@@ -127,10 +127,32 @@ struct sst_dev_stream_map {
 	u8 status;
 };
 
+#define MAX_DESCRIPTOR_SIZE 172
+
+struct sst_dev_effects_map {
+	char	uuid[16];
+	u16	algo_id;
+	char	descriptor[MAX_DESCRIPTOR_SIZE];
+};
+
+struct sst_dev_effects_resource_map {
+	char  uuid[16];
+	unsigned int flags;
+	u16 cpuLoad;
+	u16 memoryUsage;
+};
+
+struct sst_dev_effects {
+	struct sst_dev_effects_map *effs_map;
+	struct sst_dev_effects_resource_map *effs_res_map;
+	unsigned int effs_num_map;
+};
+
 struct sst_platform_data {
 	/* Intel software platform id*/
 	const struct soft_platform_id *spid;
 	struct sst_dev_stream_map *pdev_strm_map;
+	struct sst_dev_effects pdev_effs;
 	unsigned int strm_map_size;
 };
 

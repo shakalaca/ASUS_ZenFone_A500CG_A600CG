@@ -68,6 +68,8 @@
 #define MIPIA_MAX_RETURN_PACK_SIZE_REG			0xb054
 #define MIPIA_VIDEO_MODE_FORMAT_REG			0xb058
 #define MIPIA_EOT_DISABLE_REG				0xb05c
+#define CLOCK_STOP					(0x1 << 1)
+
 #define MIPIA_LP_BYTECLK_REG				0xb060
 #define MIPIA_LP_GEN_DATA_REG				0xb064
 #define MIPIA_HS_GEN_DATA_REG				0xb068
@@ -313,6 +315,13 @@ struct mdfld_dsi_hw_context {
 	u32 cck_div;
 	/*brightness*/
 	int lastbrightnesslevel;
+
+	/*dpst register values*/
+	u32 histogram_intr_ctrl;
+	u32 histogram_logic_ctrl;
+	u32 aimg_enhance_bin;
+	u32 lvds_port_ctrl;
+
 };
 
 struct mdfld_dsi_hw_registers {
@@ -397,6 +406,12 @@ struct mdfld_dsi_hw_registers {
 	u32 mipi_data_len_reg;
 	u32 mipi_cmd_addr_reg;
 	u32 mipi_cmd_len_reg;
+
+	/*dpst registers*/
+	u32 histogram_intr_ctrl_reg;
+	u32 histogram_logic_ctrl_reg;
+	u32 aimg_enhance_bin_reg;
+	u32 lvds_port_ctrl_reg;
 };
 
 #define NO_GAMMA_CSC			0x0

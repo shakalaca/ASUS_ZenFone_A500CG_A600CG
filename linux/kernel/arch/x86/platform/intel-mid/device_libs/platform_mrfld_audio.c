@@ -18,7 +18,7 @@
 #include <linux/sfi.h>
 #include <linux/platform_device.h>
 #include <asm/intel-mid.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include <asm/platform_sst_audio.h>
 #include <asm/platform_mrfld_audio.h>
 #include "platform_msic.h"

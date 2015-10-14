@@ -1,3 +1,3 @@
 if EXTERNAL_CAMERA
-source ../modules/camera/drivers/Kconfig
+source drivers/external_drivers/camera/drivers/Kconfig
 endif

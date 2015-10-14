@@ -33,6 +33,7 @@
 #define BLC_PWM_FREQ_CALC_CONSTANT 32
 #define MHz 1000000
 #define BRIGHTNESS_MIN_LEVEL 1
+#define BRIGHTNESS_INIT_LEVEL 50
 #define BRIGHTNESS_MAX_LEVEL 100
 #define BRIGHTNESS_MASK	0xFF
 #define BLC_POLARITY_NORMAL 0
@@ -82,7 +83,8 @@ int psb_set_brightness(struct backlight_device *bd)
 		 * dev_priv->blc_adj2;
 		 */
 		adjusted_level = level * dev_priv->blc_adj2;
-		adjusted_level = adjusted_level / BLC_ADJUSTMENT_MAX;
+		adjusted_level = adjusted_level / BLC_ADJUSTMENT_MAX / 100;
+		dev_priv->brightness_adjusted = adjusted_level;
 
 #ifndef CONFIG_MID_DSI_DPU
 		if (!(dev_priv->dsr_fb_update & MDFLD_DSR_MIPI_CONTROL)
@@ -97,6 +99,7 @@ int psb_set_brightness(struct backlight_device *bd)
 		}
 #endif
 
+		PSB_DEBUG_BL("Adjusted Backlight value: %d\n", adjusted_level);
 		mdfld_dsi_brightness_control(dev, 0, adjusted_level);
 		mdfld_dsi_brightness_control(dev, 2, adjusted_level);
 	}
@@ -125,7 +128,7 @@ static int device_backlight_init(struct drm_device *dev)
 	    (struct drm_psb_private *)dev->dev_private;
 
 	dev_priv->blc_adj1 = BLC_ADJUSTMENT_MAX;
-	dev_priv->blc_adj2 = BLC_ADJUSTMENT_MAX;
+	dev_priv->blc_adj2 = BLC_ADJUSTMENT_MAX * 100;
 
 	return 0;
 }
@@ -150,7 +153,7 @@ int psb_backlight_init(struct drm_device *dev)
 	if ((ret = device_backlight_init(dev)) != 0)
 		return ret;
 
-	psb_backlight_device->props.brightness = BRIGHTNESS_MAX_LEVEL;
+	psb_backlight_device->props.brightness = BRIGHTNESS_INIT_LEVEL;
 	psb_backlight_device->props.max_brightness = BRIGHTNESS_MAX_LEVEL;
 	backlight_update_status(psb_backlight_device);
 #endif

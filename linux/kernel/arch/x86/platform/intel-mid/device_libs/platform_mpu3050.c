@@ -12,18 +12,8 @@
 
 #include <linux/gpio.h>
 #include <linux/i2c.h>
-#include <linux/lnw_gpio.h>
 #include <asm/intel-mid.h>
 #include "platform_mpu3050.h"
-
-void *gyro_platform_data(void *info)
-{
-	struct i2c_board_info *i2c_info = (struct i2c_board_info *)info;
-
-	i2c_info->irq = get_gpio_by_name("gyro_int");
-
-	return NULL;
-}
 
 void *mpu3050_platform_data(void *info)
 {

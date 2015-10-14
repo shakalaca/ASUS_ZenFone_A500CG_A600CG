@@ -37,10 +37,9 @@
 
 #define BITFIELD_GET(word, bit_offset, bit_size)	\
 	(((word) >> (bit_offset)) & BITMASK(bit_size))
-#define BITFIELD_SET(word, bit_offset, bit_size, new_val) do {		\
-	word = ((word) & ~BITMASK_AT(bit_size, bit_offset)) |		\
-		(((new_val) & BITMASK(bit_size)) << (bit_offset));	\
-} while (0)
+#define BITFIELD_SET(word, bit_offset, bit_size, new_val) \
+	(word = ((word) & ~BITMASK_AT(bit_size, bit_offset)) |		\
+		(((new_val) & BITMASK(bit_size)) << (bit_offset)))
 
 /* Is val aligned to "align" ("align" must be power of 2) */
 #ifndef IS_ALIGNED

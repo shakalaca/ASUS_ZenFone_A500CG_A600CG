@@ -28,8 +28,7 @@
 #include <linux/regulator/intel_pmic.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/fixed.h>
-#include <asm/intel_scu_flis.h>
-#include <linux/regulator/driver.h>
+
 #include <asm/intel-mid.h>
 
 /****** Clovertrail SoC ******/
@@ -39,6 +38,7 @@
 static struct regulator_consumer_supply redhookbay_vprog1_consumer[] = {
 //	REGULATOR_SUPPLY("vprog1", "4-0048"), /* lm3554 */
 //	REGULATOR_SUPPLY("vprog1", "4-0036"), /* ov8830 */
+	REGULATOR_SUPPLY("vprog1", "4-0021"), /* gc0339 */
     REGULATOR_SUPPLY("vprog1", "4-0024"), /* hm2056 */
 	REGULATOR_SUPPLY("vprog1", "4-0010"), /* imx111 */
 	REGULATOR_SUPPLY("vprog1", "4-0037"), /* mn34130 */
@@ -69,6 +69,7 @@ static struct regulator_init_data redhookbay_vprog1_data = {
 	.constraints = {
 		.min_uV			= 1200000,
 		.max_uV			= 2800000,
+		.apply_uV		= 1,
 		.valid_ops_mask		= REGULATOR_CHANGE_STATUS
 			| REGULATOR_CHANGE_MODE | REGULATOR_CHANGE_VOLTAGE,
 		.valid_modes_mask	= REGULATOR_MODE_NORMAL
@@ -114,7 +115,6 @@ static struct regulator_init_data victoriabay_vprog1_data = {
 		.valid_modes_mask	= REGULATOR_MODE_NORMAL
 			| REGULATOR_MODE_STANDBY
 			| REGULATOR_MODE_FAST,
-            		.force_boot_off = 0, //ASUS_BSP++, add for turn off power at booting
 	},
 	.num_consumer_supplies	= ARRAY_SIZE(victoriabay_vprog1_consumer),
 	.consumer_supplies	= victoriabay_vprog1_consumer,
@@ -234,7 +234,6 @@ static struct regulator_init_data vprog2_data = {
 			| REGULATOR_CHANGE_MODE | REGULATOR_CHANGE_VOLTAGE,
 		.valid_modes_mask	= REGULATOR_MODE_NORMAL
 			| REGULATOR_MODE_STANDBY | REGULATOR_MODE_FAST,
-            		.force_boot_off = 0, //ASUS_BSP++, add for turn off power at booting
 	},
 	.num_consumer_supplies		= ARRAY_SIZE(vprog2_consumer),
 	.consumer_supplies		= vprog2_consumer,
@@ -302,7 +301,6 @@ static struct regulator_init_data vemmc1_data = {
 		.valid_modes_mask	= REGULATOR_MODE_NORMAL
 			| REGULATOR_MODE_STANDBY
 			| REGULATOR_MODE_FAST,
-            		.force_boot_off = 0, //ASUS_BSP++, add for turn off power at booting
 	},
 	.num_consumer_supplies	= ARRAY_SIZE(vemmc1_consumer),
 	.consumer_supplies	= vemmc1_consumer,
@@ -323,151 +321,11 @@ static struct platform_device vemmc1_device = {
 	},
 };
 
-static struct regulator_consumer_supply vccsdio_consumer[] = {
-    REGULATOR_SUPPLY("vmmc", "0000:00:04.0"),
-};
-static struct regulator_init_data vccsdio_data = {
-		.constraints = {
-			.min_uV			= 2850000,
-			.max_uV			= 2850000,
-			.valid_ops_mask	=	REGULATOR_CHANGE_STATUS |
-							REGULATOR_CHANGE_MODE,
-			.valid_modes_mask	=	REGULATOR_MODE_NORMAL |
-							REGULATOR_MODE_STANDBY |
-						REGULATOR_MODE_FAST,
-            .force_boot_off = 1,
-		      },
-		.num_consumer_supplies		= ARRAY_SIZE(vccsdio_consumer),
-		.consumer_supplies		 = vccsdio_consumer,
-};
-
-
-#define ENCTRL0_ISOLATE		0x55555557
-#define ENCTRL1_ISOLATE		0x5555
-#define STORAGESTIO_FLISNUM	0x8
-#define ENCTRL0_OFF		0x10
-#define ENCTRL1_OFF		0x11
-
-static unsigned int enctrl0_orig;
-static unsigned int enctrl1_orig;
-
-static int _mmc1_disconnect_shim(void)
-{
-	int err = 0;
-
-	err = intel_scu_ipc_read_shim(&enctrl0_orig,
-			STORAGESTIO_FLISNUM, ENCTRL0_OFF);
-	if (err) {
-		pr_err("%s: ENCTRL0 read failed\n", __func__);
-		goto out;
-	}
-	err = intel_scu_ipc_read_shim(&enctrl1_orig,
-			STORAGESTIO_FLISNUM, ENCTRL1_OFF);
-	if (err) {
-		pr_err("%s: ENCTRL1 read failed\n", __func__);
-		goto out;
-	}
-
-	pr_info("%s: mmc1.vmmc save original enctrl 0x%x, 0x%x\n",
-			__func__, enctrl0_orig, enctrl1_orig);
-	/* isolate shim */
-	err = intel_scu_ipc_write_shim(ENCTRL0_ISOLATE,
-			STORAGESTIO_FLISNUM, ENCTRL0_OFF);
-	if (err) {
-		pr_err("%s: ENCTRL0 ISOLATE failed\n",
-				__func__);
-		goto out;
-	}
-
-	err = intel_scu_ipc_write_shim(ENCTRL1_ISOLATE,
-			STORAGESTIO_FLISNUM, ENCTRL1_OFF);
-	if (err) {
-		pr_err("%s: ENCTRL1 ISOLATE failed\n", __func__);
-		goto out;
-	}
-  out:
-    return err;
-}
-/* Wrapper function, always return 0 (pass) */
-static int vccsdio_before_vreg_off(struct regulator_dev *rdev)
-{
-    _mmc1_disconnect_shim();
-    return 0;
-}
-static int _mmc1_reconnect_shim(void)
-{
-	int err = 0;
-
-	/* reconnect shim */
-	err = intel_scu_ipc_write_shim(enctrl0_orig,
-			STORAGESTIO_FLISNUM, ENCTRL0_OFF);
-	if (err) {
-		pr_err("%s: ENCTRL0 CONNECT shim failed\n", __func__);
-		goto out;
-	}
-
-	err = intel_scu_ipc_write_shim(enctrl1_orig,
-			STORAGESTIO_FLISNUM, ENCTRL1_OFF);
-	if (err) {
-		pr_err("%s: ENCTRL1 CONNECT shim failed\n", __func__);
-		goto out;
-	}
-
-	pr_info("%s: mmc1.vmmc recover original enctrl 0x%x, 0x%x\n",
-			__func__, enctrl0_orig, enctrl1_orig);
-out:
-	return err;
-}
-/* Wrapper function, always return 0 (pass) */
-static int vccsdio_after_vreg_on(struct regulator_dev *rdev)
-{
-    _mmc1_reconnect_shim();
-    return 0;
-}
-
-static unsigned long vccsdio_latest_disable_time = 0;
-
-static int vccsdio_before_vreg_on (struct regulator_dev *rdev)
-{
-    struct intel_pmic_info *pmic_info = rdev_get_drvdata(rdev);
-
-    if (!pmic_info || pmic_info->min_disable_interval_ms == 0 ||
-        vccsdio_latest_disable_time == 0 ||
-        vccsdio_latest_disable_time == INITIAL_JIFFIES)
-        return 0;
-
-    while (jiffies_to_msecs(jiffies - vccsdio_latest_disable_time) < pmic_info->min_disable_interval_ms)
-        msleep(1);
-    return 0;
-}
-
-static int vccsdio_after_vreg_off(struct regulator_dev *rdev)
-{
-    vccsdio_latest_disable_time = jiffies;
-    return 0;
-}
-
-static struct intel_pmic_info vccsdio_info = {
-		.pmic_reg   = VCCSDIOCNT_ADDR,
-		.init_data  = &vccsdio_data,
-		.table_len  = ARRAY_SIZE(VCCSDIO_VSEL_table),
-		.table      = VCCSDIO_VSEL_table,
-	.before_vreg_off = vccsdio_before_vreg_off,
-    .after_vreg_off = vccsdio_after_vreg_off,
-    .before_vreg_on = vccsdio_before_vreg_on,
-	.after_vreg_on = vccsdio_after_vreg_on,
-    .min_disable_interval_ms = 20,
-};
-
-static struct platform_device vccsdio_device = {
-	.name = "intel_regulator",
-	.id = VCCSDIO,
-	.dev = {
-		.platform_data = &vccsdio_info,
-	},
-};
 static int __init regulator_init(void)
 {
+	if (intel_mid_identify_cpu() != INTEL_MID_CPU_CHIP_CLOVERVIEW)
+		return 0;
+
 	if (INTEL_MID_BOARD(2, PHONE, CLVTP, VB, PRO)
 	    || INTEL_MID_BOARD(2, PHONE, CLVTP, VB, ENG)
 	    || INTEL_MID_BOARD(3, PHONE, CLVTP, RHB, PRO, VVLITE)
@@ -485,7 +343,6 @@ static int __init regulator_init(void)
 	platform_device_register(&vprog2_device);
 	platform_device_register(&vemmc2_device);
 	platform_device_register(&vemmc1_device);
-	platform_device_register(&vccsdio_device);
 	return 0;
 }
 device_initcall(regulator_init);

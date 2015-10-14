@@ -42,6 +42,8 @@ extern int drm_psb_msvdx_tiling;
 
 #define FIRMWAREID		0x014d42ab
 
+#define GET_MSVDX_FREQUENCY(freq_code)	((1600 * 2)/((freq_code) + 1))
+
 /* psb_mmu.c */
 uint32_t psb_get_default_pd_addr(struct psb_mmu_driver *driver);
 
@@ -101,6 +103,7 @@ int psb_setup_msvdx(struct drm_device *dev);
 
 #define FW_VA_RENDER_HOST_INT		0x00004000
 #define MSVDX_DEVICE_NODE_FLAGS_MMU_HW_INVALIDATION	0x00000020
+#define FW_DEVA_ERROR_DETECTED 0x08000000
 
 /* There is no work currently underway on the hardware */
 #define MSVDX_FW_STATUS_HW_IDLE	0x00000001
@@ -226,10 +229,8 @@ struct msvdx_private {
 	uint32_t fw_b0_uploaded;
 	uint32_t msvdx_hw_busy;
 
-#ifdef CONFIG_VIDEO_MRFLD
-	uint32_t vec_ec_mem_data[4];
+	uint32_t vec_ec_mem_data[5];
 	uint32_t vec_ec_mem_saved;
-#endif
 
 	uint32_t psb_dash_access_ctrl;
 	uint32_t decoding_err;
@@ -239,8 +240,6 @@ struct msvdx_private {
 	drm_psb_msvdx_decode_status_t decode_status;
 	uint32_t host_be_opp_enabled;
 
-	uint32_t ec_fence;
-	uint32_t ref_pic_fence;
 	/*work for error concealment*/
 	struct work_struct ec_work;
 	struct ttm_object_file *tfile; /* protected by cmdbuf_mutex */
@@ -278,6 +277,8 @@ struct psb_msvdx_cmd_queue {
 	uint32_t host_be_opp_enabled;
 	uint32_t deblock_cmd_offset;
 	struct ttm_object_file *tfile;
+	struct psb_video_ctx *msvdx_ctx;
+	int frame_boundary;
 };
 
 #ifdef CONFIG_VIDEO_MRFLD
@@ -318,7 +319,8 @@ extern int psb_submit_video_cmdbuf(struct drm_device *dev,
 				   struct ttm_buffer_object *cmd_buffer,
 				   unsigned long cmd_offset,
 				   unsigned long cmd_size,
-				   struct psb_video_ctx *msvdx_ctx);
+				   struct psb_video_ctx *msvdx_ctx,
+				   uint32_t fence_flag);
 
 void msvdx_powerdown_tasklet(unsigned long data);
 int psb_msvdx_dequeue_send(struct drm_device *dev);

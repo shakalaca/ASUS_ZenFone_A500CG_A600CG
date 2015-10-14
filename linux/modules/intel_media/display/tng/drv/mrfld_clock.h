@@ -39,6 +39,7 @@
 #define _CLK_EN_PLL_DSI1		(1 << 7)
 #define _CLK_EN_CCK_DSI0		(1 << 6)
 #define _CLK_EN_CCK_DSI1		(1 << 5)
+#define _CLK_EN_MASK			(0xf << 5)
 #define _DSI_PLL_LOCK			(1 << 0)
 #define DSI_PLL_DIV_REG			0x4C
 #define FUSE_OVERRIDE_FREQ_CNTRL_REG3	0x54

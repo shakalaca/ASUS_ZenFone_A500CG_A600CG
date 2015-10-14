@@ -38,7 +38,7 @@
 #include <asm/intel_scu_ipcutil.h>
 #include <asm/intel_mid_gpadc.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
@@ -129,17 +129,6 @@ static void mfld_jack_report(struct snd_soc_jack *jack, unsigned int status)
 						BIT(1), BIT(1));
 	}
 	snd_soc_jack_report(jack, status, mask);
-#ifdef CONFIG_SWITCH_MID
-	/* report to the switch driver as well */
-	if (status) {
-		if (status == SND_JACK_HEADPHONE)
-			mid_headset_report((1<<1));
-		else if (status == SND_JACK_HEADSET)
-			mid_headset_report(1);
-	} else {
-		mid_headset_report(0);
-	}
-#endif
 }
 
 void mfld_jack_wq(struct work_struct *work)

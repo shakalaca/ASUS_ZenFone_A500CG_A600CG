@@ -41,11 +41,8 @@ struct mei_txe_hw;
 struct mei_txe_hw {
 	void __iomem *mem_addr[NUM_OF_MEM_BARS];
 	u32 aliveness;
-	unsigned long aliveness_atime;
-	unsigned long aliveness_timeout;
-	bool recvd_aliv_resp;
+	u32 hhier;
 	wait_queue_head_t wait_aliveness_resp;
-	struct work_struct reset_work;
 
 	u32 readiness_state;
 	unsigned long intr_cause;
@@ -70,6 +67,10 @@ struct mei_device *mei_txe_dev_init(struct pci_dev *pdev);
 
 irqreturn_t mei_txe_irq_quick_handler(int irq, void *dev_id);
 irqreturn_t mei_txe_irq_thread_handler(int irq, void *dev_id);
+
+void mei_txe_intr_save(struct mei_device *dev);
+void mei_txe_intr_restore(struct mei_device *dev);
+
 int mei_txe_aliveness_set_sync(struct mei_device *dev, u32 req);
 
 int mei_txe_setup_satt2(struct mei_device *dev, phys_addr_t addr, u32 range);

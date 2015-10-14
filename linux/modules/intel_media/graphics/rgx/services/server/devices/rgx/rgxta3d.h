@@ -50,7 +50,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rgxdevice.h"
 #include "rgx_fwif_shared.h"
 #include "rgx_fwif_resetframework.h"
-#include "rgxfwutils.h"
 #include "sync_server.h"
 #include "connection_server.h"
 
@@ -62,11 +61,6 @@ typedef struct _RGX_SERVER_RENDER_CONTEXT_ RGX_SERVER_RENDER_CONTEXT;
 typedef struct _RGX_FREELIST_ RGX_FREELIST;
 typedef struct _RGX_PMR_NODE_ RGX_PMR_NODE;
 
-typedef struct _RGX_CLEANUP_HOST_DATA_ {
-	IMG_UINT32 ui32SubmittedCommandsTA;
-	IMG_UINT32 ui32SubmittedCommands3D;
-} RGX_CLEANUP_HOST_DATA;
-
 typedef struct {
 	PVRSRV_DEVICE_NODE		*psDeviceNode;
 	DEVMEM_MEMDESC			*psFWHWRTDataMemDesc;
@@ -74,7 +68,6 @@ typedef struct {
 	DEVMEM_MEMDESC			*psRTArrayMemDesc;
 	RGX_FREELIST 			*apsFreeLists[RGXFW_MAX_FREELISTS];
 	PVRSRV_CLIENT_SYNC_PRIM	*psCleanupSync;
-	RGX_CLEANUP_HOST_DATA		sHostCleanup;
 } RGX_RTDATA_CLEANUP_DATA;
 
 struct _RGX_FREELIST_ {
@@ -143,7 +136,6 @@ typedef struct {
 	DLLIST_NODE	sNode;
 
 	PVRSRV_CLIENT_SYNC_PRIM	*psCleanupSync;
-	RGX_CLEANUP_HOST_DATA	sHostCleanup;
 }RGX_ZSBUFFER_DATA;
 
 typedef struct {
@@ -423,9 +415,21 @@ PVRSRV_ERROR PVRSRVRGXKickTA3DKM(RGX_SERVER_RENDER_CONTEXT	*psRenderContext,
 								 IMG_BOOL					bPDumpContinuous,
 								 RGX_RTDATA_CLEANUP_DATA        *psRTDataCleanup,
 								 RGX_ZSBUFFER_DATA              *psZBuffer,
-								 RGX_ZSBUFFER_DATA               *psSBuffer);
+								 RGX_ZSBUFFER_DATA               *psSBuffer,
+								 IMG_BOOL						bCommitRefCountsTA,
+								 IMG_BOOL						bCommitRefCounts3D,
+								 IMG_BOOL						*pbCommittedRefCountsTA,
+								 IMG_BOOL						*pbCommittedRefCounts3D);
+
 
 PVRSRV_ERROR PVRSRVRGXSetRenderContextPriorityKM(CONNECTION_DATA *psConnection,
 												 RGX_SERVER_RENDER_CONTEXT *psRenderContext,
 												 IMG_UINT32 ui32Priority);
+
+PVRSRV_ERROR PVRSRVRGXGetLastRenderContextResetReasonKM(RGX_SERVER_RENDER_CONTEXT	*psRenderContext,
+                                                        IMG_UINT32 *peLastResetReason);
+
+/* Debug - check if render context is waiting on a fence */
+IMG_VOID CheckForStalledRenderCtxt(PVRSRV_RGXDEV_INFO *psDevInfo);
+
 #endif /* __RGXTA3D_H__ */

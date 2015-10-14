@@ -180,7 +180,8 @@ int load_msr_list(struct i2c_client *client, char *name,
 			ret, name);
 		return ret;
 	}
-	dev_info(&client->dev, "Received %d bytes drv data\n", (*fw)->size);
+	dev_info(&client->dev, "Received %lu bytes drv data\n",
+			(unsigned long)(*fw)->size);
 
 	return 0;
 }

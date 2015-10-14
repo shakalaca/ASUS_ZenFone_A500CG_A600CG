@@ -4,7 +4,7 @@
 ccflags-y += -DDEBUG
 
 ifeq (user,$(TARGET_BUILD_VARIANT))
-  LOCAL_CFLAGS += -DCHANGE_DLP_HSI_TX_DELAY
+  KBUILD_CFLAGS += -DWA_FOR_PDU_WRONG_SIZE
 endif
 
 obj-$(CONFIG_HSI_LOGICAL) += hsi_flash.o

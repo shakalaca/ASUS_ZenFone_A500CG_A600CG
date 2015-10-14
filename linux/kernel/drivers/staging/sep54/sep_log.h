@@ -124,5 +124,8 @@ extern int sep_log_mask;
 #define SEP_LOG_TRACE(format, arg...) do {} while (0)
 #endif
 
+#undef pr_fmt
+#define pr_fmt(fmt)     KBUILD_MODNAME ": %s:%d: " fmt, __func__, __LINE__
+
 #endif
 

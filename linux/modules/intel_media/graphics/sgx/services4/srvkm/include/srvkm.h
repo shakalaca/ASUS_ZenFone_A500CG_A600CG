@@ -112,6 +112,7 @@ IMG_UINT32 SyncTakeWriteOp(PVRSRV_KERNEL_SYNC_INFO *psKernelSync, IMG_UINT32 ui3
 	psKernelSync->ui32HistoryIndex++;
 	psKernelSync->ui32HistoryIndex = psKernelSync->ui32HistoryIndex % PER_SYNC_HISTORY;
 #endif
+	PVR_UNREFERENCED_PARAMETER(ui32OpType);
 	return psKernelSync->psSyncData->ui32WriteOpsPending++;
 }
 
@@ -135,6 +136,7 @@ IMG_UINT32 SyncTakeReadOp(PVRSRV_KERNEL_SYNC_INFO *psKernelSync, IMG_UINT32 ui32
 	psKernelSync->ui32HistoryIndex++;
 	psKernelSync->ui32HistoryIndex = psKernelSync->ui32HistoryIndex % PER_SYNC_HISTORY;
 #endif
+	PVR_UNREFERENCED_PARAMETER(ui32OpType);
 	return psKernelSync->psSyncData->ui32ReadOpsPending++;
 }
 
@@ -158,6 +160,7 @@ IMG_UINT32 SyncTakeReadOp2(PVRSRV_KERNEL_SYNC_INFO *psKernelSync, IMG_UINT32 ui3
 	psKernelSync->ui32HistoryIndex++;
 	psKernelSync->ui32HistoryIndex = psKernelSync->ui32HistoryIndex % PER_SYNC_HISTORY;
 #endif
+	PVR_UNREFERENCED_PARAMETER(ui32OpType);
 	return psKernelSync->psSyncData->ui32ReadOps2Pending++;
 }
 
@@ -181,6 +184,7 @@ IMG_UINT32 SyncRollBackWriteOp(PVRSRV_KERNEL_SYNC_INFO *psKernelSync, IMG_UINT32
 	psKernelSync->ui32HistoryIndex++;
 	psKernelSync->ui32HistoryIndex = psKernelSync->ui32HistoryIndex % PER_SYNC_HISTORY;
 #endif
+	PVR_UNREFERENCED_PARAMETER(ui32OpType);
 	return psKernelSync->psSyncData->ui32WriteOpsPending--;
 }
 
@@ -204,6 +208,7 @@ IMG_UINT32 SyncRollBackReadOp(PVRSRV_KERNEL_SYNC_INFO *psKernelSync, IMG_UINT32 
 	psKernelSync->ui32HistoryIndex++;
 	psKernelSync->ui32HistoryIndex = psKernelSync->ui32HistoryIndex % PER_SYNC_HISTORY;
 #endif
+	PVR_UNREFERENCED_PARAMETER(ui32OpType);
 	return psKernelSync->psSyncData->ui32ReadOpsPending--;
 }
 

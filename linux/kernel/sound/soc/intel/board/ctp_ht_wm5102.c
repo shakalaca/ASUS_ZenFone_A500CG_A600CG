@@ -30,11 +30,10 @@
 #include <linux/rpmsg.h>
 #include <linux/init.h>
 #include <linux/rpmsg.h>
-#include <asm/intel_mid_gpadc.h>
 #include <asm/intel_scu_pmic.h>
 #include <asm/intel_scu_ipcutil.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include <asm/platform_ctp_audio.h>
 #include <asm/intel_sst_ctp.h>
 #include <sound/pcm.h>

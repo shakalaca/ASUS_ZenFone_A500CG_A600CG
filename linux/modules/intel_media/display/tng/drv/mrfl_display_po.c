@@ -33,7 +33,6 @@
 #include "mdfld_output.h"
 #include <asm/intel_scu_ipc.h>
 #include "mdfld_dsi_pkg_sender.h"
-#include <linux/pm_runtime.h>
 #include "psb_drv.h"
 
 static void __iomem *io_base;

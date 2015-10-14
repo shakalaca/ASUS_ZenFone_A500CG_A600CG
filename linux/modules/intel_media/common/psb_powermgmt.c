@@ -45,18 +45,16 @@
 #include <linux/atomic.h>
 
 #include <linux/version.h>
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0))
 #define SUPPORT_EARLY_SUSPEND 1
-#endif
 #include <asm/intel_scu_pmic.h>
 
 #if SUPPORT_EARLY_SUSPEND
 #include <linux/earlysuspend.h>
 #endif /* if SUPPORT_EARLY_SUSPEND */
-
 #include <asm/intel-mid.h>
 #include <linux/mutex.h>
 #include <linux/gpio.h>
+#include <linux/early_suspend_sysfs.h>
 #include "mdfld_dsi_dbi_dsr.h"
 
 #define SCU_CMD_VPROG2  0xe3
@@ -93,6 +91,9 @@ void release_ospm_lock(void)
 	mutex_unlock(&g_ospm_mutex);
 }
 
+static void ospm_early_suspend();
+static void ospm_late_resume();
+
 #if SUPPORT_EARLY_SUSPEND
 /*
  * gfx_early_suspend
@@ -115,6 +116,7 @@ static int ospm_runtime_pm_msvdx_suspend(struct drm_device *dev)
 	struct msvdx_private *msvdx_priv = dev_priv->msvdx_private;
 	struct psb_video_ctx *pos, *n;
 	int decode_ctx = 0, decode_running = 0;
+	unsigned long irq_flags;
 
 	PSB_DEBUG_PM("MSVDX: %s: enter in runtime pm.\n", __func__);
 
@@ -136,7 +138,7 @@ static int ospm_runtime_pm_msvdx_suspend(struct drm_device *dev)
 		goto out;
 	}
 
-	mutex_lock(&dev_priv->video_ctx_mutex);
+	spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 	list_for_each_entry_safe(pos, n, &dev_priv->video_ctx, head) {
 		int entrypoint = pos->ctx_type & 0xff;
 		if (entrypoint == VAEntrypointVLD ||
@@ -148,7 +150,7 @@ static int ospm_runtime_pm_msvdx_suspend(struct drm_device *dev)
 			break;
 		}
 	}
-	mutex_unlock(&dev_priv->video_ctx_mutex);
+	spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 
 	/* have decode context, but not started, or is just closed */
 	if (decode_ctx && msvdx_priv->msvdx_ctx)
@@ -180,6 +182,7 @@ static int ospm_runtime_pm_topaz_suspend(struct drm_device *dev)
 	struct pnw_topaz_private *pnw_topaz_priv = dev_priv->topaz_private;
 	struct psb_video_ctx *pos, *n;
 	int encode_ctx = 0, encode_running = 0;
+	unsigned long irq_flags;
 
 	if (!ospm_power_is_hw_on(OSPM_VIDEO_ENC_ISLAND))
 		goto out;
@@ -196,7 +199,7 @@ static int ospm_runtime_pm_topaz_suspend(struct drm_device *dev)
 		}
 	}
 
-	mutex_lock(&dev_priv->video_ctx_mutex);
+	spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 	list_for_each_entry_safe(pos, n, &dev_priv->video_ctx, head) {
 		int entrypoint = pos->ctx_type & 0xff;
 		if (entrypoint == VAEntrypointEncSlice ||
@@ -205,7 +208,7 @@ static int ospm_runtime_pm_topaz_suspend(struct drm_device *dev)
 			break;
 		}
 	}
-	mutex_unlock(&dev_priv->video_ctx_mutex);
+	spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 
 	/* have encode context, but not started, or is just closed */
 	if (encode_ctx && dev_priv->topaz_ctx)
@@ -285,10 +288,10 @@ static int ospm_runtime_pm_topaz_resume(struct drm_device *dev)
 	struct pnw_topaz_private *pnw_topaz_priv = dev_priv->topaz_private;
 	struct psb_video_ctx *pos, *n;
 	int encode_ctx = 0, encode_running = 0;
+	unsigned long irq_flags;
 
 	/*printk(KERN_ALERT "ospm_runtime_pm_topaz_resume\n");*/
-
-	mutex_lock(&dev_priv->video_ctx_mutex);
+	spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 	list_for_each_entry_safe(pos, n, &dev_priv->video_ctx, head) {
 		int entrypoint = pos->ctx_type & 0xff;
 		if (entrypoint == VAEntrypointEncSlice ||
@@ -297,7 +300,7 @@ static int ospm_runtime_pm_topaz_resume(struct drm_device *dev)
 			break;
 		}
 	}
-	mutex_unlock(&dev_priv->video_ctx_mutex);
+	spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 
 	/* have encode context, but not started, or is just closed */
 	if (encode_ctx && dev_priv->topaz_ctx)
@@ -402,6 +405,18 @@ out:
 	return;
 }
 
+static ssize_t early_suspend_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	if (!strncmp(buf, EARLY_SUSPEND_ON, EARLY_SUSPEND_STATUS_LEN))
+		ospm_early_suspend();
+	else if (!strncmp(buf, EARLY_SUSPEND_OFF, EARLY_SUSPEND_STATUS_LEN))
+		ospm_late_resume();
+
+	return count;
+}
+static DEVICE_EARLY_SUSPEND_ATTR(early_suspend_store);
+
 /*
  * ospm_power_init
  *
@@ -426,6 +441,10 @@ void ospm_power_init(struct drm_device *dev)
 	atomic_set(&g_videoenc_access_count, 0);
 	atomic_set(&g_videodec_access_count, 0);
 
+	device_create_file(&dev->pdev->dev, &dev_attr_early_suspend);
+
+	register_early_suspend_device(&gpDrmDevice->pdev->dev);
+
 #if SUPPORT_EARLY_SUSPEND
 	register_early_suspend(&gfx_early_suspend_desc);
 #endif /* if SUPPORT_EARLY_SUSPEND */
@@ -445,6 +464,9 @@ void ospm_power_init(struct drm_device *dev)
  */
 void ospm_power_uninit(void)
 {
+	device_remove_file(&gpDrmDevice->pdev->dev, &dev_attr_early_suspend);
+	unregister_early_suspend_device(&gpDrmDevice->pdev->dev);
+
 #if SUPPORT_EARLY_SUSPEND
     unregister_early_suspend(&gfx_early_suspend_desc);
 #endif /* if SUPPORT_EARLY_SUSPEND */
@@ -502,13 +524,13 @@ static void mdfld_adjust_display_fifo(struct drm_device *dev)
 		REG_WRITE(MI_ARB, 0x0);
 
 		/*
-		 * enable bit 29 for BUNIT.DEBUG0 register
-		 * This gives slightly more priority to urgent ISOCH traffic
-		 * (which applies to Display and Camera) over BE (best effort)
-		 * in memory controller arbiter, to lower the chance that
-		 * display memory request being blocked for long time which
-		 * may cause display controller crash.
-		 */
+		* enable bit 29 for BUNIT.DEBUG0 register
+		* This gives slightly more priority to urgent ISOCH traffic
+		* (which applies to Display and Camera) over BE (best effort)
+		* in memory controller arbiter, to lower the chance that
+		* display memory request being blocked for long time which
+		* may cause display controller crash.
+		*/
 		temp = intel_mid_msgbus_read32(3, 0x30);
 		intel_mid_msgbus_write32(3, 0x30, temp | (1 << 29));
 	}
@@ -1112,8 +1134,7 @@ static bool ospm_resume_pci(struct pci_dev *pdev)
 	return !gbSuspended;
 }
 
-#if SUPPORT_EARLY_SUSPEND
-static void gfx_early_suspend(struct early_suspend *h)
+static void ospm_early_suspend()
 {
 	struct drm_psb_private *dev_priv = gpDrmDevice->dev_private;
 	struct drm_device *dev = dev_priv->dev;
@@ -1157,10 +1178,8 @@ static void gfx_early_suspend(struct early_suspend *h)
 	pm_runtime_allow(&gpDrmDevice->pdev->dev);
 #endif
 }
-#endif /* if SUPPORT_EARLY_SUSPEND */
 
-#if SUPPORT_EARLY_SUSPEND
-static void gfx_late_resume(struct early_suspend *h)
+static void ospm_late_resume()
 {
 	struct drm_psb_private *dev_priv = gpDrmDevice->dev_private;
 	struct drm_device *dev = dev_priv->dev;
@@ -1204,6 +1223,19 @@ static void gfx_late_resume(struct early_suspend *h)
 		psb_set_brightness(NULL);
 
 	mutex_unlock(&dev->mode_config.mutex);
+}
+
+#if SUPPORT_EARLY_SUSPEND
+static void gfx_early_suspend(struct early_suspend *h)
+{
+	ospm_early_suspend();
+}
+#endif /* if SUPPORT_EARLY_SUSPEND */
+
+#if SUPPORT_EARLY_SUSPEND
+static void gfx_late_resume(struct early_suspend *h)
+{
+	ospm_late_resume();
 }
 #endif /* if SUPPORT_EARLY_SUSPEND */
 
@@ -1668,6 +1700,7 @@ bool ospm_power_is_hw_on(int hw_islands)
 	spin_unlock_irqrestore(&dev_priv->ospm_lock, flags);
 	return ret;
 }
+EXPORT_SYMBOL(ospm_power_is_hw_on);
 
 /* For video case, we only force enable hw in process context.
  * Protected by g_ospm_mutex */

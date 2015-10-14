@@ -235,8 +235,11 @@ IMG_VOID dllist_move_next_node_to_tail(PDLLIST_NODE psListHead)
 	PDLLIST_NODE psTmp;
 
 	psTmp = dllist_get_next_node(psListHead);
-	dllist_remove_next_node(psListHead);
-	dllist_add_to_tail(psListHead, psTmp);
+	if (psTmp != IMG_NULL)
+	{
+		dllist_remove_next_node(psListHead);
+		dllist_add_to_tail(psListHead, psTmp);
+	}
 }
 
 

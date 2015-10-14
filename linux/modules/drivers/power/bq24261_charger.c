@@ -40,6 +40,7 @@
 #include <linux/power/bq24261_charger.h>
 #include <linux/seq_file.h>
 #include <linux/debugfs.h>
+#include <linux/wakelock.h>
 
 #include <asm/intel_scu_ipc.h>
 
@@ -92,16 +93,16 @@
 #define BQ24261_HZ_ENABLE		(0x01)
 
 #define BQ24261_ICHRG_MASK		(0x1F << 3)
-#define BQ24261_ICHRG_100mA		(0x01 << 3)
-#define BQ24261_ICHRG_200mA		(0x01 << 4)
-#define BQ24261_ICHRG_400mA		(0x01 << 5)
-#define BQ24261_ICHRG_800mA		(0x01 << 6)
-#define BQ24261_ICHRG_1600mA		(0x01 << 7)
+#define BQ24261_ICHRG_100ma		(0x01 << 3)
+#define BQ24261_ICHRG_200ma		(0x01 << 4)
+#define BQ24261_ICHRG_400ma		(0x01 << 5)
+#define BQ24261_ICHRG_800ma		(0x01 << 6)
+#define BQ24261_ICHRG_1600ma		(0x01 << 7)
 
 #define BQ24261_ITERM_MASK		(0x03)
-#define BQ24261_ITERM_50mA		(0x01 << 0)
-#define BQ24261_ITERM_100mA		(0x01 << 1)
-#define BQ24261_ITERM_200mA		(0x01 << 2)
+#define BQ24261_ITERM_50ma		(0x01 << 0)
+#define BQ24261_ITERM_100ma		(0x01 << 1)
+#define BQ24261_ITERM_200ma		(0x01 << 2)
 
 #define BQ24261_VBREG_MASK		(0x3F << 2)
 
@@ -121,13 +122,14 @@
 #define BQ24261_VENDOR_MASK		(0x07 << 5)
 #define BQ24261_VENDOR			(0x02 << 5)
 #define BQ24261_REV_MASK		(0x07)
+#define BQ24261_2_3_REV			(0x06)
 #define BQ24261_REV			(0x02)
 #define BQ24260_REV			(0x01)
 
 #define BQ24261_TS_MASK			(0x01 << 3)
 #define BQ24261_TS_ENABLED		(0x01 << 3)
 #define BQ24261_BOOST_ILIM_MASK		(0x01 << 4)
-#define BQ24261_BOOST_ILIM_500mA	(0x0)
+#define BQ24261_BOOST_ILIM_500ma	(0x0)
 #define BQ24261_BOOST_ILIM_1A		(0x01 << 4)
 
 #define BQ24261_SAFETY_TIMER_MASK	(0x03 << 5)
@@ -189,19 +191,19 @@ u16 bq24261_inlmt[][2] = {
 u16 bq24261_iterm[][2] = {
 	{0, 0x00}
 	,
-	{50, BQ24261_ITERM_50mA}
+	{50, BQ24261_ITERM_50ma}
 	,
-	{100, BQ24261_ITERM_100mA}
+	{100, BQ24261_ITERM_100ma}
 	,
-	{150, BQ24261_ITERM_100mA | BQ24261_ITERM_50mA}
+	{150, BQ24261_ITERM_100ma | BQ24261_ITERM_50ma}
 	,
-	{200, BQ24261_ITERM_200mA}
+	{200, BQ24261_ITERM_200ma}
 	,
-	{250, BQ24261_ITERM_200mA | BQ24261_ITERM_50mA}
+	{250, BQ24261_ITERM_200ma | BQ24261_ITERM_50ma}
 	,
-	{300, BQ24261_ITERM_200mA | BQ24261_ITERM_100mA}
+	{300, BQ24261_ITERM_200ma | BQ24261_ITERM_100ma}
 	,
-	{350, BQ24261_ITERM_200mA | BQ24261_ITERM_100mA | BQ24261_ITERM_50mA}
+	{350, BQ24261_ITERM_200ma | BQ24261_ITERM_100ma | BQ24261_ITERM_50ma}
 	,
 };
 
@@ -209,25 +211,25 @@ u16 bq24261_cc[][2] = {
 
 	{500, 0x00}
 	,
-	{600, BQ24261_ICHRG_100mA}
+	{600, BQ24261_ICHRG_100ma}
 	,
-	{700, BQ24261_ICHRG_200mA}
+	{700, BQ24261_ICHRG_200ma}
 	,
-	{800, BQ24261_ICHRG_100mA | BQ24261_ICHRG_200mA}
+	{800, BQ24261_ICHRG_100ma | BQ24261_ICHRG_200ma}
 	,
-	{900, BQ24261_ICHRG_400mA}
+	{900, BQ24261_ICHRG_400ma}
 	,
-	{1000, BQ24261_ICHRG_400mA | BQ24261_ICHRG_100mA}
+	{1000, BQ24261_ICHRG_400ma | BQ24261_ICHRG_100ma}
 	,
-	{1100, BQ24261_ICHRG_400mA | BQ24261_ICHRG_200mA}
+	{1100, BQ24261_ICHRG_400ma | BQ24261_ICHRG_200ma}
 	,
-	{1200, BQ24261_ICHRG_400mA | BQ24261_ICHRG_200mA | BQ24261_ICHRG_100mA}
+	{1200, BQ24261_ICHRG_400ma | BQ24261_ICHRG_200ma | BQ24261_ICHRG_100ma}
 	,
-	{1300, BQ24261_ICHRG_800mA}
+	{1300, BQ24261_ICHRG_800ma}
 	,
-	{1400, BQ24261_ICHRG_800mA | BQ24261_ICHRG_100mA}
+	{1400, BQ24261_ICHRG_800ma | BQ24261_ICHRG_100ma}
 	,
-	{1500, BQ24261_ICHRG_800mA | BQ24261_ICHRG_200mA}
+	{1500, BQ24261_ICHRG_800ma | BQ24261_ICHRG_200ma}
 	,
 };
 
@@ -303,6 +305,7 @@ struct bq24261_charger {
 	int cntl_state;
 	int max_temp;
 	int min_temp;
+	int revision;
 	enum bq24261_chrgr_stat chrgr_stat;
 	bool online;
 	bool present;
@@ -313,10 +316,12 @@ struct bq24261_charger {
 	bool is_hw_chrg_term;
 	char model_name[MODEL_NAME_SIZE];
 	char manufacturer[DEV_MANUFACTURER_NAME_SIZE];
+	struct wake_lock chrgr_en_wakelock;
 };
 
 enum bq2426x_model_num {
-	BQ24260 = 0,
+	BQ2426X = 0,
+	BQ24260,
 	BQ24261,
 };
 
@@ -326,6 +331,7 @@ struct bq2426x_model {
 };
 
 static struct bq2426x_model bq24261_model_name[] = {
+	{ "bq2426x", BQ2426X },
 	{ "bq24260", BQ24260 },
 	{ "bq24261", BQ24261 },
 };
@@ -434,7 +440,7 @@ static inline void bq24261_dump_regs(bool dump_master)
 		dev_err(&bq24261_client->dev,
 			"%s: Error in getting battery current", __func__);
 	else
-		dev_info(&bq24261_client->dev, "Battery Current=%dmA\n",
+		dev_info(&bq24261_client->dev, "Battery Current=%dma\n",
 				(bat_cur/1000));
 
 	ret = get_battery_voltage(&bat_volt);
@@ -588,7 +594,7 @@ static inline int bq24261_tmr_ntc_init(struct bq24261_charger *chip)
 		reg_val |= BQ24261_TS_ENABLED;
 
 	/* Check if boost mode current configuration is above 1A*/
-	if (chip->pdata->boost_mode_mA >= 1000)
+	if (chip->pdata->boost_mode_ma >= 1000)
 		reg_val |= BQ24261_BOOST_ILIM_1A;
 
 	ret = bq24261_read_modify_reg(chip->client, BQ24261_ST_NTC_MON_ADDR,
@@ -831,8 +837,10 @@ static inline int bq24261_enable_boost_mode(
 
 	if (val) {
 
-		if (chip->pdata->enable_vbus)
-			chip->pdata->enable_vbus(true);
+		if ((chip->revision & BQ24261_REV_MASK) == BQ24261_REV) {
+			if (chip->pdata->enable_vbus)
+				chip->pdata->enable_vbus(true);
+		}
 
 		/* TODO: Support different Host Mode Current limits */
 
@@ -850,7 +858,8 @@ static inline int bq24261_enable_boost_mode(
 			return ret;
 		chip->boost_mode = true;
 
-		schedule_delayed_work(&chip->wdt_work, 0);
+		if ((chip->revision & BQ24261_REV_MASK) == BQ24261_REV)
+			schedule_delayed_work(&chip->wdt_work, 0);
 
 		dev_info(&chip->client->dev, "Boost Mode enabled\n");
 	} else {
@@ -870,10 +879,13 @@ static inline int bq24261_enable_boost_mode(
 			bq24261_enable_charger(chip, false);
 		chip->boost_mode = false;
 		dev_info(&chip->client->dev, "Boost Mode disabled\n");
-		cancel_delayed_work_sync(&chip->wdt_work);
 
-		if (chip->pdata->enable_vbus)
-			chip->pdata->enable_vbus(false);
+		if ((chip->revision & BQ24261_REV_MASK) == BQ24261_REV) {
+			cancel_delayed_work_sync(&chip->wdt_work);
+
+			if (chip->pdata->enable_vbus)
+				chip->pdata->enable_vbus(false);
+		}
 
 		/* Notify power supply subsystem to enable charging
 		 * if needed. Eg. if DC adapter is connected
@@ -954,6 +966,19 @@ static int bq24261_usb_set_property(struct power_supply *psy,
 
 	case POWER_SUPPLY_PROP_PRESENT:
 		chip->present = val->intval;
+		/*If charging capable cable is present, then
+		hold the charger wakelock so that the target
+		does not enter suspend mode when charging is
+		in progress.
+		If charging cable has been removed, then
+		unlock the wakelock to allow the target to
+		enter the sleep mode*/
+		if (!wake_lock_active(&chip->chrgr_en_wakelock) &&
+					val->intval)
+			wake_lock(&chip->chrgr_en_wakelock);
+		else if (wake_lock_active(&chip->chrgr_en_wakelock) &&
+					!val->intval)
+			wake_unlock(&chip->chrgr_en_wakelock);
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
 		chip->online = val->intval;
@@ -1407,6 +1432,10 @@ static int bq24261_handle_irq(struct bq24261_charger *chip, u8 stat_reg)
 
 		case BQ24261_LOW_SUPPLY:
 			notify = false;
+
+			if (chip->pdata->handle_low_supply)
+				chip->pdata->handle_low_supply();
+
 			if (chip->cable_type !=
 					POWER_SUPPLY_CHARGER_TYPE_NONE) {
 				schedule_delayed_work
@@ -1592,7 +1621,7 @@ static inline int register_otg_notifications(struct bq24261_charger *chip)
 #else
 	chip->transceiver = usb_get_phy(USB_PHY_TYPE_USB2);
 #endif
-	if (!chip->transceiver) {
+	if (!chip->transceiver || IS_ERR(chip->transceiver)) {
 		dev_err(&chip->client->dev, "failed to get otg transceiver\n");
 		return -EINVAL;
 	}
@@ -1612,9 +1641,10 @@ static enum bq2426x_model_num bq24261_get_model(int bq24261_rev_reg)
 	case BQ24260_REV:
 		return BQ24260;
 	case BQ24261_REV:
+	case BQ24261_2_3_REV:
 		return BQ24261;
 	default:
-		return -EINVAL;
+		return BQ2426X;
 	}
 }
 
@@ -1624,7 +1654,8 @@ static int bq24261_probe(struct i2c_client *client,
 	struct i2c_adapter *adapter;
 	struct bq24261_charger *chip;
 	int ret;
-	enum bq2426x_model_num bq24261_rev;
+	int bq2426x_rev;
+	enum bq2426x_model_num bq24261_rev_index;
 
 	adapter = to_i2c_adapter(client->dev.parent);
 
@@ -1640,19 +1671,19 @@ static int bq24261_probe(struct i2c_client *client,
 		return -EIO;
 	}
 
-	ret = bq24261_read_reg(client, BQ24261_VENDOR_REV_ADDR);
-	if (ret < 0) {
+	bq2426x_rev = bq24261_read_reg(client, BQ24261_VENDOR_REV_ADDR);
+	if (bq2426x_rev < 0) {
 		dev_err(&client->dev,
-			"Error (%d) in reading BQ24261_VENDOR_REV_ADDR\n", ret);
-		return ret;
+			"Error (%d) in reading BQ24261_VENDOR_REV_ADDR\n", bq2426x_rev);
+		return bq2426x_rev;
 	}
+	dev_info(&client->dev, "bq2426x revision: 0x%x found!!\n", bq2426x_rev);
 
-	bq24261_rev = bq24261_get_model(ret);
-	if (((ret & BQ24261_VENDOR_MASK) != BQ24261_VENDOR) ||
-		(bq24261_rev < 0)) {
+	bq24261_rev_index = bq24261_get_model(bq2426x_rev);
+	if ((bq2426x_rev & BQ24261_VENDOR_MASK) != BQ24261_VENDOR) {
 		dev_err(&client->dev,
 			"Invalid Vendor/Revision number in BQ24261_VENDOR_REV_ADDR: %d",
-			ret);
+			bq2426x_rev);
 		return -ENODEV;
 	}
 
@@ -1692,14 +1723,17 @@ static int bq24261_probe(struct i2c_client *client,
 	chip->max_cc = 1500;
 	chip->chrgr_stat = BQ24261_CHRGR_STAT_UNKNOWN;
 	chip->chrgr_health = POWER_SUPPLY_HEALTH_UNKNOWN;
+	chip->revision = bq2426x_rev;
 
 	strncpy(chip->model_name,
-		bq24261_model_name[bq24261_rev].model_name,
+		bq24261_model_name[bq24261_rev_index].model_name,
 		MODEL_NAME_SIZE);
 	strncpy(chip->manufacturer, DEV_MANUFACTURER,
 		DEV_MANUFACTURER_NAME_SIZE);
 
 	mutex_init(&chip->lock);
+	wake_lock_init(&chip->chrgr_en_wakelock,
+			WAKE_LOCK_SUSPEND, "chrgr_en_wakelock");
 	ret = power_supply_register(&client->dev, &chip->psy_usb);
 	if (ret) {
 		dev_err(&client->dev, "Failed: power supply register (%d)\n",
@@ -1713,8 +1747,10 @@ static int bq24261_probe(struct i2c_client *client,
 				bq24261_low_supply_fault_work);
 	INIT_DELAYED_WORK(&chip->exception_mon_work,
 				bq24261_exception_mon_work);
-	INIT_DELAYED_WORK(&chip->wdt_work,
-				bq24261_wdt_reset_worker);
+	if ((chip->revision & BQ24261_REV_MASK) == BQ24261_REV) {
+		INIT_DELAYED_WORK(&chip->wdt_work,
+					bq24261_wdt_reset_worker);
+	}
 
 	INIT_WORK(&chip->irq_work, bq24261_irq_worker);
 	if (chip->client->irq) {
@@ -1755,6 +1791,7 @@ static int bq24261_remove(struct i2c_client *client)
 		free_irq(client->irq, chip);
 
 	flush_scheduled_work();
+	wake_lock_destroy(&chip->chrgr_en_wakelock);
 	if (chip->irq_iomap)
 		iounmap(chip->irq_iomap);
 	if (chip->transceiver)
@@ -1769,6 +1806,10 @@ static int bq24261_suspend(struct device *dev)
 {
 	struct bq24261_charger *chip = dev_get_drvdata(dev);
 
+	if ((chip->revision & BQ24261_REV_MASK) == BQ24261_REV) {
+		if (chip->boost_mode)
+			cancel_delayed_work_sync(&chip->wdt_work);
+	}
 	dev_dbg(&chip->client->dev, "bq24261 suspend\n");
 	return 0;
 }
@@ -1776,6 +1817,11 @@ static int bq24261_suspend(struct device *dev)
 static int bq24261_resume(struct device *dev)
 {
 	struct bq24261_charger *chip = dev_get_drvdata(dev);
+
+	if ((chip->revision & BQ24261_REV_MASK) == BQ24261_REV) {
+		if (chip->boost_mode)
+			bq24261_enable_boost_mode(chip, 1);
+	}
 
 	dev_dbg(&chip->client->dev, "bq24261 resume\n");
 	return 0;

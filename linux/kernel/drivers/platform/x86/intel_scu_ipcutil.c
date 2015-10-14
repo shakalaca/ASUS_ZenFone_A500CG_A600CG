@@ -28,11 +28,11 @@
 #include <linux/io.h>
 #include <linux/rpmsg.h>
 #include <asm/intel_scu_ipc.h>
-#include <asm/intel_scu_ipcutil.h>
 #include <asm/intel_scu_pmic.h>
+#include <asm/intel_scu_ipcutil.h>
 #include <asm/intel-mid.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include <linux/pm_runtime.h>
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
@@ -83,9 +83,12 @@
 
 #define OSNIB_SIZE		32	/* Size (bytes) of the default OSNIB.*/
 
-#define OSNIB_INTEL_RSVD_SIZE	14	/* Size (bytes) of Intel RESERVED in */
+#define OSNIB_INTEL_RSVD_SIZE	24	/* Size (bytes) of Intel RESERVED in */
 					/* OSNIB.                            */
-#define OSNIB_OEM_RSVD_SIZE	10	/* Size (bytes) of OEM RESERVED      */
+#define OSNIB_OEM_RSVD_SIZE	96	/* Size (bytes) of OEM RESERVED      */
+					/* in OSNIB.                         */
+
+#define OSNIB_NVRAM_SIZE	128	/* Size (bytes) of NVRAM             */
 					/* in OSNIB.                         */
 
 #define OSHOB_DEF_FABRIC_ERR_SIZE   50	/* In DWORDS.                        */
@@ -112,6 +115,12 @@
 /* SCU buffer size is give in dwords. So it is x4 here to get the total      */
 /* number of bytes.                                                          */
 
+#define SCU_TRACE_HEADER_SIZE    16     /* SCU trace header                  */
+
+#define CHAABI_DEBUG_DATA_SIZE   5      /* Reserved for chaabi debug         */
+
+#define OSHOB_RESERVED_SIZE      184    /* Reserved                          */
+
 
 struct chip_reset_event {
 	int id;
@@ -120,9 +129,54 @@ struct chip_reset_event {
 };
 
 static struct chip_reset_event chip_reset_events[] = {
+	{ INTEL_MID_CPU_CHIP_CARBONCANYON, "RESETSRC0", "RESETSRC1" },
+	{ INTEL_MID_CPU_CHIP_ANNIEDALE, "RESETSRC0", "RESETSRC1" },
 	{ INTEL_MID_CPU_CHIP_TANGIER, "RESETSRC0", "RESETSRC1" },
 	{ INTEL_MID_CPU_CHIP_CLOVERVIEW, "RESETIRQ1", "RESETIRQ2" },
 	{ INTEL_MID_CPU_CHIP_PENWELL, "RESETIRQ1", "RESETIRQ2" },
+};
+
+struct osnib_target_os {
+	const char *target_os_name;
+	int id;
+};
+
+static struct osnib_target_os osnib_target_oses[] = {
+	{ "main", SIGNED_MOS_ATTR },
+	{ "charging", SIGNED_COS_ATTR  },
+	{ "recovery", SIGNED_RECOVERY_ATTR },
+	{ "fastboot", SIGNED_POS_ATTR },
+	{ "factory", SIGNED_FACTORY_ATTR },
+};
+
+
+struct osnib_wake_src {
+	u8 id;
+	const char *wakesrc_name;
+};
+
+static struct osnib_wake_src osnib_wake_srcs[] = {
+	{ WAKE_BATT_INSERT, "battery inserted" },
+	{ WAKE_PWR_BUTTON_PRESS, "power button pressed" },
+	{ WAKE_RTC_TIMER, "rtc timer" },
+	{ WAKE_USB_CHRG_INSERT, "usb charger inserted" },
+	{ WAKE_RESERVED, "reserved" },
+	{ WAKE_REAL_RESET, "real reset" },
+	{ WAKE_COLD_BOOT, "cold boot" },
+	{ WAKE_UNKNOWN, "unknown" },
+	{ WAKE_KERNEL_WATCHDOG_RESET, "kernel watchdog reset" },
+	{ WAKE_SECURITY_WATCHDOG_RESET, "security watchdog reset" },
+	{ WAKE_WATCHDOG_COUNTER_EXCEEDED, "watchdog counter exceeded" },
+	{ WAKE_POWER_SUPPLY_DETECTED, "power supply detected" },
+	{ WAKE_FASTBOOT_BUTTONS_COMBO, "fastboot combo" },
+	{ WAKE_NO_MATCHING_OSIP_ENTRY, "no matching osip entry" },
+	{ WAKE_CRITICAL_BATTERY, "critical battery" },
+	{ WAKE_INVALID_CHECKSUM, "invalid checksum" },
+	{ WAKE_FORCED_RESET, "forced reset"},
+	{ WAKE_ACDC_CHRG_INSERT, "ac charger inserted" },
+	{ WAKE_PMIC_WATCHDOG_RESET, "pmic watchdog reset" },
+	{ WAKE_PLATFORM_WATCHDOG_RESET, "HWWDT reset platform" },
+	{ WAKE_SC_WATCHDOG_RESET, "HWWDT reset SC" },
 };
 
 
@@ -136,10 +190,12 @@ struct scu_ipc_osnib {
 	u8 reset_ev2;          /* RESETIRQ2 or RESETSRC1.           */
 	u8 spare;              /* Spare.                            */
 	u8 intel_reserved[OSNIB_INTEL_RSVD_SIZE]; /* INTEL RESERVED */
-			       /* (offsets 7 to 20).                */
-	u8 oem_reserved[OSNIB_OEM_RSVD_SIZE];     /* OEM RESERVED   */
-			       /* (offsets 21 to 30).               */
+			       /* (offsets 7 to 30).                */
 	u8 checksum;           /* CHECKSUM.                         */
+	u8 oem_reserved[OSNIB_OEM_RSVD_SIZE];     /* OEM RESERVED   */
+			       /* (offsets 32 to 127).              */
+	u8 nvram[OSNIB_NVRAM_SIZE];               /* NVRAM          */
+			       /* (offsets 128 to 255).             */
 };
 
 /* Default OSHOB allocation. */
@@ -155,10 +211,7 @@ struct scu_ipc_oshob {
 				/* error log buffer.            */
 };
 
-struct scu_ipc_oshob scu_ipc_oshob_default;
-
-
-/* Extended OSHOB allocation. */
+/* Extended OSHOB allocation. version 1.3 */
 struct scu_ipc_oshob_extend {
 	u32 magic;              /* MAGIC number.                           */
 	u8  rev_major;          /* Revision major.                         */
@@ -196,29 +249,54 @@ struct scu_ipc_oshob_extend {
 	u32 sculogbuffersize;   /* size of scu log buffer      */
 };
 
-struct scu_ipc_oshob_extend scu_ipc_oshob_extend_struct;
+/* Extended OSHOB allocation. version 1.4. */
+struct scu_ipc_oshob_extend_v14 {
+	u32 magic;              /* MAGIC number.                           */
+	u8  rev_major;          /* Revision major.                         */
+	u8  rev_minor;          /* Revision minor.                         */
+	u16 oshob_size;         /* OSHOB size.                             */
+
+	u32 scutxl;             /* SCUTxl offset position.                 */
+				/* If on MRFLD platform, next param may be */
+				/* shifted by                              */
+				/* (OSHOB_SCU_BUF_MRFLD_DW_SIZE - 1) bytes.*/
+	u32 iatxl;              /* IATxl.                                  */
+	u32 bocv;               /* BOCV.                                   */
+
+	u32 osnib_ptr;          /* The unique OSNIB pointer.               */
+
+	u32 pmit;               /* PMIT.                                   */
+	u8  scutraceheader[SCU_TRACE_HEADER_SIZE];   /* SCU trace header   */
+	u32 fabricerrlog[OSHOB_DEF_FABRIC_ERR_SIZE]; /* fabric error data  */
+	u32 chaabidebugdata[CHAABI_DEBUG_DATA_SIZE]; /* fabric error data  */
+	u32 pmuemergency;       /* pmu emergency                           */
+	u32 sculogbufferaddr;   /* scu log buffer address                  */
+	u32 sculogbuffersize;   /* size of scu log buffer                  */
+	u32 oshob_reserved[OSHOB_RESERVED_SIZE];     /* oshob reserved     */
+};
 
 struct scu_ipc_oshob_info {
-	__u32	oshob_base;     /* Base address of OSHOB. Use ioremap to     */
-				/* remap for access.                         */
-	__u8	oshob_majrev;   /* Major revision number of OSHOB structure. */
-	__u8	oshob_minrev;   /* Minor revision number of OSHOB structure. */
-	__u16	oshob_size;     /* Total size (bytes) of OSHOB structure.    */
-	__u32   scu_trace[OSHOB_SCU_BUF_BASE_DW_SIZE*4]; /* SCU trace buffer.*/
+	u8      oshob_majrev;   /* Major revision number of OSHOB structure. */
+	u8      oshob_minrev;   /* Minor revision number of OSHOB structure. */
+	u16     oshob_size;     /* Total size (bytes) of OSHOB structure.    */
+	u32     scu_trace[OSHOB_SCU_BUF_BASE_DW_SIZE*4]; /* SCU trace buffer.*/
 				/* Set to max SCU buffer size (dwords) to    */
 				/* adapt to MRFLD. On other platforms, only  */
 				/* the first dword is stored and read.       */
-	__u32   ia_trace;       /* IA trace buffer.                          */
-	__u16	osnib_size;     /* Total size (bytes) of OSNIB structure.    */
-	__u16	oemnib_size;    /* Total size (bytes) of OEMNIB area.        */
-	__u32	osnibr_ptr;     /* Pointer to Intel read zone.               */
-	__u32	osnibw_ptr;     /* Pointer to Intel write zone.              */
-	__u32	oemnibr_ptr;    /* Pointer to OEM read zone.                 */
-	__u32	oemnibw_ptr;    /* Pointer to OEM write zone.                */
-	__u32   scu_trace_buf;  /* SCU extended trace buffer                 */
-	__u32   scu_trace_size; /* SCU extended trace buffer size            */
-	__u32   nvram_addr;     /* NV ram phys addr                          */
-	__u32   nvram_size;     /* NV ram size in bytes                      */
+	u32     ia_trace;       /* IA trace buffer.                          */
+	u16     osnib_size;     /* Total size (bytes) of OSNIB structure.    */
+	u16     oemnib_size;    /* Total size (bytes) of OEMNIB area.        */
+	u32     scu_trace_size; /* SCU extended trace buffer size            */
+	u32     nvram_size;     /* NV ram size in bytes                      */
+
+	phys_addr_t   oshob_base;     /* Base address of OSHOB. Use ioremap  */
+				      /* to remap for access.                */
+	phys_addr_t   osnibr_ptr;     /* Pointer to Intel read zone.         */
+	phys_addr_t   osnibw_ptr;     /* Pointer to Intel write zone.        */
+	phys_addr_t   oemnibr_ptr;    /* Pointer to OEM read zone.           */
+	phys_addr_t   oemnibw_ptr;    /* Pointer to OEM write zone.          */
+	phys_addr_t   scu_trace_buf;  /* SCU extended trace buffer           */
+	phys_addr_t   nvram_addr;     /* NV ram phys addr                    */
 
 	int (*scu_ipc_write_osnib)(u8 *data, int len, int offset);
 	int (*scu_ipc_read_osnib)(u8 *data, int len, int offset);
@@ -274,7 +352,7 @@ int intel_scu_ipc_osc_clk(u8 clk, unsigned int khz)
 	}
 
 	ipc_ret = rpmsg_send_command(ipcutil_instance,
-		IPCMSG_OSC_CLK, 0, ipc_wbuf, NULL, 2, 0);
+		RP_OSC_CLK_CTRL, 0, ipc_wbuf, NULL, 2, 0);
 	if (ipc_ret != 0)
 		pr_err("%s: failed to set osc clk(%d) output\n", __func__, clk);
 
@@ -343,7 +421,9 @@ EXPORT_SYMBOL_GPL(intel_scu_ipc_set_osc_clk0);
 /* Helpers to turn on/off msic vprog1 and vprog2 */
 int intel_scu_ipc_msic_vprog1(int on)
 {
-	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER)
+	if ((oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_CARBONCANYON))
 		return intel_scu_ipc_iowrite8(MSIC_VPROG1_MRFLD_CTRL,
 			on ? MSIC_VPROG1_MRFLD_ON : MSIC_VPROG_MRFLD_OFF);
 	else
@@ -354,7 +434,9 @@ EXPORT_SYMBOL_GPL(intel_scu_ipc_msic_vprog1);
 
 int intel_scu_ipc_msic_vprog2(int on)
 {
-	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER)
+	if ((oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_CARBONCANYON))
 		return intel_scu_ipc_iowrite8(MSIC_VPROG2_MRFLD_CTRL,
 			on ? MSIC_VPROG2_MRFLD_ON : MSIC_VPROG_MRFLD_OFF);
 	else
@@ -465,13 +547,13 @@ static int scu_pmdb_access(struct scu_ipc_pmdb_buffer *p_buf)
 	for (i = 0; i < p_buf->count/PMDB_ACCESS_SIZE; i++) {
 		if (pmdb_sub_cmd_is_read(p_buf->sub))
 			ret = rpmsg_send_raw_command(ipcutil_instance,
-					IPCMSG_PMDB_CMD, p_buf->sub,
+					RP_PMDB, p_buf->sub,
 					p_data, (u32 *)p_data,
 					PMDB_ACCESS_SIZE, PMDB_ACCESS_SIZE / 4,
 					0, offset);
 		else
 			ret = rpmsg_send_raw_command(ipcutil_instance,
-					IPCMSG_PMDB_CMD, p_buf->sub,
+					RP_PMDB, p_buf->sub,
 					p_data, NULL, PMDB_ACCESS_SIZE,
 					0, 0, offset);
 		if (ret < 0) {
@@ -484,14 +566,14 @@ static int scu_pmdb_access(struct scu_ipc_pmdb_buffer *p_buf)
 	if (p_buf->count % PMDB_ACCESS_SIZE > 0) {
 		if (pmdb_sub_cmd_is_read(p_buf->sub))
 			ret = rpmsg_send_raw_command(ipcutil_instance,
-					IPCMSG_PMDB_CMD, p_buf->sub,
+					RP_PMDB, p_buf->sub,
 					p_data, (u32 *)p_data,
 					p_buf->count % PMDB_ACCESS_SIZE,
 					(p_buf->count % PMDB_ACCESS_SIZE) / 4,
 					0, offset);
 		else
 			ret = rpmsg_send_raw_command(ipcutil_instance,
-					IPCMSG_PMDB_CMD, p_buf->sub,
+					RP_PMDB, p_buf->sub,
 					p_data, NULL,
 					p_buf->count % PMDB_ACCESS_SIZE,
 					0, 0, offset);
@@ -584,7 +666,7 @@ static long scu_ipc_ioctl(struct file *fp, unsigned int cmd,
 		}
 
 		ret = rpmsg_send_simple_command(ipcutil_instance,
-					IPCMSG_S0IX_COUNTER, cmd_id);
+					RP_S0IX_COUNTER, cmd_id);
 
 		if (ret < 0) {
 			pr_err("ipc_get_s0ix_counter failed!\n");
@@ -686,7 +768,7 @@ static long scu_ipc_ioctl(struct file *fp, unsigned int cmd,
 		if (version.count > 16)
 			return -EINVAL;
 
-		ret = rpmsg_send_command(ipcutil_instance, IPCMSG_FW_REVISION,
+		ret = rpmsg_send_command(ipcutil_instance, RP_GET_FW_REVISION,
 			cmd & 0x1, NULL, (u32 *)version.data, 0, 4);
 		if (ret < 0)
 			return ret;
@@ -729,8 +811,20 @@ static long scu_ipc_ioctl(struct file *fp, unsigned int cmd,
 	return ret;
 }
 
+phys_addr_t intel_scu_ipc_get_oshob_base(void)
+{
+	if (oshob_info == NULL)
+		return 0;
+
+	return oshob_info->oshob_base;
+}
+EXPORT_SYMBOL_GPL(intel_scu_ipc_get_oshob_base);
+
 int intel_scu_ipc_get_oshob_size(void)
 {
+	if (oshob_info == NULL)
+		return 0;
+
 	return oshob_info->oshob_size;
 }
 EXPORT_SYMBOL_GPL(intel_scu_ipc_get_oshob_size);
@@ -753,8 +847,8 @@ int intel_scu_ipc_read_oshob(u8 *data, int len, int offset)
 
 	for (i = 0; i < len; i = i+1) {
 		*ptr = readb(oshob_addr + offset + i);
-		pr_debug("addr(remapped)=%8x, offset=%2x, value=%2x\n",
-			(u32)(oshob_addr + i),
+		pr_debug("addr(remapped)=%p, offset=%2x, value=%2x\n",
+			(oshob_addr + i),
 			offset + i, *ptr);
 		ptr++;
 	}
@@ -766,27 +860,16 @@ exit:
 
 EXPORT_SYMBOL_GPL(intel_scu_ipc_read_oshob);
 
-/* This option is used to write to the default OSNIB. */
-#define IPCMSG_WRITE_OSNIB		0xE4
-
-/* This option is used to write to the extended OSNIB. */
-#define IPCMSG_WRITE_OSNIB_EXTEND	0xE4
-
-/* This command is used to write the OEMNIB data.   */
-/* Used with the extended OSHOB OSNIB only.     */
-#define IPCMSG_WRITE_OEMNIB		0xDF
-
-
 /* This function is used for the default OSNIB. */
 int intel_scu_ipc_read_osnib(u8 *data, int len, int offset)
 {
 	int i, ret = 0;
-	u32 osnibw_ptr;
+	phys_addr_t osnibw_ptr;
 	u8 *ptr, check = 0;
 	u16 struct_offs;
 	void __iomem *oshob_addr, *osnibr_addr, *osnibw_addr;
 
-	pr_debug("OSHOB base addr value is %x\n", oshob_info->oshob_base);
+	pr_debug("OSHOB base addr value is %pa\n", &oshob_info->oshob_base);
 	oshob_addr = ioremap_nocache(oshob_info->oshob_base,
 				     oshob_info->oshob_size);
 	if (!oshob_addr) {
@@ -806,8 +889,7 @@ int intel_scu_ipc_read_osnib(u8 *data, int len, int offset)
 		goto exit;
 	}
 
-	pr_debug("OSNIB read addr (remapped) is %x\n",
-						(unsigned int)osnibr_addr);
+	pr_debug("OSNIB read addr (remapped) is %p\n", osnibr_addr);
 
 	/* Make a chksum verification for osnib */
 	for (i = 0; i < oshob_info->osnib_size; i++)
@@ -823,7 +905,7 @@ int intel_scu_ipc_read_osnib(u8 *data, int len, int offset)
 			for (i = 0; i < oshob_info->osnib_size; i++)
 				writeb(0, osnibw_addr + i);
 			rpmsg_send_raw_command(ipcutil_instance,
-				IPCMSG_WRITE_OSNIB, 0,
+				RP_WRITE_OSNIB, 0,
 				NULL, NULL, 0, 0,
 				0xFFFFFFFF, 0);
 			iounmap(osnibw_addr);
@@ -833,8 +915,8 @@ int intel_scu_ipc_read_osnib(u8 *data, int len, int offset)
 	ptr = data;
 	for (i = 0; i < len; i++) {
 		*ptr = readb(osnibr_addr + offset + i);
-		pr_debug("addr(remapped)=%8x, offset=%2x, value=%2x\n",
-			(u32)(osnibr_addr+offset+i), offset+i, *ptr);
+		pr_debug("addr(remapped)=%p offset=%2x, value=%2x\n",
+			(osnibr_addr+offset+i), offset+i, *ptr);
 		ptr++;
 	}
 
@@ -848,13 +930,13 @@ int intel_scu_ipc_write_osnib(u8 *data, int len, int offset)
 {
 	int i;
 	int ret = 0;
-	u32 osnibw_ptr;
+	phys_addr_t osnibw_ptr;
 	u8 osnib_data[oshob_info->osnib_size];
 	u8 check = 0, chksum = 0;
 	u16 struct_offs;
 	void __iomem *oshob_addr, *osnibw_addr, *osnibr_addr;
 
-	pr_debug("OSHOB base addr value is 0x%8x\n", oshob_info->oshob_base);
+	pr_debug("OSHOB base addr value is %pa\n", &oshob_info->oshob_base);
 
 	rpmsg_global_lock();
 
@@ -871,8 +953,8 @@ int intel_scu_ipc_write_osnib(u8 *data, int len, int offset)
 			    oshob_info->offs_add;
 	osnibr_addr = oshob_addr + struct_offs;
 
-	pr_debug("OSNIB read addr (remapped) in OSHOB at %x\n",
-						(unsigned int)osnibr_addr);
+	pr_debug("OSNIB read addr (remapped) in OSHOB at %p\n",
+						osnibr_addr);
 
 	for (i = 0; i < oshob_info->osnib_size; i++) {
 		osnib_data[i] = readb(osnibr_addr + i);
@@ -897,7 +979,7 @@ int intel_scu_ipc_write_osnib(u8 *data, int len, int offset)
 		pr_err("ERR: osnibw ptr from oshob is 0, manually set it here\n");
 	}
 
-	pr_debug("POSNIB write address: %x\n", osnibw_ptr);
+	pr_debug("POSNIB write address: %pa\n", &osnibw_ptr);
 
 	osnibw_addr = ioremap_nocache(osnibw_ptr, oshob_info->osnib_size);
 	if (!osnibw_addr) {
@@ -910,7 +992,7 @@ int intel_scu_ipc_write_osnib(u8 *data, int len, int offset)
 		writeb(*(osnib_data + i), (osnibw_addr + i));
 
 	ret = rpmsg_send_raw_command(ipcutil_instance,
-			IPCMSG_WRITE_OSNIB, 0,
+			RP_WRITE_OSNIB, 0,
 			NULL, NULL, 0, 0,
 			0xFFFFFFFF, 0);
 	if (ret < 0)
@@ -942,9 +1024,8 @@ int intel_scu_ipc_read_osnib_extend(u8 *data, int len, int offset)
 		goto exit;
 	}
 
-	pr_debug(
-		"ipc_read_osnib_extend: remap OSNIB addr=0x%x size %d\n",
-		oshob_info->osnibr_ptr, oshob_info->osnib_size);
+	pr_debug("ipc_read_osnib_extend: OSNIB addr=%pa size %d\n",
+		 &oshob_info->osnibr_ptr, oshob_info->osnib_size);
 
 	osnibr_addr = ioremap_nocache(oshob_info->osnibr_ptr,
 				      oshob_info->osnib_size);
@@ -961,9 +1042,8 @@ int intel_scu_ipc_read_osnib_extend(u8 *data, int len, int offset)
 
 	if (check) {
 		pr_err("ipc_read_osnib_extend: WARNING!!! osnib chksum verification faild, reset all osnib data!\n");
-		pr_debug(
-			"ipc_read_osnib_extend: remap osnibw ptr addr=0x%x size %d\n",
-			oshob_info->osnibw_ptr, oshob_info->osnib_size);
+		pr_debug("ipc_read_osnib_extend: remap osnibw ptr addr=%pa size %d\n",
+			&oshob_info->osnibw_ptr, oshob_info->osnib_size);
 
 		osnibw_addr = ioremap_nocache(oshob_info->osnibw_ptr,
 					      oshob_info->osnib_size);
@@ -980,7 +1060,7 @@ int intel_scu_ipc_read_osnib_extend(u8 *data, int len, int offset)
 		/* So the mask is coded on 4 bytes.                           */
 		sptr_dw_mask = 0xFFFFFFFF;
 		rpmsg_send_raw_command(ipcutil_instance,
-			IPCMSG_WRITE_OSNIB_EXTEND,
+			RP_WRITE_OSNIB,
 			0, NULL, NULL, 0, 0, sptr_dw_mask, 0);
 		iounmap(osnibw_addr);
 	}
@@ -989,8 +1069,8 @@ int intel_scu_ipc_read_osnib_extend(u8 *data, int len, int offset)
 	pr_debug("ipc_read_osnib_extend: OSNIB content:\n");
 	for (i = 0; i < len; i++) {
 		*ptr = readb(osnibr_addr + offset + i);
-		pr_debug("addr(remapped)=%8x, offset=%2x, value=%2x\n",
-			(u32)(osnibr_addr+offset+i), offset+i, *ptr);
+		pr_debug("addr(remapped)=%p, offset=%2x, value=%2x\n",
+			(osnibr_addr+offset+i), offset+i, *ptr);
 		ptr++;
 	}
 
@@ -1014,9 +1094,8 @@ int intel_scu_ipc_write_osnib_extend(u8 *data, int len, int offset)
 
 	rpmsg_global_lock();
 
-	pr_debug(
-		"ipc_write_osnib_extend: remap OSHOB addr 0x%8x size %d\n",
-		oshob_info->oshob_base, oshob_info->oshob_size);
+	pr_debug("ipc_write_osnib_extend: remap OSHOB addr %pa size %d\n",
+		 &oshob_info->oshob_base, oshob_info->oshob_size);
 
 	oshob_addr = ioremap_nocache(oshob_info->oshob_base,
 				     oshob_info->oshob_size);
@@ -1066,9 +1145,8 @@ int intel_scu_ipc_write_osnib_extend(u8 *data, int len, int offset)
 		    offsetof(struct scu_ipc_osnib, checksum)) = ~chksum + 1;
 	}
 
-	pr_debug(
-		"ipc_write_osnib_extend: remap osnibw ptr addr=0x%x size %d\n",
-		oshob_info->osnibw_ptr, oshob_info->osnib_size);
+	pr_debug("ipc_write_osnib_extend: osnibw ptr addr=%pa size %d\n",
+		 &oshob_info->osnibw_ptr, oshob_info->osnib_size);
 
 	osnibw_addr = ioremap_nocache(oshob_info->osnibw_ptr,
 				      oshob_info->osnib_size);
@@ -1086,7 +1164,7 @@ int intel_scu_ipc_write_osnib_extend(u8 *data, int len, int offset)
 	/* So the mask is coded on 4 bytes.                                 */
 	sptr_dw_mask = 0xFFFFFFFF;
 	ret = rpmsg_send_raw_command(ipcutil_instance,
-			IPCMSG_WRITE_OSNIB_EXTEND, 0, NULL, NULL,
+			RP_WRITE_OSNIB, 0, NULL, NULL,
 			0, 0, sptr_dw_mask, 0);
 	if (ret < 0)
 		pr_err("scu_ipc_write_osnib_extend: ipc_write_osnib failed!!\n");
@@ -1111,12 +1189,22 @@ exit:
  */
 int intel_scu_ipc_write_osnib_rr(u8 rr)
 {
-	pr_info("intel_scu_ipc_write_osnib_rr: reboot reason %x\n", rr);
+	int i;
 
-	return oshob_info->scu_ipc_write_osnib(
-			&rr,
-			1,
-			offsetof(struct scu_ipc_osnib, target_mode));
+	for (i = 0; i < ARRAY_SIZE(osnib_target_oses); i++) {
+		if (osnib_target_oses[i].id == rr) {
+			pr_info("intel_scu_ipc_write_osnib_rr: reboot reason: %s\n",
+				osnib_target_oses[i].target_os_name);
+			return oshob_info->scu_ipc_write_osnib(
+				&rr,
+				1,
+				offsetof(struct scu_ipc_osnib, target_mode));
+		}
+	}
+
+	pr_warn("intel_scu_ipc_write_osnib_rr: reboot reason [0x%x] not found\n",
+			rr);
+	return -1;
 }
 EXPORT_SYMBOL_GPL(intel_scu_ipc_write_osnib_rr);
 
@@ -1139,18 +1227,6 @@ int intel_scu_ipc_read_oshob_extend_param(void __iomem *poshob_addr)
 	u16 struct_offs;
 	int buff_size;
 
-	oshob_info->oshob_size = readw(
-			    poshob_addr +
-			    offsetof(struct scu_ipc_oshob_extend, oshob_size));
-
-	/* Get version. */
-	oshob_info->oshob_majrev = readb(
-			    poshob_addr +
-			    offsetof(struct scu_ipc_oshob_extend, rev_major));
-	oshob_info->oshob_minrev = readb(
-			    poshob_addr +
-			    offsetof(struct scu_ipc_oshob_extend, rev_minor));
-
 	/* Get defined OSNIB space size. */
 	oshob_info->osnib_size = readw(
 			    poshob_addr +
@@ -1172,7 +1248,9 @@ int intel_scu_ipc_read_oshob_extend_param(void __iomem *poshob_addr)
 	}
 
 	/* Set SCU and IA trace buffers. Size calculated in bytes here. */
-	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER)
+	if ((oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_CARBONCANYON))
 		buff_size = OSHOB_SCU_BUF_MRFLD_DW_SIZE*4;
 	else
 		buff_size = OSHOB_SCU_BUF_BASE_DW_SIZE*4;
@@ -1207,6 +1285,11 @@ int intel_scu_ipc_read_oshob_extend_param(void __iomem *poshob_addr)
 		    "ipc_read_oshob_extend_param: ERR: osnibw from oshob is 0, manually set it here\n");
 	}
 
+	pr_info("(extend oshob) osnib read ptr = %pa\n",
+		&oshob_info->osnibr_ptr);
+	pr_info("(extend oshob) osnib write ptr = %pa\n",
+		&oshob_info->osnibw_ptr);
+
 	struct_offs = offsetof(struct scu_ipc_oshob_extend, r_oem_ptr) +
 			    oshob_info->offs_add;
 	oshob_info->oemnibr_ptr = readl(poshob_addr + struct_offs);
@@ -1231,10 +1314,10 @@ int intel_scu_ipc_read_oshob_extend_param(void __iomem *poshob_addr)
 					&intel_scu_ipc_read_osnib_extend;
 
 	pr_info(
-		"Using EXTENDED OSHOB structure size = %d bytes\n",
+		"Using extended oshob structure size = %d bytes\n",
 		oshob_info->oshob_size);
 	pr_info(
-		"OSNIB size = %d bytes OEMNIB size = %d bytes\n",
+		"OSNIB Intel size = %d bytes OEMNIB size = %d bytes\n",
 		oshob_info->osnib_size, oshob_info->oemnib_size);
 
 	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_CLOVERVIEW) {
@@ -1266,6 +1349,81 @@ int intel_scu_ipc_read_oshob_extend_param(void __iomem *poshob_addr)
 	return 0;
 }
 
+int intel_scu_ipc_read_oshob_extend_param_v14(void __iomem *poshob_addr)
+{
+	u16 struct_offs;
+	int buff_size;
+
+	/* set intel OSNIB space size. */
+	oshob_info->osnib_size = OSNIB_SIZE;
+
+	/* set OEM OSNIB space size. */
+	oshob_info->oemnib_size = OSNIB_OEM_RSVD_SIZE;
+
+	/* Set SCU and IA trace buffers. Size calculated in bytes here. */
+	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER)
+		buff_size = OSHOB_SCU_BUF_MRFLD_DW_SIZE*4;
+	else
+		buff_size = OSHOB_SCU_BUF_BASE_DW_SIZE*4;
+
+	intel_scu_ipc_read_oshob(
+		(u8 *)(oshob_info->scu_trace),
+		buff_size,
+		offsetof(struct scu_ipc_oshob_extend_v14, scutxl));
+
+	struct_offs = offsetof(struct scu_ipc_oshob_extend_v14, iatxl) +
+			    oshob_info->offs_add;
+	oshob_info->ia_trace = readl(poshob_addr + struct_offs);
+
+	/* Set pointers */
+	struct_offs = offsetof(struct scu_ipc_oshob_extend_v14, osnib_ptr) +
+			    oshob_info->offs_add;
+	oshob_info->osnibr_ptr = readl(poshob_addr + struct_offs);
+
+	if (!oshob_info->osnibr_ptr) {
+		pr_err("ipc_read_oshob_extend_param_v14: R_INTEL_POINTER is NULL!\n");
+		return -ENOMEM;
+	}
+
+	/* write and read pointer are the same */
+	oshob_info->osnibw_ptr = oshob_info->osnibr_ptr;
+
+	pr_info("(latest extend oshob) osnib ptr = %pa\n",
+		&oshob_info->osnibr_ptr);
+
+	/* OEM NIB point at offset OSNIB_SIZE */
+	oshob_info->oemnibr_ptr = oshob_info->osnibr_ptr + OSNIB_SIZE;
+
+	/* write and read pinter are the same */
+	oshob_info->oemnibw_ptr = oshob_info->oemnibr_ptr;
+
+	/* we use tha same function for all extended OSHOB structure */
+	oshob_info->scu_ipc_write_osnib =
+					&intel_scu_ipc_write_osnib_extend;
+	oshob_info->scu_ipc_read_osnib =
+					&intel_scu_ipc_read_osnib_extend;
+
+	pr_info(
+		"Using latest extended oshob structure size = %d bytes\n",
+		oshob_info->oshob_size);
+	pr_info(
+		"OSNIB Intel size = %d bytes OEMNIB size = %d bytes\n",
+		oshob_info->osnib_size, oshob_info->oemnib_size);
+
+	struct_offs = offsetof(struct scu_ipc_oshob_extend_v14,
+			    sculogbufferaddr) + oshob_info->offs_add;
+	oshob_info->scu_trace_buf = readl(poshob_addr + struct_offs);
+
+	struct_offs = offsetof(struct scu_ipc_oshob_extend_v14,
+			    sculogbuffersize) + oshob_info->offs_add;
+	oshob_info->scu_trace_size = readl(poshob_addr + struct_offs);
+
+	/* NVRAM after Intel and OEM OSNIB */
+	oshob_info->nvram_addr = oshob_info->oemnibr_ptr + OSNIB_OEM_RSVD_SIZE;
+	oshob_info->nvram_size = OSNIB_NVRAM_SIZE;
+
+	return 0;
+}
 
 int intel_scu_ipc_read_oshob_def_param(void __iomem *poshob_addr)
 {
@@ -1279,13 +1437,17 @@ int intel_scu_ipc_read_oshob_def_param(void __iomem *poshob_addr)
 	oshob_info->oemnib_size = 0;
 
 	/* Set OSHOB total size */
-	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER)
+	if ((oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_CARBONCANYON))
 		oshob_info->oshob_size = OSHOB_MRFLD_SIZE;
 	else
 		oshob_info->oshob_size = OSHOB_SIZE;
 
 	/* Set SCU and IA trace buffers. Size calculated in bytes here. */
-	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER)
+	if ((oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_CARBONCANYON))
 		buff_size = OSHOB_SCU_BUF_MRFLD_DW_SIZE*4;
 	else
 		buff_size = OSHOB_SCU_BUF_BASE_DW_SIZE*4;
@@ -1293,7 +1455,7 @@ int intel_scu_ipc_read_oshob_def_param(void __iomem *poshob_addr)
 	ret = intel_scu_ipc_read_oshob(
 		(u8 *)(oshob_info->scu_trace),
 		buff_size,
-		offsetof(struct scu_ipc_oshob_extend, scutxl));
+		offsetof(struct scu_ipc_oshob, scutxl));
 
 	if (ret != 0) {
 		pr_err("Cannot get scutxl data from OSHOB\n");
@@ -1313,11 +1475,11 @@ int intel_scu_ipc_read_oshob_def_param(void __iomem *poshob_addr)
 			    oshob_info->offs_add;
 	oshob_info->osnibr_ptr = (unsigned long)(poshob_addr + struct_offs);
 
-	pr_info("Using DEFAULT OSHOB structure size = %d bytes\n",
-					oshob_info->oshob_size);
+	pr_info("Using default oshob structure size = %d bytes\n",
+		oshob_info->oshob_size);
 
-	pr_debug("Using DEFAULT OSHOB structure OSNIB read ptr %x\n",
-		oshob_info->osnibr_ptr);
+	pr_debug("Using default oshob structure OSNIB read ptr %pa\n",
+		 &oshob_info->osnibr_ptr);
 
 	return ret;
 }
@@ -1329,8 +1491,9 @@ int intel_scu_ipc_read_oshob_info(void)
 	void __iomem *oshob_addr;
 	unsigned char oshob_magic[4];
 
+	/* Notice that SCU still returns address coded in 4 bytes. */
 	ret = rpmsg_send_command(ipcutil_instance,
-		IPCMSG_GET_HOBADDR, 0, NULL, &oshob_base, 0, 1);
+				 RP_GET_HOBADDR, 0, NULL, &oshob_base, 0, 1);
 
 	if (ret < 0) {
 		pr_err("ipc_read_oshob cmd failed!!\n");
@@ -1350,9 +1513,9 @@ int intel_scu_ipc_read_oshob_info(void)
 		goto exit;
 	}
 
-	pr_debug("OSHOB addr 0x%8x remapped to addr 0x%8x\n",
-		oshob_base, (u32)oshob_addr);
+	pr_info("(oshob) base addr = 0x%x\n", oshob_base);
 
+	/* Store base address. */
 	oshob_info->oshob_base = oshob_base;
 
 	oshob_info->platform_type = intel_mid_identify_cpu();
@@ -1366,8 +1529,11 @@ int intel_scu_ipc_read_oshob_info(void)
 	oshob_info->nvram_addr = 0;
 	oshob_info->nvram_size = 0;
 
-	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) {
-		pr_info("(oshob) identified platform = INTEL_MID_CPU_CHIP_TANGIER\n");
+	if ((oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+		(oshob_info->platform_type ==
+			INTEL_MID_CPU_CHIP_CARBONCANYON)) {
+		pr_info("(oshob) identified platform = INTEL_MID_CPU_CHIP_TANGIER|ANNIEDALE|CARBONCANYON\n");
 
 		/* By default we already have 1 dword reserved in the OSHOB */
 		/* structures for SCU buffer. For Merrifield, SCU size to   */
@@ -1386,28 +1552,58 @@ int intel_scu_ipc_read_oshob_info(void)
 	for (i = 0; i < OSHOB_HEADER_MAGIC_SIZE; i = i+1)
 		oshob_magic[i] = readb(oshob_addr + i);
 
+	pr_debug("(oshob) OSHOB magic = %x %x %x %x\n",
+		oshob_magic[0], oshob_magic[1], oshob_magic[2], oshob_magic[3]);
+
 	if (strncmp(oshob_magic, OSHOB_MAGIC_NUMBER,
 		    OSHOB_HEADER_MAGIC_SIZE) == 0) {
-		if (intel_scu_ipc_read_oshob_extend_param(oshob_addr) != 0) {
-			ret = -EFAULT;
-			goto unmap_oshob;
+		/* Get OSHOB version and size which are commoon to all */
+		/* extended OSHOB structure. */
+		oshob_info->oshob_majrev = readb(oshob_addr +
+			offsetof(struct scu_ipc_oshob_extend, rev_major));
+		oshob_info->oshob_minrev = readb(oshob_addr +
+			offsetof(struct scu_ipc_oshob_extend, rev_minor));
+		oshob_info->oshob_size = readw(oshob_addr +
+			offsetof(struct scu_ipc_oshob_extend, oshob_size));
+
+		pr_info("(oshob) oshob version = %x.%x\n",
+			oshob_info->oshob_majrev, oshob_info->oshob_minrev);
+
+		if ((oshob_info->oshob_majrev >= 1) &&
+		    (oshob_info->oshob_minrev >= 4)) {
+			if (intel_scu_ipc_read_oshob_extend_param_v14(
+					oshob_addr) != 0) {
+				ret = -EFAULT;
+				goto unmap_oshob;
+			}
+		} else {
+			if (intel_scu_ipc_read_oshob_extend_param(
+					oshob_addr) != 0) {
+				ret = -EFAULT;
+				goto unmap_oshob;
+			}
 		}
 
-		if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) {
-			pr_info("(extend oshob) SCU buffer size is %d bytes\n",
+		if ((oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_TANGIER) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_CARBONCANYON)) {
+			pr_debug("(extend oshob) SCU buffer size is %d bytes\n",
 				OSHOB_SCU_BUF_MRFLD_DW_SIZE*4);
 		} else {
-			pr_info("(extend oshob) SCU buffer size is %d bytes\n",
+			pr_debug("(extend oshob) SCU buffer size is %d bytes\n",
 				OSHOB_SCU_BUF_BASE_DW_SIZE*4);
 		}
 	} else {
 		ret = intel_scu_ipc_read_oshob_def_param(oshob_addr);
 
 		if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) {
-			pr_info("(default oshob) SCU buffer size is %d bytes\n",
+			pr_debug("(default oshob) SCU buffer size is %d bytes\n",
 				OSHOB_SCU_BUF_MRFLD_DW_SIZE*4);
 		} else {
-			pr_info("(default oshob) SCU buffer size is %d bytes\n",
+			pr_debug("(default oshob) SCU buffer size is %d bytes\n",
 				OSHOB_SCU_BUF_BASE_DW_SIZE*4);
 		}
 	}
@@ -1436,8 +1632,8 @@ int intel_scu_ipc_write_oemnib(u8 *oemnib, int len, int offset)
 
 	rpmsg_global_lock();
 
-	pr_debug("ipc_write_oemnib: remap OSHOB addr 0x%8x size %d\n",
-		oshob_info->oshob_base, oshob_info->oshob_size);
+	pr_debug("ipc_write_oemnib: OSHOB addr %pa size %d\n",
+		&oshob_info->oshob_base, oshob_info->oshob_size);
 
 	oshob_addr = ioremap_nocache(oshob_info->oshob_base,
 				     oshob_info->oshob_size);
@@ -1466,8 +1662,8 @@ int intel_scu_ipc_write_oemnib(u8 *oemnib, int len, int offset)
 		goto unmap_oshob_addr;
 	}
 
-	pr_debug("ipc_write_oemnib: POEMNIB remap oemnibw ptr 0x%x size %d\n",
-		oshob_info->oemnibw_ptr, oshob_info->oemnib_size);
+	pr_debug("ipc_write_oemnib: POEMNIB oemnibw ptr %pa size %d\n",
+		&oshob_info->oemnibw_ptr, oshob_info->oemnib_size);
 
 	oemnibw_addr = ioremap_nocache(oshob_info->oemnibw_ptr,
 				       oshob_info->oemnib_size);
@@ -1484,12 +1680,42 @@ int intel_scu_ipc_write_oemnib(u8 *oemnib, int len, int offset)
 	/* words of the OSNIB oemnib_size bytes will be written.        */
 	/* So the mask is coded on 4 bytes.                             */
 	sptr_dw_mask = 0xFFFFFFFF;
-	ret = rpmsg_send_raw_command(ipcutil_instance,
-			IPCMSG_WRITE_OEMNIB, 0, NULL, NULL,
+	if ((oshob_info->oshob_majrev >= 1) &&
+	    (oshob_info->oshob_minrev >= 4)) {
+		sptr_dw_mask = 0xFFFFFFFF;
+		/* OEM NIB lies on region 1, 2, and 3 */
+		ret = rpmsg_send_raw_command(ipcutil_instance,
+			RP_WRITE_OSNIB, 0, NULL, NULL,
+			0, 0, sptr_dw_mask, 1);
+		if (ret < 0) {
+			pr_err("ipc_write_oemnib: ipc_write_osnib failed!!\n");
+			goto unmap_oemnibw_addr;
+		}
+		ret = rpmsg_send_raw_command(ipcutil_instance,
+			RP_WRITE_OSNIB, 0, NULL, NULL,
+			0, 0, sptr_dw_mask, 2);
+		if (ret < 0) {
+			pr_err("ipc_write_oemnib: ipc_write_osnib failed!!\n");
+			goto unmap_oemnibw_addr;
+		}
+		ret = rpmsg_send_raw_command(ipcutil_instance,
+			RP_WRITE_OSNIB, 0, NULL, NULL,
+			0, 0, sptr_dw_mask, 3);
+		if (ret < 0) {
+			pr_err("ipc_write_oemnib: ipc_write_osnib failed!!\n");
+			goto unmap_oemnibw_addr;
+		}
+	} else {
+		ret = rpmsg_send_raw_command(ipcutil_instance,
+			RP_WRITE_OEMNIB, 0, NULL, NULL,
 			0, 0, sptr_dw_mask, 0);
-	if (ret < 0)
-		pr_err("ipc_write_oemnib: ipc_write_osnib failed!!\n");
+		if (ret < 0) {
+			pr_err("ipc_write_oemnib: ipc_write_osnib failed!!\n");
+			goto unmap_oemnibw_addr;
+		}
+	}
 
+unmap_oemnibw_addr:
 	iounmap(oemnibw_addr);
 
 unmap_oshob_addr:
@@ -1515,8 +1741,8 @@ static int intel_scu_ipc_read_oemnib(u8 *oemnib, int len, int offset)
 		return -EINVAL;
 	}
 
-	pr_debug("ipc_read_oemnib: remap OSHOB base addr 0x%x size %d\n",
-		oshob_info->oshob_base, oshob_info->oshob_size);
+	pr_debug("ipc_read_oemnib: OSHOB base addr %pa size %d\n",
+		&oshob_info->oshob_base, oshob_info->oshob_size);
 
 	oshob_addr = ioremap_nocache(oshob_info->oshob_base,
 				     oshob_info->oshob_size);
@@ -1544,8 +1770,8 @@ static int intel_scu_ipc_read_oemnib(u8 *oemnib, int len, int offset)
 		goto unmap_oshob_addr;
 	}
 
-	pr_debug("ipc_read_oemnib: POEMNIB remap oemnibr ptr 0x%x size %d\n",
-		oshob_info->oemnibr_ptr, oshob_info->oemnib_size);
+	pr_debug("ipc_read_oemnib: POEMNIB oemnibr ptr %pa size %d\n",
+		 &oshob_info->oemnibr_ptr, oshob_info->oemnib_size);
 
 	oemnibr_addr = ioremap_nocache(oshob_info->oemnibr_ptr,
 				       oshob_info->oemnib_size);
@@ -1557,11 +1783,11 @@ static int intel_scu_ipc_read_oemnib(u8 *oemnib, int len, int offset)
 	}
 
 	ptr = oemnib;
-	pr_debug("ipc_read_oemnib: OEMNIB content:\n");
+	pr_info("ipc_read_oemnib: OEMNIB content:\n");
 	for (i = 0; i < len; i++) {
 		*ptr = readb(oemnibr_addr + offset + i);
-		pr_debug("addr(remapped)=%8x, offset=%2x, value=%2x\n",
-			(u32)(oemnibr_addr+offset+i), offset+i, *ptr);
+		pr_debug("addr(remapped)=%p, offset=%2x, value=%2x\n",
+			(oemnibr_addr+offset+i), offset+i, *ptr);
 		ptr++;
 	}
 
@@ -1588,18 +1814,18 @@ static int intel_scu_ipc_read_oshob_it_tree(u32 *ptr)
 	    (oshob_info->oshob_minrev == OSHOB_REV_MIN_DEFAULT)) {
 		struct_offs = offsetof(struct scu_ipc_oshob, pmit) +
 				    oshob_info->offs_add;
-		return intel_scu_ipc_read_oshob(
-					(u8 *) ptr,
-					4,
-					struct_offs);
+	} else if ((oshob_info->oshob_majrev >= 1) &&
+		   (oshob_info->oshob_minrev >= 4)) {
+		struct_offs = offsetof(struct scu_ipc_oshob_extend_v14, pmit) +
+				    oshob_info->offs_add;
 	} else {
 		struct_offs = offsetof(struct scu_ipc_oshob_extend, pmit) +
 				    oshob_info->offs_add;
-		return intel_scu_ipc_read_oshob(
-				(u8 *) ptr,
-				4,
-				struct_offs);
 	}
+	return intel_scu_ipc_read_oshob(
+			(u8 *) ptr,
+			4,
+			struct_offs);
 }
 #endif
 
@@ -1611,7 +1837,7 @@ static int intel_scu_ipc_read_osnib_reset_ev1(u8 *rev1)
 {
 	int i;
 
-	for (i = 0 ; i < ARRAY_SIZE(chip_reset_events); i++) {
+	for (i = 0; i < ARRAY_SIZE(chip_reset_events); i++) {
 		if (chip_reset_events[i].id == oshob_info->platform_type) {
 			pr_debug(
 				"intel_scu_ipc_read_osnib_rst_ev1: read %s\n",
@@ -1685,7 +1911,7 @@ EXPORT_SYMBOL_GPL(intel_scu_ipc_write_osnib_wd);
 /*
  * Get SCU trace buffer physical address if available
  */
-u32 intel_scu_ipc_get_scu_trace_buffer(void)
+phys_addr_t intel_scu_ipc_get_scu_trace_buffer(void)
 {
 	if (oshob_info == NULL)
 		return 0;
@@ -1718,7 +1944,7 @@ EXPORT_SYMBOL_GPL(intel_scu_ipc_get_nvram_size);
 /*
  * Get nvram addr
  */
-u32 intel_scu_ipc_get_nvram_addr(void)
+phys_addr_t intel_scu_ipc_get_nvram_addr(void)
 {
 	if (oshob_info == NULL)
 		return 0;
@@ -1736,9 +1962,16 @@ u32 intel_scu_ipc_get_fabricerror_buf1_offset(void)
 
 	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_CLOVERVIEW)
 		return offsetof(struct scu_ipc_oshob_extend, fabricerrlog1);
-	else if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER)
-		return offsetof(struct scu_ipc_oshob, fab_err_log) +
-				oshob_info->offs_add;
+	else if ((oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) ||
+		(oshob_info->platform_type == INTEL_MID_CPU_CHIP_ANNIEDALE))
+		if ((oshob_info->oshob_majrev >= 1) &&
+		    (oshob_info->oshob_minrev >= 4)) {
+			return offsetof(struct scu_ipc_oshob_extend_v14,
+					fabricerrlog) + oshob_info->offs_add;
+		} else {
+			return offsetof(struct scu_ipc_oshob,
+					fab_err_log) + oshob_info->offs_add;
+		}
 	else {
 		pr_err("scu_ipc_get_fabricerror_buf_offset: platform not recognized!\n");
 		return 0;
@@ -1807,7 +2040,12 @@ static int intel_scu_ipc_oshob_stat(struct seq_file *m, void *unused)
 	     (oshob_info->oshob_minrev == OSHOB_REV_MIN_DEFAULT)) {
 		seq_printf(m, "DEFAULT OSHOB\n");
 		seq_printf(m, "OSHOB size : %d\n", oshob_info->oshob_size);
-		if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) {
+		if ((oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_TANGIER) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_CARBONCANYON)) {
 			seq_printf(m, "SCU trace : ");
 
 			for (i = 0; i < OSHOB_SCU_BUF_MRFLD_DW_SIZE; i++)
@@ -1824,7 +2062,12 @@ static int intel_scu_ipc_oshob_stat(struct seq_file *m, void *unused)
 						oshob_info->oshob_majrev,
 						oshob_info->oshob_minrev);
 		seq_printf(m, "OSHOB size : %d\n\n", oshob_info->oshob_size);
-		if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) {
+		if ((oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_TANGIER) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_CARBONCANYON)) {
 			seq_printf(m, "SCU trace : ");
 
 			for (i = 0; i < OSHOB_SCU_BUF_MRFLD_DW_SIZE; i++)
@@ -1838,10 +2081,10 @@ static int intel_scu_ipc_oshob_stat(struct seq_file *m, void *unused)
 		seq_printf(m, "IA trace  : %x\n\n", oshob_info->ia_trace);
 
 		seq_printf(m, "OSNIB size : %d\n", oshob_info->osnib_size);
-		seq_printf(m, "OSNIB  read address  : %x\n",
-						    oshob_info->osnibr_ptr);
-		seq_printf(m, "OSNIB  write address : %x\n",
-						oshob_info->osnibw_ptr);
+		seq_printf(m, "OSNIB  read address  : %pa\n",
+			   &oshob_info->osnibr_ptr);
+		seq_printf(m, "OSNIB  write address : %pa\n",
+			   &oshob_info->osnibw_ptr);
 		/* Dump OSNIB */
 		osnib = ioremap_nocache(oshob_info->osnibr_ptr,
 						oshob_info->osnib_size);
@@ -1854,9 +2097,10 @@ static int intel_scu_ipc_oshob_stat(struct seq_file *m, void *unused)
 		i = 0;
 		count = 0; /* used for fancy presentation */
 		while (i < oshob_info->osnib_size) {
-			if (count%4 == 0)
-				seq_printf(m, "\nOSNIB[%08x] ",
-						oshob_info->osnibr_ptr+i);
+			if (count%4 == 0) {
+				phys_addr_t cur = oshob_info->osnibr_ptr+i;
+				seq_printf(m, "\nOSNIB[%pa] ", &cur);
+			}
 
 			value = readl(osnib+i);
 			seq_printf(m, "%08x ", value);
@@ -1866,12 +2110,11 @@ static int intel_scu_ipc_oshob_stat(struct seq_file *m, void *unused)
 		seq_printf(m, "\n\n");
 		iounmap(osnib);
 
-		seq_printf(m, "OEMNIB size : %d\n",
-						oshob_info->oemnib_size);
-		seq_printf(m, "OEMNIB read address  : %x\n",
-						oshob_info->oemnibr_ptr);
-		seq_printf(m, "OEMNIB write address : %x\n",
-						oshob_info->oemnibw_ptr);
+		seq_printf(m, "OEMNIB size : %d\n", oshob_info->oemnib_size);
+		seq_printf(m, "OEMNIB read address  : %pa\n",
+			   &oshob_info->oemnibr_ptr);
+		seq_printf(m, "OEMNIB write address : %pa\n",
+			   &oshob_info->oemnibw_ptr);
 		seq_printf(m, "\n\n");
 	}
 	return 0;
@@ -1895,9 +2138,10 @@ static int intel_scu_ipc_oemnib_stat(struct seq_file *m, void *unused)
 	i = 0;
 	count = 0; /* used for fancy presentation */
 	while (i < oshob_info->oemnib_size) {
-		if (count%4 == 0)
-			seq_printf(m, "\nOEMNIB[%08x] ",
-				    oshob_info->oemnibr_ptr+i);
+		if (count%4 == 0) {
+			phys_addr_t cur = oshob_info->oemnibr_ptr+i;
+			seq_printf(m, "\nOEMNIB[%pa] ", &cur);
+		}
 
 		value = readl(oemnib+i);
 		seq_printf(m, "%08x ", value);
@@ -1910,12 +2154,12 @@ static int intel_scu_ipc_oemnib_stat(struct seq_file *m, void *unused)
 	return 0;
 }
 
-static ssize_t intel_scu_ipc_oshob_open(struct inode *inode, struct file *file)
+static int intel_scu_ipc_oshob_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, intel_scu_ipc_oshob_stat, NULL);
 }
 
-static ssize_t intel_scu_ipc_oemnib_open(struct inode *inode, struct file *file)
+static int intel_scu_ipc_oemnib_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, intel_scu_ipc_oemnib_stat, NULL);
 }
@@ -1941,7 +2185,7 @@ static ssize_t intel_scu_ipc_oemnib_write(struct file *file,
 		return -EFAULT;
 	}
 
-	pr_info("Write OEMNIB: number bytes = %d\n", count);
+	pr_info("Write OEMNIB: number bytes = %zd\n", count);
 
 	/* Note: when the string is passed through debugfs interface, the  */
 	/* real count value includes the end of line \n. So we must take   */
@@ -2009,7 +2253,7 @@ static ssize_t intel_scu_ipc_oemnib_write(struct file *file,
 	kfree(posnib_data);
 	kfree(temp);
 
-	pr_info("Write OEMNIB: OEMNIB updated: count=%d bytes\n", count);
+	pr_info("Write OEMNIB: OEMNIB updated: count=%zd bytes\n", count);
 
 	return count;
 }
@@ -2085,6 +2329,352 @@ static void intel_mid_scu_ipc_oemnib_debugfs_exit(void)
 	debugfs_remove_recursive(scu_ipc_oemnib_dir);
 }
 
+#define IPC_CMD_RXTX_BUF_SIZE 16
+#define IPC_CMD_INPUT_ENTRY_SIZE 16
+
+struct scu_ipc_cmd {
+	u32 sptr;
+	u32 dptr;
+	u8 cmd;
+	u8 cmdid;
+	u8 wbuf[IPC_CMD_RXTX_BUF_SIZE];
+	u32 rbuf[IPC_CMD_RXTX_BUF_SIZE / sizeof(u32)];
+	u8 inlen;
+	u8 outlen;
+};
+
+static struct scu_ipc_cmd ipc_cmd;
+
+static ssize_t intel_scu_ipc_trigger_write(struct file *file,
+					  const char __user *buf,
+					    size_t count, loff_t *ppos)
+{
+	int ret;
+
+	if (ipc_cmd.inlen > IPC_CMD_RXTX_BUF_SIZE ||
+	    ipc_cmd.outlen > IPC_CMD_RXTX_BUF_SIZE / sizeof(u32)) {
+		pr_err("Given RX/TX length is too big");
+		return -EFAULT;
+	}
+
+	ret = rpmsg_send_generic_raw_command(ipc_cmd.cmd, ipc_cmd.cmdid,
+					     ipc_cmd.wbuf, ipc_cmd.inlen,
+					     ipc_cmd.rbuf, ipc_cmd.outlen,
+					     ipc_cmd.dptr, ipc_cmd.sptr);
+	if (ret) {
+		pr_err("Failed to send ipc command");
+		return ret;
+	}
+
+	return count;
+}
+
+static int intel_scu_ipc_rwbuf_show(struct seq_file *m, void *unused)
+{
+	int i, ret = 0;
+	u8 *buf = (u8 *)m->private;
+
+	for (i = 0; i < IPC_CMD_RXTX_BUF_SIZE; i++) {
+		ret = seq_printf(m, "%02d:0x%02x\n", i, buf[i]);
+		if (ret) {
+			pr_err("Failed to perform sequential print");
+			return ret;
+		}
+	}
+
+	return ret;
+}
+
+static int intel_scu_ipc_rbuf_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, intel_scu_ipc_rwbuf_show, &ipc_cmd.rbuf);
+}
+
+static int intel_scu_ipc_wbuf_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, intel_scu_ipc_rwbuf_show, &ipc_cmd.wbuf);
+}
+
+static ssize_t intel_scu_ipc_wbuf_write(struct file *file,
+					  const char __user *buf,
+					    size_t count, loff_t *ppos)
+{
+	int ret;
+	unsigned long idx, val;
+	char tmp[IPC_CMD_INPUT_ENTRY_SIZE] = {0}; /* "01:0xff" */
+
+	if (!count || count > sizeof(tmp))
+		return -EFAULT;
+
+	ret = copy_from_user(&tmp, buf, count);
+	if (ret) {
+		pr_err("Failed to copy from user space");
+		return ret;
+	}
+
+	tmp[2] = 0; /* "01\0" */
+	ret = kstrtoul(tmp, 10, &idx);
+	if (ret) {
+		pr_err("Given index is invalid");
+		return -EFAULT;
+	}
+	if (idx + 1 > IPC_CMD_RXTX_BUF_SIZE || idx < 0) {
+		pr_err("Given index is out of range. Should be 0...15");
+		return -EFAULT;
+	}
+
+	tmp[7] = 0; /* "01\00xff\0" */
+	ret = kstrtoul(&tmp[3], 16, &val);
+	if (ret)
+		return -EFAULT;
+	if (val > 0xff || val < 0x00)
+		return -EFAULT;
+
+	ipc_cmd.wbuf[idx] = val;
+
+	return count;
+}
+
+static const struct file_operations scu_ipc_trigger_fops = {
+	.owner = THIS_MODULE,
+	.write = intel_scu_ipc_trigger_write,
+};
+
+static const struct file_operations scu_ipc_rbuf_fops = {
+	.owner = THIS_MODULE,
+	.open = intel_scu_ipc_rbuf_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static const struct file_operations scu_ipc_wbuf_fops = {
+	.owner = THIS_MODULE,
+	.open = intel_scu_ipc_wbuf_open,
+	.read = seq_read,
+	.write = intel_scu_ipc_wbuf_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static struct dentry *scu_ipc_cmd_dir, *scu_ipc_cmd_file,
+	*scu_ipc_cmdid_file, *scu_ipc_trigger_file, *scu_ipc_rbuf_file,
+	*scu_ipc_wbuf_file, *scu_ipc_sptr_file, *scu_ipc_dptr_file,
+	*scu_ipc_inlen_file, *scu_ipc_outlen_file;
+
+static int intel_mid_scu_ipc_cmd_debugfs_init(void)
+{
+	scu_ipc_cmd_dir = debugfs_create_dir("intel_scu_ipc_cmd", NULL);
+	if (!scu_ipc_cmd_dir) {
+		pr_err("cannot create ipc cmd debugfs directory\n");
+		return -ENOMEM;
+	}
+
+	scu_ipc_cmd_file = debugfs_create_x8("ipc_cmd", S_IWUSR | S_IRUSR,
+						scu_ipc_cmd_dir, &ipc_cmd.cmd);
+	if (!scu_ipc_cmd_file) {
+		pr_err("cannot create ipc cmd debugfs file\n");
+		goto err;
+	}
+
+	scu_ipc_cmdid_file = debugfs_create_x8("ipc_cmdid", S_IWUSR | S_IRUSR,
+						scu_ipc_cmd_dir,
+					       &ipc_cmd.cmdid);
+	if (!scu_ipc_cmdid_file) {
+		pr_err("cannot create ipc cmdid debugfs file\n");
+		goto err;
+	}
+
+	scu_ipc_trigger_file = debugfs_create_file("ipc_trigger", S_IWUSR,
+						   scu_ipc_cmd_dir, NULL,
+						   &scu_ipc_trigger_fops);
+	if (!scu_ipc_trigger_file) {
+		pr_err("cannot create ipc trigger debugfs file\n");
+		goto err;
+	}
+
+	scu_ipc_wbuf_file = debugfs_create_file("ipc_wbuf", S_IWUSR | S_IRUSR,
+						scu_ipc_cmd_dir, NULL,
+						&scu_ipc_wbuf_fops);
+	if (!scu_ipc_wbuf_file) {
+		pr_err("cannot create ipc wbuf debugfs file\n");
+		goto err;
+	}
+
+	scu_ipc_rbuf_file = debugfs_create_file("ipc_rbuf", S_IWUSR | S_IRUSR,
+						scu_ipc_cmd_dir, NULL,
+						&scu_ipc_rbuf_fops);
+	if (!scu_ipc_rbuf_file) {
+		pr_err("cannot create ipc rbuf debugfs file\n");
+		goto err;
+	}
+
+	scu_ipc_sptr_file = debugfs_create_x32("ipc_sptr", S_IWUSR | S_IRUSR,
+					       scu_ipc_cmd_dir, &ipc_cmd.sptr);
+	if (!scu_ipc_sptr_file) {
+		pr_err("cannot create ipc sptr debugfs file\n");
+		goto err;
+	}
+
+	scu_ipc_dptr_file = debugfs_create_x32("ipc_dptr", S_IWUSR | S_IRUSR,
+					       scu_ipc_cmd_dir, &ipc_cmd.dptr);
+	if (!scu_ipc_dptr_file) {
+		pr_err("cannot create ipc dptr debugfs file\n");
+		goto err;
+	}
+
+	scu_ipc_inlen_file = debugfs_create_u8("ipc_inlen", S_IWUSR | S_IRUSR,
+					     scu_ipc_cmd_dir, &ipc_cmd.inlen);
+	if (!scu_ipc_inlen_file) {
+		pr_err("cannot create ipc inlen debugfs file\n");
+		goto err;
+	}
+
+	scu_ipc_outlen_file = debugfs_create_u8("ipc_outlen", S_IWUSR | S_IRUSR,
+					     scu_ipc_cmd_dir, &ipc_cmd.outlen);
+	if (!scu_ipc_outlen_file) {
+		pr_err("cannot create ipc outlen debugfs file\n");
+		goto err;
+	}
+
+	return 0;
+
+err:
+	debugfs_remove_recursive(scu_ipc_cmd_dir);
+	return -ENOMEM;
+}
+
+static void intel_mid_scu_ipc_cmd_debugfs_exit(void)
+{
+	debugfs_remove_recursive(scu_ipc_cmd_dir);
+}
+
+#ifdef DUMP_OSNIB
+
+static ssize_t intel_scu_ipc_osnib_read_reset_event(
+	struct file *file, char __user *buf,
+	size_t count, loff_t *ppos)
+{
+	loff_t pos = *ppos;
+	u8 rev[1] = {0};
+	int ret, i;
+
+	if (pos > 0)
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(chip_reset_events); i++) {
+		if (chip_reset_events[i].id == oshob_info->platform_type) {
+			if (strcmp(
+				file->f_path.dentry->d_name.name,
+				chip_reset_events[i].reset_ev1_name) == 0)
+				ret = intel_scu_ipc_read_osnib_reset_ev1(rev);
+			else
+				ret = intel_scu_ipc_read_osnib_reset_ev2(rev);
+
+			if (ret != 0) {
+				pr_err("%s: cannot read %s, ret=%d",
+					__func__,
+					file->f_path.dentry->d_name.name,
+					ret);
+				return ret;
+			}
+
+			/*
+			*  buf is allocated by the kernel (4ko) and we will
+			*  never write more than 6 bytes so no need to check
+			*/
+			ret = sprintf(buf, "0x%x\n", rev[0]);
+			if (ret < 0) {
+				pr_err(
+					"%s: cannot convert the value, ret = %d",
+					__func__,
+					ret);
+				return ret;
+			}
+
+			*ppos += ret;
+			return ret;
+		}
+	}
+
+	pr_err("%s: param not found\n", __func__);
+	return -EFAULT;
+}
+
+/* Attach the debugfs operations methods */
+static const struct file_operations scu_ipc_osnib_fops = {
+	.owner = THIS_MODULE,
+	.read  = intel_scu_ipc_osnib_read_reset_event,
+};
+
+static struct dentry *scu_ipc_osnib_dir;
+static struct dentry *scu_ipc_osnib_file_reset_ev1;
+static struct dentry *scu_ipc_osnib_file_reset_ev2;
+
+/*
+*	debugfs interface: init interface.
+*/
+static int intel_mid_scu_ipc_osnib_debugfs_init(void)
+{
+	int i;
+
+	/* Create debugfs directory /sys/kernel/debug/intel_scu_osnib */
+	scu_ipc_osnib_dir = debugfs_create_dir("intel_scu_osnib", NULL);
+
+	if (!scu_ipc_osnib_dir) {
+		pr_err("%s: cannot create OSNIB debugfs directory\n", __func__);
+		return -1;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(chip_reset_events); i++) {
+		if (chip_reset_events[i].id == oshob_info->platform_type) {
+
+			scu_ipc_osnib_file_reset_ev1 = debugfs_create_file(
+					chip_reset_events[i].reset_ev1_name,
+					S_IFREG | S_IRUGO,
+					scu_ipc_osnib_dir,
+					NULL, &scu_ipc_osnib_fops);
+
+			if (!scu_ipc_osnib_file_reset_ev1) {
+				pr_err("%s: cannot create %s debugfs file\n",
+					__func__,
+					chip_reset_events[i].reset_ev1_name);
+				debugfs_remove(scu_ipc_osnib_dir);
+				return -1;
+			}
+
+			scu_ipc_osnib_file_reset_ev2 = debugfs_create_file(
+					chip_reset_events[i].reset_ev2_name,
+					S_IFREG | S_IRUGO,
+					scu_ipc_osnib_dir,
+					NULL, &scu_ipc_osnib_fops);
+
+			if (!scu_ipc_osnib_file_reset_ev2) {
+				pr_err("%s: cannot create %s debugfs file\n",
+					__func__,
+					chip_reset_events[i].reset_ev1_name);
+				debugfs_remove_recursive(scu_ipc_osnib_dir);
+				return -1;
+			}
+
+			return 0;
+		}
+	}
+
+	pr_err("%s: param not found\n", __func__);
+	return -EFAULT;
+}
+
+/*
+*	debugfs interface: exit interface.
+*/
+static void intel_mid_scu_ipc_osnib_debugfs_exit(void)
+{
+	debugfs_remove_recursive(scu_ipc_osnib_dir);
+}
+
+#endif /* DUMP_OSNIB */
+
 #endif /* CONFIG_DEBUG_FS */
 
 static const struct file_operations scu_ipc_fops = {
@@ -2107,6 +2697,7 @@ static int oshob_init(void)
 
 #ifdef DUMP_OSNIB
 	u8 rr, reset_ev1, reset_ev2, wd, alarm, wakesrc, *ptr;
+	int rr_found = 0, wksrc_found = 0;
 	u32 pmit, scu_trace[OSHOB_SCU_BUF_BASE_DW_SIZE*4], ia_trace;
 	int buff_size;
 #endif
@@ -2136,11 +2727,11 @@ static int oshob_init(void)
 		goto exit;
 	}
 
-	pr_debug("PMIT addr 0x%8x remapped to 0x%8x\n", pmit, (u32)ptr);
+	pr_debug("PMIT addr 0x%8x remapped to 0x%p\n", pmit, ptr);
 
 	reset_ev1 = readb(ptr);
 	reset_ev2 = readb(ptr+1);
-	for (i = 0 ; i < ARRAY_SIZE(chip_reset_events); i++) {
+	for (i = 0; i < ARRAY_SIZE(chip_reset_events); i++) {
 		if (chip_reset_events[i].id == oshob_info->platform_type) {
 			pr_warn("[BOOT] %s=0x%02x %s=0x%02x (PMIT interrupt tree)\n",
 				chip_reset_events[i].reset_ev1_name,
@@ -2155,7 +2746,12 @@ static int oshob_init(void)
 	if ((oshob_info->oshob_majrev == OSHOB_REV_MAJ_DEFAULT) &&
 	    (oshob_info->oshob_minrev == OSHOB_REV_MIN_DEFAULT)) {
 		/* Use default OSHOB here. Calculate in bytes here. */
-		if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER)
+		if ((oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_TANGIER) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_CARBONCANYON))
 			buff_size = OSHOB_SCU_BUF_MRFLD_DW_SIZE*4;
 		else
 			buff_size = OSHOB_SCU_BUF_BASE_DW_SIZE*4;
@@ -2183,23 +2779,44 @@ static int oshob_init(void)
 		}
 	    } else {
 		/* Use extended OSHOB here. Calculate in bytes here. */
-		if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER)
+		if ((oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_TANGIER) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+			(oshob_info->platform_type ==
+				INTEL_MID_CPU_CHIP_CARBONCANYON))
 			buff_size = OSHOB_SCU_BUF_MRFLD_DW_SIZE*4;
 		else
 			buff_size = OSHOB_SCU_BUF_BASE_DW_SIZE*4;
 
-		ret = intel_scu_ipc_read_oshob(
-			(u8 *)(scu_trace),
-			buff_size,
-			offsetof(struct scu_ipc_oshob_extend, scutxl));
+		if ((oshob_info->oshob_majrev >= 1) &&
+		    (oshob_info->oshob_minrev >= 4)) {
+			ret = intel_scu_ipc_read_oshob(
+				(u8 *)(scu_trace),
+				buff_size,
+				offsetof(struct scu_ipc_oshob_extend_v14,
+								scutxl));
+		} else {
+			ret = intel_scu_ipc_read_oshob(
+				(u8 *)(scu_trace),
+				buff_size,
+				offsetof(struct scu_ipc_oshob_extend, scutxl));
+		}
 
 		if (ret != 0) {
 			pr_err("Cannot read SCU data\n");
 			goto exit;
 		}
 
-		struct_offs = offsetof(struct scu_ipc_oshob_extend, iatxl) +
-				    oshob_info->offs_add;
+		if ((oshob_info->oshob_majrev >= 1) &&
+		    (oshob_info->oshob_minrev >= 4)) {
+			struct_offs = offsetof(struct scu_ipc_oshob_extend_v14,
+						iatxl) + oshob_info->offs_add;
+		} else {
+			struct_offs = offsetof(struct scu_ipc_oshob_extend,
+						iatxl) + oshob_info->offs_add;
+		}
+
 		ret = intel_scu_ipc_read_oshob(
 				(u8 *)(&ia_trace),
 				4,
@@ -2211,7 +2828,12 @@ static int oshob_init(void)
 		}
 	}
 
-	if (oshob_info->platform_type == INTEL_MID_CPU_CHIP_TANGIER) {
+	if ((oshob_info->platform_type ==
+			INTEL_MID_CPU_CHIP_TANGIER) ||
+		(oshob_info->platform_type ==
+			INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+		(oshob_info->platform_type ==
+			INTEL_MID_CPU_CHIP_CARBONCANYON)) {
 		for (i = 0; i < OSHOB_SCU_BUF_MRFLD_DW_SIZE; i++)
 			pr_warn("[BOOT] SCU_TR[%d]=0x%08x\n", i, scu_trace[i]);
 	} else
@@ -2233,17 +2855,39 @@ static int oshob_init(void)
 		goto exit;
 	}
 
-	pr_warn("[BOOT] RR=0x%02x WD=0x%02x ALARM=0x%02x (osnib)\n",
-		rr, wd, alarm);
+	for (i = 0; i < ARRAY_SIZE(osnib_target_oses); i++) {
+		if (osnib_target_oses[i].id == rr) {
+			pr_warn("[BOOT] RR=[%s] WD=0x%02x ALARM=0x%02x (osnib)\n",
+				osnib_target_oses[i].target_os_name, wd, alarm);
+			rr_found++;
+			break;
+		}
+	}
 
-	for (i = 0 ; i < ARRAY_SIZE(chip_reset_events); i++) {
+	if (!rr_found)
+		pr_warn("[BOOT] RR=[UNKNOWN 0x%02x] WD=0x%02x ALARM=0x%02x (osnib)\n",
+			rr, wd, alarm);
+
+	for (i = 0; i < ARRAY_SIZE(osnib_wake_srcs); i++) {
+		if (osnib_wake_srcs[i].id == wakesrc) {
+			pr_warn("[BOOT] WAKESRC=[%s] (osnib)\n",
+				osnib_wake_srcs[i].wakesrc_name);
+			wksrc_found++;
+			break;
+		}
+	}
+
+	if (!wksrc_found)
+		pr_warn("[BOOT] WAKESRC=[UNKNOWN 0x%02x] (osnib)\n", wakesrc);
+
+	for (i = 0; i < ARRAY_SIZE(chip_reset_events); i++) {
 		if (chip_reset_events[i].id == oshob_info->platform_type) {
-			pr_warn("[BOOT] WAKESRC=0x%02x %s=0x%02x %s=0x%02x (osnib)\n",
-				wakesrc,
+			pr_warn("[BOOT] %s=0x%02x %s=0x%02x (osnib)\n",
 				chip_reset_events[i].reset_ev1_name,
 				reset_ev1,
 				chip_reset_events[i].reset_ev2_name,
 				reset_ev2);
+			break;
 		}
 	}
 
@@ -2261,6 +2905,20 @@ static int oshob_init(void)
 			pr_info("OEMNIB interface registered to debugfs\n");
 		}
 	}
+	ret = intel_mid_scu_ipc_cmd_debugfs_init();
+	if (ret) {
+		pr_err("Cannot register ipc cmd interface to debugfs");
+		goto exit;
+	}
+
+#ifdef DUMP_OSNIB
+	ret = intel_mid_scu_ipc_osnib_debugfs_init();
+	if (ret != 0) {
+		pr_err("Cannot register OSNIB interface to debugfs\n");
+		goto exit;
+	} else
+		pr_info("OSNIB interface registered to debugfs\n");
+#endif /* DUMP_OSNIB */
 #endif /* CONFIG_DEBUG_FS */
 
 exit:
@@ -2323,6 +2981,11 @@ static void ipcutil_rpmsg_remove(struct rpmsg_channel *rpdev)
 		/* unregister from debugfs.                     */
 		intel_mid_scu_ipc_oemnib_debugfs_exit();
 	}
+	intel_mid_scu_ipc_cmd_debugfs_exit();
+
+#ifdef DUMP_OSNIB
+	intel_mid_scu_ipc_osnib_debugfs_exit();
+#endif /* DUMP_OSNIB */
 #endif /* CONFIG_DEBUG_FS */
 
 	kfree(oshob_info);

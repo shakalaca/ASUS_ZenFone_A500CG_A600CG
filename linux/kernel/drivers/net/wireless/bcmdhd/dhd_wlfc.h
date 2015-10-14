@@ -24,6 +24,11 @@
 #ifndef __wlfc_host_driver_definitions_h__
 #define __wlfc_host_driver_definitions_h__
 
+#ifdef QMONITOR
+#include <dhd_qmon.h>
+#endif
+
+
 /* 16 bits will provide an absolute max of 65536 slots */
 #define WLFC_HANGER_MAXITEMS 1024
 
@@ -136,6 +141,10 @@ typedef struct wlfc_mac_descriptor {
 	/* flag. TRUE when in suppress state */
 	uint8 suppressed;
 	uint8 deleting;
+
+#ifdef QMONITOR
+	dhd_qmon_t qmon;
+#endif /* QMONITOR */
 
 #ifdef PROP_TXSTATUS_DEBUG
 	uint32 dstncredit_sent_packets;
@@ -285,4 +294,13 @@ int dhd_wlfc_event(struct dhd_info *dhd);
 int dhd_os_wlfc_block(dhd_pub_t *pub);
 int dhd_os_wlfc_unblock(dhd_pub_t *pub);
 
+void dhd_wlfc_dump(dhd_pub_t *dhdp, struct bcmstrbuf *strbuf);
+int dhd_wlfc_init(dhd_pub_t *dhd);
+void dhd_wlfc_deinit(dhd_pub_t *dhd);
+int dhd_wlfc_parse_header_info(dhd_pub_t *dhd, void* pktbuf, int tlv_hdr_len,
+	uchar *reorder_info_buf, uint *reorder_info_len);
+int dhd_wlfc_commit_packets(void* state, f_commitpkt_t fcommit,
+	void* commit_ctx, void *pktbuf);
+void dhd_wlfc_cleanup(dhd_pub_t *dhd, ifpkt_cb_t fn, int arg);
+bool ifpkt_fn(void* p, int ifid);
 #endif /* __wlfc_host_driver_definitions_h__ */

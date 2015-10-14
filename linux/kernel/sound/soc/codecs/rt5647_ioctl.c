@@ -47,6 +47,12 @@ hweq_t hweq_param[] = {
 			{0xc501, 0x1c7c, 0xf483, 0x1f68, 0x0094, 0x1f69},
 			0x0044, //Wenhong 140114 bard: MX-B1
                 #endif
+
+		//A502CG
+		#ifdef CONFIG_A502CG_AUDIO_SETTING
+			{0xc4ef, 0x1c13, 0xf805, 0x1f68, 0x0094, 0x1f69},
+			0x0040, //Angus 20140402
+                #endif
 	},
 	{/* HP */
 		{0},
@@ -120,10 +126,8 @@ int rt5647_update_eqmode(
 		return -EINVAL;
 	}
 	snd_soc_update_bits(codec, reg, mask, hweq_param[mode].ctrl);
-
     reg = snd_soc_read(codec, upd_reg);
     snd_soc_write(codec, upd_reg, reg | RT5647_EQ_UPD);
-
 	snd_soc_update_bits(codec, upd_reg, RT5647_EQ_UPD, 0);
 
 	return 0;

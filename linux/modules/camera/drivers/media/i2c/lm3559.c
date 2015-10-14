@@ -66,6 +66,8 @@ struct lm3559_ctrl_id {
 #define LM3559_FLASH_LED1_CURRENT_SHIFT	0
 #define LM3559_FLASH_LED2_CURRENT_SHIFT	4
 #define LM3559_FLASH_MAX_CURRENT	15
+#define LM3560_FLASH_MAX_CURRENT	13
+#define LM3560_TORCH_MAX_CURRENT	2
 
 #define LM3559_FLASH_DURATION_REG	0xc0
 #define LM3559_FLASH_TIMEOUT_SHIFT	0
@@ -86,6 +88,7 @@ struct lm3559_ctrl_id {
 
 #define LM3559_CONFIG_REG_1_INIT_SETTING	0xec
 #define LM3559_CONFIG_REG_2_INIT_SETTING	0x01
+#define LM3559_CONFIG_REG_2_INIT_SETTING_LM3560	0x11
 #define LM3559_GPIO_REG_INIT_SETTING		0x00
 
 #define LM3559_ENVM_TX2_SHIFT		0
@@ -96,6 +99,11 @@ struct lm3559_ctrl_id {
 #define LM3559_GPIO_REG			0x20
 #define LM3559_GPIO_DISABLE_TX2_SHIFT	3
 #define LM3559_GPIO_DISABLE_TX2_MASK	(1 << LM3559_GPIO_DISABLE_TX2_SHIFT)
+
+enum lm3559_hw_type {
+	lm3559_hw_type_lm3559,
+	lm3559_hw_type_lm3560,
+};
 
 struct privacy_indicator {
 	u8 indicator_current;
@@ -120,6 +128,7 @@ struct lm3559 {
 	struct privacy_indicator indicator;
 	struct timer_list flash_off_delay;
 	struct lm3559_platform_data *pdata;
+	enum lm3559_hw_type hw_type;
 };
 
 #define to_lm3559(p_sd)	container_of(p_sd, struct lm3559, sd)
@@ -176,6 +185,8 @@ static int lm3559_set_indicator(struct lm3559 *flash)
 	int ret;
 	u8 val;
 
+	/* Clear flags register. */
+	lm3559_read(flash, LM3559_FLAGS_REG);
 	val = (flash->indicator.indicator_current
 			<< LM3559_INDICATOR_CURRENT_SHIFT) |
 		(flash->indicator.led1_enable << LM3559_INDICATOR_LED1_SHIFT) |
@@ -195,6 +206,8 @@ static int lm3559_set_torch(struct lm3559 *flash)
 {
 	u8 val;
 
+	/* Clear flags register. */
+	lm3559_read(flash, LM3559_FLAGS_REG);
 	val = (flash->torch_current << LM3559_TORCH_LED1_CURRENT_SHIFT) |
 	      (flash->torch_current << LM3559_TORCH_LED2_CURRENT_SHIFT);
 
@@ -205,6 +218,8 @@ static int lm3559_set_flash(struct lm3559 *flash)
 {
 	u8 val;
 
+	/* Clear flags register. */
+	lm3559_read(flash, LM3559_FLAGS_REG);
 	val = (flash->flash_current << LM3559_FLASH_LED1_CURRENT_SHIFT) |
 		(flash->flash_current << LM3559_FLASH_LED2_CURRENT_SHIFT);
 
@@ -232,7 +247,11 @@ static int lm3559_set_config(struct lm3559 *flash)
 	if (ret)
 		return ret;
 
-	val = LM3559_CONFIG_REG_2_INIT_SETTING & ~LM3559_ENVM_TX2_MASK;
+	if (flash->hw_type == lm3559_hw_type_lm3560)
+		val = LM3559_CONFIG_REG_2_INIT_SETTING_LM3560 &
+		      ~LM3559_ENVM_TX2_MASK;
+	else
+		val = LM3559_CONFIG_REG_2_INIT_SETTING & ~LM3559_ENVM_TX2_MASK;
 	val |= flash->pdata->envm_tx2 << LM3559_ENVM_TX2_SHIFT;
 	ret = lm3559_write(flash, LM3559_CONFIG_REG_2, val);
 	if (ret)
@@ -364,6 +383,10 @@ static int lm3559_s_flash_intensity(struct v4l2_subdev *sd, u32 intensity)
 	if (limit == 0)
 		limit = LM3559_FLASH_MAX_CURRENT;
 
+	if (flash->hw_type == lm3559_hw_type_lm3560 &&
+	    limit > LM3560_FLASH_MAX_CURRENT)
+		limit = LM3560_FLASH_MAX_CURRENT;
+
 	intensity = LM3559_CLAMP_PERCENTAGE(intensity);
 	intensity = intensity * limit / LM3559_MAX_PERCENT;
 	flash->flash_current = intensity;
@@ -379,6 +402,10 @@ static int lm3559_g_flash_intensity(struct v4l2_subdev *sd, s32 *val)
 	if (limit == 0)
 		limit = LM3559_FLASH_MAX_CURRENT;
 
+	if (flash->hw_type == lm3559_hw_type_lm3560 &&
+	    limit > LM3560_FLASH_MAX_CURRENT)
+		limit = LM3560_FLASH_MAX_CURRENT;
+
 	*val = flash->flash_current * LM3559_MAX_PERCENT / limit;
 
 	return 0;
@@ -390,6 +417,10 @@ static int lm3559_s_torch_intensity(struct v4l2_subdev *sd, u32 intensity)
 
 	intensity = LM3559_CLAMP_PERCENTAGE(intensity);
 	intensity = LM3559_PERCENT_TO_VALUE(intensity, LM3559_TORCH_STEP);
+
+	if (flash->hw_type == lm3559_hw_type_lm3560 &&
+	   intensity > LM3560_TORCH_MAX_CURRENT)
+		intensity = LM3560_TORCH_MAX_CURRENT;
 
 	flash->torch_current = intensity;
 
@@ -874,6 +905,7 @@ static int lm3559_probe(struct i2c_client *client,
 		return -ENOMEM;
 	}
 
+	flash->hw_type = id->driver_data;
 	flash->pdata = client->dev.platform_data;
 
 	v4l2_i2c_subdev_init(&flash->sd, client, &lm3559_ops);
@@ -899,6 +931,11 @@ static int lm3559_probe(struct i2c_client *client,
 		dev_err(&client->dev, "gpio request/direction_output fail");
 		goto fail2;
 	}
+
+	if (flash->hw_type == lm3559_hw_type_lm3560 &&
+	    (flash->pdata->flash_current_limit == 0 ||
+	     flash->pdata->flash_current_limit > LM3560_FLASH_MAX_CURRENT))
+		flash->pdata->flash_current_limit = LM3560_FLASH_MAX_CURRENT;
 
 	return 0;
 fail2:
@@ -934,8 +971,9 @@ fail:
 }
 
 static const struct i2c_device_id lm3559_id[] = {
-	{LM3559_NAME, 0},
-	{},
+	{ LM3559_NAME, lm3559_hw_type_lm3559 },
+	{ LM3560_NAME, lm3559_hw_type_lm3560 },
+	{ },
 };
 
 MODULE_DEVICE_TABLE(i2c, lm3559_id);

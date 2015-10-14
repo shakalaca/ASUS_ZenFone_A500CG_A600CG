@@ -17,7 +17,7 @@
  *
  */
 
-#ifdef CONFIG_INTEL_ATOM_MRFLD_POWER
+#ifdef CONFIG_REMOVEME_INTEL_ATOM_MRFLD_POWER
 
 #define PM_SUPPORT		0x21
 
@@ -39,14 +39,16 @@
 #define NC_PM_SSS			0x3F
 
 /* SRAM locations to get S0ix residency */
-#define S0I1_RES_ADDR		0xFFFFFDE0
-#define S0I2_RES_ADDR		0xFFFFFDE8
-#define S0I3_RES_ADDR		0xFFFFFDF0
+#define S0I1_RES_ADDR		0xFFFFF560
+#define LPMP3_RES_ADDR		0xFFFFF578
+#define S0I2_RES_ADDR		0xFFFFF568
+#define S0I3_RES_ADDR		0xFFFFF570
 
 /* SRAM locations to get S0ix count */
-#define S0I1_COUNT_ADDR		0xFFFFF420
-#define S0I2_COUNT_ADDR		0xFFFFF424
-#define S0I3_COUNT_ADDR		0xFFFFF428
+#define S0I1_COUNT_ADDR		0xFFFFF588
+#define LPMP3_COUNT_ADDR	0xFFFFF594
+#define S0I2_COUNT_ADDR		0xFFFFF58C
+#define S0I3_COUNT_ADDR		0xFFFFF590
 
 /* IPC commands to start, stop and
  * dump S0ix residency counters */
@@ -72,7 +74,7 @@
 #define PMU_USB_MPH_LSS_08		8
 #define PMU_USB3_LSS_09			9
 #define PMU_AUDIO_LSS_10		10
-#define PMU_AUDIO_DMA0_11		11
+#define PMU_RESERVED_LSS_11		11
 #define PMU_RESERVED_LSS_12		12
 #define PMU_RESERVED_LSS_13		13
 #define PMU_RESERVED_LSS_14		14
@@ -155,6 +157,5 @@ extern int intel_scu_ipc_simple_command(int, int);
 extern void log_wakeup_irq(void);
 extern void s0ix_complete(void);
 extern bool could_do_s0ix(void);
-#else
-static inline bool could_do_s0ix(void) { return true; }
+
 #endif

@@ -477,7 +477,6 @@ int ttm_pl_ub_create_ioctl(struct ttm_object_file *tfile,
 	int ret = 0;
 	struct ttm_mem_global *mem_glob = bdev->glob->mem_glob;
 	struct ttm_placement placement = default_placement;
-
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,3,0))
 	size_t acc_size =
 		ttm_pl_size(bdev, (req->size + PAGE_SIZE - 1) >> PAGE_SHIFT);

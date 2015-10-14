@@ -46,9 +46,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /* Module specific includes */
 #include "devicemem_typedefs.h"
 #include "pvr_tl.h"
+#include "tltestdefs.h"
 
 #include "tlserver.h"
-#include "tltestdefs.h"
 
 
 IMG_INTERNAL PVRSRV_ERROR IMG_CALLCONV BridgeTLConnect(IMG_HANDLE hBridge)

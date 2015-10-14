@@ -85,7 +85,7 @@ static const char *power_state_str(enum dx_sep_power_state pstate)
  */
 void dx_sep_state_change_handler(struct sep_drvdata *drvdata)
 {
-	SEP_LOG_WARN("State=0x%08X Status/RetCode=0x%08X\n",
+	pr_warn("State=0x%08X Status/RetCode=0x%08X\n",
 		     READ_REGISTER(drvdata->cc_base + SEP_STATE_GPR_OFFSET),
 		     READ_REGISTER(drvdata->cc_base + SEP_STATUS_GPR_OFFSET));
 	power_control.state_jiffies = jiffies;
@@ -222,13 +222,13 @@ static int process_hibernation_req(void)
 
 	if (sep_state != DX_SEP_STATE_DONE_FW_INIT ||
 		!(is_desc_qs_active())) {
-		SEP_LOG_ERR("Requested hibernation while SeP state=0x%08X\n",
+		pr_err("Requested hibernation while SeP state=0x%08X\n",
 			    sep_state);
 		return -EINVAL;
 	}
 	rc = set_desc_qs_state(DESC_Q_ASLEEP);
 	if (unlikely(rc != 0)) {
-		SEP_LOG_ERR("Failed moving queues to SLEEP state (%d)\n", rc);
+		pr_err("Failed moving queues to SLEEP state (%d)\n", rc);
 		return rc;
 	}
 	/* Write value SEP_SLEEP_ENABLE command to GPR7 to initialize
@@ -243,15 +243,15 @@ static int process_hibernation_req(void)
 	case DX_SEP_STATE_DONE_SLEEP_MODE:
 		break;
 	case DX_SEP_STATE_DONE_FW_INIT:
-		SEP_LOG_ERR("Transition to SLEEP mode aborted.\n");
+		pr_err("Transition to SLEEP mode aborted.\n");
 		rc = -EBUSY;
 		break;
 	case DX_SEP_STATE_PROC_SLEEP_MODE:
-		SEP_LOG_ERR("Stuck in processing of SLEEP req.\n");
+		pr_err("Stuck in processing of SLEEP req.\n");
 		rc = -ETIME;
 		break;
 	default:
-		SEP_LOG_ERR(
+		pr_err(
 			"Unexpected SeP state after SLEEP request: 0x%08X\n",
 			sep_state);
 		rc = -EINVAL;
@@ -277,7 +277,7 @@ static int process_activate_req(void)
 
 	sep_state = GET_SEP_STATE(power_control.drvdata);
 	if ((sep_state == DX_SEP_STATE_DONE_FW_INIT) && is_desc_qs_active()) {
-		SEP_LOG_INFO("Requested activation when in active state\n");
+		pr_info("Requested activation when in active state\n");
 		return 0;	/* Already in this state */
 	}
 
@@ -287,11 +287,11 @@ static int process_activate_req(void)
 			sep_state = GET_SEP_STATE(power_control.drvdata);
 			if (sep_state != DX_SEP_STATE_OFF)
 				break;
-			usleep_range(100, 100);
+			usleep_range(50, 150);
 			count++;
 		}
 		if (count >= SEP_TIMEOUT) {
-			SEP_LOG_INFO("Timeout while waiting SEP poweron\n");
+			pr_info("Timeout while waiting SEP poweron\n");
 			return -ETIME;
 		}
 
@@ -307,7 +307,7 @@ static int process_activate_req(void)
 	if (sep_state == DX_SEP_STATE_DONE_FW_INIT)
 		rc = set_desc_qs_state(DESC_Q_ACTIVE);
 	else {
-		SEP_LOG_INFO("Timeout while waiting SEP wakeup\n");
+		pr_info("Timeout while waiting SEP wakeup\n");
 		rc = -ETIME;	/* Timed out waiting */
 	}
 
@@ -344,7 +344,7 @@ int dx_sep_power_state_set(enum dx_sep_power_state req_state)
 		rc = process_activate_req();
 		break;
 	default:
-		SEP_LOG_ERR("Invalid state to request (%s)\n",
+		pr_err("Invalid state to request (%s)\n",
 			    power_state_str(req_state));
 		rc = -EINVAL;
 	}
@@ -414,7 +414,7 @@ EXPORT_SYMBOL(dx_sep_power_state_get);
 /**
  * dx_sep_power_init() - Init resources for this module
  */
-void __devinit dx_sep_power_init(struct sep_drvdata *drvdata)
+void dx_sep_power_init(struct sep_drvdata *drvdata)
 {
 	power_control.drvdata = drvdata;
 	init_completion(&power_control.state_changed);

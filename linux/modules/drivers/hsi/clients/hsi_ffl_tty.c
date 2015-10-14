@@ -1716,6 +1716,9 @@ static void _ffl_forward_tty(struct tty_struct		*tty,
 	int			 do_push;
 	int			 err;
 	char			 tty_flag;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0)
+	struct ffl_ctx 		*main_ctx = ctx->main_ctx;
+#endif
 
 	/* Initialised to 1 to prevent unexpected TTY forwarding resume
 	 * function when there is no TTY or when it is throttled */
@@ -1759,11 +1762,20 @@ static void _ffl_forward_tty(struct tty_struct		*tty,
 
 			/* Copy the data to the flip buffers */
 			data_ptr = ffl_data_ptr(ffl_virt(frame), 0);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0)
+			copied = (unsigned int)
+			tty_insert_flip_string_fixed_flag(&main_ctx->tty_prt,
+							  data_ptr,
+							  tty_flag,
+							  frame->actual_len);
+#else
 			copied = (unsigned int)
 			tty_insert_flip_string_fixed_flag(tty,
 							  data_ptr,
 							  tty_flag,
 							  frame->actual_len);
+#endif
 			ffl_rx_frame_skip(frame, copied);
 
 			/* We'll push the flip buffers each time something has
@@ -1787,7 +1799,11 @@ no_more_tty_insert:
 		/* Using tty_flip_buffer_push() with a low latency flag to
 		 * bypass the shared system work queue */
 		spin_unlock_irqrestore(&ctx->lock, *flags);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0)
+		tty_flip_buffer_push(&main_ctx->tty_prt);
+#else
 		tty_flip_buffer_push(tty);
+#endif
 		spin_lock_irqsave(&ctx->lock, *flags);
 	}
 
@@ -2032,7 +2048,11 @@ static int ffl_tty_port_activate(struct tty_port *port, struct tty_struct *tty)
 #endif
 
 	/* Set the TTY with low latency to bypass the system work queue */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0)
+	port->low_latency = 1;
+#else
 	tty->low_latency = 1;
+#endif
 
 	return 0;
 }
@@ -3352,7 +3372,11 @@ static int ffl_driver_probe(struct device *dev)
 	tty_prt->ops = &ffl_port_tty_ops;
 
 	/* Register the TTY device */
-	if (unlikely(!tty_register_device(ffl_drv.tty_drv, l, dev))) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0)
+	if (unlikely(!tty_port_register_device(tty_prt, ffl_drv.tty_drv, 1, dev))) {
+#else
+	if (unlikely(!tty_register_device(ffl_drv.tty_drv, 1, dev))) {
+#endif
 		err = -EFAULT;
 		pr_err(DRVNAME ": TTY device registration failed (%d)", err);
 		goto no_tty_device_registration;

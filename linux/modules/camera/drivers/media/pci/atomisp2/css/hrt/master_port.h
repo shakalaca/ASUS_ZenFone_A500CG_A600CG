@@ -61,13 +61,13 @@
 
 
 #define hrt_master_port_store(addr, data, bytes) \
-	_hrt_master_port_unaligned_store((void *)(addr), \
+	_hrt_master_port_unaligned_store((addr), \
 					(const void *)(data), bytes)
 #define hrt_master_port_load(addr, data, bytes) \
-	_hrt_master_port_unaligned_load((const void *)(addr), \
+	_hrt_master_port_unaligned_load((addr), \
 					(void *)(data), bytes)
 #define hrt_master_port_set(addr, data, bytes) \
-	_hrt_master_port_unaligned_set((void *)(addr), \
+	_hrt_master_port_unaligned_set((addr), \
 					(int)(data), bytes)
 
 /* reduce number of functions */

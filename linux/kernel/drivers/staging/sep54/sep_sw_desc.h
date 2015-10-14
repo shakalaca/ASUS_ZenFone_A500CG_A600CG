@@ -46,6 +46,15 @@
 	SEP_SW_DESC_ ## desc_field ## _BIT_SIZE,			      \
 	new_val)
 
+#define SEP_SW_DESC_GET_COOKIE(desc_p)\
+	((struct sep_op_ctx *)phys_to_virt(((u32 *)desc_p)[SEP_SW_DESC_COOKIE_WORD_OFFSET]))
+#define SEP_SW_DESC_SET_COOKIE(desc_p, op_ctx) \
+do {\
+	u32 __ctx_ptr__ = virt_to_phys(op_ctx) & (DMA_BIT_MASK(32));\
+	memcpy(((u32 *)desc_p) + SEP_SW_DESC_COOKIE_WORD_OFFSET,\
+	&__ctx_ptr__, sizeof(u32));\
+} while (0)
+
 /* Type specific descriptor fields access */
 #define SEP_SW_DESC_GET4TYPE(desc_p, desc_type, desc_field) BITFIELD_GET(     \
 	((u32 *)(desc_p))                                                \
@@ -59,9 +68,8 @@
 	SEP_SW_DESC_ ## desc_type ## _ ## desc_field ##  _BIT_OFFSET,	      \
 	SEP_SW_DESC_ ## desc_type ## _ ## desc_field ## _BIT_SIZE, new_val)
 
-#define SEP_SW_DESC_INIT(desc_p) do {                                \
-	memset(desc_p, 0, SEP_SW_DESC_WORD_SIZE * sizeof(u32)); \
-} while (0)
+#define SEP_SW_DESC_INIT(desc_p) \
+	memset(desc_p, 0, SEP_SW_DESC_WORD_SIZE * sizeof(u32))
 
 /* Total descriptor size in 32b words */
 #define SEP_SW_DESC_WORD_SIZE 8
@@ -245,24 +253,25 @@ enum sep_proc_mode {
 		(SEP_ENGINE_SRC_BIT_SIZE + SEP_ENGINE_TYPE_BIT_SIZE)
 
 /******************************* MACROS ***********************************/
-#define _SepCombinedEnginePackItem(eng_src, eng_type) \
+#define _sep_comb_eng_pack_item(eng_src, eng_type) \
 		(((eng_src) << SEP_ENGINE_SRC_BIT_SIZE) | \
 		 ((eng_type) << SEP_ENGINE_TYPE_BIT_SHIFT))
-#define _SepCombinedEnginePackNShift(src, type, slot) \
-		(_SepCombinedEnginePackItem(src, type) << \
+
+#define _sep_comb_eng_pack_n_shift(src, type, slot) \
+		(_sep_comb_eng_pack_item(src, type) << \
 		(slot * SEP_ENGINE_SLOT_BIT_SIZE))
 
-#define SepCombinedEnginePropsSet(cfg_p, eng_idx, eng_src, eng_type) do { \
+#define sep_comb_eng_props_set(cfg_p, eng_idx, eng_src, eng_type) do { \
 	BITFIELD_SET(*cfg_p, \
 		(eng_idx * SEP_ENGINE_SLOT_BIT_SIZE), \
 		SEP_ENGINE_SLOT_BIT_SIZE, 0); \
 	BITFIELD_SET(*cfg_p, \
 		(eng_idx * SEP_ENGINE_SLOT_BIT_SIZE), \
 		SEP_ENGINE_SLOT_BIT_SIZE, \
-		_SepCombinedEnginePackItem(eng_src, eng_type)); \
+		_sep_comb_eng_pack_item(eng_src, eng_type)); \
 } while (0)
 
-#define SepCombinedEnginePropsGet(cfg_p, eng_idx, eng_src, eng_type) do { \
+#define sep_comb_eng_props_get(cfg_p, eng_idx, eng_src, eng_type) do { \
 	*(eng_type) = BITFIELD_GET(*cfg_p, \
 				(eng_idx * SEP_ENGINE_SLOT_BIT_SIZE),\
 				SEP_ENGINE_TYPE_BIT_SIZE); \

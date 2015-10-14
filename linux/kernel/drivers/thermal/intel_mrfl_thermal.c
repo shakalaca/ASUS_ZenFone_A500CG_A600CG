@@ -40,10 +40,9 @@
 #include <asm/intel_mid_rpmsg.h>
 #include <asm/intel_basincove_gpadc.h>
 #include <asm/intel_mid_thermal.h>
-#include "../staging/iio/consumer.h"
+#include <linux/iio/consumer.h>
 
 #define DRIVER_NAME "bcove_thrm"
-#define DEVICE_NAME "mrfl_pmic_thermal"
 
 /* Number of Thermal sensors on the PMIC */
 #define PMIC_THERMAL_SENSORS	4
@@ -62,6 +61,12 @@
 #define PMIC_SRAM_BASE_ADDR	0xFFFFF610
 #define PMIC_SRAM_THRM_OFFSET	0x03
 #define IOMAP_SIZE		0x04
+
+/* NVM BANK REGISTER */
+#define EEPROM_CTRL		0x1FE
+#define EEPROM_REG15		0x1EE
+#define EEPROM_BANK1_SELECT	0x02
+#define EEPROM_BANK1_UNSELECT	0x00
 
 #define PMICALRT	(1 << 3)
 #define SYS2ALRT	(1 << 2)
@@ -184,17 +189,25 @@ static int find_adc_code(uint16_t val)
  *
  * Can sleep
  */
-static int adc_to_temp(int direct, uint16_t adc_val, unsigned long *tp)
+static int adc_to_temp(int direct, uint16_t adc_val, long *tp)
 {
 	int x0, x1, y0, y1;
 	int nr, dr;		/* Numerator & Denominator */
 	int indx;
 	int x = adc_val;
+	int8_t pmic_temp_offset;
 
 	/* Direct conversion for pmic die temperature */
 	if (direct) {
 		if (adc_val < PMIC_DIE_ADC_MIN || adc_val > PMIC_DIE_ADC_MAX)
 			return -EINVAL;
+
+		/* An offset added for pmic temp from NVM in TNG B0 */
+		intel_scu_ipc_iowrite8(EEPROM_CTRL, EEPROM_BANK1_SELECT);
+		intel_scu_ipc_ioread8(EEPROM_REG15, &pmic_temp_offset);
+		intel_scu_ipc_iowrite8(EEPROM_CTRL, EEPROM_BANK1_UNSELECT);
+
+		adc_val = adc_val + pmic_temp_offset;
 
 		*tp = adc_to_pmic_die_temp(adc_val);
 		return 0;
@@ -355,7 +368,7 @@ exit_err:
 	return ret;
 }
 
-static ssize_t store_trip_hyst(struct thermal_zone_device *tzd,
+static int store_trip_hyst(struct thermal_zone_device *tzd,
 				int trip, long hyst)
 {
 	int ret;
@@ -383,7 +396,7 @@ ipc_fail:
 	return ret;
 }
 
-static ssize_t show_trip_hyst(struct thermal_zone_device *tzd,
+static int show_trip_hyst(struct thermal_zone_device *tzd,
 				int trip, long *hyst)
 {
 	int ret;
@@ -402,7 +415,7 @@ static ssize_t show_trip_hyst(struct thermal_zone_device *tzd,
 	return ret;
 }
 
-static ssize_t store_trip_temp(struct thermal_zone_device *tzd,
+static int store_trip_temp(struct thermal_zone_device *tzd,
 				int trip, long trip_temp)
 {
 	int ret, adc_val;
@@ -429,7 +442,7 @@ exit:
 	return ret;
 }
 
-static ssize_t show_trip_temp(struct thermal_zone_device *tzd,
+static int show_trip_temp(struct thermal_zone_device *tzd,
 				int trip, long *trip_temp)
 {
 	int ret, adc_val;
@@ -456,7 +469,7 @@ exit:
 	return ret;
 }
 
-static ssize_t show_trip_type(struct thermal_zone_device *tzd,
+static int show_trip_type(struct thermal_zone_device *tzd,
 			int trip, enum thermal_trip_type *trip_type)
 {
 	/* All are passive trip points */
@@ -465,7 +478,7 @@ static ssize_t show_trip_type(struct thermal_zone_device *tzd,
 	return 0;
 }
 
-static ssize_t show_temp(struct thermal_zone_device *tzd, long *temp)
+static int show_temp(struct thermal_zone_device *tzd, long *temp)
 {
 	int ret;
 	struct thermal_device_info *td_info = tzd->devdata;
@@ -478,7 +491,7 @@ static ssize_t show_temp(struct thermal_zone_device *tzd, long *temp)
 
 	if (!tdata->is_initialized ||
 			time_after(jiffies, tdata->last_updated + HZ)) {
-		ret = iio_st_read_channel_all_raw(tdata->iio_chan,
+		ret = iio_read_channel_all_raw(tdata->iio_chan,
 						tdata->cached_vals);
 		if (ret) {
 			dev_err(&tzd->device, "ADC sampling failed:%d\n", ret);
@@ -653,6 +666,11 @@ static struct thermal_zone_device_ops tzd_ops = {
 #endif
 };
 
+static irqreturn_t mrfl_thermal_intrpt_handler(int irq, void* dev_data)
+{
+	return IRQ_WAKE_THREAD;
+}
+
 static int mrfl_thermal_probe(struct platform_device *pdev)
 {
 	int ret, i;
@@ -698,7 +716,7 @@ static int mrfl_thermal_probe(struct platform_device *pdev)
 	 * Order of the channels obtained from adc:
 	 * "SYSTHERM0", "SYSTHERM1", "SYSTHERM2", "PMICDIE"
 	 */
-	tdata->iio_chan = iio_st_channel_get_all("THERMAL");
+	tdata->iio_chan = iio_channel_get_all(&pdev->dev);
 	if (tdata->iio_chan == NULL) {
 		dev_err(&pdev->dev, "tdata->iio_chan is null\n");
 		ret = -EINVAL;
@@ -706,7 +724,7 @@ static int mrfl_thermal_probe(struct platform_device *pdev)
 	}
 
 	/* Check whether we got all the four channels */
-	ret = iio_st_channel_get_num(tdata->iio_chan);
+	ret = iio_channel_get_num(tdata->iio_chan);
 	if (ret != PMIC_THERMAL_SENSORS) {
 		dev_err(&pdev->dev, "incorrect number of channels:%d\n", ret);
 		ret = -EFAULT;
@@ -717,7 +735,7 @@ static int mrfl_thermal_probe(struct platform_device *pdev)
 	for (i = 0; i < tdata->num_sensors; i++) {
 		tdata->tzd[i] = thermal_zone_device_register(
 				tdata->sensors[i].name,	1, 1,
-		initialize_sensor(&tdata->sensors[i]), &tzd_ops, 0, 0, 0, 0);
+		initialize_sensor(&tdata->sensors[i]), &tzd_ops, NULL, 0, 0);
 
 		if (IS_ERR(tdata->tzd[i])) {
 			ret = PTR_ERR(tdata->tzd[i]);
@@ -736,7 +754,7 @@ static int mrfl_thermal_probe(struct platform_device *pdev)
 	}
 
 	/* Register for Interrupt Handler */
-	ret = request_threaded_irq(tdata->irq, NULL, thermal_intrpt,
+	ret = request_threaded_irq(tdata->irq, mrfl_thermal_intrpt_handler, thermal_intrpt,
 						IRQF_TRIGGER_RISING,
 						DRIVER_NAME, tdata);
 	if (ret) {
@@ -761,7 +779,7 @@ exit_reg:
 	while (--i >= 0)
 		thermal_zone_device_unregister(tdata->tzd[i]);
 exit_iio:
-	iio_st_channel_release_all(tdata->iio_chan);
+	iio_channel_release_all(tdata->iio_chan);
 exit_tzd:
 	kfree(tdata->tzd);
 exit_free:
@@ -794,7 +812,7 @@ static int mrfl_thermal_remove(struct platform_device *pdev)
 
 	free_irq(tdata->irq, tdata);
 	iounmap(tdata->thrm_addr);
-	iio_st_channel_release_all(tdata->iio_chan);
+	iio_channel_release_all(tdata->iio_chan);
 	kfree(tdata->tzd);
 	kfree(tdata);
 	return 0;

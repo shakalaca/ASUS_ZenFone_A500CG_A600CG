@@ -1,3 +1,4 @@
+#undef pr_fmt
 #define pr_fmt(fmt) "mm :" fmt
 
 #include <linux/module.h>
@@ -128,7 +129,7 @@ out:
 	return 0;
 }
 /**
- * mei_mm_alloc - destributing memory chunk to Sec Application (shim library)
+ * mei_mm_alloc - distributing memory chunk to Sec Application (shim library)
  *
  * @file: pointer to file structure
  * @cmd: ioctl command
@@ -146,8 +147,8 @@ static int mei_mm_alloc(struct mei_mm_device *mdev, unsigned long arg)
 	size_t aligned_size; /* for mmap to work we need page multipliers */
 
 	if (copy_from_user(&req, (char __user *)arg, sizeof(req))) {
+		meimm_err(mdev, "failed to copy data from userland\n");
 		ret = -EFAULT;
-		meimm_err(mdev, "EFAULT");
 		goto err;
 	}
 
@@ -169,6 +170,7 @@ static int mei_mm_alloc(struct mei_mm_device *mdev, unsigned long arg)
 			(unsigned long long)paddr, req.size);
 
 	if (copy_to_user((char __user *)arg, &req, sizeof(req))) {
+		meimm_err(mdev, "failed to copy data to userland\n");
 		ret = -EFAULT;
 		goto err_unlock;
 	}
@@ -202,20 +204,25 @@ static int mei_mm_free(struct mei_mm_device *mdev, unsigned long arg)
 	int ret;
 
 	if (copy_from_user(&req, (char __user *)arg, sizeof(req))) {
-		ret = -EFAULT;
-		meimm_err(mdev, "EFAULT\n");
-		goto err;
+		meimm_err(mdev, "failed to copy data from userland\n");
+		return -EFAULT;
 	}
 
 	mutex_lock(&mdev->lock);
-	/* FIXME: validate free */
+
+	if (mdev->pool.offset < req.size) {
+		meimm_err(mdev, "cannot free 0x%lld bytes - offset=0x%zd\n",
+			  req.size, mdev->pool.offset);
+		ret = -EINVAL;
+		goto out;
+	}
+
 	mdev->pool.offset -= req.size;
 	mdev->client.size = 0;
 	mdev->client.paddr = 0LL;
+	ret = 0;
+out:
 	mutex_unlock(&mdev->lock);
-
-	return 0;
-err:
 	return ret;
 
 }
@@ -388,7 +395,7 @@ struct mei_mm_device *mei_mm_init(struct device *dev, void *vaddr,
 	ret = misc_register(&mdev->dev);
 	if (ret) {
 		kzfree(mdev);
-		dev_err(dev, "cant't register misc device.\n") ;
+		dev_err(dev, "can't register misc device.\n");
 		return ERR_PTR(ret);
 	}
 

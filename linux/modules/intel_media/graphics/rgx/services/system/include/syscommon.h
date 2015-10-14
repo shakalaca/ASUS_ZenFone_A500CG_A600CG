@@ -57,6 +57,8 @@ extern "C" {
 
 PVRSRV_ERROR SysCreateConfigData(PVRSRV_SYSTEM_CONFIG **ppsSysConfig);
 IMG_VOID SysDestroyConfigData(PVRSRV_SYSTEM_CONFIG *psSysConfig);
+PVRSRV_ERROR SysAcquireSystemData(IMG_HANDLE hSysData);
+PVRSRV_ERROR SysReleaseSystemData(IMG_HANDLE hSysData);
 PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig);
 
 #if defined(SUPPORT_SYSTEM_INTERRUPT_HANDLING)
@@ -68,7 +70,12 @@ PVRSRV_ERROR SysInstallDeviceLISR(IMG_UINT32 ui32IRQ,
 				  IMG_HANDLE *phLISRData);
 
 PVRSRV_ERROR SysUninstallDeviceLISR(IMG_HANDLE hLISRData);
+
+#if defined(SUPPORT_DRM)
+IMG_BOOL SystemISRHandler(IMG_VOID *pvData);
+#endif
 #endif /* defined(SUPPORT_SYSTEM_INTERRUPT_HANDLING) */
+
 
 /*
  * SysReadHWReg and SysWriteHWReg differ from OSReadHWReg and OSWriteHWReg

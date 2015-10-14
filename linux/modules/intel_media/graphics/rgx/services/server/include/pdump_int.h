@@ -51,11 +51,14 @@ extern "C" {
  *	This file contains internal pdump utility functions which may be accessed
  *	from OS-specific code. The header should not be included outside of srvkm
  *	pdump files.
+ *
+ *	This file represents and enables a break out of pdump ENV layer back into
+ *	COMMON for checks etc before calling back into the ENV layer to DbgWrite.
  */
 #include "dbgdrvif.h"
 
 /* Callbacks which are registered with the debug driver. */
-IMG_EXPORT IMG_VOID PDumpConnectionNotify(IMG_VOID);
+IMG_EXPORT IMG_VOID PDumpConnectionNotify(IMG_CHAR* pszStreamName);
 
 typedef enum __PDUMP_DDWMODE
 {
@@ -71,15 +74,35 @@ typedef enum __PDUMP_DDWMODE
 	PDUMP_WRITE_MODE_PERSISTENT
 } PDUMP_DDWMODE;
 
+/*
+	DbgWrite - COMMON layer write entry point/funnel from ENV layer
+	           A call back up the PDump software layer from PDumpOS... calls
+ */
+IMG_UINT32 DbgWrite(PDBG_STREAM psStream,
+                    IMG_UINT8 *pui8Data,
+                    IMG_UINT32 ui32BCount,
+                    IMG_UINT32 ui32Flags);
 
-IMG_UINT32 DbgWrite(PDBG_STREAM psStream, IMG_UINT8 *pui8Data, IMG_UINT32 ui32BCount, IMG_UINT32 ui32Flags);
+/*
+	PDumpOSDebugDriverWrite - ENV layer write entry point from COMMON layer
+	                          A call back down the PDump software layer
+ */
+IMG_UINT32 PDumpOSDebugDriverWrite(PDBG_STREAM psStream,
+                                   PDUMP_DDWMODE eDbgDrvWriteMode,
+                                   IMG_UINT8 *pui8Data,
+                                   IMG_UINT32 ui32BCount,
+                                   IMG_UINT32 ui32Level,
+                                   IMG_UINT32 ui32DbgDrvFlags);
 
-IMG_UINT32 PDumpOSDebugDriverWrite(	PDBG_STREAM psStream,
-									PDUMP_DDWMODE eDbgDrvWriteMode,
-									IMG_UINT8 *pui8Data,
-									IMG_UINT32 ui32BCount,
-									IMG_UINT32 ui32Level,
-									IMG_UINT32 ui32DbgDrvFlags);
+/*
+    Proces persistence common API for use by common clients e.g. mmu
+    and physmem.
+ */
+
+IMG_BOOL PDumpIsPersistent(IMG_VOID);
+PVRSRV_ERROR PDumpAddPersistantProcess(IMG_VOID);
+
+
 
 #if defined (__cplusplus)
 }

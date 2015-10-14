@@ -152,7 +152,6 @@ AllocSyncPrimitiveBlock(SYNC_PRIM_CONTEXT *psContext,
 	eError = DevmemImport(psContext->hBridge,
 						  &sExportCookie,
 						  PVRSRV_MEMALLOCFLAG_CPU_READABLE,
-						  "SyncPrim",
 						  &psSyncBlk->hMemDesc);
 
 	/*
@@ -854,6 +853,132 @@ IMG_INTERNAL IMG_UINT32 SyncPrimGetFirmwareAddr(PVRSRV_CLIENT_SYNC_PRIM *psSync)
 	}
 }
 
+#if !defined(__KERNEL__)
+IMG_INTERNAL PVRSRV_ERROR SyncPrimDumpSyncs(IMG_UINT32 ui32SyncCount, PVRSRV_CLIENT_SYNC_PRIM **papsSync, const IMG_CHAR *pcszExtraInfo)
+{
+#if defined(PVRSRV_NEED_PVR_DPF)
+	SYNC_PRIM *psSyncInt;
+	PVRSRV_CLIENT_SYNC_PRIM **papsServerSync;
+	IMG_UINT32 ui32ServerSyncs = 0;
+	IMG_UINT32 *pui32UID = IMG_NULL;
+	IMG_UINT32 *pui32FWAddr = IMG_NULL;
+	IMG_UINT32 *pui32CurrentOp = IMG_NULL;
+	IMG_UINT32 *pui32NextOp = IMG_NULL;
+	IMG_UINT32 i;
+	PVRSRV_ERROR eError = PVRSRV_OK;
+
+	papsServerSync = OSAllocMem(ui32SyncCount * sizeof(PVRSRV_CLIENT_SYNC_PRIM *));
+	if (!papsServerSync)
+	{
+		return PVRSRV_ERROR_OUT_OF_MEMORY;
+	}
+
+	for (i = 0; i < ui32SyncCount; i++)
+	{
+		psSyncInt = IMG_CONTAINER_OF(papsSync[i], SYNC_PRIM, sCommon);
+		if (psSyncInt->eType == SYNC_PRIM_TYPE_LOCAL)
+		{
+			PVR_DPF((PVR_DBG_ERROR, "%s: sync=local  fw=0x%x curr=0x%04x",
+					 pcszExtraInfo,
+					 SyncPrimGetFirmwareAddrLocal(psSyncInt),
+					 *psSyncInt->sCommon.pui32LinAddr));
+		}
+		else if (psSyncInt->eType == SYNC_PRIM_TYPE_SERVER)
+		{
+			papsServerSync[ui32ServerSyncs++] = papsSync[i];
+		}
+		else
+		{
+			PVR_DPF((PVR_DBG_ERROR, "SyncPrimDumpSyncs: Invalid sync type"));
+			/*
+			   Either the client has given us a bad pointer or there is an
+			   error in this module
+			   */
+			PVR_ASSERT(IMG_FALSE);
+			eError = PVRSRV_ERROR_INVALID_PARAMS;
+			goto err_free;
+		}
+	}
+
+	if (ui32ServerSyncs > 0)
+	{
+		pui32UID = OSAllocMem(ui32ServerSyncs * sizeof(IMG_UINT32));
+		if (!pui32UID)
+		{
+			eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+			goto err_free;
+		}
+		pui32FWAddr = OSAllocMem(ui32ServerSyncs * sizeof(IMG_UINT32));
+		if (!pui32FWAddr)
+		{
+			eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+			goto err_free;
+		}
+		pui32CurrentOp = OSAllocMem(ui32ServerSyncs * sizeof(IMG_UINT32));
+		if (!pui32CurrentOp)
+		{
+			eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+			goto err_free;
+		}
+		pui32NextOp = OSAllocMem(ui32ServerSyncs * sizeof(IMG_UINT32));
+		if (!pui32NextOp)
+		{
+			eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+			goto err_free;
+		}
+		eError = SyncPrimServerGetStatus(ui32ServerSyncs, papsServerSync,
+										 pui32UID,
+										 pui32FWAddr,
+										 pui32CurrentOp,
+										 pui32NextOp);
+		if (eError != PVRSRV_OK)
+		{
+			PVR_DPF((PVR_DBG_ERROR, "SyncPrimDumpSyncs: Error querying server sync status (%d)",
+					 eError));
+			goto err_free;
+		}
+		for (i = 0; i < ui32ServerSyncs; i++)
+		{
+			PVR_DPF((PVR_DBG_ERROR, "%s: sync=server fw=0x%x curr=0x%04x next=0x%04x id=%u%s",
+					 pcszExtraInfo,
+					 pui32FWAddr[i],
+					 pui32CurrentOp[i],
+					 pui32NextOp[i],
+					 pui32UID[i],
+					 (pui32NextOp[i] - pui32CurrentOp[i] == 1) ? " *" : 
+					 (pui32NextOp[i] - pui32CurrentOp[i] >  1) ? " **" : 
+					 ""));
+		}
+	}
+
+err_free:
+	OSFreeMem(papsServerSync);
+	if (pui32UID)
+	{
+		OSFreeMem(pui32UID);
+	}
+	if (pui32FWAddr)
+	{
+		OSFreeMem(pui32FWAddr);
+	}
+	if (pui32CurrentOp)
+	{
+		OSFreeMem(pui32CurrentOp);
+	}
+	if (pui32NextOp)
+	{
+		OSFreeMem(pui32NextOp);
+	}
+	return eError;
+#else
+	PVR_UNREFERENCED_PARAMETER(ui32SyncCount);
+	PVR_UNREFERENCED_PARAMETER(papsSync);
+	PVR_UNREFERENCED_PARAMETER(pcszExtraInfo);
+	return PVRSRV_OK;
+#endif
+}
+#endif
+
 IMG_INTERNAL
 PVRSRV_ERROR SyncPrimOpCreate(IMG_UINT32 ui32SyncCount,
 							  PVRSRV_CLIENT_SYNC_PRIM **papsSyncPrim,
@@ -1190,6 +1315,48 @@ IMG_VOID SyncPrimOpDestroy(PSYNC_OP_COOKIE psCookie)
 	OSFreeMem(psCookie);
 }
 
+IMG_INTERNAL
+PVRSRV_ERROR SyncPrimOpResolve(PSYNC_OP_COOKIE psCookie,
+							   IMG_UINT32 *pui32SyncCount,
+							   PVRSRV_CLIENT_SYNC_PRIM_OP **ppsSyncOp)
+{
+	IMG_UINT32 ui32ServerIndex = 0;
+	IMG_UINT32 ui32ClientIndex = 0;
+	PVRSRV_CLIENT_SYNC_PRIM_OP *psSyncOps;
+	IMG_UINT32 i;
+
+	psSyncOps = OSAllocMem(sizeof(PVRSRV_CLIENT_SYNC_PRIM_OP) * 
+						   psCookie->ui32SyncCount);
+	if (!psSyncOps)
+	{
+		return PVRSRV_ERROR_OUT_OF_MEMORY;
+	}
+	
+	for (i=0; i<psCookie->ui32SyncCount; i++)
+	{
+		psSyncOps[i].psSync = psCookie->papsSyncPrim[i];
+		if (SyncPrimIsServerSync(psCookie->papsSyncPrim[i]))
+		{
+			psSyncOps[i].ui32FenceValue = 0;
+			psSyncOps[i].ui32UpdateValue = 0;
+			psSyncOps[i].ui32Flags = psCookie->paui32ServerFlags[ui32ServerIndex];
+			ui32ServerIndex++;
+		}
+		else
+		{
+			psSyncOps[i].ui32FenceValue = psCookie->paui32FenceValue[ui32ClientIndex]; 
+			psSyncOps[i].ui32UpdateValue = psCookie->paui32UpdateValue[ui32ClientIndex]; 
+			psSyncOps[i].ui32Flags = psCookie->paui32Flags[ui32ClientIndex];
+			ui32ClientIndex++;
+		}
+	}
+
+	*ppsSyncOp = psSyncOps;
+	*pui32SyncCount = psCookie->ui32SyncCount;
+
+	return PVRSRV_OK;
+}
+
 #if !defined(__KERNEL__)
 IMG_INTERNAL
 PVRSRV_ERROR SyncPrimServerAlloc(SYNC_BRIDGE_HANDLE hBridge,
@@ -1222,8 +1389,8 @@ PVRSRV_ERROR SyncPrimServerAlloc(SYNC_BRIDGE_HANDLE hBridge,
 	}
 
 #if defined(PVR_SYNC_PRIM_ALLOC_TRACE)
-	PVR_DPF((PVR_DBG_WARNING, "Allocated server sync prim [%p] fw=0x%08x" PVR_DBG_FILELINE_FMT,
-			 &psNewSync->sCommon, psNewSync->u.sServer.ui32FirmwareAddr PVR_DBG_FILELINE_ARG));
+	PVR_DPF((PVR_DBG_WARNING, "Allocated sync=server fw=0x%x [%p]" PVR_DBG_FILELINE_FMT,
+			 psNewSync->u.sServer.ui32FirmwareAddr, &psNewSync->sCommon PVR_DBG_FILELINE_ARG));
 #endif
 
 	psNewSync->eType = SYNC_PRIM_TYPE_SERVER;

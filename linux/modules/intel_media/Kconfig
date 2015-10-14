@@ -218,6 +218,20 @@ config SUPPORT_MIPI_ORISE8018B_DISPLAY
        help
          xxxxxx
 
+config SUPPORT_MIPI_ORISE9605A_DISPLAY
+       bool "Support Orise OTM9605A 540x960 MIPI interface Panel"
+       depends on DRM_MDFLD || DRM_CTP
+       default n
+       help
+         xxxxxx
+
+config SUPPORT_MIPI_RM68191_DISPLAY
+       bool "Support Orise RM68191 540x960 MIPI interface Panel"
+       depends on DRM_MDFLD || DRM_CTP
+       default n
+       help
+         xxxxxx
+
 config MDFD_VIDEO_ENCODE
 	bool "Support for Medfield Video Encode"
 	depends on DRM_MDFLD || DRM_CTP
@@ -306,6 +320,21 @@ config DRM_HANDSET_DEBUG
 
 endchoice
 
+config GFX_RGX_BVNC
+	string
+	depends on DRM_INTEL_HANDSET
+	prompt "IMG graphics driver BNVC specification"
+	help
+	    A build configuration parameter which must have the same value
+	    for the IMG kernel mode driver and the IMG user mode driver.
+	    The BVNC value will differ depending upon target (e.g.,
+	    Merrifield vs. Moorefield) and desired build configuration.
+	    Normally a value recommended by IMG is used.
+	    Examples as of 2013-12-06:
+	    - Merrifield - 1.14.4.4 - DDK1.2
+	    - Merrifield - 1.76.4.6 - DDK1.3
+	    - Moorefield - 1.72.4.12 - either DDK
+
 config MRFL_DISPLAY
 	tristate "Intel Merrifield Generic Framebuffer Driver"
 	depends on PCI && X86_MRFLD && !DRM_MDFLD && FB
@@ -323,6 +352,7 @@ config DRM_MRFLD
         select FB_CFB_FILLRECT
         select FB_CFB_IMAGEBLIT
         select DRM_KMS_HELPER
+        select GENERIC_ALLOCATOR
         help
           Choose this option if you have a Merrifield platform.
           If M is selected the module will be called mid_gfx.
@@ -382,3 +412,15 @@ config DRM_VXD_BYT
        select DRM_TTM
        help
          Choose this option if you want to enable VXD decoding for Baylake platform
+
+config MOOREFIELD
+	bool "Build option for the Moorefield platform"
+	depends on DRM_INTEL_HANDSET
+	default n
+	help
+	  For the GFX block of TNG/ANN, its power islands' power on/off sequences are:
+	  1. Power on:  SLC_LDO -> SLC -> Sidekick -> Rascal/Dust;
+	  2. Power off: Rascal/Dust -> Sidekick -> SLC -> SLC_LDO;
+	  So we should follow the sequence, and VED/VEC/VSP power islands just depend
+	  on the SLC power island.
+	  And it would distinguish the Display Class implementation.

@@ -4,11 +4,9 @@
 #include <linux/lnw_gpio.h>
 #include <linux/gpio.h>
 #include <linux/extcon/extcon-fsa9285.h>
-#include <linux/power/byt_ulpmc_battery.h>
 #include <linux/power/smb347-charger.h>
 #include <asm/intel-mid.h>
 #include <asm/intel_crystalcove_pwrsrc.h>
-
 #define OTG_MUX_GPIO	3
 #define OTG_XSD_GPIO	58
 
@@ -40,22 +38,26 @@ static struct i2c_board_info __initdata fsa9285_i2c_device = {
 	I2C_BOARD_INFO("fsa9285", 0x25),
 };
 
-static void *fsa9285_platform_data(void)
+void *fsa9285_platform_data(void)
 {
 	int ret = 0;
 
 	fsa_pdata.enable_vbus = crystal_cove_enable_vbus;
 	fsa_pdata.disable_vbus = crystal_cove_disable_vbus;
-#ifdef CONFIG_BYT_ULPMC_BATTERY
-	fsa_pdata.sdp_pre_setup = byt_ulpmc_suspend_sdp_charging;
-	fsa_pdata.sdp_post_setup = byt_ulpmc_reset_charger;
-#elif CONFIG_CHARGER_SMB347
-	fsa_pdata.sdp_pre_setup = smb347_disable_charger;
-	fsa_pdata.sdp_post_setup = smb347_enable_charger;
-#else
-	fsa_pdata.sdp_pre_setup = fsa_dummy_sdp_pre_setup;
-	fsa_pdata.sdp_post_setup = fsa_dummy_sdp_post_setup;
-#endif
+
+	if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR0) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR0) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR1) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR1)) {
+
+		/* Get SMB347 platform data for BYT-FFRD8 PR0/PR1 targets */
+		fsa_pdata.sdp_pre_setup = smb347_disable_charger;
+		fsa_pdata.sdp_post_setup = smb347_enable_charger;
+	} else {
+		/* Else consider dummy data */
+		fsa_pdata.sdp_pre_setup = fsa_dummy_sdp_pre_setup;
+		fsa_pdata.sdp_post_setup = fsa_dummy_sdp_post_setup;
+	}
 
 	ret = gpio_request(OTG_MUX_GPIO, "fsa-otg-mux");
 	if (ret) {
@@ -86,6 +88,7 @@ static void *fsa9285_platform_data(void)
 	return &fsa_pdata;
 }
 
+#ifdef CONFIG_BYT_ULPMC_BATTERY
 static int __init fsa9285_i2c_init(void)
 {
 	fsa9285_i2c_device.platform_data = fsa9285_platform_data();
@@ -93,4 +96,4 @@ static int __init fsa9285_i2c_init(void)
 	return i2c_register_board_info(3, &fsa9285_i2c_device, 1);
 }
 module_init(fsa9285_i2c_init);
-
+#endif

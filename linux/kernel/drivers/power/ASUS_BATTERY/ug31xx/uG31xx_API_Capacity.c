@@ -2953,6 +2953,9 @@ _cap_u8_ UpiGetOcvSoc(CapacityDataType *data, _cap_u16_ volt)
   FindOcvIdxVoltage(obj, OCV_TABLE_IDX_STAND_ALONE, volt);
   FindOcvRM(obj, OCV_TABLE_IDX_STAND_ALONE, volt);
   soc = (_cap_u8_)CalculateRsoc((_cap_u32_)obj->rm, obj->info->fcc);
+  #ifdef  UG31XX_SHELL_ALGORITHM
+  upi_free(obj);
+  #endif  ///< end of UG31XX_SHELL_ALGORITHM
   return (soc);
 }
 

@@ -53,10 +53,18 @@ enum POWER_ISLAND_STATE {
 };
 
 /* All Graphics Islands */
-#define	OSPM_GRAPHICS_ISLAND	(NC_PM_SSS_GFX_SLC | \
+#define	OSPM_GRAPHICS_ISLAND	NC_PM_SSS_GFX_RSCD
+
+#if 1
+#define	OSPM_SIDEKICK_ISLAND	NC_PM_SSS_GFX_SDKCK
+#define	OSPM_SLC_ISLAND		NC_PM_SSS_GFX_SLC
+#define	OSPM_SLC_LDO_ISLAND	NC_PM_SSS_GFX_SLC_LDO
+#else
+/* All SLC Islands */
+#define	OSPM_SLC_ISLAND	(NC_PM_SSS_GFX_SLC | \
 				NC_PM_SSS_GFX_SDKCK | \
-				NC_PM_SSS_GFX_RSCD | \
 				NC_PM_SSS_GFX_SLC_LDO)
+#endif
 
 /* All Display Islands */
 #define OSPM_DISPLAY_ISLAND	(OSPM_DISPLAY_A |\
@@ -130,13 +138,6 @@ bool is_island_on(u32 hw_island);
 /* Get Display island from the pipe */
 u32 pipe_to_island(u32 pipe);
 
-#undef OSPM_DEBUG_INFO
-#ifdef OSPM_DEBUG_INFO
-#define OSPM_DPF(...)	printk(KERN_ALERT __VA_ARGS__)
-#else
-#define OSPM_DPF(...)
-#endif
-
 /* FIXME: hkpatel */
 /*** LEGACY SUPPORT ****/
 /*** REMOVE ONCE CONVERTED ALL FUNCTIONS TO NEW ARCH */
@@ -159,8 +160,5 @@ void ospm_apm_power_down_topaz(struct drm_device *dev);
 void ospm_apm_power_down_vsp(struct drm_device *dev);
 int ospm_runtime_pm_allow(struct drm_device *dev);
 void ospm_runtime_pm_forbid(struct drm_device *dev);
-#ifdef CONFIG_GFX_RTPM
-void psb_ospm_post_power_down();
-#endif
 
 #endif		/* __INTEL_MEDIA_ISLAND_MANAGEMENT_H__ */

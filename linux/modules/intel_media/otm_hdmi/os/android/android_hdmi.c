@@ -89,9 +89,9 @@
 
 /* External state dependency */
 extern int hdmi_state;
- 
-extern void disable_diet(int disable);
 
+/* External default scaling mode dependency */
+extern int default_hdmi_scaling_mode;
 
 static const struct {
 	int width, height, htotal, vtotal, dclk, vrefr, vic, par;
@@ -817,8 +817,6 @@ static struct drm_display_mode
 		}
 	}
 
-	drm_mode_set_name(mode);
-
 	mode->flags |= (timings->mode_info_flags & PD_HSYNC_HIGH) ?
 		DRM_MODE_FLAG_PHSYNC : DRM_MODE_FLAG_NHSYNC;
 	mode->flags |= (timings->mode_info_flags & PD_VSYNC_HIGH) ?
@@ -829,6 +827,25 @@ static struct drm_display_mode
 		DRM_MODE_FLAG_PAR16_9 : DRM_MODE_FLAG_PAR4_3;
 
 	return mode;
+}
+
+/**
+ * helper function to check whether two clocks can fall into the same VIC.
+ *
+ * Returns: true if possible, false otherwise.
+ */
+static bool __android_check_clock_match(int target, int reference)
+{
+	/* check target clock is in range of 60Hz or 59.94 (reference * 1000/1001) with
+	 * (-0.5%, +0.5%) tolerance. Based on CEA spec, when determining whether two video timings
+	 * are identical, clock frequencey within (-0.5%, +0.5%) tolerance should be considered
+	 * as the same.
+	 */
+
+	if (target >= DIV_ROUND_UP(reference * 995, 1001) &&
+		target <= DIV_ROUND_UP(reference * 1005, 1000))
+		return true;
+	return false;
 }
 
 /**
@@ -843,7 +860,8 @@ static int android_hdmi_add_cea_edid_modes(void *context,
 {
 	hdmi_context_t *ctx = (hdmi_context_t *)context;
 	edid_info_t *edid_info;
-	struct drm_display_mode *newmode = NULL;
+	struct drm_display_mode *newmode = NULL, *mode_entry, *t;
+	unsigned int saved_flags;
 	int i = 0, ret_count = 0;
 
 	if (connector == NULL || ctx == NULL)
@@ -858,8 +876,41 @@ static int android_hdmi_add_cea_edid_modes(void *context,
 				&edid_info->timings[i], connector->dev);
 		if (!newmode)
 			continue;
+
+		/* add new mode to list */
+		drm_mode_set_name(newmode);
 		drm_mode_probed_add(connector, newmode);
 		ret_count++;
+	}
+
+	list_for_each_entry_safe(mode_entry, t, &connector->probed_modes, head) {
+		/* If DRM already correctly handled PAR, skip this mode_entry */
+		if ((mode_entry->flags & DRM_MODE_FLAG_PAR4_3) || (mode_entry->flags & DRM_MODE_FLAG_PAR16_9))
+			continue;
+
+		for (i = 0; i < edid_info->num_timings; i++) {
+			newmode = android_hdmi_get_drm_mode_from_pdt(
+					&edid_info->timings[i], connector->dev);
+			if (!newmode)
+				continue;
+
+			/* Clear PAR flag for comparison */
+			saved_flags = newmode->flags;
+			newmode->flags &= (~DRM_MODE_FLAG_PAR4_3) & (~DRM_MODE_FLAG_PAR16_9);
+
+			/* If same mode, then update PAR flag */
+			if (drm_mode_equal_no_clocks(newmode, mode_entry) &&
+					__android_check_clock_match(newmode->clock, mode_entry->clock)) {
+					if (saved_flags & DRM_MODE_FLAG_PAR4_3)
+						mode_entry->flags |= DRM_MODE_FLAG_PAR4_3;
+					else
+						mode_entry->flags |= DRM_MODE_FLAG_PAR16_9;
+					break;
+			}
+
+			/* restore flag */
+			newmode->flags = saved_flags;
+		}
 	}
 
 	return ret_count;
@@ -1174,26 +1225,6 @@ static void __android_hdmi_dump_crtc_mode(struct drm_display_mode *mode)
 	pr_debug("vtotal = %d\n", mode->vtotal);
 	pr_debug("clock = %d\n", mode->clock);
 	pr_debug("flags = 0x%x\n", mode->flags);
-}
-
-
-/**
- * helper function to check whether two clocks can fall into the same VIC.
- *
- * Returns: true if possible, false otherwise.
- */
-static bool __android_check_clock_match(int target, int reference)
-{
-	/* check target clock is in range of 60Hz or 59.94 (reference * 1000/1001) with
-	 * (-0.5%, +0.5%) tolerance. Based on CEA spec, when determining whether two video timings
-	 * are identical, clock frequencey within (-0.5%, +0.5%) tolerance should be considered
-	 * as the same.
-	 */
-
-	if (target >= DIV_ROUND_UP(reference * 995, 1001) &&
-		target <= DIV_ROUND_UP(reference * 1005, 1000))
-		return true;
-	return false;
 }
 
 /**
@@ -1608,9 +1639,11 @@ void android_hdmi_suspend_display(struct drm_device *dev)
 
 	otm_hdmi_power_rails_off();
 
+	/* disable hotplug detection */
+	otm_hdmi_enable_hpd(false);
+
 	return;
 }
-
 
 /**
  * Prepare HDMI EDID-like data and copy it to the given buffer
@@ -1722,6 +1755,9 @@ void android_hdmi_resume_display(struct drm_device *dev)
 		/* power off rails, HPD will continue to work */
 		otm_hdmi_power_rails_off();
 	}
+
+	/* enable hotplug detection */
+	otm_hdmi_enable_hpd(true);
 }
 
 /**
@@ -2019,7 +2055,7 @@ bool android_enable_hdmi_hdcp(struct drm_device *dev)
 		pr_debug("hdcp enabled");
 		return true;
 	} else {
-		pr_err("hdcp could not be enabled");
+		pr_debug("hdcp could not be enabled");
 		return false;
 	}
 #endif
@@ -2199,7 +2235,6 @@ android_hdmi_detect(struct drm_connector *connector,
 			hdmi_state = 1;
 			first_boot = false;
 		}
-		disable_diet(1);
 
 		if (prev_connection_status == connector_status_connected)
 			return connector_status_connected;
@@ -2233,7 +2268,7 @@ android_hdmi_detect(struct drm_connector *connector,
 
 		/* Always turn off power rails when hdmi is disconnected */
 		otm_hdmi_power_rails_off();
-		disable_diet(0);
+
 		prev_connection_status = connector_status_disconnected;
 
 		return connector_status_disconnected;
@@ -2389,7 +2424,7 @@ void android_hdmi_connector_dpms(struct drm_connector *connector, int mode)
 	bool hdmi_audio_busy = false;
 	u32 dspcntr_val;
 
-#ifdef CONFIG_PM_RUNTIME
+#if (defined CONFIG_PM_RUNTIME) && (!defined MERRIFIELD)
 	bool panel_on = false, panel_on2 = false;
 	struct mdfld_dsi_config **dsi_configs;
 #endif
@@ -2426,7 +2461,7 @@ void android_hdmi_connector_dpms(struct drm_connector *connector, int mode)
 			DISP_PLANEB_STATUS = DISPLAY_PLANE_ENABLE;
 	}
 
-#ifdef CONFIG_PM_RUNTIME
+#if (defined CONFIG_PM_RUNTIME) && (!defined MERRIFIELD)
 	dsi_configs = dev_priv->dsi_configs;
 
 	if (dsi_configs[0])
@@ -2630,39 +2665,38 @@ void android_hdmi_driver_init(struct drm_device *dev,
 		return;
 
 	psb_intel_output->mode_dev = mode_dev;
+	psb_intel_output->type = INTEL_OUTPUT_HDMI;
+	psb_intel_output->dev_priv = (struct drm_psb_private *)hdmi_priv;
+
 	connector = &psb_intel_output->base;
 	encoder = &psb_intel_output->enc;
+
 	drm_connector_init(dev, &psb_intel_output->base,
 				&android_hdmi_connector_funcs,
 				DRM_MODE_CONNECTOR_DVID);
-
-	drm_encoder_init(dev, &psb_intel_output->enc, &android_hdmi_enc_funcs,
-			 DRM_MODE_ENCODER_TMDS);
-
-	drm_mode_connector_attach_encoder(&psb_intel_output->base,
-					  &psb_intel_output->enc);
-	psb_intel_output->type = INTEL_OUTPUT_HDMI;
-
-	psb_intel_output->dev_priv = (struct drm_psb_private *)hdmi_priv;
-
-	drm_encoder_helper_add(encoder, &android_hdmi_enc_helper_funcs);
 	drm_connector_helper_add(connector,
 				 &android_hdmi_connector_helper_funcs);
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0))
 	drm_connector_attach_property(connector,
 					dev->mode_config.scaling_mode_property,
-					DRM_MODE_SCALE_CENTER);
+					default_hdmi_scaling_mode);
 #else
         drm_object_attach_property(&connector->base,
                                         dev->mode_config.scaling_mode_property,
-                                        DRM_MODE_SCALE_CENTER);
+					default_hdmi_scaling_mode);
 #endif
 	connector->display_info.subpixel_order = SubPixelHorizontalRGB;
 	connector->interlace_allowed = false;
 	connector->doublescan_allowed = false;
-
 	/* Disable polling */
 	connector->polled = 0;
+
+	drm_encoder_init(dev, &psb_intel_output->enc, &android_hdmi_enc_funcs,
+			 DRM_MODE_ENCODER_TMDS);
+	drm_encoder_helper_add(encoder, &android_hdmi_enc_helper_funcs);
+
+	drm_mode_connector_attach_encoder(&psb_intel_output->base,
+					  &psb_intel_output->enc);
 
 #ifdef OTM_HDMI_HDCP_ENABLE
 	otm_hdmi_hdcp_init(hdmi_priv->context, &hdmi_ddc_read_write);
@@ -2678,6 +2712,9 @@ void android_hdmi_driver_init(struct drm_device *dev,
 	power_on = otm_hdmi_power_rails_on();
 	if (!power_on)
 		pr_err("%s: Unable to power on HDMI rails\n", __func__);
+
+	/* Enable hotplug detection */
+	otm_hdmi_enable_hpd(true);
 
 	pr_info("%s: Done with driver init\n", __func__);
 	pr_info("Exit %s\n", __func__);

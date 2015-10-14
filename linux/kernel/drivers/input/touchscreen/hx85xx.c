@@ -64,6 +64,29 @@
 	#include <asm/uaccess.h>
 	#include <linux/buffer_head.h>
 	#include <linux/kthread.h>
+	#include <linux/version.h>
+	#include <linux/usb/penwell_otg.h>
+	//#include "../../base/base.h"
+
+//=============================================================================================================
+//
+//	Segment : Kernel Define Options 
+//
+//=============================================================================================================
+	#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 8, 0))
+	#if defined(MODULE) || defined(CONFIG_HOTPLUG)
+	#define __devexit_p(x) x
+	#else
+	#define __devexit_p(x) NULL
+	#endif
+	/* Used for HOTPLUG */
+	#define __devinit        __section(.devinit.text) __cold notrace
+	#define __devinitdata    __section(.devinit.data)
+	#define __devinitconst   __section(.devinit.rodata)
+	#define __devexit        __section(.devexit.text) __exitused __cold notrace
+	#define __devexitdata    __section(.devexit.data)
+	#define __devexitconst   __section(.devexit.rodata)
+	#endif
 	
 //=============================================================================================================
 //
@@ -86,7 +109,14 @@
 	//#define HX_PORTING_DEB_MSG								// Support Driver Porting Message			,default is close
 	//#define HX_IREF_MODIFY										// Support IREF Modify Function				,default is close
 	#define HX_FW_UPDATE_BY_I_FILE						// Support Update FW by i file				,default is close
+	#define HX_TP_SYS_GLOVE										// Support Sys : Glove mode			,default is close
+	#define HX_TP_SYS_TP_ID										// Support Sys : TP ID Read			,default is close
 	//TODO END
+
+	//ASUS TODO START : Select the function you need!
+	//------------------------------------------// Support Function Enable :
+	#define ASUS_TOUCH_PROXIMITY_NODE								//<ASUS_Proximity+>
+	//ASUS TODO END
 
 	//------------------------------------------// Support Different IC. Select one at one time.
 	#define HX_85XX_A_SERIES_PWON		1
@@ -106,6 +136,8 @@
 		#define HX_TP_SYS_RESET										// Support Sys : HW Reset function			,default is open
 		//#define ENABLE_CHIP_STATUS_MONITOR			// Support Polling ic status            ,default is close
 	#endif
+	
+	//#define SMART_RESUME
 
 	//------------------------------------------// Support FW Bin checksum method,mapping with Hitouch *.bin
 	#define HX_TP_BIN_CHECKSUM_SW		1
@@ -147,7 +179,7 @@
 
 	//------------------------------------------// Virtual key
 	#define HX_VKEY_0   KEY_BACK
-	#define HX_VKEY_1   KEY_HOMEPAGE
+	#define HX_VKEY_1   KEY_HOME
 	#define HX_VKEY_2   KEY_MENU
 	#define HX_VKEY_3   104
 	#define HX_KEY_ARRAY    {HX_VKEY_0, HX_VKEY_1, HX_VKEY_2, HX_VKEY_3}
@@ -216,7 +248,7 @@
 		// For Firmare Update 
 		struct miscdevice firmware;
 		struct attribute_group attrs;
-		struct switch_dev touch_sdev;
+		struct switch_dev touch_sdev;		//<ASUS_SDev+>
 		int abs_x_max;
 		int abs_y_max;
 		int rst_gpio;
@@ -311,11 +343,22 @@
 	static int himax_hang_shaking(void); 																			// Hand shaking function
 	static int himax_ts_poweron(struct himax_ts_data *ts_modify);							// Power on
 	static int himax_touch_sysfs_init(void);																	// Sys filesystem initial
-	static void himax_touch_sysfs_deinit(void);																// Sys filesystem de-initial
+	static void himax_touch_sysfs_deinit(void);									// Sys filesystem de-initial
 
+	static uint8_t rFE96_setting[8] = { 0xB4, 0x64, 0x1F, 0x1F, 0x3C, 0x05, 0x3C, 0x05};	//add by josh for init self_test FE96
+	static int self_test_delay_time = 2;							//add by josh for init self_test delay time(s)
+
+	static int cable_status	= -1; //josh add for USB time issue (init : -1)
+
+	extern int query_cable_status(void);
+
+	int himax_cable_status(int status);
 	#ifdef HX_RST_PIN_FUNC    
 	void himax_HW_reset(void);
 	#endif
+
+	extern int Read_PROJ_ID(void);
+	extern int Read_TP_ID(void);
 	
 	//----[HX_LOADIN_CONFIG]--------------------------------------------------------------------------------start
 		#ifdef HX_LOADIN_CONFIG
@@ -357,7 +400,7 @@
 		unsigned char c34[] 	= { 0xD3, 0x06, 0x01};
 		unsigned char c35[] 	= { 0xD5, 0xA5, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 		
-    unsigned char c36[] 	= { 0x40,0x01, 0x5A
+		unsigned char c36[] 	= { 0x40,0x01, 0x5A
     												, 0x77, 0x02, 0xF0, 0x13, 0x00, 0x00
     												, 0x56, 0x10, 0x14, 0x18, 0x06, 0x10, 0x0C, 0x0F, 0x0F, 0x0F, 0x52, 0x34, 0x80, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};//start:0x00 ,size 31
 	
@@ -398,11 +441,22 @@
 		static bool i_Needupdate = true;
 		static unsigned char i_isTP_Updated = 0;
 		#ifdef CONFIG_TOUCHSCREEN_HIMAX_HX85XX_A502CG
-		static unsigned char i_CTPM_FW[]=
+		static unsigned char *i_CTPM_FW;
+		static unsigned char i_CTPM_FW_GIS[]=
 		{
-			//#include "hx85xx_GIS_A502CG_ASUS_02_2014-03-18_1054.i"
-			//#include "hx85xx_20140319_ASUS_A502_GIS_D0501_00_01.i"
-			#include "hx85xx_20140325_ASUS_A502_GIS_D0501_00_03.i"
+			#include "hx85xx_20140512_ASUS_A502_GIS_D0503_00_08.i"
+		};
+		static unsigned char i_CTPM_FW_Ofilm[]=
+		{
+			#include "hx85xx_20140512_ASUS_A502_OFILM_D0503_01_08.i"
+		};
+		static unsigned char i_CTPM_FW_GIS_New[]=
+		{
+			#include "hx85xx_20140926_ASUS_A502_GIS_D0507_02_08.i"
+		};
+		static unsigned char i_CTPM_FW_Toptouch[]=
+		{
+			#include "hx85xx_20140926_ASUS_A502_TOP_D0507_03_08.i"
 		};
 		#else
 		static unsigned char i_CTPM_FW[]=
@@ -461,6 +515,7 @@
 		#ifdef HX_TP_SYS_SELF_TEST 
 		static ssize_t himax_chip_self_test_function(struct device *dev, struct device_attribute *attr, char *buf); 
 		static int himax_chip_self_test(void);
+		static ssize_t himax_chip_self_test_setting(struct device *dev,struct device_attribute *attr, const char *buf, size_t count);
 		#endif 
 	//----[HX_TP_SYS_SELF_TEST]-------------------------------------------------------------------------------end
 	
@@ -556,6 +611,40 @@
 		#endif
 	//----[HX_TP_SYS_HITOUCH]---------------------------------------------------------------------------------end
 
+	//----[HX_TP_SYS_GLOVE]---------------------------------------------------------------------------------start
+		#ifdef HX_TP_SYS_GLOVE
+		static int	glove_mode_support		= 0;
+		#endif
+	//----[HX_TP_SYS_GLOVE]-----------------------------------------------------------------------------------end
+
+	//----[ASUS_Proximity]----------------------------------------------------------------------------------start
+		#ifdef ASUS_TOUCH_PROXIMITY_NODE
+		#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+		static ssize_t tp_proximity_proc_read(struct file *file, char __user *buf, size_t count, loff_t *ppos);
+		static ssize_t tp_proximity_proc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos);
+		#else
+		static int tp_proximity_proc_read(char *buf, char **start, off_t offset, int request, int *eof, void *data);
+		static int tp_proximity_proc_write(struct file *file, const char *buffer, unsigned long count, void *data);
+		#endif
+
+		static unsigned int touch_proximity_at_phone = 0;
+
+		#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+		static const struct file_operations tp_proximity_proc_fops = {
+			.owner = THIS_MODULE,
+			.read = tp_proximity_proc_read,
+			.write = tp_proximity_proc_write,
+		};
+		#endif
+		#endif
+	//----[ASUS_Proximity]------------------------------------------------------------------------------------end
+
+	//----[SMART_RESUME]---------------------------------------------------------------------------------start
+		#ifdef SMART_RESUME
+		static int	dclick_mode_support		= 0;
+		#endif
+	//----[SMART_RESUME]-----------------------------------------------------------------------------------end
+
 //=============================================================================================================
 //
 //	Segment : Himax Normal Function
@@ -587,9 +676,9 @@
 			}
 			 
 			if( i2c_himax_read(ts_modify->client, 0x31, data, 3, DEFAULT_RETRY_CNT) < 0)
-            {
-                return ;
-            }
+			{
+				return ;
+			}
 		
 			if((data[0] == 0x85 && data[1] == 0x28) || (cmd[0] == 0x04 && cmd[1] == 0x85 && (cmd[2] == 0x26 || cmd[2] == 0x27 || cmd[2] == 0x28)))
 			{
@@ -676,7 +765,33 @@
 			#endif
 	
 			printk(KERN_INFO "[himax] %s: TS suspend\n", __func__);
-			
+
+#ifdef SMART_RESUME
+			if (dclick_mode_support == 1)
+			{
+/*
+				wake_lock(&ts_modify->wake_lock);
+
+				//if( i2c_himax_read(ts_modify->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+				//{
+				//	printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+				//	return 0;
+				//}            
+				//buf[0] = buf[0] | 0x10;
+				buf[0] = 0x10;
+         
+				printk(KERN_INFO "[himax] %s: enter , write 0x90:0x10\n", __func__);
+				if( i2c_himax_write(ts_modify->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+				{
+					printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+					return 0;
+				}
+				msleep(120);
+
+				wake_unlock(&ts_modify->wake_lock);
+*/
+			} else {		
+#endif			
 			//Wakelock Protect Start
 			wake_lock(&ts_modify->wake_lock);
 			//Wakelock Protect End
@@ -732,7 +847,9 @@
 			{
 				enable_irq(client->irq);
 			}
-
+#ifdef SMART_RESUME
+			}
+#endif
 			is_suspend = true;
 
 			return 0;
@@ -750,7 +867,48 @@
 				printk(KERN_INFO "[himax] %s TP never enter suspend , reject the resume action\n",__func__);
 				return 0;
 			}			
+#ifdef SMART_RESUME
+			if (dclick_mode_support == 1)
+			{
+/*
+				wake_lock(&ts_modify->wake_lock);
 
+				buf[0] = HX_CMD_TSSOFF;
+				ret = i2c_himax_master_write(ts_modify->client, buf, 1, DEFAULT_RETRY_CNT);
+				if(ret < 0) 
+				{
+					printk(KERN_ERR "[himax] %s: I2C access failed addr = 0x%x\n", __func__, ts_modify->client->addr);
+				} 
+				msleep(200);
+
+				//if( i2c_himax_read(ts_modify->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+				//{
+				//	printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+				//	return 0;
+				//}            
+				//buf[0] = buf[0] & 0xEF;
+				buf[0] = 0x00;
+            
+				printk(KERN_INFO "[himax] %s: enter , write 0x90:0x00\n", __func__);
+				if( i2c_himax_write(ts_modify->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+				{
+					printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+					return 0;
+				}
+				msleep(120);
+			
+				buf[0] = HX_CMD_TSSON;
+				ret = i2c_himax_master_write(ts_modify->client, buf, 1, DEFAULT_RETRY_CNT);
+				if(ret < 0) 
+				{
+					printk(KERN_ERR "[himax] %s: I2C access failed addr = 0x%x\n", __func__, ts_modify->client->addr);
+				} 
+				msleep(120);
+
+				wake_unlock(&ts_modify->wake_lock);
+*/
+			} else {		
+#endif	
 			//Wakelock Protect Start
 			wake_lock(&ts_modify->wake_lock);
 			//Wakelock Protect End
@@ -804,7 +962,9 @@
 				ESD_COUNTER = 0;
 				#endif
 			//----[HX_ESD_WORKAROUND]-----------------------------------------------------------------------------end
-			
+#ifdef SMART_RESUME
+			}
+#endif			
 			return 0;
 		}
 		
@@ -813,14 +973,119 @@
 			static void himax_ts_early_suspend(struct early_suspend *h)
 			{
 				struct himax_ts_data *ts;
+				uint8_t buf[2] = {0};
+
 				ts = container_of(h, struct himax_ts_data, early_suspend);
+#ifdef SMART_RESUME
+				if (dclick_mode_support == 1)
+				{
+					wake_lock(&ts->wake_lock);
+
+					//if( i2c_himax_read(ts->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+					//{
+					//	printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+					//	return 0;
+					//}            
+					//buf[0] = buf[0] | 0x10;
+					buf[0] = 0x10;
+         
+					printk(KERN_INFO "[himax] %s: enter , write 0x90:0x10\n", __func__);
+					if( i2c_himax_write(ts->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+					{
+						printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+						return 0;
+					}
+					msleep(120);
+
+					wake_unlock(&ts->wake_lock);
+				}
+#endif	
 				himax_ts_suspend(ts->client, PMSG_SUSPEND);
 			}
 		
 			static void himax_ts_late_resume(struct early_suspend *h)
 			{
 				struct himax_ts_data *ts;
+				uint8_t buf[2] = {0};
+				int ret = 0;
+
 				ts = container_of(h, struct himax_ts_data, early_suspend);
+#ifdef SMART_RESUME
+				if (dclick_mode_support == 1)
+				{
+					wake_lock(&ts->wake_lock);
+
+					buf[0] = HX_CMD_TSSOFF;
+					ret = i2c_himax_master_write(ts->client, buf, 1, DEFAULT_RETRY_CNT);
+					if(ret < 0) 
+					{
+						printk(KERN_ERR "[himax] %s: I2C access failed addr = 0x%x\n", __func__, ts->client->addr);
+					} 
+					msleep(200);
+
+					//if( i2c_himax_read(ts->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+					//{
+					//	printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+					//	return 0;
+					//}            
+					//buf[0] = buf[0] & 0xEF;
+					buf[0] = 0x00;
+            
+					printk(KERN_INFO "[himax] %s: enter , write 0x90:0x00\n", __func__);
+					if( i2c_himax_write(ts->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+					{
+						printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+						return 0;
+					}
+					msleep(120);
+			
+					buf[0] = HX_CMD_TSSON;
+					ret = i2c_himax_master_write(ts->client, buf, 1, DEFAULT_RETRY_CNT);
+					if(ret < 0) 
+					{
+						printk(KERN_ERR "[himax] %s: I2C access failed addr = 0x%x\n", __func__, ts->client->addr);
+					} 
+					msleep(120);
+
+					wake_unlock(&ts->wake_lock);
+				} else {
+					wake_lock(&ts->wake_lock);
+
+					buf[0] = HX_CMD_TSSOFF;
+					ret = i2c_himax_master_write(ts->client, buf, 1, DEFAULT_RETRY_CNT);
+					if(ret < 0) 
+					{
+						printk(KERN_ERR "[himax] %s: I2C access failed addr = 0x%x\n", __func__, ts->client->addr);
+					} 
+					msleep(200);
+
+					//if( i2c_himax_read(ts->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+					//{
+					//	printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+					//	return 0;
+					//}            
+					//buf[0] = buf[0] & 0xEF;
+					buf[0] = 0x00;
+            
+					printk(KERN_INFO "[himax] %s: enter , write 0x90:0x00\n", __func__);
+					if( i2c_himax_write(ts->client, 0x90 ,&buf[0], 1, DEFAULT_RETRY_CNT) < 0)
+					{
+						printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+						return 0;
+					}
+					msleep(120);
+			
+					buf[0] = HX_CMD_TSSON;
+					ret = i2c_himax_master_write(ts->client, buf, 1, DEFAULT_RETRY_CNT);
+					if(ret < 0) 
+					{
+						printk(KERN_ERR "[himax] %s: I2C access failed addr = 0x%x\n", __func__, ts->client->addr);
+					} 
+					msleep(120);
+
+					wake_unlock(&ts->wake_lock);
+				}		
+#endif	
 				himax_ts_resume(ts->client);
 			}
 			#endif
@@ -1268,7 +1533,7 @@
 			printk("Himax i2c_checksum_38 = %d \n",i2c_CheckSum);
 			//------------------------------------------------------------------config bank PART c38 END
 			
-		  //------------------------------------------------------------------config bank PART c39 START
+			//------------------------------------------------------------------config bank PART c39 START
 			data[0] = 0xE1;
 			data[1] = 0x15;
 			if((i2c_himax_master_write(touch_i2c, &data[0],2,3))<0)
@@ -1306,7 +1571,7 @@
 			printk("Himax i2c_checksum_39 = %d \n",i2c_CheckSum);
 			//------------------------------------------------------------------config bank PART c39 END
 			
-		  //------------------------------------------------------------------config bank PART c40 START
+			//------------------------------------------------------------------config bank PART c40 START
 			data[0] = 0xE1;
 			data[1] = 0x15;
 			if((i2c_himax_master_write(touch_i2c, &data[0],2,3))<0)
@@ -1633,7 +1898,7 @@
 			printk("Himax i2c_checksum_AC = %d , %d \n",data[1],data[2]);
 			
 			int ret = i2c_himax_read(touch_i2c, 0xAB, buf0, 2, DEFAULT_RETRY_CNT);
-		  if(ret < 0)
+			if(ret < 0)
 			{
 				printk(KERN_ERR "[Himax]:i2c_himax_read 0xDA failed line: %d \n",__LINE__);
 				goto HimaxErr;
@@ -2546,7 +2811,7 @@
 			{
 				printk("[Himax]:himax_chip_reset_function ++ \n");
 				
-				if(private_ts->retry_time <= 10)
+				//if(private_ts->retry_time <= 10)
 				{
 					//Wakelock Protect start
 					wake_lock(&private_ts->wake_lock);
@@ -2590,8 +2855,8 @@
 						enable_irq(private_ts->client->irq);
 					}
 				}
-				private_ts->retry_time ++;
-				printk("[Himax]:himax_chip_reset_function retry_time =%d --\n",private_ts->retry_time);
+				//private_ts->retry_time ++;
+				//printk("[Himax]:himax_chip_reset_function retry_time =%d --\n",private_ts->retry_time);
 			}
 			#endif
 		//----[ENABLE_CHIP_RESET_MACHINE]-----------------------------------------------------------------------end
@@ -3280,12 +3545,32 @@
 		int fts_ctpm_fw_upgrade_with_i_file(void)
 		{
 			unsigned char* ImageBuffer = i_CTPM_FW;
-			int fullFileLength = sizeof(i_CTPM_FW); //Paul Check
+			//int fullFileLength = sizeof(i_CTPM_FW); //Paul Check
+			int fullFileLength = 32768;
 			
 			int i, j;
 			uint8_t cmd[5], last_byte, prePage;
 			int FileLength;
 			uint8_t checksumResult = 0;
+
+			#ifdef CONFIG_TOUCHSCREEN_HIMAX_HX85XX_A502CG
+			if (Read_TP_ID() == 0 && sizeof(i_CTPM_FW_GIS) != 0)		// GIS
+			{
+				fullFileLength = sizeof(i_CTPM_FW_GIS);
+			}
+			else if (Read_TP_ID() == 1 && sizeof(i_CTPM_FW_Ofilm) != 0)	// Ofilm
+			{
+				fullFileLength = sizeof(i_CTPM_FW_Ofilm);
+			}
+			else if (Read_TP_ID() == 2 && sizeof(i_CTPM_FW_GIS_New) != 0)	// GIS New
+			{
+				fullFileLength = sizeof(i_CTPM_FW_GIS_New);
+			}
+			else if (Read_TP_ID() == 3 && sizeof(i_CTPM_FW_Toptouch) != 0)	// Toptouch
+			{
+				fullFileLength = sizeof(i_CTPM_FW_Toptouch);
+			}
+			#endif
 			
 			//Try 3 Times
 			for (j = 0; j < 3; j++) 
@@ -3451,16 +3736,13 @@
 		
 		static bool i_Check_FW_Version()
 		{
+			printk(KERN_ERR "Before TP upgrade\n");
 			himax_read_FW_ver(false);
 
-			printk("FW_VER_MAJ_buff in flash : %d \n",FW_VER_MAJ_buff[0]);
-			printk("FW_VER_MIN_buff in flash : %d \n",FW_VER_MIN_buff[0]);
-			printk("CFG_VER_MAJ_buff in flash : %d \n",CFG_VER_MAJ_buff[(CFG_VER_MAJ_FLASH_LENG - 1)]);
-			printk("CFG_VER_MIN_buff in flash : %d \n",CFG_VER_MIN_buff[(CFG_VER_MIN_FLASH_LENG - 1)]);
-			printk("FW_VER_MAJ_buff in Image : %d \n",i_CTPM_FW[FW_VER_MAJ_FLASH_ADDR]);
-			printk("FW_VER_MIN_buff in Image : %d \n",i_CTPM_FW[FW_VER_MIN_FLASH_ADDR]);
-			printk("CFG_VER_MAJ_buff in Image : %d \n",i_CTPM_FW[CFG_VER_MAJ_FLASH_ADDR + (CFG_VER_MAJ_FLASH_LENG - 1)]);
-			printk("CFG_VER_MIN_buff in Image : %d \n",i_CTPM_FW[CFG_VER_MIN_FLASH_ADDR + (CFG_VER_MIN_FLASH_LENG - 1)]);
+			printk("FW and Config in Image : D0%d0%d_0%d_0%d\n",i_CTPM_FW[FW_VER_MAJ_FLASH_ADDR] ,i_CTPM_FW[FW_VER_MIN_FLASH_ADDR] 
+										,i_CTPM_FW[CFG_VER_MAJ_FLASH_ADDR + (CFG_VER_MAJ_FLASH_LENG - 1)] 
+										,i_CTPM_FW[CFG_VER_MIN_FLASH_ADDR + (CFG_VER_MIN_FLASH_LENG - 1)]);
+
 
 			//TODO modify the condition by your project 
 			//Here check fw_ver_maj, fw_ver_min, cfg_ver_maj, cfg_ver_min 
@@ -3487,9 +3769,29 @@
 		static int i_update_func(void)
 		{
 			unsigned char* ImageBuffer = i_CTPM_FW;
-    	int fullFileLength = sizeof(i_CTPM_FW); 
+			//int fullFileLength = sizeof(i_CTPM_FW);
+			int fullFileLength = 32768; 
+
+			#ifdef CONFIG_TOUCHSCREEN_HIMAX_HX85XX_A502CG
+			if (Read_TP_ID() == 0 && sizeof(i_CTPM_FW_GIS) != 0)		// GIS
+			{
+				fullFileLength = sizeof(i_CTPM_FW_GIS);
+			}
+			else if (Read_TP_ID() == 1 && sizeof(i_CTPM_FW_Ofilm) != 0)	// Ofilm
+			{
+				fullFileLength = sizeof(i_CTPM_FW_Ofilm);
+			}
+			else if (Read_TP_ID() == 2 && sizeof(i_CTPM_FW_GIS_New) != 0)	// GIS New
+			{
+				fullFileLength = sizeof(i_CTPM_FW_GIS_New);
+			}
+			else if (Read_TP_ID() == 3 && sizeof(i_CTPM_FW_Toptouch) != 0)	// Toptouch
+			{
+				fullFileLength = sizeof(i_CTPM_FW_Toptouch);
+			}
+			#endif
     	
-    	if (i_Check_FW_Version() > 0 )
+    			if (i_Check_FW_Version() > 0 )
 			{		 
 				//disable_irq(private_ts->client->irq);
 				if(fts_ctpm_fw_upgrade_with_i_file() == 0)
@@ -3516,9 +3818,9 @@
 					else
 						printk(KERN_ERR "TP upgrade OK, line: %d\n", __LINE__);
 					
-				#ifdef HX_RST_PIN_FUNC
-					himax_HW_reset();
-				#endif
+					#ifdef HX_RST_PIN_FUNC
+						himax_HW_reset();
+					#endif
 			
 					//msleep(50);
 					//himax_ts_poweron(private_ts); 
@@ -3526,6 +3828,8 @@
 					//enable_irq(private_ts->client->irq);
 				}
 			}
+			printk(KERN_ERR "After TP upgrade\n");
+			himax_read_FW_ver(false);
 			return 0;
 		}
 		
@@ -4059,10 +4363,10 @@
 			else if(debug_level_cmd == 'v')
 			{
 				count += sprintf(buf + count, "FW_VER_MAJ_buff = ");
-                count += sprintf(buf + count, "0x%2.2X \n",FW_VER_MAJ_buff[0]);
+				count += sprintf(buf + count, "0x%2.2X \n",FW_VER_MAJ_buff[0]);
 
 				count += sprintf(buf + count, "FW_VER_MIN_buff = ");
-                count += sprintf(buf + count, "0x%2.2X \n",FW_VER_MIN_buff[0]);
+				count += sprintf(buf + count, "0x%2.2X \n",FW_VER_MIN_buff[0]);
 
 				count += sprintf(buf + count, "CFG_VER_MAJ_buff = ");
 				for( i=0 ; i<12 ; i++)
@@ -4072,10 +4376,10 @@
 				count += sprintf(buf + count, "\n");
 
 				count += sprintf(buf + count, "CFG_VER_MIN_buff = ");
-                for( i=0 ; i<12 ; i++)
-                {
-                    count += sprintf(buf + count, "0x%2.2X ",CFG_VER_MIN_buff[i]);
-                }
+				for( i=0 ; i<12 ; i++)
+				{
+					count += sprintf(buf + count, "0x%2.2X ",CFG_VER_MIN_buff[i]);
+				}
 				count += sprintf(buf + count, "\n");
 			}
 			else if(debug_level_cmd == 'd')
@@ -5803,14 +6107,14 @@
 				msleep(10);
 				
 				//-->Modify the initial value of self_test.
-				cmdbuf[0] = 0xB4; 
-				cmdbuf[1] = 0x64; 
-				cmdbuf[2] = 0x3F; 
-				cmdbuf[3] = 0x3F; 
-				cmdbuf[4] = 0x3C; 
-				cmdbuf[5] = 0x00; 
-				cmdbuf[6] = 0x3C; 
-				cmdbuf[7] = 0x00; 
+				cmdbuf[0] = rFE96_setting[0]; 
+				cmdbuf[1] = rFE96_setting[1]; 
+				cmdbuf[2] = rFE96_setting[2]; 
+				cmdbuf[3] = rFE96_setting[3];
+				cmdbuf[4] = rFE96_setting[4]; 
+				cmdbuf[5] = rFE96_setting[5]; 
+				cmdbuf[6] = rFE96_setting[6]; 
+				cmdbuf[7] = rFE96_setting[7]; 
 				i2c_himax_write(private_ts->client, 0x40,&cmdbuf[0], 8, DEFAULT_RETRY_CNT);
 				msleep(10);
 				
@@ -5853,8 +6157,8 @@
 				
 				//Step 6 : Sensor On
 				i2c_himax_write(private_ts->client, 0x83,&cmdbuf[0], 0, DEFAULT_RETRY_CNT);
-				
-				mdelay(2000);
+	
+				mdelay(self_test_delay_time * 1000);
 				
 				//Step 7 : Sensor Off
 				i2c_himax_write(private_ts->client, 0x82,&cmdbuf[0], 0, DEFAULT_RETRY_CNT);
@@ -5906,9 +6210,75 @@
 				himax_ts_poweron(private_ts); 
 			}
 			return pf_value;
+		}
+
+		//add by josh setting self_test config
+		/*
+		 * time : t:x12 (12s)
+		 * fe96 : w:x96:x03:x02......
+		 */
+		static ssize_t himax_chip_self_test_setting(struct device *dev,struct device_attribute *attr, const char *buf, size_t count)
+		{
+			char buf_tmp[6], length = 0;
+			uint8_t veriLen = 0;
+			uint8_t write_da[100];	
+			unsigned long result = 0;
+			static uint8_t himax_command = 0;
+	
+			memset(buf_tmp, 0x0, sizeof(buf_tmp));
+			memset(write_da, 0x0, sizeof(write_da));
+			if (buf[0] == 't' && buf[1] == ':' && buf[2] == 'x')
+			{
+				if(buf[3] > 47 && buf[3] < 58 && buf[4] > 47 && buf[4] < 58)
+				{
+					self_test_delay_time = ( buf[3] - 48 ) * 10 + buf[4] - 48;
+					printk(KERN_INFO "[Himax]: self_test_delay_time = %d\n", self_test_delay_time);
+				}
+				return count;
+			}
+	
+			if (buf[0] == 'w' && buf[1] == ':')
+			{
+				if (buf[2] == 'x')
+				{
+					uint8_t loop_i;
+					uint16_t base = 5;
+					memcpy(buf_tmp, buf + 3, 2);
+					if (!strict_strtoul(buf_tmp, 16, &result))
+						himax_command = result;
+					for (loop_i = 0; loop_i < 100; loop_i++)
+					{
+						if (buf[base] == '\n')
+						{
+							if (buf[0] == 'w')
+								printk(KERN_INFO "CMD: %x, %x, %d\n", himax_command, write_da[0], length);
+							for (veriLen = 0; veriLen < length; veriLen++)
+							{
+								printk(KERN_INFO "%x ", *((&write_da[0])+veriLen));
+								rFE96_setting[veriLen] = *((&write_da[0])+veriLen);
+								printk(KERN_INFO "[Himax]: rFE96_setting[%d] = %x \n",veriLen ,rFE96_setting[veriLen]);
+							}
+
+							printk(KERN_INFO "\n");
+							return count;
+						}
+						if (buf[base + 1] == 'x')
+						{
+							buf_tmp[4] = '\n';
+							buf_tmp[5] = '\0';
+							memcpy(buf_tmp, buf + base + 2, 2);
+							if (!strict_strtoul(buf_tmp, 16, &result))
+								write_da[loop_i] = result;
+							length++;
+						}
+						base += 4;
+					}
+				}
+			}
+			return count;
 		} 
 		
-		static DEVICE_ATTR(tp_self_test, (S_IWUSR|S_IRUGO), himax_chip_self_test_function, NULL);
+		static DEVICE_ATTR(tp_self_test, (S_IWUSR|S_IRUGO), himax_chip_self_test_function, himax_chip_self_test_setting);
 		#endif
 	//----[HX_TP_SYS_SELF_TEST]-------------------------------------------------------------------------------end
 
@@ -5974,6 +6344,201 @@
 		static DEVICE_ATTR(reset, (S_IWUSR|S_IRUGO),NULL, himax_reset_set);
 		#endif
 	//----[HX_TP_SYS_RESET]----------------------------------------------------------------------------------end	
+
+	//----[HX_TP_SYS_GLOVE]-------------------------------------------------------------------------------start
+		#ifdef HX_TP_SYS_GLOVE
+		static ssize_t himax_glove_show(struct device *dev,struct device_attribute *attr, char *buf)
+		{
+			int ret = 0;
+
+			ret += sprintf(buf + ret, "Glove mode: %d\n", glove_mode_support);
+
+			return ret;
+		}
+
+		//-----------------------------------------------------------------------------------
+		//himax_glove_store
+		//command 0 : glove mode not support
+		//command 1 : glove mode support
+		//-----------------------------------------------------------------------------------
+		static ssize_t himax_glove_store(struct device *dev,struct device_attribute *attr, const char *buf, size_t count)
+		{
+			uint8_t buf0[2] = {0};
+
+			if(buf[0] == '0')
+			{
+				glove_mode_support = 0;
+				buf0[0] = 0x00;
+				i2c_himax_write(touch_i2c, 0x92 ,&buf0[0], 1, DEFAULT_RETRY_CNT);
+			}
+			else if(buf[0] == '1')
+			{
+				glove_mode_support = 1;
+				buf0[0] = 0x01;
+				i2c_himax_write(touch_i2c, 0x92 ,&buf0[0], 1, DEFAULT_RETRY_CNT);	
+			}
+			return count;
+		}
+
+		static DEVICE_ATTR(glove_mode, (S_IWUSR|S_IRUGO|S_IWUGO),himax_glove_show, himax_glove_store);
+		#endif
+	//----[HX_TP_SYS_GLOVE]---------------------------------------------------------------------------------end
+
+	//----[HX_TP_SYS_TP_ID]-------------------------------------------------------------------------------start
+		#ifdef HX_TP_SYS_TP_ID
+		static ssize_t himax_tp_id_show(struct device *dev,struct device_attribute *attr, char *buf)
+		{
+			if (Read_TP_ID() == 0)		// GIS
+			{
+				printk("[Himax]: TP GIS \n");
+				return sprintf(buf, "0\n");
+			}
+			else if (Read_TP_ID() == 1)	// Ofilm
+			{
+				printk("[Himax]: TP Ofilm \n");
+				return sprintf(buf, "1\n");
+			}
+			else if (Read_TP_ID() == 2)	// GIS New
+			{
+				printk("[Himax]: TP GIS New \n");
+				return sprintf(buf, "2\n");
+			}
+			else if (Read_TP_ID() == 3)	// Toptouch
+			{
+				printk("[Himax]: TP Toptouch \n");
+				return sprintf(buf, "3\n");
+			}
+			else				// Error
+			{
+				printk("[Himax]: TP Error \n");
+				return sprintf(buf, "Error\n");
+			}
+		}
+
+		static DEVICE_ATTR(tp_id, (S_IWUSR|S_IRUGO|S_IWUGO),himax_tp_id_show, NULL);
+		#endif
+	//----[HX_TP_SYS_TP_ID]---------------------------------------------------------------------------------end
+
+	//----[ASUS_Proximity]--------------------------------------------------------------------------------start
+		#ifdef ASUS_TOUCH_PROXIMITY_NODE
+		#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+		static ssize_t tp_proximity_proc_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+		{
+			char *str;
+			int len;
+
+			if (touch_proximity_at_phone == 1) {		//No Touch
+				printk("[Himax] Touch is disabled now\n");
+				str = "Touch is disabled now\n";
+			} else if (touch_proximity_at_phone == 0) {	//Touch
+				printk("[Himax] Touch is enabled now\n");
+				str = "Touch is enabled now\n";
+			}
+
+			len = strlen(str);
+			copy_to_user(buf, str, len);
+			if (*ppos == 0)
+		 		*ppos += len;
+			else
+				len = 0;
+			return len;
+		}
+		static ssize_t tp_proximity_proc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+		{
+			char str[128];
+			if (count > PAGE_SIZE) //procfs write and read has PAGE_SIZE limit
+				count = 128;
+
+		        if (copy_from_user(str, buf, count))
+			{
+				printk("copy_from_user failed!\n");
+				return -EFAULT;
+		        }
+
+			if (count > 1)
+			{
+				str[count-1] = '\0';
+			}
+
+			if ((int)(str[0]) == (1+48)) {		//No Touch
+				touch_proximity_at_phone = 1;
+				printk("[Himax] Disable Touch\n");
+			} else {				//Touch
+				touch_proximity_at_phone = 0;
+				printk("[Himax] Enable Touch\n");
+			}
+
+			return count;
+		}
+		#else
+		static int tp_proximity_proc_read(char *buf, char **start, off_t offset, int request,
+						     int *eof, void *data)
+		{
+			if (touch_proximity_at_phone == 1) {		//No Touch
+				printk("[Himax] Touch is disabled now\n");
+				return sprintf(buf, "Touch is disabled now\n");
+			} else if (touch_proximity_at_phone == 0) {	//Touch
+				printk("[Himax] Touch is enabled now\n");
+				return sprintf(buf, "Touch is enabled now\n");
+			}
+
+			return 0;
+		}
+		static int tp_proximity_proc_write(struct file *file, const char *buffer,
+						      unsigned long count, void *data)
+		{
+        		//struct device_private *dpp = container_of(data, struct device_private, driver_data);
+			//struct device *dev = container_of(dpp, struct device, p);
+
+			if ((int)(*buffer) == (1+48)) {		//No Touch
+				touch_proximity_at_phone = 1;
+				printk("[Himax] Disable Touch\n");
+			} else {				//Touch
+				touch_proximity_at_phone = 0;
+				printk("[Himax] Enable Touch\n");
+			}
+
+			return count;
+		}
+		#endif
+		#endif
+	//----[ASUS_Proximity]----------------------------------------------------------------------------------end
+
+	//----[SMART_RESUME]-------------------------------------------------------------------------------start
+		#ifdef SMART_RESUME
+		static ssize_t himax_dclick_show(struct device *dev,struct device_attribute *attr, char *buf)
+		{
+			int ret = 0;
+
+			ret += sprintf(buf + ret, "dclick mode: %d\n", dclick_mode_support);
+
+			return ret;
+		}
+
+		//-----------------------------------------------------------------------------------
+		//himax_dclick_store
+		//command 0 : dclick mode not support
+		//command 1 : dclick mode support
+		//-----------------------------------------------------------------------------------
+		static ssize_t himax_dclick_store(struct device *dev,struct device_attribute *attr, const char *buf, size_t count)
+		{
+			uint8_t buf0[2] = {0};
+
+			if(buf[0] == '0')
+			{
+				dclick_mode_support = 0;
+			}
+			else if(buf[0] == '1')
+			{
+				dclick_mode_support = 1;
+			}
+			printk("[Himax] set dclick mode: %d\n", dclick_mode_support);
+			return count;
+		}
+
+		static DEVICE_ATTR(dclick_mode, (S_IWUSR|S_IRUGO|S_IWGRP),himax_dclick_show, himax_dclick_store);
+		#endif
+	//----[SMART_RESUME]---------------------------------------------------------------------------------end
 
 	static int himax_touch_sysfs_init(void)
 	{
@@ -6052,12 +6617,40 @@
 
 		#ifdef HX_TP_SYS_RESET
 		ret = sysfs_create_file(android_touch_kobj, &dev_attr_reset.attr);
-        if (ret)
-        {
-            printk(KERN_ERR "[TP]TOUCH_ERR: sysfs_create_file failed\n");
-            return ret;
-        }
+		if (ret)
+		{
+			printk(KERN_ERR "[TP]TOUCH_ERR: sysfs_create_file failed\n");
+			return ret;
+		}
 		#endif
+
+		#ifdef HX_TP_SYS_GLOVE
+		ret = sysfs_create_file(android_touch_kobj, &dev_attr_glove_mode.attr);
+		if (ret) 
+		{
+			printk(KERN_ERR "[TP]TOUCH_ERR: sysfs_create_file failed\n");
+			return ret;
+		}
+		#endif
+
+		#ifdef HX_TP_SYS_TP_ID
+		ret = sysfs_create_file(android_touch_kobj, &dev_attr_tp_id.attr);
+		if (ret) 
+		{
+			printk(KERN_ERR "[TP]TOUCH_ERR: sysfs_create_file failed\n");
+			return ret;
+		}
+		#endif
+
+		#ifdef SMART_RESUME
+		ret = sysfs_create_file(android_touch_kobj, &dev_attr_dclick_mode.attr);
+		if (ret) 
+		{
+			printk(KERN_ERR "[TP]TOUCH_ERR: sysfs_create_file failed\n");
+			return ret;
+		}
+		#endif
+
 		return 0 ;
 	}
 
@@ -6086,9 +6679,45 @@
 		#ifdef HX_TP_SYS_RESET
 		sysfs_remove_file(android_touch_kobj, &dev_attr_reset.attr);
 		#endif
+
+		#ifdef HX_TP_SYS_GLOVE
+		sysfs_remove_file(android_touch_kobj, &dev_attr_glove_mode.attr);
+		#endif
+
+		#ifdef HX_TP_SYS_TP_ID
+		sysfs_remove_file(android_touch_kobj, &dev_attr_tp_id.attr);
+		#endif
+
+		#ifdef SMART_RESUME
+		sysfs_remove_file(android_touch_kobj, &dev_attr_dclick_mode.attr);
+		#endif
 		
 		kobject_del(android_touch_kobj);
 	}
+
+//<ASUS_SDev+>
+	// add by Josh for touch switch read & write ++
+	static ssize_t touch_switch_name(struct switch_dev *sdev, char *buf)
+	{
+		return sprintf(buf, "D0%d0%d_0%d_0%d\n", FW_VER_MAJ_buff[0], FW_VER_MIN_buff[0], CFG_VER_MAJ_buff[(CFG_VER_MAJ_FLASH_LENG - 1)], CFG_VER_MIN_buff[(CFG_VER_MIN_FLASH_LENG - 1)]);
+	}
+	/*
+	static ssize_t touch_switch_state(struct switch_dev *sdev, char *buf)
+	{
+		himax_chip->proximity_status = (himax_chip->proximity_status +1) % 2;
+		//printk(KERN_ERR "[Himax] %s: proximity_status: %d \n", __func__, himax_chip->proximity_status);
+		return sprintf(buf, "%d\n", himax_chip->proximity_status);
+	}
+
+	static void touch_switch_status_report(void){
+		printk("[ITE]: %s \n",__func__);
+		
+	}
+	*/
+	// add by Josh for touch switch read & write --
+//<ASUS_SDev->
+
+
 //=============================================================================================================
 //
 //	Segment : Himax Touch Work Function
@@ -6097,6 +6726,9 @@
 
 	static void himax_ts_work_func(struct work_struct *work)
 	{
+#ifdef SMART_RESUME
+		int check_FC = 1;
+#endif		
 		int ret, i, temp1, temp2;
 		unsigned int x=0, y=0, area=0, press=0;
 		const unsigned int x_res = HX_X_RES;
@@ -6313,7 +6945,45 @@
 			}
 			#endif
 		//----[HX_ESD_WORKAROUND]-------------------------------------------------------------------------------end
+
+#ifdef SMART_RESUME
+		if (dclick_mode_support == 1 && touch_proximity_at_phone == 0)
+		{
+			#ifdef HX_PORTING_DEB_MSG
+			printk(KERN_INFO "[himax] Smart Resume Check!\n");
+			#endif
+			for(i=0;i<hx_touch_info_size;i++)
+			{
+				//printk("GPG key %d", data[i]);
+				if(buf[i]!=0xFC)
+				{
+					check_FC = 0;
+					break;
+				}
+			}
+			#ifdef HX_PORTING_DEB_MSG
+			printk(KERN_INFO "[himax] Smart Resume Event = %d!\n", check_FC);
+			#endif
+			if(check_FC == 1)
+			{
+				printk(KERN_INFO "[himax] SMART RESUME!\n");
+				input_report_key(ts->input_dev, KEY_POWER, 1);
+				//input_mt_sync(ts->input_dev);
+				//input_sync(ts->input_dev);    
+				input_report_key(ts->input_dev, KEY_POWER, 0);
+				//input_mt_sync(ts->input_dev);
+				input_sync(ts->input_dev);
+    	
+				//Mutexlock Protect Start
+				mutex_unlock(&ts->mutex_lock);
+				//Mutexlock Protect End
 		
+				enable_irq(ts->client->irq);    	
+
+				return;
+			}
+		}
+#endif		
 		//calculate the checksum
 		for(i = 0; i < hx_touch_info_size; i++)
 		{
@@ -6494,6 +7164,22 @@
 		{
 			hx_point_num= buf[HX_TOUCH_INFO_POINT_CNT] & 0x0f;
 		}   
+
+//<ASUS_Proximity+>
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
+		if (touch_proximity_at_phone == 1)
+		{
+			for(i=0; i<HX_MAX_PT; i++)
+			{
+				temp_x[i] = 0xFFFF;
+				temp_y[i] = 0xFFFF; 
+				input_mt_sync(ts->input_dev);
+			}
+		}
+		else
+		{
+#endif
+//<ASUS_Proximity->
 		
 		// Touch Point information
 		if(hx_point_num != 0 && tpd_key == 0xFF)
@@ -6661,6 +7347,13 @@
 				#endif
 			//----[HX_ESD_WORKAROUND]-----------------------------------------------------------------------------end
 		}
+
+//<ASUS_Proximity+>
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
+		}
+#endif
+//<ASUS_Proximity->
+
 		/*	
 		//----[HX_EN_GESTURE]---------------------------------------------------------------------------------start
 			#ifdef HX_EN_GESTURE
@@ -6782,8 +7475,10 @@
 			#endif	
 			
 			dev_dbg(&client->dev, "[HIMAX TP MSG] %s\n", __func__);
-			disable_irq_nosync(ts->client->irq);
-			queue_work(ts->himax_wq, &ts->work);
+			if(queue_work(ts->himax_wq, &ts->work))
+			{
+				disable_irq_nosync(ts->client->irq);
+			}
 			
 			return IRQ_HANDLED;
 		}
@@ -6796,6 +7491,9 @@
 			if(HX_INT_IS_EDGE)	//edge trigger
 			{
 				err = request_irq(client->irq, himax_ts_irq_handler,IRQF_TRIGGER_FALLING, client->name, ts);
+				#ifdef SMART_RESUME
+				irq_set_irq_wake(client->irq,1);
+				#endif
 			}
 			else	//low level trigger
 			{
@@ -6822,6 +7520,9 @@
 			#if defined(HX_EN_SEL_BUTTON) || defined(HX_EN_MUT_BUTTON)    
 			int i = 0;
 			#endif 
+			#ifdef ASUS_TOUCH_PROXIMITY_NODE
+			struct proc_dir_entry *tp_proximity_proc; //<ASUS_Proximity+>
+			#endif
 	
 			//#ifdef HX_PORTING_DEB_MSG
 			printk("[HIMAX PORTING MSG]%s enter\n",__func__);
@@ -6894,8 +7595,8 @@
 			if( gpio_request(HIMAX_RST_GPIO, "himax-reset") != 0)
 			{
 				printk("[HIMAX PORTING ERROR] reset gpio %d request fail.\n",HIMAX_RST_GPIO);
-                err = -ENODEV;
-                goto err_check_functionality_failed;
+				err = -ENODEV;
+				goto err_check_functionality_failed;
 			}
 			gpio_direction_output(HIMAX_RST_GPIO, 1);	//reset set high
 			msleep(100);
@@ -6995,10 +7696,38 @@
 			// *.i FW update
 			//*********************************************************************************************************
 			#ifdef HX_FW_UPDATE_BY_I_FILE
+			#ifdef CONFIG_TOUCHSCREEN_HIMAX_HX85XX_A502CG
+			if (Read_TP_ID() == 0  && sizeof(i_CTPM_FW_GIS) != 0)		// GIS
+			{
+				printk("[HIMAX PORTING MSG]%s TP : GIS \n",__func__);
+				i_CTPM_FW = i_CTPM_FW_GIS;
+			}
+			else if (Read_TP_ID() == 1  && sizeof(i_CTPM_FW_Ofilm) != 0)	// Ofilm
+			{
+				printk("[HIMAX PORTING MSG]%s TP : Ofilm \n",__func__);
+				i_CTPM_FW = i_CTPM_FW_Ofilm;
+			}
+			else if (Read_TP_ID() == 2  && sizeof(i_CTPM_FW_GIS_New) != 0)	// GIS New
+			{
+				printk("[HIMAX PORTING MSG]%s TP : GIS New \n",__func__);
+				i_CTPM_FW = i_CTPM_FW_GIS_New;
+			}
+			else if (Read_TP_ID() == 3  && sizeof(i_CTPM_FW_Toptouch) != 0)	// Toptouch
+			{
+				printk("[HIMAX PORTING MSG]%s TP : Toptouch \n",__func__);
+				i_CTPM_FW = i_CTPM_FW_Toptouch;
+			}
+			else								// Others
+			{
+				printk("[HIMAX PORTING MSG]%s TP : Others, Use default GIS New\n",__func__);
+				i_CTPM_FW = i_CTPM_FW_GIS_New;
+			}
+			#endif
+
 			if(i_Needupdate)
-    	{
-        i_update_func();
-    	}
+			{
+				i_update_func();
+			}
 			#endif
 			
 			himax_touch_information();
@@ -7073,6 +7802,10 @@
 				}
 				#endif    
 			//----[HX_EN_XXX_BUTTON]------------------------------------------------------------------------------------end	
+
+			#ifdef SMART_RESUME
+			set_bit(KEY_POWER, ts->input_dev->keybit);
+			#endif
 		
 			__set_bit(EV_KEY, ts->input_dev->evbit);
 			__set_bit(EV_ABS, ts->input_dev->evbit);
@@ -7173,7 +7906,45 @@
 				queue_delayed_work(ts->himax_wq, &ts->himax_chip_monitor, 60*HZ);   //for ESD solution
 				#endif
 			//----[ENABLE_CHIP_STATUS_MONITOR]----------------------------------------------------------------------end
+
+			//<ASUS_Proximity+>
+			#ifdef ASUS_TOUCH_PROXIMITY_NODE
+			#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+			tp_proximity_proc = proc_create("asus_touch_proximity_status", 0664, NULL, &tp_proximity_proc_fops);
+			#else
+			tp_proximity_proc = create_proc_entry("asus_touch_proximity_status", 0664, NULL);
+			#endif
+			if (!tp_proximity_proc) {
+				dev_err(&client->dev,
+						"%s: Failed to create proc proximity node\n",
+						__func__);
+				goto err_input_register_device_failed;
+			#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
+			} else {
+				tp_proximity_proc->write_proc = tp_proximity_proc_write;
+				tp_proximity_proc->read_proc = tp_proximity_proc_read;
+				tp_proximity_proc->data = NULL;
+			#endif
+			}
+			#endif
+			//<ASUS_Proximity->
+
+			//<ASUS_SDev+>
+			//switch add by josh for Version info ++
+			ts->touch_sdev.name = "touch";
+			ts->touch_sdev.print_name = touch_switch_name;
+			//ts->touch_sdev.print_state = touch_switch_state;
+			if(switch_dev_register(&ts->touch_sdev) < 0){
+				printk("switch_dev_register failed!\n");
+			}
+			//switch add by josh for Version info --
+			//<ASUS_SDev->
 		
+			// add by josh for check USB status +++
+			//cable_status = query_cable_status();
+			//himax_cable_status(cable_status);
+			// add by josh for check USB status ---
+
 			//#ifdef HX_PORTING_DEB_MSG
 			printk("[HIMAX PORTING MSG]%s complete. \n",__func__);
 			//#endif
@@ -7229,6 +8000,16 @@
 			struct himax_ts_data *ts = i2c_get_clientdata(client);
 			
 			himax_touch_sysfs_deinit();
+
+			//<ASUS_Proximity+>
+			#ifdef ASUS_TOUCH_PROXIMITY_NODE
+			#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+			proc_remove("asus_touch_proximity_status");
+			#else
+			remove_proc_entry("asus_touch_proximity_status", NULL);
+			#endif
+			#endif
+			//<ASUS_Proximity->
 			
 			unregister_early_suspend(&ts->early_suspend);
 			free_irq(client->irq, ts);
@@ -7355,21 +8136,48 @@
 int himax_cable_status(int status)
 {
     uint8_t buf0[2] = {0};
-    printk("[Himax] %s: cable_status=%d, init_success=%d.\n", __func__, status,private_ts->init_success);
+    //printk("[Himax] %s: cable_status=%d, init_success=%d.\n", __func__, status,private_ts->init_success);
+    printk("[Himax] %s: cable_status=%d\n", __func__, status);
 
-    if(private_ts->init_success == 1)
+    if(private_ts != NULL)
     {
-        if(status == 0x02) //non usb
+        //if(status == 0x02) //non usb
+	if(status == 0x00) //non usb
         {
-            buf0[0] = 0x00;
-            i2c_himax_write(touch_i2c, 0x90 ,&buf0[0], 1, DEFAULT_RETRY_CNT);
+            if( i2c_himax_read(touch_i2c, 0x90 ,&buf0[0], 1, DEFAULT_RETRY_CNT) < 0)
+            {
+                printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+                return 0;
+            }            
+            buf0[0] = buf0[0] & 0xFE;
+            
+            if( i2c_himax_write(touch_i2c, 0x90 ,&buf0[0], 1, DEFAULT_RETRY_CNT) < 0)
+            {
+                printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+                return 0;
+            }
         }
-        else if((status == 0x00) || (status == 0x01)) //usb plug in
+        //else if((status == 0x00) || (status == 0x01)) //usb plug in
+	else //usb plug in
         {
-            buf0[0] = 0x01;
-            i2c_himax_write(touch_i2c, 0x90 ,&buf0[0], 1, DEFAULT_RETRY_CNT);
+            if( i2c_himax_read(touch_i2c, 0x90 ,&buf0[0], 1, DEFAULT_RETRY_CNT) < 0)
+            {
+                printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+                return 0;
+            }            
+            buf0[0] = buf0[0] | 0x01;
+            
+            if( i2c_himax_write(touch_i2c, 0x90 ,&buf0[0], 1, DEFAULT_RETRY_CNT) < 0)
+            {
+                printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+                return 0;
+            }
+
         }
+        printk("[Himax] %s: setting success\n", __func__);
+        return 1;
     }
+    printk("[Himax] %s: setting fail\n", __func__);
     return 0;
 }
 EXPORT_SYMBOL(himax_cable_status);

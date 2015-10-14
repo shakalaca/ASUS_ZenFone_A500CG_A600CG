@@ -164,6 +164,11 @@ struct fw_update_info {
 	struct fw_ud *fwud_pending;
 };
 
+/* Used to store firmware version. */
+#define FW_VERSION_SIZE		16
+#define FW_VERSION_MAX_SIZE	32
+static u8 fw_version_raw_data[FW_VERSION_MAX_SIZE] = { 0 };
+
 static struct fw_update_info fui;
 
 static struct misc_fw misc_fw_table[] = {
@@ -395,7 +400,7 @@ int calc_offset_and_length(struct fw_ud *fw_ud_ptr, char *scu_req,
 		*len = MAX_FW_CHUNK;
 		return 0;
 	} else {
-		for (cnt = 0; cnt < ARRAY_SIZE(misc_fw_table) ; cnt++) {
+		for (cnt = 0; cnt < ARRAY_SIZE(misc_fw_table); cnt++) {
 
 			if (!strncmp(misc_fw_table[cnt].fw_type, scu_req,
 					strlen(misc_fw_table[cnt].fw_type))) {
@@ -410,9 +415,9 @@ int calc_offset_and_length(struct fw_ud *fw_ud_ptr, char *scu_req,
 						goto error_case;
 
 					dev_dbg(fui.dev,
-					"\nmisc fw type=%s, len=%d,offset=%d",
+					"\nmisc fw type=%s, len=%u,offset=%p",
 					misc_fw_table[cnt].fw_type, *len,
-					(int)*offset);
+					*offset);
 
 					return 0;
 
@@ -828,34 +833,241 @@ EXPORT_SYMBOL(intel_scu_ipc_fw_update);
 static ssize_t fw_version_show(struct kobject *kobj,
 		struct kobj_attribute *attr, char *buf)
 {
-	u8 data[16] = { 0 };
-	int ret;
-	int i;
+	int data_to_copy, i;
 	int used = 0;
 
+	if (intel_mid_identify_cpu() > INTEL_MID_CPU_CHIP_CLOVERVIEW)
+		data_to_copy = FW_VERSION_MAX_SIZE;
+	else
+		data_to_copy = FW_VERSION_SIZE;
+
+	for (i = 0; i < data_to_copy; i++)
+		used += snprintf(buf + used, PAGE_SIZE - used, "%x ",
+				fw_version_raw_data[i]);
+
+	return used;
+}
+
+/*
+ * Read IFWI version
+ */
+
+#define INTE_SCU_FW_BUF_LENGTH              256
+#define INTE_SCU_IPC_FW_VERSION_LENGTH      16
+
+#define INTE_SCU_IPC_FW_REVISION_MAJ_REG    15
+#define INTE_SCU_IPC_FW_REVISION_MIN_REG    14
+#define INTE_SCU_IPC_SCU_RT_FW_REVISION_MAJ_REG    1
+#define INTE_SCU_IPC_SCU_RT_FW_REVISION_MIN_REG    0
+#define INTE_SCU_IPC_PUNIT_FW_REVISION_MAJ_REG     5
+#define INTE_SCU_IPC_PUNIT_FW_REVISION_MIN_REG     4
+#define INTE_SCU_IPC_IA32_FW_REVISION_MAJ_REG      7
+#define INTE_SCU_IPC_IA32_FW_REVISION_MIN_REG      6
+#define INTE_SCU_IPC_SUPP_IA32_FW_REVISION_MAJ_REG 9
+#define INTE_SCU_IPC_SUPP_IA32_FW_REVISION_MIN_REG 8
+#define INTE_SCU_IPC_VALHOOKS_FW_REVISION_MAJ_REG  11
+#define INTE_SCU_IPC_VALHOOKS_FW_REVISION_MIN_REG  10
+
+#define INTE_SCU_IPC_SCU_BS_FW_REVISION_EXT_MIN_REG    0
+#define INTE_SCU_IPC_SCU_BS_FW_REVISION_EXT_MAJ_REG    2
+#define INTE_SCU_IPC_SCU_RT_FW_REVISION_EXT_MIN_REG    4
+#define INTE_SCU_IPC_SCU_RT_FW_REVISION_EXT_MAJ_REG    6
+#define INTE_SCU_IPC_IA32_FW_REVISION_EXT_MIN_REG      8
+#define INTE_SCU_IPC_IA32_FW_REVISION_EXT_MAJ_REG      10
+#define INTE_SCU_IPC_VALHOOKS_FW_REVISION_EXT_MIN_REG  12
+#define INTE_SCU_IPC_VALHOOKS_FW_REVISION_EXT_MAJ_REG  14
+
+#define INTE_SCU_IPC_FW_REVISION_EXT_MIN_REG           0
+#define INTE_SCU_IPC_FW_REVISION_EXT_MAJ_REG           2
+#define INTE_SCU_IPC_CHAABI_FW_REVISION_EXT_MIN_REG    4
+#define INTE_SCU_IPC_CHAABI_FW_REVISION_EXT_MAJ_REG    6
+#define INTE_SCU_IPC_MIA_FW_REVISION_EXT_MIN_REG       8
+#define INTE_SCU_IPC_MIA_FW_REVISION_EXT_MAJ_REG       10
+
+#define INTE_SCU_FW_OFFS	0
+#define INTE_SCU_FW_EXT_OFFS	1
+
+struct scu_ipc_version {
+	unsigned int    count;    /* length of version info */
+	unsigned char   data[FW_VERSION_MAX_SIZE]; /* version data */
+	char            scu_bs[FW_VERSION_SIZE];
+	char            scu_rt[FW_VERSION_SIZE];
+	char            ia32fw[FW_VERSION_SIZE];
+	char            supp_ia32fw[FW_VERSION_SIZE];
+	char            valhooks[FW_VERSION_SIZE];
+	char            ifwi[FW_VERSION_SIZE];
+	char            chaabi[FW_VERSION_SIZE];
+	char            mia[FW_VERSION_SIZE];
+	char            punit[FW_VERSION_SIZE];
+};
+
+struct scu_ipc_version version;
+
+static void format_rev_4_digit(struct scu_ipc_version ver, int vers_ext, char *buf,
+		int pos_maj, int pos_min)
+{
+	int offs;
+
+	if (vers_ext)
+		offs = FW_VERSION_SIZE;
+	else
+		offs = 0;
+	snprintf(buf, FW_VERSION_SIZE, "%.4X.%.4X",
+		ver.data[offs + pos_maj + 1] << 8 | ver.data[offs + pos_maj],
+		ver.data[offs + pos_min + 1] << 8 | ver.data[offs + pos_min]);
+}
+
+static void format_rev_2_digit(struct scu_ipc_version ver, char *buf,
+		int pos_maj, int pos_min)
+{
+	snprintf(buf, FW_VERSION_SIZE, "%.2X.%.2X",
+		ver.data[pos_maj], ver.data[pos_min]);
+}
+
+static void read_ifwi_version(void)
+{
+	bool ifwi_rev_ext = false;
+
+	/* Check how to read components versions. For example, with older */
+	/* CPU, major/minor version is coded on 2 digits only.            */
+	if (intel_mid_identify_cpu() > INTEL_MID_CPU_CHIP_CLOVERVIEW)
+		ifwi_rev_ext = true;
+
+	version.count = FW_VERSION_SIZE;
+	memcpy(version.data, fw_version_raw_data, FW_VERSION_SIZE);
+
+	if (ifwi_rev_ext) {
+		memcpy(version.data + FW_VERSION_SIZE,
+			fw_version_raw_data + FW_VERSION_SIZE,
+			FW_VERSION_SIZE);
+
+		format_rev_4_digit(version, INTE_SCU_FW_OFFS, version.scu_bs,
+				INTE_SCU_IPC_SCU_BS_FW_REVISION_EXT_MAJ_REG,
+				INTE_SCU_IPC_SCU_BS_FW_REVISION_EXT_MIN_REG);
+		pr_info("SCU BS Version: %s\n", version.scu_bs);
+
+		format_rev_4_digit(version, INTE_SCU_FW_OFFS, version.scu_rt,
+				INTE_SCU_IPC_SCU_RT_FW_REVISION_EXT_MAJ_REG,
+				INTE_SCU_IPC_SCU_RT_FW_REVISION_EXT_MIN_REG);
+		pr_info("SCU RT Version: %s\n", version.scu_rt);
+
+		format_rev_4_digit(version, INTE_SCU_FW_OFFS, version.ia32fw,
+				INTE_SCU_IPC_IA32_FW_REVISION_EXT_MAJ_REG,
+				INTE_SCU_IPC_IA32_FW_REVISION_EXT_MIN_REG);
+		pr_info("IA32FW Version: %s\n", version.ia32fw);
+
+		format_rev_4_digit(version, INTE_SCU_FW_OFFS, version.valhooks,
+				INTE_SCU_IPC_VALHOOKS_FW_REVISION_EXT_MAJ_REG,
+				INTE_SCU_IPC_VALHOOKS_FW_REVISION_EXT_MIN_REG);
+		pr_info("ValHooks Version: %s\n", version.valhooks);
+
+		format_rev_4_digit(version, INTE_SCU_FW_EXT_OFFS, version.ifwi,
+				INTE_SCU_IPC_FW_REVISION_EXT_MAJ_REG,
+				INTE_SCU_IPC_FW_REVISION_EXT_MIN_REG);
+		pr_info("IFWI Version: %s\n", version.ifwi);
+
+		format_rev_4_digit(version, INTE_SCU_FW_EXT_OFFS, version.chaabi,
+				INTE_SCU_IPC_CHAABI_FW_REVISION_EXT_MAJ_REG,
+				INTE_SCU_IPC_CHAABI_FW_REVISION_EXT_MIN_REG);
+		pr_info("CHAABI Version: %s\n", version.chaabi);
+
+		format_rev_4_digit(version, INTE_SCU_FW_EXT_OFFS, version.mia,
+				INTE_SCU_IPC_MIA_FW_REVISION_EXT_MAJ_REG,
+				INTE_SCU_IPC_MIA_FW_REVISION_EXT_MIN_REG);
+		pr_info("mIA Version: %s\n", version.mia);
+	} else {
+		format_rev_2_digit(version, version.ifwi,
+				INTE_SCU_IPC_FW_REVISION_MAJ_REG,
+				INTE_SCU_IPC_FW_REVISION_MIN_REG);
+		pr_info("IFWI Version: %s\n", version.ifwi);
+
+		format_rev_2_digit(version, version.scu_rt,
+				INTE_SCU_IPC_SCU_RT_FW_REVISION_MAJ_REG,
+				INTE_SCU_IPC_SCU_RT_FW_REVISION_MIN_REG);
+		pr_info("SCU Version: %s\n", version.scu_rt);
+
+		format_rev_2_digit(version, version.punit,
+				INTE_SCU_IPC_PUNIT_FW_REVISION_MAJ_REG,
+				INTE_SCU_IPC_PUNIT_FW_REVISION_MIN_REG);
+		pr_info("PUnit Version: %s\n", version.punit);
+
+		format_rev_2_digit(version, version.ia32fw,
+				INTE_SCU_IPC_IA32_FW_REVISION_MAJ_REG,
+				INTE_SCU_IPC_IA32_FW_REVISION_MIN_REG);
+		pr_info("IA32FW Version: %s\n", version.ia32fw);
+
+		format_rev_2_digit(version, version.supp_ia32fw,
+				INTE_SCU_IPC_SUPP_IA32_FW_REVISION_MAJ_REG,
+				INTE_SCU_IPC_SUPP_IA32_FW_REVISION_MIN_REG);
+		pr_info("SUPP IA32FW Version: %s\n", version.supp_ia32fw);
+
+		format_rev_2_digit(version, version.valhooks,
+				INTE_SCU_IPC_VALHOOKS_FW_REVISION_MAJ_REG,
+				INTE_SCU_IPC_VALHOOKS_FW_REVISION_MIN_REG);
+		pr_info("ValHooks Version: %s\n", version.valhooks);
+	}
+	return;
+}
+
+static int fw_version_info(void)
+{
+	int ret;
+
+	memset(fw_version_raw_data, 0, FW_VERSION_MAX_SIZE);
+
 	ret = rpmsg_send_command(fw_update_instance, IPCMSG_FW_REVISION, 0,
-					NULL, (u32 *)data, 0, 4);
+				NULL, (u32 *)fw_version_raw_data, 0, 4);
 	if (ret < 0) {
 		cur_err("Error getting fw version");
 		return -EINVAL;
 	}
 
-	for (i = 0; i < 16; i++)
-		used += snprintf(buf + used, PAGE_SIZE - used, "%x ", data[i]);
-
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) {
+	if (intel_mid_identify_cpu() > INTEL_MID_CPU_CHIP_CLOVERVIEW) {
 		ret = rpmsg_send_command(fw_update_instance,
-			IPCMSG_FW_REVISION, 1, NULL, (u32 *)data, 0, 4);
+			IPCMSG_FW_REVISION, 1, NULL,
+			(u32 *)(fw_version_raw_data + FW_VERSION_SIZE), 0, 4);
 		if (ret < 0) {
 			cur_err("Error getting fw version");
 			return -EINVAL;
 		}
-		for (i = 0; i < 16; i++)
-			used += snprintf(buf + used, PAGE_SIZE - used,
-				"%x ", data[i]);
 	}
 
-	return used;
+	read_ifwi_version();
+
+	return 0;
+}
+
+static ssize_t sys_version_show(struct kobject *kobj,
+		struct kobj_attribute *attr, char *buf)
+{
+	if (intel_mid_identify_cpu() > INTEL_MID_CPU_CHIP_CLOVERVIEW) {
+		if (strcmp(attr->attr.name, "chaabi_version") == 0)
+			return snprintf(buf, PAGE_SIZE, "%s\n",
+					version.chaabi);
+		if (strcmp(attr->attr.name, "mia_version") == 0)
+			return snprintf(buf, PAGE_SIZE, "%s\n",
+					version.mia);
+		if (strcmp(attr->attr.name, "scu_bs_version") == 0)
+			return snprintf(buf, PAGE_SIZE, "%s\n",
+					version.scu_bs);
+	} else {
+		if (strcmp(attr->attr.name, "punit_version") == 0)
+			return snprintf(buf, PAGE_SIZE, "%s\n", version.punit);
+		if (strcmp(attr->attr.name, "supp_ia32fw_version") == 0)
+			return snprintf(buf, PAGE_SIZE, "%s\n", version.supp_ia32fw);
+	}
+
+	if (strcmp(attr->attr.name, "ifwi_version") == 0)
+		return snprintf(buf, PAGE_SIZE, "%s\n", version.ifwi);
+	if (strcmp(attr->attr.name, "scu_version") == 0)
+		return snprintf(buf, PAGE_SIZE, "%s\n", version.scu_rt);
+	if (strcmp(attr->attr.name, "ia32fw_version") == 0)
+		return snprintf(buf, PAGE_SIZE, "%s\n", version.ia32fw);
+	if (strcmp(attr->attr.name, "valhooks_version") == 0)
+		return snprintf(buf, PAGE_SIZE, "%s\n", version.valhooks);
+
+	pr_err("component version not found\n");
+	return 0;
 }
 
 static ssize_t last_error_show(struct kobject *kobj,
@@ -903,6 +1115,16 @@ struct bin_attribute bin_attr_##_name =	\
 
 static KOBJ_FW_UPDATE_ATTR(cancel_update, S_IWUSR, NULL, cancel_update_store);
 static KOBJ_FW_UPDATE_ATTR(fw_version, S_IRUGO, fw_version_show, NULL);
+static KOBJ_FW_UPDATE_ATTR(ifwi_version, S_IRUGO, sys_version_show, NULL);
+static KOBJ_FW_UPDATE_ATTR(chaabi_version, S_IRUGO, sys_version_show, NULL);
+static KOBJ_FW_UPDATE_ATTR(mia_version, S_IRUGO, sys_version_show, NULL);
+static KOBJ_FW_UPDATE_ATTR(scu_bs_version, S_IRUGO, sys_version_show, NULL);
+static KOBJ_FW_UPDATE_ATTR(scu_version, S_IRUGO, sys_version_show, NULL);
+static KOBJ_FW_UPDATE_ATTR(punit_version, S_IRUGO, sys_version_show, NULL);
+static KOBJ_FW_UPDATE_ATTR(ia32fw_version, S_IRUGO, sys_version_show, NULL);
+static KOBJ_FW_UPDATE_ATTR(supp_ia32fw_version, S_IRUGO, sys_version_show, NULL);
+static KOBJ_FW_UPDATE_ATTR(valhooks_version, S_IRUGO, sys_version_show, NULL);
+
 static KOBJ_FW_UPDATE_ATTR(last_error, S_IRUGO, last_error_show, NULL);
 static BIN_ATTR(dnx, S_IWUSR, DNX_MAX_SIZE, NULL, write_dnx);
 static BIN_ATTR(ifwi, S_IWUSR, IFWI_MAX_SIZE, NULL, write_ifwi);
@@ -910,6 +1132,15 @@ static BIN_ATTR(ifwi, S_IWUSR, IFWI_MAX_SIZE, NULL, write_ifwi);
 static struct attribute *fw_update_attrs[] = {
 	&cancel_update_attr.attr,
 	&fw_version_attr.attr,
+	&ifwi_version_attr.attr,
+	&chaabi_version_attr.attr,
+	&mia_version_attr.attr,
+	&scu_bs_version_attr.attr,
+	&scu_version_attr.attr,
+	&punit_version_attr.attr,
+	&ia32fw_version_attr.attr,
+	&supp_ia32fw_version_attr.attr,
+	&valhooks_version_attr.attr,
 	&last_error_attr.attr,
 	NULL,
 };
@@ -1000,6 +1231,13 @@ static int fw_update_rpmsg_probe(struct rpmsg_channel *rpdev)
 	if (ret) {
 		dev_err(fui.dev, "creating fw update sysfs failed\n");
 		goto err_free_fwud;
+	}
+
+	dev_info(&rpdev->dev, "Getting current fw version\n");
+	ret = fw_version_info();
+	if (ret) {
+		dev_err(fui.dev, "cannot get current fw version\n");
+		goto err_sysfs;
 	}
 
 	/* If alloc_fota_mem_early flag is set, allocate FOTA_MEM_SIZE

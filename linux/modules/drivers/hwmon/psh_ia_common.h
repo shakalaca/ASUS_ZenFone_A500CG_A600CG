@@ -16,26 +16,38 @@
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 
-#define CONFIG_SENSORS_PSH_BYT	1
+#define E_GENERAL		((int)(-1))
+#define E_NOMEM			((int)(-2))
+#define E_PARAM			((int)(-3))
+#define E_BUSY			((int)(-4))
+#define E_HW			((int)(-5))
+#define E_NOSUPPORT		((int)(-6))
+#define E_RPC_COMM		((int)(-7))
+#define E_LPE_COMM		((int)(-8))
+#define E_CMD_ASYNC		((int)(-9))
+#define E_CMD_NOACK		((int)(-10))
+#define E_LBUF_COMM		((int)(-11))
 
 #ifndef _CMD_ENGINE_H_
 enum cmd_id {
-	CMD_RESET,
+	CMD_RESET = 0,
 	CMD_SETUP_DDR,
 	CMD_GET_SINGLE,
 	CMD_CFG_STREAM,
 	CMD_STOP_STREAM,
-	CMD_ADD_EVENT,
+	CMD_ADD_EVENT = 5,
 	CMD_CLEAR_EVENT,
 	CMD_SELF_TEST,
 	CMD_DEBUG,
 	CMD_CALIBRATION,
-	CMD_UPDATE_DDR,
+	CMD_UPDATE_DDR = 10,
 	CMD_GET_STATUS,
 	CMD_SET_PROPERTY,
 	CMD_COUNTER,
 	CMD_GET_VERSION,
+	CMD_IA_NOTIFY = 15,
 	CMD_ID_MAX,
+	CMD_INVALID = 244,
 	CMD_FW_UPDATE = 255,
 };
 
@@ -73,6 +85,20 @@ struct cmd_resp {
 	u16 data_len;
 	char buf[0];
 } __packed;
+
+#define IA_NOTIFY_SUSPEND ((u8)0x1)
+#define IA_NOTIFY_RESUME  ((u8)0x2)
+struct cmd_ia_notify_param {
+	u8 id;
+	char extra[0];
+} __attribute__ ((packed));
+
+
+struct resp_cmd_ack {
+	u8 cmd_id;
+	int ret;
+	char extra[0];
+} __attribute__ ((packed));
 
 #define SCMD_DEBUG_SET_MASK ((u16)0x1)
 #define SCMD_DEBUG_GET_MASK ((u16)0x2)
@@ -114,9 +140,9 @@ struct resp_version {
 #define LINK_AS_MONITOR		(1)
 #define LINK_AS_REPORTER	(2)
 struct link_info {
-	u8 id;
+	u8 sid;
 	u8 ltype;
-	u16 slide;
+	u16 rpt_freq;
 } __packed;
 
 #define SNR_NAME_MAX_LEN 6
@@ -125,7 +151,7 @@ struct snr_info {
 	u8 status;
 	u16 freq;
 	u16 data_cnt;
-	u16 slide;
+	u16 bit_cfg;
 	u16 priv;
 	u16 attri;
 
@@ -146,9 +172,10 @@ struct snr_info {
 
 
 #ifndef _SENSOR_DEF_H
-struct sensor_cfg {
+struct sensor_cfg_param {
 	u16 sample_freq; /* HZ */
 	u16 buff_delay; /* max time(ms) for data bufferring */
+	u16 bit_cfg;
 	char extra[0];
 } __packed;
 
@@ -201,21 +228,18 @@ struct frame_head {
 #define STR_BUFF_SIZE 256
 
 struct psh_ia_priv {
-	struct loop_buffer lbuf;	/* loop bufer */
-	struct page *pg;
+	struct loop_buffer *lbuf; /* loop bufer, if have */
 	struct circ_buf circ, circ_dbg;	/* circ buf for sysfs data node */
 	struct resp_debug_get_mask dbg_mask;
 	struct resp_counter counter;
+	struct resp_cmd_ack *cmd_ack;
 	char *version_str;
 	struct mutex cmd_mutex;
-	struct completion cmpl;
-	struct completion get_status_comp;
-	struct completion cmd_reset_comp;
+	struct mutex circ_dbg_mutex;
 	struct completion cmd_load_comp;
-	struct completion cmd_counter_comp;
-	struct completion cmd_version_comp;
+	struct completion cmd_comp;
 	struct list_head sensor_list;
-	u32 reset_in_progress;
+	u8 cmd_in_progress;
 	u32 load_in_progress;
 	u32 status_bitmask;
 
@@ -223,11 +247,20 @@ struct psh_ia_priv {
 };
 
 /* exports */
-void ia_process_lbuf(struct device *dev);
+void ia_lbuf_read_init(struct loop_buffer *lbuf,
+		u8 *buf, u16 size, update_finished_f uf);
+void ia_lbuf_read_reset(struct loop_buffer *lbuf);
+int ia_lbuf_read_next(struct psh_ia_priv *psh_ia_data,
+			struct loop_buffer *lbuf,
+			u8 **buf, u16 *size);
 int ia_send_cmd(struct psh_ia_priv *psh_ia_data,
-		int ch, struct ia_cmd *cmd, int len);
+		struct ia_cmd *cmd, int len);
 int psh_ia_common_init(struct device *dev, struct psh_ia_priv **data);
 void psh_ia_common_deinit(struct device *dev);
+int ia_handle_frame(struct psh_ia_priv *psh_ia_data, void *dbuf, int size);
+int psh_ia_comm_suspend(struct device *dev);
+int psh_ia_comm_resume(struct device *dev);
+
 
 
 /* imports */
@@ -235,7 +268,6 @@ void psh_ia_common_deinit(struct device *dev);
 int do_setup_ddr(struct device *dev);
 int process_send_cmd(struct psh_ia_priv *psh_ia_data,
 			int ch, struct ia_cmd *cmd, int len);
-int ia_handle_frame(struct psh_ia_priv *psh_ia_data, void *dbuf, int size);
 
 #define PSH_ITSELF     (PHY_SENSOR_BASE) /* means PSH itself */
 #define PORT_SENSOR_NUM (PORT_SENSOR_MAX_NUM - PORT_SENSOR_BASE - 1)
@@ -260,18 +292,14 @@ enum sensor_type {
 	PORT_SENSOR_BASE = 200,
 	CS_PORT,        /* port for streaming configuration and uploading */
 	GS_PORT,        /* port for get_single configuration and uploading */
-#if defined(CONFIG_HAVE_SENSOR_EVENT)
 	EVT_PORT,       /* port for event configuration and uploading */
-#endif
 	PORT_SENSOR_MAX_NUM,
 };
 
 static const char sensor_port_str[PORT_SENSOR_NUM][SNR_NAME_MAX_LEN] = {
 	"CSPRT",
 	"GSPRT",
-#if defined(CONFIG_HAVE_SENSOR_EVENT)
 	"EVPRT",
-#endif
 };
 
 struct sensor_db {
@@ -288,4 +316,7 @@ struct trace_data {
 	u8 sensor_cnt;
 } __packed;
 
+#define psh_err(fmt, arg...) pr_err("psh: "fmt, ## arg)
+#define psh_warn(fmt, arg...) pr_warn("psh: "fmt, ## arg)
+#define psh_debug(fmt, arg...) pr_debug("psh: "fmt, ## arg)
 #endif

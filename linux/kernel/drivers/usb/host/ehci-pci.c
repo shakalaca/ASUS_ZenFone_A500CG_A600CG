@@ -18,30 +18,33 @@
  * Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#ifndef CONFIG_PCI
-#error "This file is PCI bus glue.  CONFIG_PCI must be defined."
-#endif
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/pci.h>
+#include <linux/usb.h>
+#include <linux/usb/hcd.h>
+
+#include "ehci.h"
+#include "pci-quirks.h"
+
+#define DRIVER_DESC "EHCI PCI platform driver"
+
+static const char hcd_name[] = "ehci-pci";
 
 /* defined here to avoid adding to pci_ids.h for single instance use */
 #define PCI_DEVICE_ID_INTEL_CE4100_USB	0x2e70
 
 /*-------------------------------------------------------------------------*/
-
-/* called after powerup, by probe or system-pm "wakeup" */
-static int ehci_pci_reinit(struct ehci_hcd *ehci, struct pci_dev *pdev)
+/* CloverTrail USB SPH and Modem USB Switch Control Flag */
+static unsigned int use_sph;
+module_param(use_sph, uint, S_IRUGO);
+MODULE_PARM_DESC(use_sph, "sph and modem usb switch flag, default disable\n");
+/*
+* for external read access to <usb_sph>
+*/
+unsigned int sph_enabled(void)
 {
-	int			retval;
-
-	/* we expect static quirk code to handle the "extended capabilities"
-	 * (currently just BIOS handoff) allowed starting with EHCI 0.96
-	 */
-
-	/* PCI Memory-Write-Invalidate cycle support is optional (uncommon) */
-	retval = pci_set_mwi(pdev);
-	if (!retval)
-		ehci_dbg(ehci, "MWI active\n");
-
-	return 0;
+	return use_sph;
 }
 
 /* enable SRAM if sram detected */
@@ -103,7 +106,6 @@ static void sram_deinit(struct usb_hcd *hcd)
 		vfree(ehci->sram_swap);
 		ehci->sram_swap = NULL;
 	}
-
 }
 
 static int sram_backup(struct usb_hcd *hcd)
@@ -159,6 +161,22 @@ static int sram_restore(struct usb_hcd *hcd)
 	return 0;
 }
 
+/* called after powerup, by probe or system-pm "wakeup" */
+static int ehci_pci_reinit(struct ehci_hcd *ehci, struct pci_dev *pdev)
+{
+	int			retval;
+
+	/* we expect static quirk code to handle the "extended capabilities"
+	 * (currently just BIOS handoff) allowed starting with EHCI 0.96
+	 */
+
+	/* PCI Memory-Write-Invalidate cycle support is optional (uncommon) */
+	retval = pci_set_mwi(pdev);
+	if (!retval)
+		ehci_dbg(ehci, "MWI active\n");
+
+	return 0;
+}
 
 /* called during probe() after chip reset completes */
 static int ehci_pci_setup(struct usb_hcd *hcd)
@@ -169,8 +187,18 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 	u8			rev;
 	u32			temp;
 	int			retval;
-	int			force_otg_hc_mode = 0;
 
+	ehci->caps = hcd->regs;
+
+	/*
+	 * ehci_init() causes memory for DMA transfers to be
+	 * allocated.  Thus, any vendor-specific workarounds based on
+	 * limiting the type of memory used for DMA transfers must
+	 * happen before ehci_setup() is called.
+	 *
+	 * Most other workarounds can be done either before or after
+	 * init and reset; they are located here too.
+	 */
 	switch (pdev->vendor) {
 	case PCI_VENDOR_ID_TOSHIBA_2:
 		/* celleb's companion chip */
@@ -183,122 +211,6 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 #endif
 		}
 		break;
-	case PCI_VENDOR_ID_INTEL:
-		if (pdev->device == 0x0811 || pdev->device == 0x0829 ||
-				pdev->device == 0xE006) {
-			ehci_info(ehci, "Detected Intel MID OTG HC\n");
-			hcd->has_tt = 1;
-			ehci->has_hostpc = 1;
-#ifdef CONFIG_USB_OTG
-			ehci->has_otg = 1;
-#endif
-			force_otg_hc_mode = 1;
-
-			hcd->has_sram = 1;
-			/*
-			 * Disable SRAM for CLVP A0 due to the silicon issue.
-			 */
-			if (pdev->device == 0xE006 && pdev->revision < 0xC) {
-				ehci_info(ehci, "Disable SRAM for CLVP A0\n");
-				hcd->has_sram = 0;
-			}
-
-			hcd->sram_no_payload = 1;
-			sram_init(hcd);
-		} else if (pdev->device == 0x0806) {
-			ehci_info(ehci, "Detected Langwell MPH\n");
-			hcd->has_tt = 1;
-			ehci->has_hostpc = 1;
-			hcd->has_sram = 1;
-			hcd->sram_no_payload = 1;
-			sram_init(hcd);
-		} else if (pdev->device == 0x0829) {
-			ehci_info(ehci, "Detected Penwell OTG HC\n");
-			hcd->has_tt = 1;
-			ehci->has_hostpc = 1;
-		} else if (pdev->device == 0x08F2) {
-#ifdef CONFIG_USB_EHCI_HCD_SPH
-			struct ehci_sph_pdata   *sph_pdata;
-			sph_pdata = pdev->dev.platform_data;
-			if (!sph_pdata) {
-				ehci_err(ehci, "get SPH platform data failed\n");
-				retval = -ENODEV;
-				return retval;
-			}
-
-			/* All need to bypass tll mode  */
-			temp = ehci_readl(ehci, hcd->regs + CLV_SPHCFG);
-			temp &= ~CLV_SPHCFG_ULPI1TYPE;
-			ehci_writel(ehci, temp, hcd->regs + CLV_SPHCFG);
-
-			sph_pdata->enabled = sph_enabled();
-
-			/* Check SPH enabled or not */
-			if (sph_pdata->enabled == 0) {
-				/* ULPI 1 ref-clock switch off */
-				temp = ehci_readl(ehci, hcd->regs + CLV_SPHCFG);
-				temp |= CLV_SPHCFG_REFCKDIS;
-				ehci_writel(ehci, temp, hcd->regs + CLV_SPHCFG);
-
-				/* Set Power state */
-				retval = pci_set_power_state(pdev, PCI_D1);
-				if (retval < 0)
-					ehci_err(ehci,
-						"Set SPH to D1 failed, retval = %d\n",
-						retval);
-
-				ehci_info(ehci, "USB SPH is disabled\n");
-				return -ENODEV;
-			}
-
-			ehci_info(ehci, "Detected SPH HC\n");
-			hcd->has_tt = 1;
-			ehci->has_hostpc = 1;
-
-			temp = ehci_readl(ehci, hcd->regs + CLV_SPH_HOSTPC);
-			temp |= CLV_SPH_HOSTPC_PTS;
-			ehci_writel(ehci, temp, hcd->regs + CLV_SPH_HOSTPC);
-
-			device_set_wakeup_enable(&pdev->dev, true);
-
-			/* Set Runtime-PM flags for SPH */
-			hcd->rpm_control = 1;
-			hcd->rpm_resume = 0;
-			pm_runtime_set_active(&pdev->dev);
-#endif
-		} else if (pdev->device == 0x119C) {
-			ehci_info(ehci, "Detected Merr USB2 HC\n");
-			hcd->has_tt = 1;
-			ehci->has_hostpc = 1;
-		} else if (pdev->device == 0x119D) {
-			ehci_info(ehci, "Detected HSIC HC\n");
-			hcd->has_tt = 1;
-			ehci->has_hostpc = 1;
-			ehci->has_lpm = 0;
-			hcd->has_sram = 1;
-			hcd->sram_no_payload = 1;
-			sram_init(hcd);
-
-			device_set_wakeup_enable(&pdev->dev, true);
-			/* Set Runtime-PM flags for SPH */
-			hcd->rpm_control = 1;
-			hcd->rpm_resume = 0;
-			pm_runtime_set_active(&pdev->dev);
-		}
-	}
-
-	ehci->caps = hcd->regs;
-	ehci->regs = hcd->regs +
-		HC_LENGTH(ehci, ehci_readl(ehci, &ehci->caps->hc_capbase));
-
-	dbg_hcs_params(ehci, "reset");
-	dbg_hcc_params(ehci, "reset");
-
-        /* ehci_init() causes memory for DMA transfers to be
-         * allocated.  Thus, any vendor-specific workarounds based on
-         * limiting the type of memory used for DMA transfers must
-         * happen before ehci_init() is called. */
-	switch (pdev->vendor) {
 	case PCI_VENDOR_ID_NVIDIA:
 		/* NVidia reports that certain chips don't handle
 		 * QH, ITD, or SITD addresses above 2GB.  (But TD,
@@ -314,63 +226,111 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 				ehci_warn(ehci, "can't enable NVidia "
 					"workaround for >2GB RAM\n");
 			break;
-		}
-		break;
-	}
 
-	/* cache this readonly data; minimize chip reads */
-	ehci->hcs_params = ehci_readl(ehci, &ehci->caps->hcs_params);
-	if (force_otg_hc_mode)
-		ehci_reset(ehci);
-
-	retval = ehci_halt(ehci);
-	if (retval)
-		return retval;
-
-	if ((pdev->vendor == PCI_VENDOR_ID_AMD && pdev->device == 0x7808) ||
-	    (pdev->vendor == PCI_VENDOR_ID_ATI && pdev->device == 0x4396)) {
-		/* EHCI controller on AMD SB700/SB800/Hudson-2/3 platforms may
-		 * read/write memory space which does not belong to it when
-		 * there is NULL pointer with T-bit set to 1 in the frame list
-		 * table. To avoid the issue, the frame list link pointer
-		 * should always contain a valid pointer to a inactive qh.
+		/* Some NForce2 chips have problems with selective suspend;
+		 * fixed in newer silicon.
 		 */
-		ehci->use_dummy_qh = 1;
-		ehci_info(ehci, "applying AMD SB700/SB800/Hudson-2/3 EHCI "
-				"dummy qh workaround\n");
-	}
-
-	/* data structure init */
-	retval = ehci_init(hcd);
-	if (retval)
-		return retval;
-
-	switch (pdev->vendor) {
-	case PCI_VENDOR_ID_NEC:
-		ehci->need_io_watchdog = 0;
+		case 0x0068:
+			if (pdev->revision < 0xa4)
+				ehci->no_selective_suspend = 1;
+			break;
+		}
 		break;
 	case PCI_VENDOR_ID_INTEL:
-		ehci->need_io_watchdog = 0;
-		ehci->fs_i_thresh = 1;
-		if (pdev->device == 0x27cc) {
-			ehci->broken_periodic = 1;
-			ehci_info(ehci, "using broken periodic workaround\n");
-		}
-		if (pdev->device == 0x0806 || pdev->device == 0x0811
-			|| pdev->device == 0x0829 || pdev->device == 0xE006) {
-			ehci_info(ehci, "disable lpm for langwell/penwell\n");
-			ehci->has_lpm = 0;
-		}
-		if (pdev->device == PCI_DEVICE_ID_INTEL_CE4100_USB) {
+		if (pdev->device == PCI_DEVICE_ID_INTEL_CE4100_USB)
 			hcd->has_tt = 1;
-			tdi_reset(ehci);
+		else if (pdev->device == 0x0811 || pdev->device == 0x0829 ||
+				pdev->device == 0xE006) {
+			ehci_info(ehci, "Detected Intel MID OTG HC\n");
+			hcd->has_tt = 1;
+			ehci->has_hostpc = 1;
+#ifdef CONFIG_USB_OTG
+			ehci->has_otg = 1;
+#endif
+			hcd->has_sram = 1;
+			/*
+			 * Disable SRAM for CLVP A0 due to the silicon issue.
+			 */
+			if (pdev->device == 0xE006 && pdev->revision < 0xC) {
+				ehci_info(ehci, "Disable SRAM for CLVP A0\n");
+				hcd->has_sram = 0;
+			}
+
+			hcd->sram_no_payload = 1;
+			sram_init(hcd);
+			} else if (pdev->device == 0x0806) {
+				ehci_info(ehci, "Detected Langwell MPH\n");
+				hcd->has_tt = 1;
+				ehci->has_hostpc = 1;
+				hcd->has_sram = 1;
+				hcd->sram_no_payload = 1;
+				sram_init(hcd);
+			} else if (pdev->device == 0x0829) {
+				ehci_info(ehci, "Detected Penwell OTG HC\n");
+				hcd->has_tt = 1;
+				ehci->has_hostpc = 1;
+		} else if (pdev->device == 0x08F2) {
+#ifdef CONFIG_USB_EHCI_HCD_SPH
+			struct ehci_sph_pdata   *sph_pdata;
+			sph_pdata = pdev->dev.platform_data;
+
+			/* All need to bypass tll mode  */
+			temp = ehci_readl(ehci, hcd->regs + CLV_SPHCFG);
+			temp &= ~CLV_SPHCFG_ULPI1TYPE;
+			ehci_writel(ehci, temp, hcd->regs + CLV_SPHCFG);
+
+			/* Check SPH enabled or not */
+			if (!sph_enabled() || !sph_pdata) {
+				/* ULPI 1 ref-clock switch off */
+				temp = ehci_readl(ehci, hcd->regs + CLV_SPHCFG);
+				temp |= CLV_SPHCFG_REFCKDIS;
+				ehci_writel(ehci, temp, hcd->regs + CLV_SPHCFG);
+
+				/* Set Power state */
+				retval = pci_set_power_state(pdev, PCI_D1);
+				if (retval < 0)
+					ehci_err(ehci,
+						"Set SPH to D1 failed, retval = %d\n",
+						retval);
+
+				ehci_info(ehci, "USB SPH is disabled\n");
+				return -ENODEV;
+				}
+
+			sph_pdata->enabled = sph_enabled();
+
+			ehci_info(ehci, "Detected SPH HC\n");
+			hcd->has_tt = 1;
+			ehci->has_hostpc = 1;
+
+			hcd->has_wakeup_irq = 1;
+
+			temp = ehci_readl(ehci, hcd->regs + CLV_SPH_HOSTPC);
+			temp |= CLV_SPH_HOSTPC_PTS;
+			ehci_writel(ehci, temp, hcd->regs + CLV_SPH_HOSTPC);
+
+			device_set_wakeup_enable(&pdev->dev, true);
+
+			pm_runtime_set_active(&pdev->dev);
+#endif
+		} else if (pdev->device == 0x119D) {
+			ehci_info(ehci, "Detected HSIC HC\n");
+			hcd->has_tt = 1;
+			ehci->has_hostpc = 1;
+
+			hcd->has_wakeup_irq = 1;
+
+			hcd->has_sram = 0;
+			hcd->sram_no_payload = 1;
+			sram_init(hcd);
+
+			device_set_wakeup_enable(&pdev->dev, true);
+			pm_runtime_set_active(&pdev->dev);
 		}
 		break;
 	case PCI_VENDOR_ID_TDI:
-		if (pdev->device == PCI_DEVICE_ID_TDI_EHCI) {
+		if (pdev->device == PCI_DEVICE_ID_TDI_EHCI)
 			hcd->has_tt = 1;
-			tdi_reset(ehci);
-		}
 		break;
 	case PCI_VENDOR_ID_AMD:
 		/* AMD PLL quirk */
@@ -382,28 +342,17 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 			retval = -EIO;
 			goto done;
 		}
-		break;
-	case PCI_VENDOR_ID_NVIDIA:
-		switch (pdev->device) {
-		/* Some NForce2 chips have problems with selective suspend;
-		 * fixed in newer silicon.
-		 */
-		case 0x0068:
-			if (pdev->revision < 0xa4)
-				ehci->no_selective_suspend = 1;
-			break;
 
-		/* MCP89 chips on the MacBookAir3,1 give EPROTO when
-		 * fetching device descriptors unless LPM is disabled.
-		 * There are also intermittent problems enumerating
-		 * devices with PPCD enabled.
+		/*
+		 * EHCI controller on AMD SB700/SB800/Hudson-2/3 platforms may
+		 * read/write memory space which does not belong to it when
+		 * there is NULL pointer with T-bit set to 1 in the frame list
+		 * table. To avoid the issue, the frame list link pointer
+		 * should always contain a valid pointer to a inactive qh.
 		 */
-		case 0x0d9d:
-			ehci_info(ehci, "disable lpm/ppcd for nvidia mcp89");
-			ehci->has_lpm = 0;
-			ehci->has_ppcd = 0;
-			ehci->command &= ~CMD_PPCEE;
-			break;
+		if (pdev->device == 0x7808) {
+			ehci->use_dummy_qh = 1;
+			ehci_info(ehci, "applying AMD SB700/SB800/Hudson-2/3 EHCI dummy qh workaround\n");
 		}
 		break;
 	case PCI_VENDOR_ID_VIA:
@@ -424,6 +373,18 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 		/* AMD PLL quirk */
 		if (usb_amd_find_chipset_info())
 			ehci->amd_pll_fix = 1;
+
+		/*
+		 * EHCI controller on AMD SB700/SB800/Hudson-2/3 platforms may
+		 * read/write memory space which does not belong to it when
+		 * there is NULL pointer with T-bit set to 1 in the frame list
+		 * table. To avoid the issue, the frame list link pointer
+		 * should always contain a valid pointer to a inactive qh.
+		 */
+		if (pdev->device == 0x4396) {
+			ehci->use_dummy_qh = 1;
+			ehci_info(ehci, "applying AMD SB700/SB800/Hudson-2/3 EHCI dummy qh workaround\n");
+		}
 		/* SB600 and old version of SB700 have a bug in EHCI controller,
 		 * which causes usb devices lose response in some cases.
 		 */
@@ -453,25 +414,52 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 	}
 
 	/* optional debug port, normally in the first BAR */
-	temp = pci_find_capability(pdev, 0x0a);
+	temp = pci_find_capability(pdev, PCI_CAP_ID_DBG);
 	if (temp) {
 		pci_read_config_dword(pdev, temp, &temp);
 		temp >>= 16;
-		if ((temp & (3 << 13)) == (1 << 13)) {
+		if (((temp >> 13) & 7) == 1) {
+			u32 hcs_params = ehci_readl(ehci,
+						    &ehci->caps->hcs_params);
+
 			temp &= 0x1fff;
-			ehci->debug = ehci_to_hcd(ehci)->regs + temp;
+			ehci->debug = hcd->regs + temp;
 			temp = ehci_readl(ehci, &ehci->debug->control);
 			ehci_info(ehci, "debug port %d%s\n",
-				HCS_DEBUG_PORT(ehci->hcs_params),
-				(temp & DBGP_ENABLED)
-					? " IN USE"
-					: "");
+				  HCS_DEBUG_PORT(hcs_params),
+				  (temp & DBGP_ENABLED) ? " IN USE" : "");
 			if (!(temp & DBGP_ENABLED))
 				ehci->debug = NULL;
 		}
 	}
 
-	ehci_reset(ehci);
+	retval = ehci_setup(hcd);
+	if (retval)
+		return retval;
+
+	/* These workarounds need to be applied after ehci_setup() */
+	switch (pdev->vendor) {
+	case PCI_VENDOR_ID_NEC:
+		ehci->need_io_watchdog = 0;
+		break;
+	case PCI_VENDOR_ID_INTEL:
+		ehci->need_io_watchdog = 0;
+		break;
+	case PCI_VENDOR_ID_NVIDIA:
+		switch (pdev->device) {
+		/* MCP89 chips on the MacBookAir3,1 give EPROTO when
+		 * fetching device descriptors unless LPM is disabled.
+		 * There are also intermittent problems enumerating
+		 * devices with PPCD enabled.
+		 */
+		case 0x0d9d:
+			ehci_info(ehci, "disable ppcd for nvidia mcp89\n");
+			ehci->has_ppcd = 0;
+			ehci->command &= ~CMD_PPCEE;
+			break;
+		}
+		break;
+	}
 
 	/* at least the Genesys GL880S needs fixup here */
 	temp = HCS_N_CC(ehci->hcs_params) * HCS_N_PCC(ehci->hcs_params);
@@ -496,10 +484,11 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 	}
 
 	/* Serial Bus Release Number is at PCI 0x60 offset */
-	pci_read_config_byte(pdev, 0x60, &ehci->sbrn);
 	if (pdev->vendor == PCI_VENDOR_ID_STMICRO
 	    && pdev->device == PCI_DEVICE_ID_STMICRO_USB_HOST)
-		ehci->sbrn = 0x20; /* ConneXT has no sbrn register */
+		;	/* ConneXT has no sbrn register */
+	else
+		pci_read_config_byte(pdev, 0x60, &ehci->sbrn);
 
 	/* Keep this around for a while just in case some EHCI
 	 * implementation uses legacy PCI PM support.  This test
@@ -516,22 +505,11 @@ static int ehci_pci_setup(struct usb_hcd *hcd)
 		}
 	}
 
-#ifdef	CONFIG_USB_SUSPEND
-	/* REVISIT: the controller works fine for wakeup iff the root hub
-	 * itself is "globally" suspended, but usbcore currently doesn't
-	 * understand such things.
-	 *
-	 * System suspend currently expects to be able to suspend the entire
-	 * device tree, device-at-a-time.  If we failed selective suspend
-	 * reports, system suspend would fail; so the root hub code must claim
-	 * success.  That's lying to usbcore, and it matters for runtime
-	 * PM scenarios with selective suspend and remote wakeup...
-	 */
+#ifdef	CONFIG_PM_RUNTIME
 	if (ehci->no_selective_suspend && device_can_wakeup(&pdev->dev))
 		ehci_warn(ehci, "selective suspend/wakeup unavailable\n");
 #endif
 
-	ehci_port_power(ehci, 1);
 	retval = ehci_pci_reinit(ehci, pdev);
 done:
 	return retval;
@@ -549,69 +527,6 @@ done:
  * the right sort of wakeup.
  * Also they depend on separate root hub suspend/resume.
  */
-
-static int ehci_pci_suspend(struct usb_hcd *hcd, bool do_wakeup)
-{
-	struct ehci_hcd		*ehci = hcd_to_ehci(hcd);
-	unsigned long		flags;
-	int			rc = 0;
-	int			port;
-
-	if (time_before(jiffies, ehci->next_statechange))
-		msleep(10);
-
-	/* s0i3 may poweroff SRAM, backup the SRAM */
-	if (hcd->has_sram && sram_backup(hcd)) {
-		ehci_warn(ehci, "sram_backup failed\n");
-		return -EPERM;
-	}
-
-	/* Root hub was already suspended. Disable irq emission and
-	 * mark HW unaccessible.  The PM and USB cores make sure that
-	 * the root hub is either suspended or stopped.
-	 */
-	ehci_prepare_ports_for_controller_suspend(ehci, do_wakeup);
-	spin_lock_irqsave (&ehci->lock, flags);
-	ehci_writel(ehci, 0, &ehci->regs->intr_enable);
-	(void)ehci_readl(ehci, &ehci->regs->intr_enable);
-
-	/* Set HOSTPC_PHCD if not set yet to let PHY enter low-power mode */
-	if (ehci->has_hostpc) {
-		spin_unlock_irqrestore(&ehci->lock, flags);
-		usleep_range(5000, 6000);
-		spin_lock_irqsave(&ehci->lock, flags);
-
-		port = HCS_N_PORTS(ehci->hcs_params);
-		while (port--) {
-			u32 __iomem	*hostpc_reg;
-			u32		temp;
-			struct pci_dev  *pdev =
-				to_pci_dev(hcd->self.controller);
-
-			if (pdev->device != 0x119D) {
-				hostpc_reg = (u32 __iomem *)((u8 *) ehci->regs
-						 + HOSTPC0 + 4 * port);
-				temp = ehci_readl(ehci, hostpc_reg);
-
-				if (!(temp & HOSTPC_PHCD))
-					ehci_writel(ehci, temp | HOSTPC_PHCD,
-							hostpc_reg);
-				temp = ehci_readl(ehci, hostpc_reg);
-				ehci_dbg(ehci, "Port %d PHY low-power mode %s\n",
-						port, (temp & HOSTPC_PHCD) ?
-						"succeeded" : "failed");
-			}
-		}
-	}
-
-	clear_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
-	spin_unlock_irqrestore (&ehci->lock, flags);
-
-	// could save FLADJ in case of Vaux power loss
-	// ... we'd only use it to handle clock skew
-
-	return rc;
-}
 
 static bool usb_is_intel_switchable_ehci(struct pci_dev *pdev)
 {
@@ -634,6 +549,55 @@ static void ehci_enable_xhci_companion(void)
 		usb_enable_xhci_ports(companion);
 		return;
 	}
+}
+
+static int ehci_pci_suspend(struct usb_hcd *hcd, bool do_wakeup)
+{
+	struct ehci_hcd		*ehci = hcd_to_ehci(hcd);
+	unsigned long		flags;
+	int			rc = 0;
+	int			port;
+
+	if (time_before(jiffies, ehci->next_statechange))
+		usleep_range(10000, 12000);
+
+	/* s0i3 may poweroff SRAM, backup the SRAM */
+	if (hcd->has_sram && sram_backup(hcd)) {
+		ehci_warn(ehci, "sram_backup failed\n");
+		return -EPERM;
+	}
+
+	rc = ehci_suspend(hcd, do_wakeup);
+
+	/* Set HOSTPC_PHCD if not set yet to let PHY enter low-power mode */
+	if (ehci->has_hostpc) {
+		usleep_range(5000, 6000);
+		spin_lock_irqsave(&ehci->lock, flags);
+
+		port = HCS_N_PORTS(ehci->hcs_params);
+		while (port--) {
+			u32 __iomem	*hostpc_reg;
+			u32		temp;
+			struct pci_dev  *pdev =
+				to_pci_dev(hcd->self.controller);
+
+			if (pdev->device != 0x119D) {
+				hostpc_reg = &ehci->regs->hostpc[port];
+				temp = ehci_readl(ehci, hostpc_reg);
+
+				if (!(temp & HOSTPC_PHCD))
+					ehci_writel(ehci, temp | HOSTPC_PHCD,
+							hostpc_reg);
+				temp = ehci_readl(ehci, hostpc_reg);
+				ehci_dbg(ehci, "Port %d PHY low-power mode %s\n",
+					port, (temp & HOSTPC_PHCD) ?
+						"succeeded" : "failed");
+			}
+		}
+		spin_unlock_irqrestore(&ehci->lock, flags);
+	}
+
+	return rc;
 }
 
 static int ehci_pci_resume(struct usb_hcd *hcd, bool hibernated)
@@ -666,126 +630,32 @@ static int ehci_pci_resume(struct usb_hcd *hcd, bool hibernated)
 	if (usb_is_intel_switchable_ehci(pdev))
 		ehci_enable_xhci_companion();
 
-	// maybe restore FLADJ
-
-	if (time_before(jiffies, ehci->next_statechange))
-		msleep(100);
-
-	/* Mark hardware accessible again as we are out of D3 state by now */
-	set_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
-
-	/* If CF is still set and we aren't resuming from hibernation
-	 * then we maintained PCI Vaux power.
-	 * Just undo the effect of ehci_pci_suspend().
-	 */
-	if (ehci_readl(ehci, &ehci->regs->configured_flag) == FLAG_CF &&
-				!hibernated) {
-		int	mask = INTR_MASK;
-
-		ehci_prepare_ports_for_controller_resume(ehci);
-		if (!hcd->self.root_hub->do_remote_wakeup)
-			mask &= ~STS_PCD;
-		ehci_writel(ehci, mask, &ehci->regs->intr_enable);
-		ehci_readl(ehci, &ehci->regs->intr_enable);
-		return 0;
-	}
-
-	usb_root_hub_lost_power(hcd->self.root_hub);
-
-	/* Else reset, to cope with power loss or flush-to-storage
-	 * style "resume" having let BIOS kick in during reboot.
-	 */
-	(void) ehci_halt(ehci);
-	(void) ehci_reset(ehci);
-	(void) ehci_pci_reinit(ehci, pdev);
-
-	/* emptying the schedule aborts any urbs */
-	spin_lock_irq(&ehci->lock);
-	if (ehci->reclaim)
-		end_unlink_async(ehci);
-	ehci_work(ehci);
-	spin_unlock_irq(&ehci->lock);
-
-	ehci_writel(ehci, ehci->command, &ehci->regs->command);
-	ehci_writel(ehci, FLAG_CF, &ehci->regs->configured_flag);
-	ehci_readl(ehci, &ehci->regs->command);	/* unblock posted writes */
-
-	/* here we "know" root ports should always stay powered */
-	ehci_port_power(ehci, 1);
-
-	ehci->rh_state = EHCI_RH_SUSPENDED;
+	if (ehci_resume(hcd, hibernated) != 0)
+		(void) ehci_pci_reinit(ehci, pdev);
 	return 0;
 }
-#endif
 
-static int ehci_update_device(struct usb_hcd *hcd, struct usb_device *udev)
+#else
+
+#define ehci_pci_suspend	NULL
+#define ehci_pci_resume		NULL
+#endif	/* CONFIG_PM */
+
+/*
+ * Called when the ehci_pci module is removed.
+ */
+static void ehci_pci_stop(struct usb_hcd *hcd)
 {
-	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
-	int rc = 0;
-
-	if (!udev->parent) /* udev is root hub itself, impossible */
-		rc = -1;
-	/* we only support lpm device connected to root hub yet */
-	if (ehci->has_lpm && !udev->parent->parent) {
-		rc = ehci_lpm_set_da(ehci, udev->devnum, udev->portnum);
-		if (!rc)
-			rc = ehci_lpm_check(ehci, udev->portnum);
-	}
-	return rc;
+	ehci_stop(hcd);
+	/* Release sram when removed */
+	if (hcd->has_sram)
+		sram_deinit(hcd);
 }
 
-static const struct hc_driver ehci_pci_hc_driver = {
-	.description =		hcd_name,
-	.product_desc =		"EHCI Host Controller",
-	.hcd_priv_size =	sizeof(struct ehci_hcd),
+static struct hc_driver __read_mostly ehci_pci_hc_driver;
 
-	/*
-	 * generic hardware linkage
-	 */
-	.irq =			ehci_irq,
-	.flags =		HCD_MEMORY | HCD_USB2,
-
-	/*
-	 * basic lifecycle operations
-	 */
+static const struct ehci_driver_overrides pci_overrides __initconst = {
 	.reset =		ehci_pci_setup,
-	.start =		ehci_run,
-#ifdef	CONFIG_PM
-	.pci_suspend =		ehci_pci_suspend,
-	.pci_resume =		ehci_pci_resume,
-#endif
-	.stop =			ehci_stop,
-	.shutdown =		ehci_shutdown,
-
-	/*
-	 * managing i/o requests and associated device resources
-	 */
-	.urb_enqueue =		ehci_urb_enqueue,
-	.urb_dequeue =		ehci_urb_dequeue,
-	.endpoint_disable =	ehci_endpoint_disable,
-	.endpoint_reset =	ehci_endpoint_reset,
-
-	/*
-	 * scheduling support
-	 */
-	.get_frame_number =	ehci_get_frame,
-
-	/*
-	 * root hub support
-	 */
-	.hub_status_data =	ehci_hub_status_data,
-	.hub_control =		ehci_hub_control,
-	.bus_suspend =		ehci_bus_suspend,
-	.bus_resume =		ehci_bus_resume,
-	.relinquish_port =	ehci_relinquish_port,
-	.port_handed_over =	ehci_port_handed_over,
-
-	/*
-	 * call back when device connected and addressed
-	 */
-	.update_device =	ehci_update_device,
-
-	.clear_tt_buffer_complete	= ehci_clear_tt_buffer_complete,
 };
 
 /*-------------------------------------------------------------------------*/
@@ -812,9 +682,121 @@ static struct pci_driver ehci_pci_driver = {
 	.remove =	usb_hcd_pci_remove,
 	.shutdown = 	usb_hcd_pci_shutdown,
 
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_PM
 	.driver =	{
 		.pm =	&usb_hcd_pci_pm_ops
 	},
 #endif
 };
+
+#ifdef CONFIG_USB_EHCI_HCD_SPH
+#include "ehci-sph-pci.c"
+#define INTEL_MID_SPH_HOST_DRIVER	ehci_sph_driver
+#endif
+
+#if defined(CONFIG_USB_LANGWELL_OTG) || defined(CONFIG_USB_PENWELL_OTG)
+#include "ehci-langwell-pci.c"
+#define INTEL_MID_OTG_HOST_DRIVER	ehci_otg_driver
+#endif
+
+#ifdef CONFIG_USB_HCD_HSIC
+#include "ehci-tangier-hsic-pci.c"
+#define INTEL_MID_HSIC_HOST_DRIVER	ehci_hsic_driver
+#endif
+
+static int __init ehci_pci_init(void)
+{
+	int		retval;
+
+	if (usb_disabled())
+		return -ENODEV;
+
+	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
+
+	ehci_init_driver(&ehci_pci_hc_driver, &pci_overrides);
+
+	/* Entries for the PCI suspend/resume callbacks are special */
+	ehci_pci_hc_driver.pci_suspend = ehci_pci_suspend;
+	ehci_pci_hc_driver.pci_resume = ehci_pci_resume;
+
+	/* Need to use seprate ehci_stop since need to hanlde sram */
+	ehci_pci_hc_driver.stop = ehci_pci_stop;
+
+#ifdef CONFIG_USB_HCD_HSIC
+	retval = pci_register_driver(&INTEL_MID_HSIC_HOST_DRIVER);
+	if (retval < 0)
+		goto clean0;
+#endif
+
+#ifdef INTEL_MID_OTG_HOST_DRIVER
+	retval = intel_mid_ehci_driver_register(&INTEL_MID_OTG_HOST_DRIVER);
+	if (retval < 0) {
+		pr_err("%s  register otg host driver failed, retval = %d\n",
+				__func__, retval);
+		goto clean1;
+	}
+#endif
+
+#ifdef CONFIG_USB_EHCI_HCD_SPH
+	if (sph_enabled()) {
+		retval = pci_register_driver(&INTEL_MID_SPH_HOST_DRIVER);
+		if (retval < 0) {
+			pr_err("%s  register sph driver failed, retval = %d\n",
+					__func__, retval);
+			goto clean2;
+		}
+	}
+#endif
+
+	retval = pci_register_driver(&ehci_pci_driver);
+	if (retval < 0) {
+		pr_err("%s  register ehci pci driver failed, retval = %d\n",
+				__func__, retval);
+		goto clean3;
+	}
+	return retval;
+
+clean3:
+	pci_unregister_driver(&ehci_pci_driver);
+
+#ifdef CONFIG_USB_EHCI_HCD_SPH
+clean2:
+	pci_unregister_driver(&INTEL_MID_SPH_HOST_DRIVER);
+#endif
+
+#ifdef INTEL_MID_OTG_HOST_DRIVER
+clean1:
+	intel_mid_ehci_driver_unregister(&INTEL_MID_OTG_HOST_DRIVER);
+#endif
+
+#ifdef CONFIG_USB_HCD_HSIC
+clean0:
+	pci_unregister_driver(&INTEL_MID_HSIC_HOST_DRIVER);
+#endif
+	return retval;
+}
+module_init(ehci_pci_init);
+
+static void __exit ehci_pci_cleanup(void)
+{
+#ifdef INTEL_MID_OTG_HOST_DRIVER
+	intel_mid_ehci_driver_unregister(&INTEL_MID_OTG_HOST_DRIVER);
+#endif
+
+#ifdef CONFIG_USB_EHCI_HCD_SPH
+	if (sph_enabled())
+		pci_unregister_driver(&INTEL_MID_SPH_HOST_DRIVER);
+#endif
+
+#ifdef CONFIG_USB_HCD_HSIC
+	pci_unregister_driver(&INTEL_MID_HSIC_HOST_DRIVER);
+#endif
+
+	pci_unregister_driver(&ehci_pci_driver);
+}
+module_exit(ehci_pci_cleanup);
+
+MODULE_DESCRIPTION(DRIVER_DESC);
+MODULE_AUTHOR("David Brownell");
+MODULE_AUTHOR("Alan Stern");
+MODULE_LICENSE("GPL");

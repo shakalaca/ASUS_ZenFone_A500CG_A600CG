@@ -762,6 +762,12 @@ static PVRSRV_ERROR TLTestCMD_SignalPE (IMG_UINT32* psIn1)
 
 	/* ensure the registers goes through before continuing */
 	OSMemoryBarrier();
+#if !defined(RGXFW_POWMON_TIMERCTL)
+	/* ack the output from the FW */
+	ui32Tmp = OSReadHWReg32(psDevInfo->pvRegsBaseKM, RGX_CR_EVENT_STATUS);
+	OSWriteHWReg32(psDevInfo->pvRegsBaseKM, RGX_CR_EVENT_STATUS, ui32Tmp|RGX_CR_EVENT_STATUS_GPIO_ACK_EN);
+	OSMemoryBarrier();
+#endif
 
 #if defined(NO_HARDWARE)
 	PVR_DPF((PVR_DBG_WARNING, "TLTestCMD_SignalPwrEst is a no-op on NO_HARDWARE!"));

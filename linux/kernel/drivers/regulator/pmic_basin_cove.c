@@ -231,13 +231,19 @@ static struct regulator_desc intel_pmic_desc[] = {
 	},
 };
 
-static int __devinit basin_cove_pmic_probe(struct platform_device *pdev)
+static int basin_cove_pmic_probe(struct platform_device *pdev)
 {
 	struct intel_pmic_info *pdata = dev_get_platdata(&pdev->dev);
+	struct regulator_config config = { };
 	unsigned int i;
 
 	if (!pdata || !pdata->pmic_reg)
 		return -EINVAL;
+
+	config.dev = &pdev->dev;
+	config.init_data = pdata->init_data;
+	config.driver_data = pdata;
+
 	for (i = 0; i < ARRAY_SIZE(reg_addr_offset); i++) {
 		if (reg_addr_offset[i] == pdata->pmic_reg)
 			break;
@@ -246,9 +252,7 @@ static int __devinit basin_cove_pmic_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	pdata->intel_pmic_rdev =
-	regulator_register(&intel_pmic_desc[i],
-		&pdev->dev, pdata->init_data, pdata,
-			pdev->dev.of_node);
+	regulator_register(&intel_pmic_desc[i], &config);
 	if (IS_ERR(pdata->intel_pmic_rdev)) {
 		dev_err(&pdev->dev, "can't register regulator..error %ld\n",
 				PTR_ERR(pdata->intel_pmic_rdev));
@@ -259,7 +263,7 @@ static int __devinit basin_cove_pmic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devexit basin_cove_pmic_remove(struct platform_device *pdev)
+static int basin_cove_pmic_remove(struct platform_device *pdev)
 {
 	regulator_unregister(platform_get_drvdata(pdev));
 	return 0;
@@ -278,7 +282,7 @@ static struct platform_driver basin_cove_pmic_driver = {
 		.owner = THIS_MODULE,
 	},
 	.probe = basin_cove_pmic_probe,
-	.remove = __devexit_p(basin_cove_pmic_remove),
+	.remove = basin_cove_pmic_remove,
 	.id_table = basin_cove_id_table,
 };
 static int __init basin_cove_pmic_init(void)

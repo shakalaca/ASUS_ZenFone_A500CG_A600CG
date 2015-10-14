@@ -203,7 +203,7 @@ int PVRSRVDrmOpen(struct drm_device *dev, struct drm_file *file)
 #if defined(SUPPORT_DRM_EXT)
 void PVRSRVDrmPostClose(struct drm_device *dev, struct drm_file *file)
 {
-	PVRSRVRelease(file);
+	PVRSRVRelease(file->driver_priv);
 
 	file->driver_priv = NULL;
 }

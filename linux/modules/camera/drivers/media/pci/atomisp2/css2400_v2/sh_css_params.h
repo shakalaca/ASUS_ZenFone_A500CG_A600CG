@@ -1,4 +1,4 @@
-/* Release Version: ci_master_byt_20130823_2200 */
+/* Release Version: ci_master_byt_20130916_2228 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  *
@@ -111,6 +111,7 @@ struct ia_css_isp_parameters {
 	bool rgb2yuv_cc_config_changed;
 */
 	unsigned int sensor_binning;
+	bool raw_binning;
 	/* local buffers, used to re-order the 3a statistics in vmem-format */
 	const short *dis_hor_coef_tbl;
 	const short *dis_ver_coef_tbl;

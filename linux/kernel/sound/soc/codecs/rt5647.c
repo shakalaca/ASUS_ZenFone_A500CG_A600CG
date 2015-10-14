@@ -27,7 +27,8 @@
 #include <sound/initval.h>
 #include <sound/tlv.h>
 #include <linux/earlysuspend.h>
-#include <linux/gpio.h>  
+#include <linux/gpio.h>
+#include <linux/version.h>
 
 #define RTK_IOCTL
 #ifdef RTK_IOCTL
@@ -46,6 +47,12 @@
 #define USE_ASRC
 #define SET_PATH
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0)
+#define __devinit
+#define __devexit
+#define __devexit_p(x) x
+#endif
+
 #define VERSION "0.0.7 alsa 1.0.25"
 
 struct early_suspend early_suspend_gpio45;
@@ -56,6 +63,7 @@ static struct mutex event_drc_mutex;
 static int DRC_CTRL;
 static int a2dp_to_spk_delay = 600;
 static int spk_unmute_delay;
+extern int headset_state;
 
 static void GPIO45_set_low_early_suspend(struct early_suspend *h)
 {
@@ -113,7 +121,7 @@ static struct rt5647_init_reg init_list[] = {
 	{ RT5647_IL_CMD2	, 0x0010 }, /* set Inline Command Window */
 	{ RT5647_PRIV_INDEX	, 0x003d },
 	{ RT5647_PRIV_DATA	, 0x3600 },
-	{ RT5647_CHARGE_PUMP	, 0x0e06 },
+	{ RT5647_CHARGE_PUMP	, 0x0e06 }, //hp depop
 #if 0
 	{ RT5647_A_JD_CTRL1	, 0x0202 },/* for combo jack 1.8v */
 #endif
@@ -157,7 +165,7 @@ static struct rt5647_init_reg init_list[] = {
 #endif
 #if 1 /* DMIC2 */
 	{ RT5647_STO1_ADC_MIXER	, 0x5940 },
-	{ RT5647_MONO_ADC_MIXER, 0x5959 },
+	{ RT5647_MONO_ADC_MIXER, 0x7979 },
 #endif
 #if 0 /* AMIC */
 	{ RT5647_STO1_ADC_MIXER	, 0x3020 },/* ADC -> Sto ADC mixer */
@@ -167,7 +175,7 @@ static struct rt5647_init_reg init_list[] = {
 	{ RT5647_DMIC_CTRL2	, 0x0005 },
 	/* { RT5647_STO1_ADC_DIG_VOL, 0xafaf }, */ /* Mute STO1 ADC for depop, Digital Input Gain */
 	//{ RT5647_STO1_ADC_DIG_VOL, 0xd7d7 }, /* Mute STO1 ADC for depop, Digital Input Gain */
-        { RT5647_STO1_ADC_DIG_VOL, 0xafaf }, //MX-1c, Eric
+        { RT5647_STO1_ADC_DIG_VOL, 0xafaf }, //MX-1c
 	{ RT5647_GPIO_CTRL1	, 0xc004 },
 	{ RT5647_GPIO_CTRL2	, 0x0004 },
 #ifdef JD1_FUNC
@@ -203,6 +211,7 @@ static struct rt5647_init_reg init_list[] = {
 	#endif
 
 	{ RT5647_CJ_CTRL3        , 0xc000 },
+	{ RT5647_MONO_ADC_DIG_VOL, 0xafaf },
 };
 #define RT5647_INIT_REG_LEN ARRAY_SIZE(init_list)
 
@@ -858,10 +867,6 @@ int rt5647_check_irq_event(struct snd_soc_codec *codec)
 	switch (val) {
 	case 0x20: /* No plug */
 		//rt5647->jack_type = rt5647_headset_detect(codec, 0);
-
-		snd_soc_update_bits(codec, RT5647_SPK_L_MIXER , RT5647_M_IN_L_SM_L, RT5647_M_IN_L_SM_L); //Angus 0326
-		snd_soc_update_bits(codec, RT5647_SPK_R_MIXER , RT5647_M_IN_R_SM_R, RT5647_M_IN_R_SM_R); //Angus 0326
-		printk(KERN_INFO "disable alsa control\n");
 
 		ret = RT5647_J_OUT_EVENT;
 		del_timer( &jd_check_timer); //bard 1-27
@@ -2191,6 +2196,22 @@ static int rt5647_dmic1_event(struct snd_soc_dapm_widget *w,
 			snd_soc_write(codec, 0xf3, 0x0000);
 			snd_soc_write(codec, 0xf4, 0x4000);
                 #endif
+
+		//AGC(A502CG)
+		#ifdef CONFIG_A502CG_AUDIO_SETTING
+			snd_soc_write(codec, 0xb3, 0x0997);
+			snd_soc_write(codec, 0xb4, 0xc20c);
+			snd_soc_write(codec, 0xb5, 0x1700);
+			snd_soc_write(codec, 0xb6, 0xa01f);
+			snd_soc_write(codec, 0xb7, 0x4008);
+			snd_soc_write(codec, 0xd4, 0x0505);
+			snd_soc_write(codec, 0xe7, 0x0700);
+			snd_soc_write(codec, 0xf1, 0x020c);
+			snd_soc_write(codec, 0xf2, 0x1f00);
+			snd_soc_write(codec, 0xf3, 0x0000);
+			snd_soc_write(codec, 0xf4, 0x4000);
+		#endif
+
 		printk(KERN_INFO "[DRC] enable recording DRC\n");
 #ifdef CONFIG_A600CG_AUDIO_SETTING
 		rt5647_update_eqmode(codec, EQ_CH_ADC, CLUB);
@@ -2240,6 +2261,18 @@ static int rt5647_bst1_event(struct snd_soc_dapm_widget *w,
                         snd_soc_write(codec, 0xd4, 0x0505);
                         snd_soc_write(codec, 0xe7, 0x0700);
                 #endif
+
+                //AGC(A502CG)
+                #ifdef CONFIG_A502CG_AUDIO_SETTING
+                        snd_soc_write(codec, 0xb3, 0x032f);
+                        snd_soc_write(codec, 0xb4, 0x020c);
+                        snd_soc_write(codec, 0xb5, 0x1f01);
+                        snd_soc_write(codec, 0xb6, 0x0012);
+                        snd_soc_write(codec, 0xb7, 0x6004);
+                        snd_soc_write(codec, 0xd4, 0x0505);
+                        snd_soc_write(codec, 0xe7, 0x0700);
+                #endif
+
 		break;
 
 	/*case SND_SOC_DAPM_PRE_PMD:
@@ -3943,14 +3976,14 @@ static void jd_check_handler(struct work_struct *work)
 	struct snd_soc_jack *jack = get_jack(jack_fake);
 
 	val = snd_soc_read(codec, RT5647_A_JD_CTRL1) & 0x0020;
-      // pr_debug("jd_check_handler : val = 0x%x\n", val);
+        // pr_debug("jd_check_handler : val = 0x%x\n", val);
+
 	if (val == 0x20) {
 
-		snd_soc_update_bits(codec, RT5647_SPK_L_MIXER , RT5647_M_IN_L_SM_L, RT5647_M_IN_L_SM_L); //Angus 0326
-		snd_soc_update_bits(codec, RT5647_SPK_R_MIXER , RT5647_M_IN_R_SM_R, RT5647_M_IN_R_SM_R); //Angus 0326
-		printk(KERN_INFO "disable alsa control\n");
-
 		pr_err("jack plug out\n");
+
+                headset_state = 0;
+
 		rt5647_button_detect(codec);
 		snd_soc_update_bits(codec, RT5647_INT_IRQ_ST, 0x8, 0x0);
 		snd_soc_jack_report(jack, 0, SND_JACK_BTN_0);
@@ -3982,7 +4015,8 @@ static int rt5647_probe(struct snd_soc_codec *codec)
 #endif
 	int ret;
 
-	pr_info("Codec driver version %s\n", VERSION);
+//	pr_info("Codec driver version %s\n", VERSION);
+	printk(KERN_INFO "Codec driver version %s\n", VERSION);
 
 	codec->dapm.idle_bias_off = 1;
        codec_global = codec;
@@ -3993,7 +4027,6 @@ static int rt5647_probe(struct snd_soc_codec *codec)
 	}
 
 	rt5647_reset(codec);
-
 	snd_soc_update_bits(codec, RT5647_PWR_ANLG1,
 		RT5647_PWR_VREF1 | RT5647_PWR_MB |
 		RT5647_PWR_BG | RT5647_PWR_VREF2,
@@ -4219,7 +4252,7 @@ static int __devinit rt5647_i2c_probe(struct i2c_client *i2c,
 {
 	struct rt5647_priv *rt5647;
 	int ret;
-
+	printk(KERN_INFO "rt5647_i2c_probe \n");
 	rt5647 = kzalloc(sizeof(struct rt5647_priv), GFP_KERNEL);
 	if (NULL == rt5647)
 		return -ENOMEM;
@@ -4263,6 +4296,7 @@ struct i2c_driver rt5647_i2c_driver = {
 
 static int __init rt5647_modinit(void)
 {
+        printk(KERN_INFO "rt5647_modinit \n");
 	return i2c_add_driver(&rt5647_i2c_driver);
 }
 module_init(rt5647_modinit);

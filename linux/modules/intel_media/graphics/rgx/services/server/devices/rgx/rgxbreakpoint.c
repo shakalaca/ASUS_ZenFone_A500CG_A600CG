@@ -45,6 +45,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvr_debug.h"
 #include "rgxutils.h"
 #include "rgxfwutils.h"
+#include "rgxmem.h"
 #include "device.h"
 #include "sync_internal.h"
 #include "pdump_km.h"
@@ -57,7 +58,7 @@ PVRSRV_ERROR PVRSRVRGXSetBreakpointKM(PVRSRV_DEVICE_NODE	*psDeviceNode,
 					IMG_UINT32		ui32HandlerAddr,
 					IMG_UINT32		ui32DataMaster)
 {
-	DEVMEM_MEMDESC		*psFWMemContextMemDesc = hMemCtxPrivData;
+	DEVMEM_MEMDESC		*psFWMemContextMemDesc = RGXGetFWMemDescFromMemoryContextHandle(hMemCtxPrivData);
 	PVRSRV_ERROR 		eError = PVRSRV_OK;
 	RGXFWIF_KCCB_CMD 	sBPCmd;
 	
@@ -104,7 +105,7 @@ PVRSRV_ERROR PVRSRVRGXSetBreakpointKM(PVRSRV_DEVICE_NODE	*psDeviceNode,
 PVRSRV_ERROR PVRSRVRGXClearBreakpointKM(PVRSRV_DEVICE_NODE	*psDeviceNode,
 					IMG_HANDLE		hMemCtxPrivData)
 {
-	DEVMEM_MEMDESC		*psFWMemContextMemDesc = hMemCtxPrivData;
+	DEVMEM_MEMDESC		*psFWMemContextMemDesc = RGXGetFWMemDescFromMemoryContextHandle(hMemCtxPrivData);
 	PVRSRV_ERROR 		eError = PVRSRV_OK;
 	RGXFWIF_KCCB_CMD 	sBPCmd;
 	RGXFWIF_DM			eDataMaster = psDeviceNode->psDevConfig->eBPDM;
@@ -147,7 +148,7 @@ PVRSRV_ERROR PVRSRVRGXClearBreakpointKM(PVRSRV_DEVICE_NODE	*psDeviceNode,
 PVRSRV_ERROR PVRSRVRGXEnableBreakpointKM(PVRSRV_DEVICE_NODE	*psDeviceNode,
 					IMG_HANDLE		hMemCtxPrivData)
 {
-	DEVMEM_MEMDESC		*psFWMemContextMemDesc = hMemCtxPrivData;
+	DEVMEM_MEMDESC		*psFWMemContextMemDesc = RGXGetFWMemDescFromMemoryContextHandle(hMemCtxPrivData);
 	PVRSRV_ERROR 		eError = PVRSRV_OK;
 	RGXFWIF_KCCB_CMD 	sBPCmd;
 	RGXFWIF_DM			eDataMaster = psDeviceNode->psDevConfig->eBPDM;
@@ -189,7 +190,7 @@ PVRSRV_ERROR PVRSRVRGXEnableBreakpointKM(PVRSRV_DEVICE_NODE	*psDeviceNode,
 PVRSRV_ERROR PVRSRVRGXDisableBreakpointKM(PVRSRV_DEVICE_NODE	*psDeviceNode,
 					IMG_HANDLE		hMemCtxPrivData)
 {
-	DEVMEM_MEMDESC		*psFWMemContextMemDesc = hMemCtxPrivData;
+	DEVMEM_MEMDESC		*psFWMemContextMemDesc = RGXGetFWMemDescFromMemoryContextHandle(hMemCtxPrivData);
 	PVRSRV_ERROR 		eError = PVRSRV_OK;
 	RGXFWIF_KCCB_CMD 	sBPCmd;
 	RGXFWIF_DM			eDataMaster = psDeviceNode->psDevConfig->eBPDM;

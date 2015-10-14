@@ -99,7 +99,7 @@
 //#define IMX_OTP_DATA_SIZE		1280
 
 #define TSB_SUBDEV_PREFIX "t4k"
-#define TSB_DRIVER	"t4kxx"
+#define TSB_DRIVER	"t4k37"
 
 /* Sensor ids from identification register */
 #define TSB_NAME_K37	"t4k37"

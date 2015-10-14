@@ -58,26 +58,30 @@ static void lpm070w425b_get_panel_info(int pipe,
 
 bool lpm070w425b_init(struct intel_dsi_device *dsi)
 {
+	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
+
 	DRM_DEBUG_KMS("\n");
 
-	dsi->eotp_pkt = 1;
-	dsi->operation_mode = DSI_VIDEO_MODE;
-	dsi->video_mode_type = DSI_VIDEO_NBURST_SEVENT;
-	dsi->pixel_format = VID_MODE_FORMAT_RGB888;
-	dsi->port_bits = 0;
-	dsi->turn_arnd_val = 0x30;
-	dsi->rst_timer_val = 0xffff;
-	dsi->hs_to_lp_count = 0x2f;
-	dsi->lp_byte_clk = 7;
-	dsi->bw_timer = 0x820;
-	dsi->clk_lp_to_hs_count = 0x2f;
-	dsi->clk_hs_to_lp_count = 0x16;
-	dsi->video_frmt_cfg_bits = 0x8;
-	dsi->dphy_reg = 0x2a18681f;
+	intel_dsi->hs = true;
+	intel_dsi->channel = 0;
+	intel_dsi->lane_count = 4;
+	intel_dsi->eot_disable = 1;
+	intel_dsi->video_mode_type = DSI_VIDEO_NBURST_SEVENT;
+	intel_dsi->pixel_format = VID_MODE_FORMAT_RGB888;
+	intel_dsi->port_bits = 0;
+	intel_dsi->turn_arnd_val = 0x30;
+	intel_dsi->rst_timer_val = 0xffff;
+	intel_dsi->hs_to_lp_count = 0x2f;
+	intel_dsi->lp_byte_clk = 7;
+	intel_dsi->bw_timer = 0x820;
+	intel_dsi->clk_lp_to_hs_count = 0x2f;
+	intel_dsi->clk_hs_to_lp_count = 0x16;
+	intel_dsi->video_frmt_cfg_bits = 0x8;
+	intel_dsi->dphy_reg = 0x2a18681f;
 
-	dsi->backlight_off_delay = 20;
-	dsi->send_shutdown = true;
-	dsi->shutdown_pkt_delay = 20;
+	intel_dsi->backlight_off_delay = 20;
+	intel_dsi->send_shutdown = true;
+	intel_dsi->shutdown_pkt_delay = 20;
 
 	return true;
 }
@@ -121,10 +125,10 @@ void lpm070w425b_panel_reset(struct intel_dsi_device *dsi)
 	struct drm_device *dev = intel_dsi->base.base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
-	intel_gpio_nc_write32(dev_priv, 0x4160, 0x2000CC00);
-	intel_gpio_nc_write32(dev_priv, 0x4168, 0x00000004);
+	vlv_gpio_nc_write(dev_priv, 0x4160, 0x2000CC00);
+	vlv_gpio_nc_write(dev_priv, 0x4168, 0x00000004);
 	usleep_range(2000, 2500);
-	intel_gpio_nc_write32(dev_priv, 0x4168, 0x00000005);
+	vlv_gpio_nc_write(dev_priv, 0x4168, 0x00000005);
 	msleep(20);
 }
 
@@ -134,8 +138,8 @@ void  lpm070w425b_disable_panel_power(struct intel_dsi_device *dsi)
 	struct drm_device *dev = intel_dsi->base.base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
-	intel_gpio_nc_write32(dev_priv, 0x4160, 0x2000CC00);
-	intel_gpio_nc_write32(dev_priv, 0x4168, 0x00000004);
+	vlv_gpio_nc_write(dev_priv, 0x4160, 0x2000CC00);
+	vlv_gpio_nc_write(dev_priv, 0x4168, 0x00000004);
 	usleep_range(2000, 2500);
 }
 
@@ -151,30 +155,30 @@ void lpm070w425b_send_otp_cmds(struct intel_dsi_device *dsi)
 	dsi_vc_dcs_write_0(intel_dsi, 0, 0x01);
 	usleep_range(5000, 7000);
 	{
-		unsigned char ucData[] = {0xb0, 0x00};
-		dsi_vc_generic_write(intel_dsi, 0, ucData, 2);
+		unsigned char data[] = {0xb0, 0x00};
+		dsi_vc_generic_write(intel_dsi, 0, data, 2);
 	}
 	{
-		unsigned char ucData[] = {0xb3, 0x14, 0x08, 0x00, 0x22, 0x00};
-		dsi_vc_generic_write(intel_dsi, 0, ucData, 6);
+		unsigned char data[] = {0xb3, 0x14, 0x08, 0x00, 0x22, 0x00};
+		dsi_vc_generic_write(intel_dsi, 0, data, 6);
 	}
 	{
-		unsigned char ucData[] = {0xb4, 0x0c};
-		dsi_vc_generic_write(intel_dsi, 0, ucData, 6);
+		unsigned char data[] = {0xb4, 0x0c};
+		dsi_vc_generic_write(intel_dsi, 0, data, 6);
 	}
 	{
-		unsigned char ucData[] = {0xb6, 0x3a, 0xD3};
-		dsi_vc_generic_write(intel_dsi, 0, ucData, 6);
+		unsigned char data[] = {0xb6, 0x3a, 0xD3};
+		dsi_vc_generic_write(intel_dsi, 0, data, 6);
 	}
 		dsi_vc_dcs_write_1(intel_dsi, 0, 0x3A, 0x77);
 		dsi_vc_dcs_write_1(intel_dsi, 0, 0x36, 0xC0);
 	{
-		unsigned char ucData[] = {0x2A, 0x00, 0x00, 0x04, 0xAF};
-		dsi_vc_generic_write(intel_dsi, 0, ucData, 6);
+		unsigned char data[] = {0x2A, 0x00, 0x00, 0x04, 0xAF};
+		dsi_vc_generic_write(intel_dsi, 0, data, 6);
 	}
 	{
-		unsigned char ucData[] = {0x2B, 0x00, 0x00, 0x07, 0x7F};
-		dsi_vc_generic_write(intel_dsi, 0, ucData, 6);
+		unsigned char data[] = {0x2B, 0x00, 0x00, 0x07, 0x7F};
+		dsi_vc_generic_write(intel_dsi, 0, data, 6);
 	}
 
 }
@@ -193,8 +197,6 @@ void lpm070w425b_enable(struct intel_dsi_device *dsi)
 void lpm070w425b_disable(struct intel_dsi_device *dsi)
 {
 	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
-	struct drm_device *dev = intel_dsi->base.base.dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
 
 	DRM_DEBUG_KMS("\n");
 
@@ -206,12 +208,6 @@ void lpm070w425b_disable(struct intel_dsi_device *dsi)
 
 enum drm_connector_status lpm070w425b_detect(struct intel_dsi_device *dsi)
 {
-	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
-	struct drm_device *dev = intel_dsi->base.base.dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
-
-	dev_priv->is_mipi = true;
-
 	return connector_status_connected;
 }
 

@@ -44,6 +44,15 @@
 #include "pvrsrv_interface.h"
 #include "displayclass_interface.h"
 #include "display_callbacks.h"
+#include <linux/wakelock.h>
+
+/*  Name changed with kernel 3.10 gen graphics patches. */
+#if !defined DRM_MODE_ENCODER_DSI
+#define DRM_MODE_ENCODER_DSI DRM_MODE_ENCODER_MIPI
+#endif
+#if !defined DRM_MODE_CONNECTOR_DSI
+#define DRM_MODE_CONNECTOR_DSI DRM_MODE_CONNECTOR_MIPI
+#endif
 
 /*Append new drm mode definition here, align with libdrm definition*/
 #define DRM_MODE_SCALE_NO_SCALE   4
@@ -68,6 +77,10 @@ enum {
 	CHIP_MRFLD_1480 = 5
 };
 
+enum enum_ports {
+	PORT_A = 0,
+	PORT_C = 1
+} ;
 
 #define PCI_ID_TOPAZ_DISABLED 0x4101
 
@@ -150,6 +163,8 @@ enum {
 #define PSB_MSVDX_OFFSET	0x50000	/*MSVDX Base offset */
 /* MSVDX MMIO region is 0x50000 - 0x57fff ==> 32KB */
 #define PSB_MSVDX_SIZE		0x10000
+
+#define PSB_IED_DRM_CNTL_STATUS		0x2208
 
 #define TNG_VSP_OFFSET		0x800000
 #define TNG_VSP_SIZE		0x400000
@@ -305,6 +320,7 @@ enum {
 #define PSB_PMPOLICY_CLOCKGATING	1
 #define PSB_PMPOLICY_POWERDOWN		2
 #define PSB_PMPOLICY_HWIDLE		3
+#define PSB_PMPOLICY_SUSPEND_HWIDLE	4
 
 #define PSB_CGPOLICY_ON		0
 #define PSB_CGPOLICY_GFXCG_DIS		1
@@ -333,6 +349,8 @@ enum {
 		((dev->pci_device & 0xffff) == 0x08c8))
 #define IS_MRFLD(dev) (((dev)->pci_device & 0xfff8) == 0x1180 || ((dev)->pci_device & 0xfff8) == 0x1480)
 
+#define IS_TNG_A0(dev) ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) && (intel_mid_soc_stepping() == 0))
+
 #if defined(CONFIG_DRM_CTP)
 #define IS_TNG_B0(dev) 		0
 #elif defined(CONFIG_DRM_VXD_BYT)
@@ -341,6 +359,7 @@ enum {
 #define IS_TNG_B0(dev) ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) && (intel_mid_soc_stepping() == 1))
 #endif
 
+#define IS_ANN_A0(dev) ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE) && (intel_mid_soc_stepping() == 0))
 
 #define IS_MID(dev) (IS_MDFLD(dev) || IS_MRFLD(dev))
 #define IS_FLDS(dev) (IS_MDFLD(dev) || IS_MRFLD(dev))
@@ -388,6 +407,8 @@ struct drm_psb_private {
 #endif
 	struct mdfld_dsi_config *dsi_configs[2];
 
+	struct workqueue_struct *vsync_wq;
+
 	struct work_struct te_work;
 	int te_pipe;
 	struct work_struct reset_panel_work;
@@ -397,6 +418,7 @@ struct drm_psb_private {
 
 	struct mutex vsync_lock;
 	atomic_t *vblank_count;
+	bool vsync_enabled[3];
 
 	/*
 	 *TTM Glue.
@@ -446,7 +468,7 @@ struct drm_psb_private {
 
 	/* IMG video context */
 	struct list_head video_ctx;
-	struct mutex video_ctx_mutex;
+	spinlock_t video_ctx_lock;
 	/* Current video context */
 	struct psb_video_ctx *topaz_ctx;
 	/* previous vieo context */
@@ -536,6 +558,7 @@ struct drm_psb_private {
 	 */
 	uint8_t panel_desc;
 	bool early_suspended;
+	struct wake_lock ospm_wake_lock;
 
 	/*
 	 * Sizes info
@@ -705,8 +728,8 @@ struct drm_psb_private {
 	struct mdfld_dsi_dbi_output *dbi_output2;
 	/* MDFLD_DSI private date end */
 
-	/*runtime PM state */
-	int rpm_enabled;
+	/* wait queue for write_mem_status complete (EOF interrupt) */
+	wait_queue_head_t eof_wait;
 
 	/*
 	 *Register state
@@ -885,7 +908,7 @@ struct drm_psb_private {
 	uint32_t saveHISTOGRAM_INT_CONTROL_REG;
 	uint32_t saveHISTOGRAM_LOGIC_CONTROL_REG;
 	// SH START DPST
-	struct drm_connector *dpst_lvds_connector;
+	struct drm_connector *dpst_connector;
 	// SH END DPST
 	uint32_t savePWM_CONTROL_LOGIC;
 
@@ -1004,7 +1027,6 @@ struct drm_psb_private {
 
 	uint32_t hdmi_audio_interrupt_mask;
 
-	//RAJESH
 	struct mdfld_dsi_encoder *encoder0;
 	struct mdfld_dsi_encoder *encoder2;
 	mdfld_dsi_encoder_t mipi_encoder_type;
@@ -1025,6 +1047,12 @@ struct drm_psb_private {
 	 * HDMI config data 
 	 */
 	void *hdmi_priv;
+
+	/* indicate whether IED session is active */
+	/* Maximum one active IED session at any given time */
+	bool ied_enabled;
+	/* indicate which source sets ied_enabled flag */
+	struct file *ied_context;
 
 #define DRM_PSB_HDMI_FLIP_ARRAY_SIZE 4
 	void *flip_array[DRM_PSB_HDMI_FLIP_ARRAY_SIZE];
@@ -1066,6 +1094,8 @@ struct drm_psb_private {
 	bool bDVIport;
 
 	struct pci_dev *pci_root;
+	bool bUseHFPLL;
+	bool bRereadZero;
 };
 
 struct psb_mmu_driver;
@@ -1179,6 +1209,7 @@ struct backlight_device *psb_get_backlight_device(void);
 #define VSP_D_PERF   (1 << 12)
 #define PSB_D_WARN    (1 << 13)
 #define PSB_D_MIPI    (1 << 14)
+#define PSB_D_BL    (1 << 15)
 
 #ifndef DRM_DEBUG_CODE
 /* To enable debug printout, set drm_psb_debug in psb_drv.c
@@ -1223,6 +1254,8 @@ extern int drm_topaz_sbuswa;
 	PSB_DEBUG(PSB_D_WARN, _fmt, ##_arg)
 #define PSB_DEBUG_MIPI(_fmt, _arg...) \
 	PSB_DEBUG(PSB_D_MIPI, _fmt, ##_arg)
+#define PSB_DEBUG_BL(_fmt, _arg...) \
+        PSB_DEBUG(PSB_D_BL, _fmt, ##_arg)
 
 #if DRM_DEBUG_CODE
 #define PSB_DEBUG(_flag, _fmt, _arg...)					\
@@ -1248,9 +1281,8 @@ static inline uint32_t REGISTER_READ(struct drm_device *dev, uint32_t reg)
 	int i = 0;
 	int reg_val = ioread32(dev_priv->vdc_reg + (reg));
 
-	/* we might need to re-read registers if B0 video mode panel */
-	if ((IS_TNG_B0(dev)) &&
-		(dev_priv->mipi_encoder_type == MDFLD_DSI_ENCODER_DPI)) {
+	/* we might need to re-read registers if video mode panel */
+	if (dev_priv->bRereadZero) {
 		if (!reg_val) {
 			for (i = 0; i < MAX_READ_COUNT; i++) {
 				reg_val = ioread32(dev_priv->vdc_reg + (reg));
@@ -1367,6 +1399,8 @@ extern int drm_vsp_burst;
 extern int drm_vsp_force_up_freq;
 extern int drm_vsp_force_down_freq;
 extern int drm_vsp_single_int;
+extern int drm_vec_force_up_freq;
+extern int drm_vec_force_down_freq;
 
 extern int drm_decode_flag;
 

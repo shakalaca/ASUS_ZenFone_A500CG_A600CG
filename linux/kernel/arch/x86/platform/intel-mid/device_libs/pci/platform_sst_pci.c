@@ -20,29 +20,57 @@
 
 #define CTP_SSP_BASE 0xffa23000
 #define CTP_DMA_BASE 0xffaf8000
+#define MRFLD_SSP_BASE 0xff2a0000
+#define MRFLD_DMA_BASE 0xff298000
 #define CTP_MAX_CONFIG_SIZE 500
 
 #define SST_CTP_IRAM_START	0
 #define SST_CTP_IRAM_END	0x80000
 #define SST_CTP_DRAM_START	0x400000
 #define SST_CTP_DRAM_END	0x480000
+#define SSP_SIZE 0x1000
+#define DMA_SIZE_CTP 0x1000
+#define DMA_SIZE_MRFLD 0x4000
+#define SST_CHECKPOINT_OFFSET 0x1C00
+#define SST_CHECKPOINT_OFFSET_MRFLD 0x0C10
+#define CHECKPOINT_DUMP_SZ 256
+#define CHECKPOINT_DUMP_SZ_MRFLD 64
 
-struct sst_pci_info sst_data;
+#define SST_V1_MAILBOX_RECV	0x800
+#define SST_V2_MAILBOX_RECV	0x400
 
-struct sst_ssp_info ssp_inf = {
+#define MRFLD_FW_LSP_DDR_BASE 0xC5E00000
+#define MRFLD_FW_MOD_END (MRFLD_FW_LSP_DDR_BASE + 0x1FFFFF)
+#define MRFLD_FW_MOD_TABLE_OFFSET 0x80000
+#define MRFLD_FW_MOD_TABLE_SIZE 0x100
+
+struct sst_platform_info sst_data;
+
+static struct sst_ssp_info ssp_inf_ctp = {
+	.base_add = CTP_SSP_BASE,
 	.gpio = {
 		.alt_function = LNW_ALT_2,
 	},
-	.in_use = true,
+	.gpio_in_use = true,
 };
 
-static struct sst_platform_config_data sst_ctp_pdata = {
+static struct sst_ssp_info ssp_inf_mrfld = {
+	.base_add = MRFLD_SSP_BASE,
+	.gpio_in_use = false,
+};
+
+static const struct sst_platform_config_data sst_ctp_pdata = {
 	.sst_sram_buff_base = 0xfffc0000,
 	.sst_dma_base[0] = CTP_DMA_BASE,
 	.sst_dma_base[1] = 0x0,
 };
 
-static struct sst_board_config_data sst_ctp_bdata = {
+static struct sst_platform_config_data sst_mrfld_pdata = {
+	.sst_dma_base[0] = MRFLD_DMA_BASE,
+	.sst_dma_base[1] = 0x0,
+};
+
+static const struct sst_board_config_data sst_ctp_bdata = {
 	.active_ssp_ports = 4,
 	.platform_id = 2,/*FIXME: Once the firmware fix is available*/
 	.board_id = 1,/*FIXME: Once the firmware fix is available*/
@@ -64,18 +92,15 @@ static struct sst_board_config_data sst_ctp_bdata = {
 				.frame_sync_width = 24,
 				.dma_handshake_interface_tx = 5,
 				.dma_handshake_interface_rx = 4,
-				.reserved[0] = 0xff,
-				.reserved[1] = 0xff,
-				.sst_ssp_base_add = 0xFFA23000,
+				.ssp_base_add = 0xFFA23000,
 		},
 		[SST_SSP_MODEM] = {0},
 		[SST_SSP_BT] = {0},
 		[SST_SSP_FM] = {0},
-
 	},
 };
 
-struct sst_info ctp_sst_info = {
+static const struct sst_info ctp_sst_info = {
 	.iram_start = SST_CTP_IRAM_START,
 	.iram_end = SST_CTP_IRAM_END,
 	.iram_use = true,
@@ -85,15 +110,21 @@ struct sst_info ctp_sst_info = {
 	.imr_start = 0,
 	.imr_end = 0,
 	.imr_use = false,
+	.mailbox_start = 0,
+	.lpe_viewpt_rqd = false,
 	.use_elf = false,
-	.dma_addr_ia_viewpt = true,
-	.max_streams = 5,
+	.max_streams = MAX_NUM_STREAMS_CTP,
 	.dma_max_len = (SST_MAX_DMA_LEN * 4),
 	.num_probes = 1,
 };
 
+static const struct sst_ipc_info ctp_ipc_info = {
+	.use_32bit_ops = true,
+	.ipc_offset = 0,
+	.mbox_recv_off = SST_V1_MAILBOX_RECV,
+};
 
-struct sst_info mrfld_sst_info = {
+static const struct sst_info mrfld_sst_info = {
 	.iram_start = 0,
 	.iram_end = 0,
 	.iram_use = false,
@@ -103,47 +134,97 @@ struct sst_info mrfld_sst_info = {
 	.imr_start = 0,
 	.imr_end = 0,
 	.imr_use = false,
+	.mailbox_start = 0,
 	.use_elf = true,
-	.dma_addr_ia_viewpt = true,
-	.max_streams = 23,
+	.lpe_viewpt_rqd = false,
+	.max_streams = MAX_NUM_STREAMS_MRFLD,
 	.dma_max_len = SST_MAX_DMA_LEN_MRFLD,
 	.num_probes = 16,
 };
 
-static int set_ctp_sst_config(struct sst_pci_info *sst_info)
+static struct sst_platform_debugfs_data ctp_debugfs_data = {
+	.ssp_reg_size = SSP_SIZE,
+	.dma_reg_size = DMA_SIZE_CTP,
+	.num_ssp = 1,
+	.num_dma = 1,
+	.checkpoint_offset = SST_CHECKPOINT_OFFSET,
+	.checkpoint_size = CHECKPOINT_DUMP_SZ,
+};
+
+static struct sst_platform_debugfs_data mrfld_debugfs_data = {
+	.ssp_reg_size = SSP_SIZE,
+	.dma_reg_size = DMA_SIZE_MRFLD,
+	.num_ssp = 3,
+	.num_dma = 2,
+	.checkpoint_offset = SST_CHECKPOINT_OFFSET_MRFLD,
+	.checkpoint_size = CHECKPOINT_DUMP_SZ_MRFLD,
+};
+
+static const struct sst_ipc_info mrfld_ipc_info = {
+	.use_32bit_ops = false,
+	.ipc_offset = 0,
+	.mbox_recv_off = SST_V2_MAILBOX_RECV,
+};
+
+static const struct sst_lib_dnld_info  mrfld_lib_dnld_info = {
+	.mod_base           = MRFLD_FW_LSP_DDR_BASE,
+	.mod_end            = MRFLD_FW_MOD_END,
+	.mod_table_offset   = MRFLD_FW_MOD_TABLE_OFFSET,
+	.mod_table_size     = MRFLD_FW_MOD_TABLE_SIZE,
+	.mod_ddr_dnld       = true,
+};
+
+static int set_ctp_sst_config(struct sst_platform_info *sst_info)
 {
 	unsigned int conf_len;
 
-	ssp_inf.base_add = CTP_SSP_BASE;
-	ssp_inf.gpio.i2s_rx_alt = get_gpio_by_name("gpio_i2s3_rx");
-	ssp_inf.gpio.i2s_tx_alt = get_gpio_by_name("gpio_i2s3_rx");
-	ssp_inf.gpio.i2s_frame = get_gpio_by_name("gpio_i2s3_fs");
-	ssp_inf.gpio.i2s_clock = get_gpio_by_name("gpio_i2s3_clk");
+	ssp_inf_ctp.gpio.i2s_rx_alt = get_gpio_by_name("gpio_i2s3_rx");
+	ssp_inf_ctp.gpio.i2s_tx_alt = get_gpio_by_name("gpio_i2s3_rx");
+	ssp_inf_ctp.gpio.i2s_frame = get_gpio_by_name("gpio_i2s3_fs");
+	ssp_inf_ctp.gpio.i2s_clock = get_gpio_by_name("gpio_i2s3_clk");
 
-        ssp_inf.gpio.i2s_rx_alt = 75;
+	sst_info->ssp_data = &ssp_inf_ctp;
+
+    ssp_inf_ctp.gpio.i2s_rx_alt = 75;
 
 #if 1 /* hardcode GPIO info before it's ready */
-	ssp_inf.gpio.i2s_rx_alt = 75;
-	ssp_inf.gpio.i2s_tx_alt = 74;
-	ssp_inf.gpio.i2s_frame = 13;
-	ssp_inf.gpio.i2s_clock = 12;
+	ssp_inf_ctp.gpio.i2s_rx_alt = 75;
+	ssp_inf_ctp.gpio.i2s_tx_alt = 74;
+	ssp_inf_ctp.gpio.i2s_frame = 13;
+	ssp_inf_ctp.gpio.i2s_clock = 12;
 #endif
 
-	sst_info->ssp_data = &ssp_inf;
 	conf_len = sizeof(sst_ctp_pdata) + sizeof(sst_ctp_bdata);
 	if (conf_len > CTP_MAX_CONFIG_SIZE)
 		return -EINVAL;
 	sst_info->pdata = &sst_ctp_pdata;
 	sst_info->bdata = &sst_ctp_bdata;
 	sst_info->probe_data = &ctp_sst_info;
+	sst_info->ipc_info = &ctp_ipc_info;
+	sst_info->debugfs_data = &ctp_debugfs_data;
+	sst_info->lib_info = NULL;
 
 	return 0;
 }
 
-static struct sst_pci_info *get_sst_platform_data(struct pci_dev *pdev)
+static void set_mrfld_sst_config(struct sst_platform_info *sst_info)
+{
+	sst_info->ssp_data = &ssp_inf_mrfld;
+	sst_info->pdata = &sst_mrfld_pdata;
+	sst_info->bdata = NULL;
+	sst_info->probe_data = &mrfld_sst_info;
+	sst_info->ipc_info = &mrfld_ipc_info;
+	sst_info->debugfs_data = &mrfld_debugfs_data;
+	sst_info->lib_info = &mrfld_lib_dnld_info;
+
+	return ;
+
+}
+
+static struct sst_platform_info *get_sst_platform_data(struct pci_dev *pdev)
 {
 	int ret;
-	struct sst_pci_info *sst_pinfo = NULL;
+	struct sst_platform_info *sst_pinfo = NULL;
 #if 0
 	switch (pdev->device) {
 	case PCI_DEVICE_ID_INTEL_SST_CLV:
@@ -153,10 +234,8 @@ static struct sst_pci_info *get_sst_platform_data(struct pci_dev *pdev)
 		sst_pinfo = &sst_data;
 		break;
 	case PCI_DEVICE_ID_INTEL_SST_MRFLD:
-		sst_data.ssp_data = NULL;
-		sst_data.pdata = NULL;
-		sst_data.bdata = NULL;
-		sst_data.probe_data = &mrfld_sst_info;
+	case PCI_DEVICE_ID_INTEL_SST_MOOR:
+		set_mrfld_sst_config(&sst_data);
 		sst_pinfo = &sst_data;
 		break;
 	default:
@@ -173,7 +252,7 @@ static struct sst_pci_info *get_sst_platform_data(struct pci_dev *pdev)
 	return sst_pinfo;
 }
 
-static void __devinit sst_pci_early_quirks(struct pci_dev *pci_dev)
+static void sst_pci_early_quirks(struct pci_dev *pci_dev)
 {
 	pci_dev->dev.platform_data = get_sst_platform_data(pci_dev);
 }
@@ -181,4 +260,6 @@ static void __devinit sst_pci_early_quirks(struct pci_dev *pci_dev)
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SST_CLV,
 							sst_pci_early_quirks);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SST_MRFLD,
+							sst_pci_early_quirks);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SST_MOOR,
 							sst_pci_early_quirks);

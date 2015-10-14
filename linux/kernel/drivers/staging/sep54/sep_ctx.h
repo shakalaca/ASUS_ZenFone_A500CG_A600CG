@@ -279,7 +279,7 @@ struct sep_ctx_combined {
 	 *  according to the given mode                               */
 	struct sep_ctx_cache_entry *sub_ctx[SEP_MAX_COMBINED_ENGINES];
 	/* store the host contexts addresses (optimization) */
-	u32 hostAddr[SEP_MAX_COMBINED_ENGINES];
+	u32 host_addr[SEP_MAX_COMBINED_ENGINES];
 };
 
 /*******************************************************************/

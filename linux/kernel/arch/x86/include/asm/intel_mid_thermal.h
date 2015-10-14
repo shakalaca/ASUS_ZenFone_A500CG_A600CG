@@ -8,6 +8,8 @@
 #define SKIN1_NAME	"skin1"
 #define MSIC_DIE_NAME	"msicdie"
 #define MSIC_SYS_NAME	"sys"
+#define SYSTHERM0       "systherm0"
+#define SYSTHERM1       "systherm1"
 #define SYSTHERM2       "systherm2"
 /**
  * struct intel_mid_thermal_sensor - intel_mid_thermal sensor information
@@ -47,12 +49,12 @@ struct soc_throttle_data {
  *
  * @num_sensors:	Maximum number of sensors supported
  * @sensors:		sensor info
- * @soc_cooling:	True or false
+ * @gpu_cooling:	Whether to register a cdev for GPU throttling
  */
 struct intel_mid_thermal_platform_data {
 	int num_sensors;
 	struct intel_mid_thermal_sensor *sensors;
-	bool soc_cooling;
+	bool gpu_cooling;
 };
 
 /**

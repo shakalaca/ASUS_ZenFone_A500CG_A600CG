@@ -27,6 +27,9 @@
 #include <linux/HWVersion.h>
 extern int Read_HW_ID(void);
 extern int Read_PROJ_ID(void);
+extern int Read_PCB_ID(void);
+
+extern int temp_status_502;
 
 /*
  *  config function
@@ -200,14 +203,13 @@ static bool ischargerSuspend = false;
 static bool isUSBSuspendNotify = false;
 static int not_ready_flag=1;
 
-#if 0
 static char *smb347_power_supplied_to[] = {
 			"max170xx_battery",
 			"max17042_battery",
 			"max17047_battery",
 			"max17050_battery",
 };
-
+#if 0
 /* Fast charge current in uA */
 static const unsigned int fcc_tbl[] = {
 	700000,
@@ -342,7 +344,7 @@ static const unsigned int ccc_tbl[] = {
 
 #define CREATE_DEBUGFS_INTERRUPT_STATUS_REGISTERS
 
-#define CHR_info(...)		printk("[SMB358] " __VA_ARGS__);
+#define CHR_info(...)	printk("[SMB358] " __VA_ARGS__);
 #define CHR_err(...)		printk(KERN_ERR, "[SMB358_ERR] " __VA_ARGS__);
 #define CFG_FAST_CHARGE_SMB358            BIT(5)|BIT(6)
 #define CFG_SOFT_450mA_SMB358   	   	BIT(6)
@@ -353,8 +355,8 @@ static const unsigned int ccc_tbl[] = {
 #define CFG_FAST_CHARGE_SMB358_A600CG	BIT(5)|BIT(7)
 
 static int hw_id_flag=0;					/*hw id, 0:EVB, 1:SR1, 2:SR2*/
-static int project_id_flag=0;				/*project id, 0:A500CG, 1:A600CG*/
-
+static int project_id_flag=0;				/*project id, 0:A500CG, 1:A600CG, 2:A502CG*/
+static int bz_5w_flag=0;					/*0=1200mA, 1=1000mA*/
 extern struct battery_info_reply batt_info;
 extern unsigned int query_cable_status(void);
 struct wake_lock wakelock_cable, wakelock_cable_t;
@@ -561,6 +563,10 @@ int setSMB347Charger(int usb_state)
 		CHR_info("charger not ready yet\n");
 		return 0;
 	}
+	if (smb347_dev->pdata->use_mains)
+		power_supply_changed(&smb347_dev->mains);
+	if (smb347_dev->pdata->use_usb)
+		power_supply_changed(&smb347_dev->usb);
 	switch (usb_state)
 	{
 	case USB_IN:
@@ -734,9 +740,15 @@ int smb347_control_JEITA(bool on) {
   ret &= ~(BIT(0)|BIT(1));
 	if (on) {
 		// No Response
+		if(project_id_flag==2)
+			ret &= ~(BIT(2)|BIT(3));
 	} else {
 		// Float Voltage Compensation
 		ret |= BIT(1);
+		if(project_id_flag==2) {
+			ret &= ~(BIT(3));
+			ret |= BIT(2);
+		}
 	}
 
   CHR_info("write control JEITA, Set Soft Hot Limit Behavior = 0x%02x\n", ret);
@@ -913,15 +925,28 @@ int smb347_set_fast_charge(void) {
 	 * command register unless pin control is specified in the platform
 	 * data.
 	 */
-	 if((project_id_flag==0)||(project_id_flag==2)||(project_id_flag==3)) {
+	 if((project_id_flag==0)||(project_id_flag==2)) {
 		 if( hw_id_flag==0 )
 			ret = CFG_FAST_CHARGE;
 		 else {
-			ret &= ~(BIT(7));
-			ret |= CFG_FAST_CHARGE_SMB358;
-			/*set terminate curent to 80mA*/
-			ret &= ~(BIT(2));
-			ret |= (BIT(0)|BIT(1));
+			if((project_id_flag==2)&&((temp_status_502==0)||(temp_status_502==1))) {
+				//in A502CG, small current when in low temp
+				ret &= ~(BIT(7)|BIT(5));
+				ret |= (BIT(6));
+			}else {
+				ret &= ~(BIT(7));
+				ret |= CFG_FAST_CHARGE_SMB358;
+			}
+
+			if(project_id_flag==2) {
+				/*set terminate curent to 40mA in A502CG*/
+				ret |= (BIT(0));
+				ret &= ~(BIT(2)|BIT(1));
+			}else {
+				/*set terminate curent to 80mA*/
+				ret &= ~(BIT(2));
+				ret |= (BIT(0)|BIT(1));
+			}
 		}
 	 }else {
 		ret &= ~(BIT(6));
@@ -942,7 +967,7 @@ int smb347_set_fast_charge(void) {
 	 * command register unless pin control is specified in the platform
 	 * data.
 	 */
-	 if((project_id_flag==0)||(project_id_flag==2)||(project_id_flag==3)) {
+	 if((project_id_flag==0)||(project_id_flag==2)) {
 		ret &= ~(BIT(7));
 		if( hw_id_flag==0 ) {
 			ret |= CFG_SOFT_700mA;
@@ -1060,7 +1085,7 @@ int smb347_AC_in_current(void) {
 			goto out;
 
 		ret &= 0x0f;
-		if(project_id_flag==3) //A501CG BZ
+		if(bz_5w_flag==1) //for BZ setting
 			ret |= (BIT(4)|BIT(5));
 		else
 			ret |= CFG_1200mA_SMB358;
@@ -2138,16 +2163,16 @@ static int smb347_inok_gpio_init(struct smb347_charger *smb)
 
 	ret = gpio_request_one(pdata->inok_gpio, GPIOF_IN, smb->client->name);
 	if (ret < 0) {
-		CHR_info(KERN_DEBUG "smb347: request INOK gpio fail!\n");
+		CHR_info("smb347: request INOK gpio fail!\n");
 		goto fail;
 	}
 
 	ret = request_threaded_irq(irq, NULL, smb347_inok_interrupt,
-					IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
+					IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING | IRQF_ONESHOT,
 					smb->client->name,
 					smb);
 	if (ret < 0) {
-		CHR_info(KERN_DEBUG "smb347: config INOK gpio as IRQ fail!\n");
+		CHR_info("smb347: config INOK gpio as IRQ fail!\n");
 		goto fail_gpio;
 	}
 
@@ -2236,16 +2261,19 @@ fail:
 }
 #endif
 
-#if 0
+#if 1
 static int smb347_mains_get_property(struct power_supply *psy,
 				     enum power_supply_property prop,
 				     union power_supply_propval *val)
 {
-	struct smb347_charger *smb =
-		container_of(psy, struct smb347_charger, mains);
-
+	//struct smb347_charger *smb =
+		//container_of(psy, struct smb347_charger, mains);
 	if (prop == POWER_SUPPLY_PROP_ONLINE) {
-		val->intval = smb->mains_online;
+		//val->intval = smb->mains_online;
+		if ((batt_info.cable_source==AC_IN))
+			val->intval = 1;
+		else
+			val->intval = 0;
 		return 0;
 	}
 	return -EINVAL;
@@ -2259,11 +2287,14 @@ static int smb347_usb_get_property(struct power_supply *psy,
 				   enum power_supply_property prop,
 				   union power_supply_propval *val)
 {
-	struct smb347_charger *smb =
-		container_of(psy, struct smb347_charger, usb);
-
+	//struct smb347_charger *smb =
+		//container_of(psy, struct smb347_charger, usb);
 	if (prop == POWER_SUPPLY_PROP_ONLINE) {
-		val->intval = smb->usb_online;
+		//val->intval = smb->usb_online;
+		if ((batt_info.cable_source==USB_IN))
+			val->intval = 1;
+		else
+			val->intval = 0;
 		return 0;
 	}
 	return -EINVAL;
@@ -2338,10 +2369,11 @@ int smb347_get_charging_status(void)
 }
 //EXPORT_SYMBOL_GPL(smb347_get_charging_status);
 
-#if 0
+
 static enum power_supply_property smb347_usb_properties[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 };
+#if 0
 
 static int smb347_battery_get_property(struct power_supply *psy,
 				       enum power_supply_property prop,
@@ -2484,7 +2516,7 @@ static const struct file_operations smb347_debugfs_fops = {
 static int cable_status_notify2(struct notifier_block *self, unsigned long action, void *dev)
 {
    if (ischargerSuspend) {
-       CHR_info(KERN_INFO "chager is suspend but USB still notify !!!\n", __func__);
+       CHR_info("chager is suspend but USB still notify !!!\n", __func__);
        //wake_lock(&wakelock_cable);
        isUSBSuspendNotify = true;
        return NOTIFY_OK;
@@ -2492,38 +2524,38 @@ static int cable_status_notify2(struct notifier_block *self, unsigned long actio
 
    switch (action) {
       case CHRG_SDP:
-         CHR_info(KERN_INFO "%s CHRG_SDP !!!\n", __func__);
+         CHR_info("%s CHRG_SDP !!!\n", __func__);
          setSMB347Charger(USB_IN);
          break;
 
       case CHRG_CDP:
-         CHR_info(KERN_INFO "%s CHRG_CDP !!!\n", __func__);
+         CHR_info("%s CHRG_CDP !!!\n", __func__);
          setSMB347Charger(AC_IN);
          break;
 
       case CHRG_DCP:
-          CHR_info(KERN_INFO "%s CHRG_DCP !!!\n", __func__);
+          CHR_info("%s CHRG_DCP !!!\n", __func__);
           setSMB347Charger(AC_IN);
           break;
 
       case CHRG_ACA:
-          CHR_info(KERN_INFO "%s CHRG_ACA !!!\n", __func__);
+          CHR_info("%s CHRG_ACA !!!\n", __func__);
           setSMB347Charger(AC_IN);
           break;
 
       case CHRG_SE1:
-          CHR_info(KERN_INFO "%s CHRG_SE1 !!!\n", __func__);
+          CHR_info("%s CHRG_SE1 !!!\n", __func__);
           setSMB347Charger(AC_IN);
           break;
 
       case CHRG_MHL:
-          CHR_info(KERN_INFO "%s CHRG_MHL !!!\n", __func__);
+          CHR_info("%s CHRG_MHL !!!\n", __func__);
           setSMB347Charger(AC_IN);
           break;
 
       case CHRG_UNKNOWN:
       default:
-          CHR_info(KERN_INFO "%s CHRG_UNKNOWN !!!\n", __func__);
+          CHR_info("%s CHRG_UNKNOWN !!!\n", __func__);
           setSMB347Charger(CABLE_OUT);
 	  break;
    }
@@ -2545,16 +2577,15 @@ static int smb347_probe(struct i2c_client *client,
 	struct device *dev = &client->dev;
 	struct smb347_charger *smb;
 	int ret;
+	uint8_t reg_val;
 
-	CHR_info(KERN_DEBUG "==== smb347_probe ====\n");
+	CHR_info("==== smb347_probe ====\n");
 
 	/*read project id first*/
 	if(PROJ_ID_A600CG == Read_PROJ_ID())
 		project_id_flag = 1;
 	else if(PROJ_ID_A502CG == Read_PROJ_ID())
 		project_id_flag = 2;
-	else if(PROJ_ID_A501CG_BZ == Read_PROJ_ID())
-		project_id_flag = 3;
 	else
 		project_id_flag = 0;
 	/*read hw id*/
@@ -2565,9 +2596,14 @@ static int smb347_probe(struct i2c_client *client,
 	else
 		hw_id_flag = 2;
 
+	reg_val = Read_PCB_ID()&0x01;
+	if( (PROJ_ID_A501CG_BZ == Read_PROJ_ID())||((PROJ_ID_A601CG == Read_PROJ_ID())&&(reg_val == 0x0)) )
+		bz_5w_flag = 1;
+	//CHR_info("PCB_ID=0x%x, PCB_ID0=0x%x\n", Read_PCB_ID(), reg_val);
+
 	if(hw_id_flag==1)
 		hw_id_flag = 2; // because cannot recognize SR1 & SR2 so use SR2 settings in all SR
-	CHR_info("%s, Read_PROJ_ID=0x%x, project_id_flag=%d, Read_HW_ID=0x%x, hw_id_flag=%d\n", __func__,  Read_PROJ_ID(), project_id_flag, Read_HW_ID(), hw_id_flag);
+	CHR_info("%s, Read_PROJ_ID=0x%x, project_id_flag=%d, Read_HW_ID=0x%x, hw_id_flag=%d, bz_5w_flag=%d\n", __func__,  Read_PROJ_ID(), project_id_flag, Read_HW_ID(), hw_id_flag, bz_5w_flag);
 
 	pdata = dev->platform_data;
 	if (!pdata)
@@ -2603,14 +2639,13 @@ static int smb347_probe(struct i2c_client *client,
 		if (ret < 0)
 			return ret;
 	}
-
 #if 0
 	ret = smb347_hw_init(smb);
 	if (ret < 0)
 		return ret;
-
+#endif
 	if (smb->pdata->use_mains) {
-		smb->mains.name = "smb347-mains";
+		smb->mains.name = "ac";
 		smb->mains.type = POWER_SUPPLY_TYPE_MAINS;
 		smb->mains.get_property = smb347_mains_get_property;
 		smb->mains.properties = smb347_mains_properties;
@@ -2624,7 +2659,7 @@ static int smb347_probe(struct i2c_client *client,
 	}
 
 	if (smb->pdata->use_usb) {
-		smb->usb.name = "smb347-usb";
+		smb->usb.name = "usb";
 		smb->usb.type = POWER_SUPPLY_TYPE_USB;
 		smb->usb.get_property = smb347_usb_get_property;
 		smb->usb.properties = smb347_usb_properties;
@@ -2638,7 +2673,7 @@ static int smb347_probe(struct i2c_client *client,
 			return ret;
 		}
 	}
-
+#if 0
 	if (smb->pdata->show_battery) {
 		smb->battery.name = "smb347-battery";
 		smb->battery.type = POWER_SUPPLY_TYPE_BATTERY;
@@ -2704,7 +2739,7 @@ static int smb347_probe(struct i2c_client *client,
 		}
 	}
 	not_ready_flag = 0;
-	CHR_info(KERN_DEBUG "==== smb347_probe done ====\n");
+	CHR_info("==== smb347_probe done ====\n");
 	return 0;
 }
 
@@ -2930,7 +2965,7 @@ static struct i2c_driver smb347_driver = {
 
 static int __init smb347_init(void)
 {
-	CHR_info(KERN_DEBUG "++++ Inside smb347_init ++++\n");
+	CHR_info("++++ Inside smb347_init ++++\n");
 	return i2c_add_driver(&smb347_driver);
 }
 module_init(smb347_init);

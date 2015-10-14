@@ -130,22 +130,6 @@ static int sst_create_algo_ipc(struct snd_ppp_params *algo_params,
 }
 
 /**
- * sst_send_algo_ipc - send ipc msg for algorithm parameters
- *
- * @msg: post msg pointer
- *
- * This function is called to send ipc msg
- */
-void sst_send_algo_ipc(struct ipc_post **msg)
-{
-	unsigned long irq_flags;
-	spin_lock_irqsave(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-	list_add_tail(&(*msg)->node, &sst_drv_ctx->ipc_dispatch_list);
-	spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-	sst_drv_ctx->ops->post_message(&sst_drv_ctx->ipc_post_msg_wq);
-}
-
-/**
  * intel_sst_ioctl_dsp - receives the device ioctl's
  *
  * @cmd:Ioctl cmd
@@ -192,7 +176,7 @@ static long intel_sst_ioctl_dsp(unsigned int cmd, unsigned long arg)
 			break;
 		}
 
-		sst_send_algo_ipc(&msg);
+		sst_add_to_dispatch_list_and_post(sst_drv_ctx, msg);
 		retval = sst_wait_timeout(sst_drv_ctx, block);
 		if (retval) {
 			pr_debug("Error in sst_set_algo = %d\n", retval);
@@ -217,7 +201,7 @@ static long intel_sst_ioctl_dsp(unsigned int cmd, unsigned long arg)
 			retval = -EFAULT;
 			break;
 		}
-		sst_send_algo_ipc(&msg);
+		sst_add_to_dispatch_list_and_post(sst_drv_ctx, msg);
 		retval = sst_wait_timeout(sst_drv_ctx, block);
 		if (retval) {
 			pr_debug("Error in sst_get_algo = %d\n", retval);
@@ -318,7 +302,8 @@ static int sst_ioctl_tuning_params(unsigned int cmd, unsigned long arg)
 		kfree(msg);
 		return -EFAULT;
 	}
-	sst_send_algo_ipc(&msg);
+
+	sst_add_to_dispatch_list_and_post(sst_drv_ctx, msg);
 	return 0;
 }
 /**

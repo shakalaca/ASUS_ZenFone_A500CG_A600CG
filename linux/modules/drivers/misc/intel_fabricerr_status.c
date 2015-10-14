@@ -293,15 +293,15 @@ static char *Secondary_FlagStatusLow32_tng[] = {
 	"sfth_i0 (IA Response Timeout)",	/* bit 16 */
 	"dfxsctap_i0 (IA Response Timeout)",	/* bit 17 */
 	"",					/* bit 18 */
-	"sdio0_i0 (IA InBand Error)",		/* bit 19 */
-	"emmc01_i0 (IA InBand Error)",		/* bit 20 */
-	"emmc01_i1 (IA InBand Error)",		/* bit 21 */
-	"sdio1_i0 (IA InBand Error)",		/* bit 22 */
-	"hsi_i0 (IA InBand Error)",		/* bit 23 */
-	"mph_i0 (IA InBand Error)",		/* bit 24 */
-	"sfth_i0 (IA InBand Error)",		/* bit 25 */
-	"dfxsctap_i0 (IA InBand Error)",	/* bit 26 */
-	"",					/* bit 27 */
+	"",					/* bit 19 */
+	"sdio0_i0 (IA InBand Error)",		/* bit 20 */
+	"emmc01_i0 (IA InBand Error)",		/* bit 21 */
+	"emmc01_i1 (IA InBand Error)",		/* bit 22 */
+	"sdio1_i0 (IA InBand Error)",		/* bit 23 */
+	"hsi_i0 (IA InBand Error)",		/* bit 24 */
+	"mph_i0 (IA InBand Error)",		/* bit 25 */
+	"sfth_i0 (IA InBand Error)",		/* bit 26 */
+	"dfxsctap_i0 (IA InBand Error)",	/* bit 27 */
 	"",					/* bit 28 */
 	"",					/* bit 29 */
 	"sram_t0 (TA Request Timeout)",		/* bit 30 */
@@ -955,6 +955,7 @@ char *fabric_error_lookup(u32 fab_id, u32 error_index, int use_hidword)
 				FullChip_FlagStatusHi32_clv[error_index] :
 				FullChip_FlagStatusLow32_clv[error_index];
 		case INTEL_MID_CPU_CHIP_TANGIER:
+		case INTEL_MID_CPU_CHIP_ANNIEDALE:
 			return use_hidword ?
 				FullChip_FlagStatusHi32_tng[error_index] :
 				FullChip_FlagStatusLow32_tng[error_index];
@@ -970,6 +971,7 @@ char *fabric_error_lookup(u32 fab_id, u32 error_index, int use_hidword)
 				Secondary_FlagStatusHi32[error_index] :
 				Secondary_FlagStatusLow32[error_index];
 		case INTEL_MID_CPU_CHIP_TANGIER:
+		case INTEL_MID_CPU_CHIP_ANNIEDALE:
 			return use_hidword ?
 				Secondary_FlagStatusHi32_tng[error_index] :
 				Secondary_FlagStatusLow32_tng[error_index];
@@ -988,6 +990,7 @@ char *fabric_error_lookup(u32 fab_id, u32 error_index, int use_hidword)
 				Audio_FlagStatusHi32_clv[error_index] :
 				Audio_FlagStatusLow32[error_index];
 		case INTEL_MID_CPU_CHIP_TANGIER:
+		case INTEL_MID_CPU_CHIP_ANNIEDALE:
 			return use_hidword ?
 				Audio_FlagStatusHi32_tng[error_index] :
 				Audio_FlagStatusLow32_tng[error_index];
@@ -1003,6 +1006,7 @@ char *fabric_error_lookup(u32 fab_id, u32 error_index, int use_hidword)
 				GP_FlagStatusHi32[error_index] :
 				GP_FlagStatusLow32[error_index];
 		case INTEL_MID_CPU_CHIP_TANGIER:
+		case INTEL_MID_CPU_CHIP_ANNIEDALE:
 			return use_hidword ?
 				GP_FlagStatusHi32_tng[error_index] :
 				GP_FlagStatusLow32_tng[error_index];
@@ -1021,6 +1025,7 @@ char *fabric_error_lookup(u32 fab_id, u32 error_index, int use_hidword)
 				SC_FlagStatusHi32_clv[error_index] :
 				SC_FlagStatusLow32_clv[error_index];
 		case INTEL_MID_CPU_CHIP_TANGIER:
+		case INTEL_MID_CPU_CHIP_ANNIEDALE:
 			return use_hidword ?
 				SC_FlagStatusHi32_tng[error_index] :
 				SC_FlagStatusLow32_tng[error_index];
@@ -1031,6 +1036,7 @@ char *fabric_error_lookup(u32 fab_id, u32 error_index, int use_hidword)
 	case FAB_ID_SC1:
 		switch (intel_mid_identify_cpu()) {
 		case INTEL_MID_CPU_CHIP_TANGIER:
+		case INTEL_MID_CPU_CHIP_ANNIEDALE:
 			return use_hidword ?
 				NULL :
 				SC_FlagStatus1Low32_tng[error_index];
@@ -1045,44 +1051,123 @@ char *fabric_error_lookup(u32 fab_id, u32 error_index, int use_hidword)
 	return NULL;
 }
 
-enum ErrorType {
-	FABRIC_ERR = 0,
-	MEMORY_ERR,
-	INSTRUCT_ERR,
-	ECC_ERR,
-	SCU_WDOG_FIRED,
-	PLL_LOCKSLIP,
-	KERN_WDOG_FIRED,
-	UNKNOWN_ERRTYPE
+static char *ScuBoot_ErrorTypes[] = {
+	"Unknown",
+	"Memory error",
+	"Instruction error",
+	"Fabric error",
+	"Shared SRAM ECC error",
+	"Unknown",
+	"North Fuses failure",
+	"Unknown",
+	"Unknown",
+	"Unknown",
+	"Kernel DLT expired",
+	"Kernel WDT expired",
+	"SCU CHAABI watchdog expired",
+	"FabricError xml request reset",
 };
 
-static char *Scu_ErrorTypes[] = {
-	"Fabric Error",
-	"Memory Error",
-	"Instruction Error",
-	"Shared SRAM ECC Error",
-	"SCU Watchdog expired",
-	"PLL Lockslip",
-	"Kernel Watchdog expired",
-	"Unknown"
+static char *ScuRuntime_ErrorTypes[] = {
+	"PLL Lock Slip",
+	"Unknown",
+	"Undefined L1 Interrupt"
+	"Punit Interrupt MBB Timeout_reset",
+	"Volt attack violation reset",
+	"Volt attack/SAI violation reset",
+	"LPE unknown interrupt",
+	"PSH Unknown interrupt",
+	"Fuse unknown interrupt",
+	"IPC2 unsupported error",
+	"Invalid KWDT IPC"
 };
 
 #define BEGIN_MAIN_FABRIC_REGID		16
-#define END_MAIN_FABRIC_REGID		35
-#define BEGIN_SEC_FABRIC_REGID		84
-#define END_SEC_FABRIC_REGID		99
-#define BEGIN_AUDIO_FABRIC_REGID	71
-#define END_AUDIO_FABRIC_REGID		83
-#define BEGIN_GP_FABRIC_REGID		58
-#define END_GP_FABRIC_REGID			70
-#define BEGIN_SC_FABRIC_REGID		36
-#define END_SC_FABRIC_REGID			57
-#define SC_FABRIC_PSH_T0_REGID		18
-#define SC_FABRIC_PSH_I0_REGID		19
-#define SC_FABRIC_ARC_T0_REGID		20
-#define SC_FABRIC_ARC_I0_REGID		21
+#define SC_FABRIC_PSH_I0_REGID		17
+#define SC_FABRIC_ARC_I0_REGID		18
+#define END_MAIN_FABRIC_REGID		23
+#define BEGIN_SC_FABRIC_REGID		24
+#define END_SC_FABRIC_REGID		28
+#define BEGIN_GP_FABRIC_REGID		29
+#define END_GP_FABRIC_REGID		30
+#define BEGIN_AUDIO_FABRIC_REGID	31
+#define END_AUDIO_FABRIC_REGID		35
+#define BEGIN_SEC_FABRIC_REGID		36
+#define END_SEC_FABRIC_REGID		45
+#define END_FABRIC_REGID		49
 
-static char *FabricFlagStatusErrLogDetail[] = {
+
+static char *FabricFlagStatusErrLogDetail_tng[] = {
+	"Main Fabric Flag Status",
+	"Audio Fabric Flag Status",
+	"Secondary Fabric Flag Status",
+	"GP Fabric Flag Status",
+	"Lower 64bit part SC Fabric Flag Status",
+	"Upper 64bit part SC Fabric Flag Status",
+	"",
+	"",
+	"",
+	"",
+	"",
+	"",
+	"",
+	"",
+	"",
+	"",
+	"IA ERROR LOG Register for the initiator iosf2ocp_i0 in Main Fabric @200MHz{mnf}",
+	"IA ERROR LOG Register for the initiator arc_i0 in SC Fabric @100MHz{scf}",
+	"IA ERROR LOG Register for the initiator psh_i0 in SC Fabric @100MHz{scf}",
+	"IA ERROR LOG Register for the initiator usb3_i0 in Main Fabric @200MHz{mnf}",
+	"IA ERROR LOG Register for the initiator usb3_i1 in Main Fabric @200MHz{mnf}",
+	"IA ERROR LOG Register for the initiator mfth_i0 in Main Fabric @200MHz{mnf}",
+	"IA ERROR LOG Register for the initiator cha_i0 in Main Fabric @200MHz{mnf}",
+	"IA ERROR LOG Register for the initiator otg_i0 in Main Fabric @200MHz{mnf}",
+	"IA ERROR LOG Register for the initiator sdf2mnf_i0 in Main Fabric @200MHz{mnf}",
+	"IA ERROR LOG Register for the initiator sdf2scf_i0 in SC Fabric @100MHz{scf}",
+	"IA ERROR LOG Register for the initiator ilb_i0 in SC Fabric @100MHz{scf}",
+	"IA ERROR LOG Register for the initiator scdma_i0 in SC Fabric @100MHz{scf}",
+	"IA ERROR LOG Register for the initiator scdma_i1 in SC Fabric @100MHz{scf}",
+	"IA ERROR LOG Register for the initiator uart_i0 in SC Fabric @100MHz{scf}",
+	"IA ERROR LOG Register for the initiator gpdma_i0 in GP Fabric @100MHz{gpf}",
+	"IA ERROR LOG Register for the initiator gpdma_i1 in GP Fabric @100MHz{gpf}",
+	"IA ERROR LOG Register for the initiator sdf2gpf_i1 in GP Fabric @100MHz{gpf}",
+	"IA ERROR LOG Register for the initiator pifocp_i0 in Audio Fabric @50MHz{adf}",
+	"IA ERROR LOG Register for the initiator adma0_i0 in Audio Fabric @50MHz{adf}",
+	"IA ERROR LOG Register for the initiator adma0_i1 in Audio Fabric @50MHz{adf}",
+	"IA ERROR LOG Register for the initiator adma1_i0 in Audio Fabric @50MHz{adf}",
+	"IA ERROR LOG Register for the initiator adma1_i1 in Audio Fabric @50MHz{adf}",
+	"IA ERROR LOG Register for the initiator sdf2adf_i0 in Audio Fabric @50MHz{adf}",
+	"IA ERROR LOG Register for the initiator sdio0_i0 in Secondary Fabric @100MHz{sdf}",
+	"IA ERROR LOG Register for the initiator emmc01_i0 in Secondary Fabric @100MHz{sdf}",
+	"IA ERROR LOG Register for the initiator sdio1_i0 in Secondary Fabric @100MHz{sdf}",
+	"IA ERROR LOG Register for the initiator hsi_i0 in Secondary Fabric @100MHz{sdf}",
+	"IA ERROR LOG Register for the initiator mph_i0 in Secondary Fabric @100MHz{sdf}",
+	"IA ERROR LOG Register for the initiator sfth_i0 in Secondary Fabric @100MHz{sdf}",
+	"IA ERROR LOG Register for the initiator mnf2sdf_i0 in Secondary Fabric @100MHz{sdf}",
+	"IA ERROR LOG Register for the initiator gpf2sdf_i0 in Secondary Fabric @100MHz{sdf}",
+	"IA ERROR LOG Register for the initiator scf2sdf_i0 in Secondary Fabric @100MHz{sdf}",
+	"IA ERROR LOG Register for the initiator adf2sdf_i0 in Secondary Fabric @100MHz{sdf}",
+	""
+};
+
+#define CLV_BEGIN_MAIN_FABRIC_REGID		16
+#define CLV_END_MAIN_FABRIC_REGID		35
+#define CLV_BEGIN_SC_FABRIC_REGID		36
+#define CLV_END_SC_FABRIC_REGID			57
+#define CLV_BEGIN_GP_FABRIC_REGID		58
+#define CLV_END_GP_FABRIC_REGID			70
+#define CLV_BEGIN_AUDIO_FABRIC_REGID		71
+#define CLV_END_AUDIO_FABRIC_REGID		83
+#define CLV_BEGIN_SEC_FABRIC_REGID		84
+#define CLV_END_SEC_FABRIC_REGID		99
+#define CLV_END_FABRIC_REGID			100
+
+#define CLV_SC_FABRIC_PSH_T0_REGID		18
+#define CLV_SC_FABRIC_PSH_I0_REGID		19
+#define CLV_SC_FABRIC_ARC_T0_REGID		20
+#define CLV_SC_FABRIC_ARC_I0_REGID		21
+
+static char *FabricFlagStatusErrLogDetail_pnw_clv[] = {
 	"Main Fabric Flag Status",
 	"Audio Fabric Flag Status",
 	"Secondary Fabric Flag Status",
@@ -1184,165 +1269,10 @@ static char *FabricFlagStatusErrLogDetail[] = {
 	"TA ERROR LOG register for initiator mph_t0 in Secondary Fabric @100MHz{sdf}",
 	"TA ERROR LOG register for initiator sfth_t0 in Secondary Fabric @100MHz{sdf}",
 	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	"",
-	""
 };
 
 #define MAX_FULLCHIP_INITID_VAL		16
-#define MAX_SECONDARY_INITID_VAL	19
+#define MAX_SECONDARY_INITID_VAL	18
 #define MAX_AUDIO_INITID_VAL		5
 #define MAX_SC_INITID_VAL			9
 #define MAX_GP_INITID_VAL			2
@@ -1374,7 +1304,6 @@ static char *init_id_str_secondary_tng[] = {
 	"gpf2sdf_i0 (thread 0)",
 	"gpf2sdf_i0 (thread 1)",
 	"emmc01_i0",
-	"emmc01_i1",
 	"scf2sdf_i0 (thread 0)",
 	"scf2sdf_i0 (thread 1)",
 	"scf2sdf_i0 (thread 2)",
@@ -1420,11 +1349,56 @@ static char *init_id_str_gp_tng[] = {
 
 static char *init_id_str_unknown = "unknown";
 
-char *get_element_errorlog_detail(u8 id, u32 *fabric_type)
+char *get_element_flagsts_detail(u8 id)
+{
+	if ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_PENWELL) ||
+		(intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CLOVERVIEW)) {
+		if (id < CLV_END_FABRIC_REGID)
+			return FabricFlagStatusErrLogDetail_pnw_clv[id];
+		else
+			return FabricFlagStatusErrLogDetail_pnw_clv[CLV_END_FABRIC_REGID];
+	}
+	if (id < END_FABRIC_REGID)
+		return FabricFlagStatusErrLogDetail_tng[id];
+
+	return FabricFlagStatusErrLogDetail_tng[END_FABRIC_REGID];
+}
+
+char *get_element_errorlog_detail_pnw_clv(u8 id, u32 *fabric_type)
+{
+	if (id >= CLV_BEGIN_MAIN_FABRIC_REGID && id <= CLV_END_MAIN_FABRIC_REGID &&
+		id != CLV_SC_FABRIC_PSH_T0_REGID && id != CLV_SC_FABRIC_PSH_I0_REGID &&
+		id != CLV_SC_FABRIC_ARC_T0_REGID && id != CLV_SC_FABRIC_ARC_I0_REGID)
+		*fabric_type = FAB_ID_FULLCHIP;
+
+	else if (id >= CLV_BEGIN_SEC_FABRIC_REGID &&
+		 id <= CLV_END_SEC_FABRIC_REGID)
+		*fabric_type = FAB_ID_SECONDARY;
+
+	else if (id >= CLV_BEGIN_AUDIO_FABRIC_REGID &&
+		 id <= CLV_END_AUDIO_FABRIC_REGID)
+		*fabric_type = FAB_ID_AUDIO;
+
+	else if (id >= CLV_BEGIN_GP_FABRIC_REGID &&
+			id <= CLV_END_GP_FABRIC_REGID)
+		*fabric_type = FAB_ID_GP;
+
+	else if ((id >= CLV_BEGIN_SC_FABRIC_REGID &&
+			id <= CLV_END_SC_FABRIC_REGID) ||
+			id == CLV_SC_FABRIC_PSH_T0_REGID ||
+			id == CLV_SC_FABRIC_PSH_I0_REGID ||
+			id == CLV_SC_FABRIC_ARC_T0_REGID ||
+			id == CLV_SC_FABRIC_ARC_I0_REGID)
+		*fabric_type = FAB_ID_SC;
+	else
+		*fabric_type = FAB_ID_UNKNOWN;
+	return get_element_flagsts_detail(id);
+}
+
+char *get_element_errorlog_detail_tng(u8 id, u32 *fabric_type)
 {
 	if (id >= BEGIN_MAIN_FABRIC_REGID && id <= END_MAIN_FABRIC_REGID &&
-		id != SC_FABRIC_PSH_T0_REGID && id != SC_FABRIC_PSH_I0_REGID &&
-		id != SC_FABRIC_ARC_T0_REGID && id != SC_FABRIC_ARC_I0_REGID)
+		id != SC_FABRIC_PSH_I0_REGID && id != SC_FABRIC_ARC_I0_REGID)
 		*fabric_type = FAB_ID_FULLCHIP;
 
 	else if (id >= BEGIN_SEC_FABRIC_REGID &&
@@ -1441,41 +1415,44 @@ char *get_element_errorlog_detail(u8 id, u32 *fabric_type)
 
 	else if ((id >= BEGIN_SC_FABRIC_REGID &&
 			id <= END_SC_FABRIC_REGID) ||
-			id == SC_FABRIC_PSH_T0_REGID ||
 			id == SC_FABRIC_PSH_I0_REGID ||
-			id == SC_FABRIC_ARC_T0_REGID ||
 			id == SC_FABRIC_ARC_I0_REGID)
 		*fabric_type = FAB_ID_SC;
 	else
 		*fabric_type = FAB_ID_UNKNOWN;
 
-	return FabricFlagStatusErrLogDetail[id];
+	return get_element_flagsts_detail(id);
 }
 
-char *get_element_flagsts_detail(u8 id)
+char *get_element_errorlog_detail(u8 id, u32 *fabric_type)
 {
-	return FabricFlagStatusErrLogDetail[id];
+	if ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_PENWELL) ||
+		(intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CLOVERVIEW))
+			return get_element_errorlog_detail_pnw_clv(id, fabric_type);
+	return get_element_errorlog_detail_tng(id, fabric_type);
 }
 
 char *get_errortype_str(u16 error_type)
 {
-	switch (error_type) {
-	case 0xE103:
-		return Scu_ErrorTypes[FABRIC_ERR];
-	case 0xE101:
-		return Scu_ErrorTypes[MEMORY_ERR];
-	case 0xE102:
-		return Scu_ErrorTypes[INSTRUCT_ERR];
-	case 0xE104:
-		return Scu_ErrorTypes[ECC_ERR];
-	case 0xE107:
-		return Scu_ErrorTypes[SCU_WDOG_FIRED];
-	case 0xE108:
-		return Scu_ErrorTypes[PLL_LOCKSLIP];
-	case 0xE10A:
-		return Scu_ErrorTypes[KERN_WDOG_FIRED];
-	default:
-		return Scu_ErrorTypes[UNKNOWN_ERRTYPE];
+	u16 error = error_type & 0xFF;
+
+	switch(error_type & 0xFF00) {
+
+	case 0xE100 :
+
+		if (error < ARRAY_SIZE(ScuBoot_ErrorTypes))
+			return ScuBoot_ErrorTypes[error];
+		return "Unknown";
+
+	case 0xE600 :
+
+		if (error < ARRAY_SIZE(ScuRuntime_ErrorTypes))
+			return ScuRuntime_ErrorTypes[error];
+		return "Unknown";
+
+	default :
+
+		return "Unknown";
 	}
 }
 

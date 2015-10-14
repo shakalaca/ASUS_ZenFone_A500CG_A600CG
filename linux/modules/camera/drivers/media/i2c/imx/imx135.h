@@ -62,6 +62,30 @@
  * Global Timing registers are based on the data rates and these are part of
  * the below clock definitions.
  */
+/* MIPI 499.2MHz 998.4mbps PIXCLK: 399.36MHz */
+#define PLL_SETTINGS_FOR_MIPI_499_2MHZ_SALTBAY \
+	{IMX_8BIT, 0x011e, 0x13}, \
+	{IMX_8BIT, 0x011f, 0x33}, \
+	{IMX_8BIT, 0x0301, 0x05}, \
+	{IMX_8BIT, 0x0303, 0x01}, \
+	{IMX_8BIT, 0x0305, 0x0c}, \
+	{IMX_8BIT, 0x0309, 0x05}, \
+	{IMX_8BIT, 0x030b, 0x01}, \
+	{IMX_8BIT, 0x030c, 0x02}, \
+	{IMX_8BIT, 0x030d, 0x70}, \
+	{IMX_8BIT, 0x030e, 0x01}, \
+	{IMX_8BIT, 0x3a06, 0x11}, \
+	{IMX_8BIT, 0x0830, 0x7f}, \
+	{IMX_8BIT, 0x0831, 0x37}, \
+	{IMX_8BIT, 0x0832, 0x67}, \
+	{IMX_8BIT, 0x0833, 0x3f}, \
+	{IMX_8BIT, 0x0834, 0x3f}, \
+	{IMX_8BIT, 0x0835, 0x47}, \
+	{IMX_8BIT, 0x0836, 0xdf}, \
+	{IMX_8BIT, 0x0837, 0x47}, \
+	{IMX_8BIT, 0x0839, 0x1f}, \
+	{IMX_8BIT, 0x083a, 0x17}, \
+	{IMX_8BIT, 0x083b, 0x02}
 
 /* MIPI 451.2MHz 902.4mbps PIXCLK: 360.96MHz */
 #define PLL_SETTINGS_FOR_MIPI_451_2MHZ_SALTBAY \
@@ -632,6 +656,63 @@ static struct imx_reg const imx135_10m_for_mipi_342[] = {
 	{IMX_TOK_TERM, 0, 0},
 };
 
+static struct imx_reg const imx135_8m_cropped[] = {
+	GROUPED_PARAMETER_HOLD_ENABLE,
+	PLL_SETTINGS_FOR_MIPI_451_2MHZ_SALTBAY,
+	/* Mode setting */
+	{IMX_8BIT, 0x0108, 0x03},
+	{IMX_8BIT, 0x0112, 0x0A},
+	{IMX_8BIT, 0x0113, 0x0A},
+	{IMX_8BIT, 0x0381, 0x01},
+	{IMX_8BIT, 0x0383, 0x01},
+	{IMX_8BIT, 0x0385, 0x01},
+	{IMX_8BIT, 0x0387, 0x01},
+	{IMX_8BIT, 0x0390, 0x00},
+	{IMX_8BIT, 0x0391, 0x11},
+	{IMX_8BIT, 0x0392, 0x00},
+	{IMX_8BIT, 0x0401, 0x00},
+	{IMX_8BIT, 0x0404, 0x00},
+	{IMX_8BIT, 0x0405, 0x10},
+	{IMX_8BIT, 0x4082, 0x01},
+	{IMX_8BIT, 0x4083, 0x01},
+	{IMX_8BIT, 0x4203, 0xFF},
+	{IMX_8BIT, 0x7006, 0x04},
+	/* Size setting */
+	{IMX_8BIT, 0x0344, 0x01},
+	{IMX_8BIT, 0x0345, 0xD0},
+	{IMX_8BIT, 0x0346, 0x01},
+	{IMX_8BIT, 0x0347, 0x48},
+	{IMX_8BIT, 0x0348, 0x0E},
+	{IMX_8BIT, 0x0349, 0x9F},
+	{IMX_8BIT, 0x034A, 0x0A},
+	{IMX_8BIT, 0x034B, 0xE7},
+	{IMX_8BIT, 0x034C, 0x0C}, /* 3280x2464 */
+	{IMX_8BIT, 0x034D, 0xD0},
+	{IMX_8BIT, 0x034E, 0x09},
+	{IMX_8BIT, 0x034F, 0xA0},
+	{IMX_8BIT, 0x0350, 0x00}, /* No Dig crop */
+	{IMX_8BIT, 0x0351, 0x00},
+	{IMX_8BIT, 0x0352, 0x00},
+	{IMX_8BIT, 0x0353, 0x00},
+	{IMX_8BIT, 0x0354, 0x0C}, /* Cut out size same as the size after crop */
+	{IMX_8BIT, 0x0355, 0xD0},
+	{IMX_8BIT, 0x0356, 0x09},
+	{IMX_8BIT, 0x0357, 0xA0},
+	{IMX_8BIT, 0x301D, 0x30}, /* ?? */
+	{IMX_8BIT, 0x3310, 0x0C}, /* Write H and V size  same as output size? */
+	{IMX_8BIT, 0x3311, 0xD0},
+	{IMX_8BIT, 0x3312, 0x09},
+	{IMX_8BIT, 0x3313, 0xA0},
+	{IMX_8BIT, 0x331C, 0x00}, /* ?? */
+	{IMX_8BIT, 0x331D, 0x10},
+	{IMX_8BIT, 0x4084, 0x00}, /* Scaling related? */
+	{IMX_8BIT, 0x4085, 0x00},
+	{IMX_8BIT, 0x4086, 0x00},
+	{IMX_8BIT, 0x4087, 0x00},
+	{IMX_8BIT, 0x4400, 0x00}, /* STATS off */
+	{IMX_TOK_TERM, 0, 0},
+};
+
 static struct imx_reg const imx135_8m_scaled_from_12m[] = {
 	GROUPED_PARAMETER_HOLD_ENABLE,
 	PLL_SETTINGS_FOR_MIPI_451_2MHZ_SALTBAY,
@@ -917,6 +998,63 @@ static struct imx_reg const imx135_1m[] = {
 	{IMX_TOK_TERM, 0, 0},
 };
 
+static struct imx_reg const imx135_976x736[] = {
+	GROUPED_PARAMETER_HOLD_ENABLE,
+	PLL_SETTINGS_FOR_MIPI_209_6MHZ_SALTBAY,
+	/* mode setting */
+	{IMX_8BIT, 0x0108, 0x03},
+	{IMX_8BIT, 0x0112, 0x0A},
+	{IMX_8BIT, 0x0113, 0x0A},
+	{IMX_8BIT, 0x0381, 0x01},
+	{IMX_8BIT, 0x0383, 0x01},
+	{IMX_8BIT, 0x0385, 0x01},
+	{IMX_8BIT, 0x0387, 0x01},
+	{IMX_8BIT, 0x0390, 0x01},
+	{IMX_8BIT, 0x0391, 0x22},
+	{IMX_8BIT, 0x0392, 0x00},
+	{IMX_8BIT, 0x0401, 0x02}, /* Scaling */
+	{IMX_8BIT, 0x0404, 0x00},
+	{IMX_8BIT, 0x0405, 0x21},
+	{IMX_8BIT, 0x4082, 0x00},
+	{IMX_8BIT, 0x4083, 0x00},
+	{IMX_8BIT, 0x4203, 0xFF},
+	{IMX_8BIT, 0x7006, 0x04},
+	/* Size setting */
+	{IMX_8BIT, 0x0344, 0x00},
+	{IMX_8BIT, 0x0345, 0x58},
+	{IMX_8BIT, 0x0346, 0x00},
+	{IMX_8BIT, 0x0347, 0x28},
+	{IMX_8BIT, 0x0348, 0x10},
+	{IMX_8BIT, 0x0349, 0x17},
+	{IMX_8BIT, 0x034A, 0x0C},
+	{IMX_8BIT, 0x034B, 0x07}, /* 88,40  4119,3079  4032,3040*/
+	{IMX_8BIT, 0x034C, 0x03}, /* 976x736 */
+	{IMX_8BIT, 0x034D, 0xD0},
+	{IMX_8BIT, 0x034E, 0x02},
+	{IMX_8BIT, 0x034F, 0xE0},
+	{IMX_8BIT, 0x0350, 0x00}, /* No Dig crop */
+	{IMX_8BIT, 0x0351, 0x00},
+	{IMX_8BIT, 0x0352, 0x00},
+	{IMX_8BIT, 0x0353, 0x00},
+	{IMX_8BIT, 0x0354, 0x07}, /* 2016,1520 */
+	{IMX_8BIT, 0x0355, 0xE0},
+	{IMX_8BIT, 0x0356, 0x05},
+	{IMX_8BIT, 0x0357, 0xF0},
+	{IMX_8BIT, 0x301D, 0x30}, /* ?? */
+	{IMX_8BIT, 0x3310, 0x03},
+	{IMX_8BIT, 0x3311, 0xD0},
+	{IMX_8BIT, 0x3312, 0x02},
+	{IMX_8BIT, 0x3313, 0xE0},
+	{IMX_8BIT, 0x331C, 0x02}, /* ?? */
+	{IMX_8BIT, 0x331D, 0x4E},
+	{IMX_8BIT, 0x4084, 0x03}, /* Scaling related? */
+	{IMX_8BIT, 0x4085, 0xD0},
+	{IMX_8BIT, 0x4086, 0x02},
+	{IMX_8BIT, 0x4087, 0xE0},
+	{IMX_8BIT, 0x4400, 0x00}, /* STATS off */
+	{IMX_TOK_TERM, 0, 0},
+};
+
 static struct imx_reg const imx135_3m_binning[] = {
 	GROUPED_PARAMETER_HOLD_ENABLE,
 	PLL_SETTINGS_FOR_MIPI_209_6MHZ_SALTBAY,
@@ -1031,6 +1169,232 @@ static struct imx_reg const imx135_1080p_binning[] = {
 	{IMX_TOK_TERM, 0, 0},
 };
 
+static const struct imx_reg imx135_1080p_nodvs_fullfov_max_clock[] = {
+	GROUPED_PARAMETER_HOLD_ENABLE,
+	PLL_SETTINGS_FOR_MIPI_451_2MHZ_SALTBAY,
+	/* mode setting */
+	{ IMX_8BIT, 0x0108, 0x03 },
+	{ IMX_8BIT, 0x0112, 0x0A },
+	{ IMX_8BIT, 0x0113, 0x0A },
+	{ IMX_8BIT, 0x0381, 0x01 },
+	{ IMX_8BIT, 0x0383, 0x01 },
+	{ IMX_8BIT, 0x0385, 0x01 },
+	{ IMX_8BIT, 0x0387, 0x01 },
+	{ IMX_8BIT, 0x0390, 0x01 },
+	{ IMX_8BIT, 0x0391, 0x22 },
+	{ IMX_8BIT, 0x0392, 0x00 },
+	{ IMX_8BIT, 0x0401, 0x00 },
+	{ IMX_8BIT, 0x0404, 0x00 },
+	{ IMX_8BIT, 0x0405, 0x10 },
+	{ IMX_8BIT, 0x4082, 0x01 },
+	{ IMX_8BIT, 0x4083, 0x01 },
+	{ IMX_8BIT, 0x7006, 0x04 },
+	/* size setting */
+	{ IMX_8BIT, 0x0344, 0x00 }, /* 168,464,4039,2655: 3872x2192 */
+	{ IMX_8BIT, 0x0345, 0xA8 },
+	{ IMX_8BIT, 0x0346, 0x01 },
+	{ IMX_8BIT, 0x0347, 0xD0 },
+	{ IMX_8BIT, 0x0348, 0x0F },
+	{ IMX_8BIT, 0x0349, 0xC7 },
+	{ IMX_8BIT, 0x034A, 0x0A },
+	{ IMX_8BIT, 0x034B, 0x5F },
+	{ IMX_8BIT, 0x034C, 0x07 }, /*1936 x 1096 */
+	{ IMX_8BIT, 0x034D, 0x90 },
+	{ IMX_8BIT, 0x034E, 0x04 },
+	{ IMX_8BIT, 0x034F, 0x48 },
+	{ IMX_8BIT, 0x0350, 0x00 },
+	{ IMX_8BIT, 0x0351, 0x00 },
+	{ IMX_8BIT, 0x0352, 0x00 },
+	{ IMX_8BIT, 0x0353, 0x00 },
+	{ IMX_8BIT, 0x0354, 0x07 }, /*1936 x 1096 */
+	{ IMX_8BIT, 0x0355, 0x90 },
+	{ IMX_8BIT, 0x0356, 0x04 },
+	{ IMX_8BIT, 0x0357, 0x48 },
+	{ IMX_8BIT, 0x301D, 0x30 },
+	{ IMX_8BIT, 0x3310, 0x07 },
+	{ IMX_8BIT, 0x3311, 0x90 },
+	{ IMX_8BIT, 0x3312, 0x04 },
+	{ IMX_8BIT, 0x3313, 0x48 },
+	{ IMX_8BIT, 0x331C, 0x04 },
+	{ IMX_8BIT, 0x331D, 0xB0 },
+	{ IMX_8BIT, 0x4084, 0x07 },
+	{ IMX_8BIT, 0x4085, 0x90 },
+	{ IMX_8BIT, 0x4086, 0x04 },
+	{ IMX_8BIT, 0x4087, 0x48 },
+	{ IMX_8BIT, 0x4400, 0x00 },
+	{ IMX_TOK_TERM, 0, 0}
+};
+
+/* 1080P NODVS 1936x1096 */
+static const struct imx_reg imx135_1080p_nodvs_max_clock[] = {
+	GROUPED_PARAMETER_HOLD_ENABLE,
+	PLL_SETTINGS_FOR_MIPI_451_2MHZ_SALTBAY,
+	/* mode setting */
+	{ IMX_8BIT, 0x0108, 0x03 },
+	{ IMX_8BIT, 0x0112, 0x0A },
+	{ IMX_8BIT, 0x0113, 0x0A },
+	{ IMX_8BIT, 0x0381, 0x01 },
+	{ IMX_8BIT, 0x0383, 0x01 },
+	{ IMX_8BIT, 0x0385, 0x01 },
+	{ IMX_8BIT, 0x0387, 0x01 },
+	{ IMX_8BIT, 0x0390, 0x01 },
+	{ IMX_8BIT, 0x0391, 0x22 },
+	{ IMX_8BIT, 0x0392, 0x00 },
+	{ IMX_8BIT, 0x0401, 0x02 },
+	{ IMX_8BIT, 0x0404, 0x00 },
+	{ IMX_8BIT, 0x0405, 0x11 },
+	{ IMX_8BIT, 0x4082, 0x00 },
+	{ IMX_8BIT, 0x4083, 0x00 },
+	{ IMX_8BIT, 0x7006, 0x04 },
+	/* size setting */
+	{ IMX_8BIT, 0x0344, 0x00 }, /* 46,396,4161,2727: 4116x2332 */
+	{ IMX_8BIT, 0x0345, 0x2E },
+	{ IMX_8BIT, 0x0346, 0x01 },
+	{ IMX_8BIT, 0x0347, 0x8C },
+	{ IMX_8BIT, 0x0348, 0x10 },
+	{ IMX_8BIT, 0x0349, 0x41 },
+	{ IMX_8BIT, 0x034A, 0x0A },
+	{ IMX_8BIT, 0x034B, 0xA7 },
+	{ IMX_8BIT, 0x034C, 0x07 }, /*1936 x 1096 */
+	{ IMX_8BIT, 0x034D, 0x90 },
+	{ IMX_8BIT, 0x034E, 0x04 },
+	{ IMX_8BIT, 0x034F, 0x48 },
+	{ IMX_8BIT, 0x0350, 0x00 },
+	{ IMX_8BIT, 0x0351, 0x00 },
+	{ IMX_8BIT, 0x0352, 0x00 },
+	{ IMX_8BIT, 0x0353, 0x00 },
+	{ IMX_8BIT, 0x0354, 0x08 }, /* 2058x1166 */
+	{ IMX_8BIT, 0x0355, 0x0A },
+	{ IMX_8BIT, 0x0356, 0x04 },
+	{ IMX_8BIT, 0x0357, 0x8E },
+	{ IMX_8BIT, 0x301D, 0x30 },
+	{ IMX_8BIT, 0x3310, 0x07 },
+	{ IMX_8BIT, 0x3311, 0x90 },
+	{ IMX_8BIT, 0x3312, 0x04 },
+	{ IMX_8BIT, 0x3313, 0x48 },
+	{ IMX_8BIT, 0x331C, 0x04 },
+	{ IMX_8BIT, 0x331D, 0xB0 },
+	{ IMX_8BIT, 0x4084, 0x07 },
+	{ IMX_8BIT, 0x4085, 0x90 },
+	{ IMX_8BIT, 0x4086, 0x04 },
+	{ IMX_8BIT, 0x4087, 0x48 },
+	{ IMX_8BIT, 0x4400, 0x00 },
+	{ IMX_TOK_TERM, 0, 0}
+};
+
+/* 1080P 10%DVS 2104x1184 */
+static const struct imx_reg imx135_1080p_10_dvs_max_clock[] = {
+	GROUPED_PARAMETER_HOLD_ENABLE,
+	PLL_SETTINGS_FOR_MIPI_451_2MHZ_SALTBAY,
+	/* mode setting */
+	{ IMX_8BIT, 0x0108, 0x03 },
+	{ IMX_8BIT, 0x0112, 0x0A },
+	{ IMX_8BIT, 0x0113, 0x0A },
+	{ IMX_8BIT, 0x0381, 0x01 },
+	{ IMX_8BIT, 0x0383, 0x01 },
+	{ IMX_8BIT, 0x0385, 0x01 },
+	{ IMX_8BIT, 0x0387, 0x01 },
+	{ IMX_8BIT, 0x0390, 0x01 },
+	{ IMX_8BIT, 0x0391, 0x22 },
+	{ IMX_8BIT, 0x0392, 0x00 },
+	{ IMX_8BIT, 0x0401, 0x00 },
+	{ IMX_8BIT, 0x0404, 0x00 },
+	{ IMX_8BIT, 0x0405, 0x10 },
+	{ IMX_8BIT, 0x4082, 0x01 },
+	{ IMX_8BIT, 0x4083, 0x01 },
+	{ IMX_8BIT, 0x7006, 0x04 },
+	/* size setting */
+	{ IMX_8BIT, 0x0344, 0x00 }, /* 0,376,4207,2743: 4208x2368 */
+	{ IMX_8BIT, 0x0345, 0x00 },
+	{ IMX_8BIT, 0x0346, 0x01 },
+	{ IMX_8BIT, 0x0347, 0x78 },
+	{ IMX_8BIT, 0x0348, 0x10 },
+	{ IMX_8BIT, 0x0349, 0x6F },
+	{ IMX_8BIT, 0x034A, 0x0A },
+	{ IMX_8BIT, 0x034B, 0xB7 },
+	{ IMX_8BIT, 0x034C, 0x08 }, /* 2104 x 1184 */
+	{ IMX_8BIT, 0x034D, 0x38 },
+	{ IMX_8BIT, 0x034E, 0x04 },
+	{ IMX_8BIT, 0x034F, 0xA0 },
+	{ IMX_8BIT, 0x0350, 0x00 },
+	{ IMX_8BIT, 0x0351, 0x00 },
+	{ IMX_8BIT, 0x0352, 0x00 },
+	{ IMX_8BIT, 0x0353, 0x00 },
+	{ IMX_8BIT, 0x0354, 0x08 }, /* 2104 x 1184 */
+	{ IMX_8BIT, 0x0355, 0x38 },
+	{ IMX_8BIT, 0x0356, 0x04 },
+	{ IMX_8BIT, 0x0357, 0xA0 },
+	{ IMX_8BIT, 0x301D, 0x30 },
+	{ IMX_8BIT, 0x3310, 0x08 },
+	{ IMX_8BIT, 0x3311, 0x38 },
+	{ IMX_8BIT, 0x3312, 0x04 },
+	{ IMX_8BIT, 0x3313, 0xA0 },
+	{ IMX_8BIT, 0x331C, 0x04 },
+	{ IMX_8BIT, 0x331D, 0xB0 },
+	{ IMX_8BIT, 0x4084, 0x00 },
+	{ IMX_8BIT, 0x4085, 0x00 },
+	{ IMX_8BIT, 0x4086, 0x00 },
+	{ IMX_8BIT, 0x4087, 0x00 },
+	{ IMX_8BIT, 0x4400, 0x00 },
+	{ IMX_TOK_TERM, 0, 0}
+};
+
+static const struct imx_reg imx135_720pdvs_max_clock[] = {
+	GROUPED_PARAMETER_HOLD_ENABLE,
+	PLL_SETTINGS_FOR_MIPI_451_2MHZ_SALTBAY,
+	/* mode setting */
+	{ IMX_8BIT, 0x0108, 0x03 },
+	{ IMX_8BIT, 0x0112, 0x0A },
+	{ IMX_8BIT, 0x0113, 0x0A },
+	{ IMX_8BIT, 0x0381, 0x01 },
+	{ IMX_8BIT, 0x0383, 0x01 },
+	{ IMX_8BIT, 0x0385, 0x01 },
+	{ IMX_8BIT, 0x0387, 0x01 },
+	{ IMX_8BIT, 0x0390, 0x01 },
+	{ IMX_8BIT, 0x0391, 0x22 },
+	{ IMX_8BIT, 0x0392, 0x00 },
+	{ IMX_8BIT, 0x0401, 0x02 },
+	{ IMX_8BIT, 0x0404, 0x00 },
+	{ IMX_8BIT, 0x0405, 0x15 },
+	{ IMX_8BIT, 0x4082, 0x00 },
+	{ IMX_8BIT, 0x4083, 0x00 },
+	{ IMX_8BIT, 0x7006, 0x04 },
+	/* size setting */
+	{ IMX_8BIT, 0x0344, 0x00 }, /* 46,404,4161,2715: 4116x2312 */
+	{ IMX_8BIT, 0x0345, 0x2E },
+	{ IMX_8BIT, 0x0346, 0x01 },
+	{ IMX_8BIT, 0x0347, 0x94 },
+	{ IMX_8BIT, 0x0348, 0x10 },
+	{ IMX_8BIT, 0x0349, 0x41 },
+	{ IMX_8BIT, 0x034A, 0x0A },
+	{ IMX_8BIT, 0x034B, 0x9B },
+	{ IMX_8BIT, 0x034C, 0x06 }, /*1568 x 880 */
+	{ IMX_8BIT, 0x034D, 0x20 },
+	{ IMX_8BIT, 0x034E, 0x03 },
+	{ IMX_8BIT, 0x034F, 0x70 },
+	{ IMX_8BIT, 0x0350, 0x00 },
+	{ IMX_8BIT, 0x0351, 0x00 },
+	{ IMX_8BIT, 0x0352, 0x00 },
+	{ IMX_8BIT, 0x0353, 0x00 },
+	{ IMX_8BIT, 0x0354, 0x08 }, /*2058 x 1156 */
+	{ IMX_8BIT, 0x0355, 0x0A },
+	{ IMX_8BIT, 0x0356, 0x04 },
+	{ IMX_8BIT, 0x0357, 0x84 },
+	{ IMX_8BIT, 0x301D, 0x30 },
+	{ IMX_8BIT, 0x3310, 0x06 },
+	{ IMX_8BIT, 0x3311, 0x20 },
+	{ IMX_8BIT, 0x3312, 0x03 },
+	{ IMX_8BIT, 0x3313, 0x70 },
+	{ IMX_8BIT, 0x331C, 0x04 },
+	{ IMX_8BIT, 0x331D, 0x4C },
+	{ IMX_8BIT, 0x4084, 0x06 },
+	{ IMX_8BIT, 0x4085, 0x20 },
+	{ IMX_8BIT, 0x4086, 0x03 },
+	{ IMX_8BIT, 0x4087, 0x70 },
+	{ IMX_8BIT, 0x4400, 0x00 },
+	{ IMX_TOK_TERM, 0, 0}
+};
+
 /******************* Video Modes ******************/
 
 /* 1080P DVS 2336x1320 */
@@ -1082,6 +1446,63 @@ static const struct imx_reg imx135_2336x1320_max_clock[] = {
 	{ IMX_8BIT, 0x3313, 0x28 },
 	{ IMX_8BIT, 0x331C, 0x04 },
 	{ IMX_8BIT, 0x331D, 0xE2 },
+	{ IMX_8BIT, 0x4084, 0x09 },
+	{ IMX_8BIT, 0x4085, 0x20 },
+	{ IMX_8BIT, 0x4086, 0x05 },
+	{ IMX_8BIT, 0x4087, 0x28 },
+	{ IMX_8BIT, 0x4400, 0x00 },
+	{ IMX_TOK_TERM, 0, 0}
+};
+
+/* 1080P DVS 2336x1320 Cropped */
+static const struct imx_reg imx135_2336x1320_cropped_mipi499[] = {
+	GROUPED_PARAMETER_HOLD_ENABLE,
+	PLL_SETTINGS_FOR_MIPI_499_2MHZ_SALTBAY,
+	/* mode setting */
+	{ IMX_8BIT, 0x0108, 0x03 },
+	{ IMX_8BIT, 0x0112, 0x0A },
+	{ IMX_8BIT, 0x0113, 0x0A },
+	{ IMX_8BIT, 0x0381, 0x01 },
+	{ IMX_8BIT, 0x0383, 0x01 },
+	{ IMX_8BIT, 0x0385, 0x01 },
+	{ IMX_8BIT, 0x0387, 0x01 },
+	{ IMX_8BIT, 0x0390, 0x00 },
+	{ IMX_8BIT, 0x0391, 0x11 },
+	{ IMX_8BIT, 0x0392, 0x00 },
+	{ IMX_8BIT, 0x0401, 0x02 },
+	{ IMX_8BIT, 0x0404, 0x00 },
+	{ IMX_8BIT, 0x0405, 0x1C },
+	{ IMX_8BIT, 0x4082, 0x01 },
+	{ IMX_8BIT, 0x4083, 0x01 },
+	{ IMX_8BIT, 0x7006, 0x04 },
+	/* size setting */
+	{ IMX_8BIT, 0x0344, 0x03 }, /* 936,900,3271,2219: 2336x1320 */
+	{ IMX_8BIT, 0x0345, 0xA8 },
+	{ IMX_8BIT, 0x0346, 0x03 },
+	{ IMX_8BIT, 0x0347, 0x84 },
+	{ IMX_8BIT, 0x0348, 0x0C },
+	{ IMX_8BIT, 0x0349, 0xC7 },
+	{ IMX_8BIT, 0x034A, 0x08 },
+	{ IMX_8BIT, 0x034B, 0xAB },
+	{ IMX_8BIT, 0x034C, 0x09 }, /* 2336 x 1320 */
+	{ IMX_8BIT, 0x034D, 0x20 },
+	{ IMX_8BIT, 0x034E, 0x05 },
+	{ IMX_8BIT, 0x034F, 0x28 },
+	{ IMX_8BIT, 0x0350, 0x00 },
+	{ IMX_8BIT, 0x0351, 0x00 },
+	{ IMX_8BIT, 0x0352, 0x00 },
+	{ IMX_8BIT, 0x0353, 0x00 },
+	{ IMX_8BIT, 0x0354, 0x09 }, /* 2336 x 1320 */
+	{ IMX_8BIT, 0x0355, 0x20 },
+	{ IMX_8BIT, 0x0356, 0x05 },
+	{ IMX_8BIT, 0x0357, 0x28 },
+	{ IMX_8BIT, 0x301D, 0x30 },
+	{ IMX_8BIT, 0x3310, 0x09 },
+	{ IMX_8BIT, 0x3311, 0x20 },
+	{ IMX_8BIT, 0x3312, 0x05 },
+	{ IMX_8BIT, 0x3313, 0x28 },
+	{ IMX_8BIT, 0x331C, 0x00 },
+	{ IMX_8BIT, 0x331D, 0xB4 },
 	{ IMX_8BIT, 0x4084, 0x09 },
 	{ IMX_8BIT, 0x4085, 0x20 },
 	{ IMX_8BIT, 0x4086, 0x05 },
@@ -1313,6 +1734,66 @@ static const struct imx_reg imx135_vga_dvs_binning[] = {
 	{IMX_8BIT, 0x4084, 0x03 },
 	{IMX_8BIT, 0x4085, 0x34 },
 	{IMX_8BIT, 0x4086, 0x02 },
+	{IMX_8BIT, 0x4087, 0x68 },
+	{IMX_8BIT, 0x4400, 0x00 },
+	{IMX_TOK_TERM, 0, 0}
+};
+
+/* VGA: H : 436 V : 360 */
+static const struct imx_reg imx135_436x360_binning[] = {
+	GROUPED_PARAMETER_HOLD_ENABLE,
+	PLL_SETTINGS_FOR_MIPI_209_6MHZ_SALTBAY,
+	/* Mode setting */
+	{IMX_8BIT, 0x0108, 0x03 },
+	{IMX_8BIT, 0x0112, 0x0A },
+	{IMX_8BIT, 0x0113, 0x0A },
+	{IMX_8BIT, 0x0381, 0x01 },
+	{IMX_8BIT, 0x0383, 0x01 },
+	{IMX_8BIT, 0x0385, 0x01 },
+	{IMX_8BIT, 0x0387, 0x01 },
+	{IMX_8BIT, 0x0390, 0x01 },
+	{IMX_8BIT, 0x0391, 0x44 },
+	{IMX_8BIT, 0x0392, 0x00 },
+	{IMX_8BIT, 0x0401, 0x02 },
+	{IMX_8BIT, 0x0404, 0x00 },
+	{IMX_8BIT, 0x0405, 0x22 },
+	{IMX_8BIT, 0x4082, 0x00 },
+	{IMX_8BIT, 0x4083, 0x00 },
+	{IMX_8BIT, 0x7006, 0x04 },
+	/* Size setting */
+	{IMX_8BIT, 0x0344, 0x00 }, /* 212,0,3995,3119 3784x3120 */
+	{IMX_8BIT, 0x0345, 0xD4 },
+	{IMX_8BIT, 0x0346, 0x00 },
+	{IMX_8BIT, 0x0347, 0x00 },
+	{IMX_8BIT, 0x0348, 0x0F },
+	{IMX_8BIT, 0x0349, 0x9B },
+	{IMX_8BIT, 0x034A, 0x0C },
+	{IMX_8BIT, 0x034B, 0x2F },
+
+	{IMX_8BIT, 0x034C, 0x01 }, /* 436x360 */
+	{IMX_8BIT, 0x034D, 0xB4 },
+	{IMX_8BIT, 0x034E, 0x01 },
+	{IMX_8BIT, 0x034F, 0x68 },
+	{IMX_8BIT, 0x0350, 0x00 },
+	{IMX_8BIT, 0x0351, 0x12 },
+	{IMX_8BIT, 0x0352, 0x00 },
+	{IMX_8BIT, 0x0353, 0x0C },
+
+	{IMX_8BIT, 0x0354, 0x03 }, /* 928x768 crop from 946x780*/
+	{IMX_8BIT, 0x0355, 0xA0 },
+	{IMX_8BIT, 0x0356, 0x03 },
+	{IMX_8BIT, 0x0357, 0x00 },
+
+	{IMX_8BIT, 0x301D, 0x30 },
+	{IMX_8BIT, 0x3310, 0x01 },
+	{IMX_8BIT, 0x3311, 0xB4 },
+	{IMX_8BIT, 0x3312, 0x01 },
+	{IMX_8BIT, 0x3313, 0x68 },
+	{IMX_8BIT, 0x331C, 0x02 },
+	{IMX_8BIT, 0x331D, 0x21 },
+	{IMX_8BIT, 0x4084, 0x01 },
+	{IMX_8BIT, 0x4085, 0xB4 },
+	{IMX_8BIT, 0x4086, 0x01 },
 	{IMX_8BIT, 0x4087, 0x68 },
 	{IMX_8BIT, 0x4400, 0x00 },
 	{IMX_TOK_TERM, 0, 0}
@@ -1550,6 +2031,24 @@ struct imx_resolution imx135_res_preview[] = {
 		},
 		.bin_factor_x = 2,
 		.bin_factor_y = 2,
+	},
+	{
+		.desc = "imx135_976x736_preview",
+		.regs = imx135_976x736,
+		.width = 976,
+		.height = 736,
+		.fps_options = {
+			{
+				 .fps = 30,
+				 .pixels_per_line = 5464,
+				 .lines_per_frame = 2046,
+			},
+			{
+			}
+		},
+		.bin_factor_x = 1,
+		.bin_factor_y = 1,
+		.used = 0,
 	},
 	{
 		.desc = "imx135_1m_preview",
@@ -1803,6 +2302,11 @@ struct imx_resolution imx135_res_still[] = {
 		.height = 2464,
 		.fps_options = {
 			{ /* Pixel clock: 273.6MHz */
+				 .fps = 9,
+				 .pixels_per_line = 7050,
+				 .lines_per_frame = 4458,
+			},
+			{ /* Pixel clock: 273.6MHz */
 				 .fps = 15,
 				 .pixels_per_line = 5500,
 				 .lines_per_frame = 3314,
@@ -1910,6 +2414,23 @@ struct imx_resolution imx135_res_video[] = {
 		.bin_factor_y = 2,
 	},
 	{
+		.desc = "imx135_436x360_binning_video",
+		.regs = imx135_436x360_binning,
+		.width = 436,
+		.height = 360,
+		.fps_options = {
+			{
+				 .fps = 30,
+				 .pixels_per_line = 9144,
+				 .lines_per_frame = 1226,
+			},
+			{
+			}
+		},
+		.bin_factor_x = 2,
+		.bin_factor_y = 2,
+	},
+	{
 		.desc = "imx135_vga_dvs_binning_video",
 		.regs = imx135_vga_dvs_binning,
 		.width = 820,
@@ -1944,15 +2465,20 @@ struct imx_resolution imx135_res_video[] = {
 		.bin_factor_y = 1,
 	},
 	{
-		.desc = "imx135_720p_dvs_binning_video",
-		.regs = imx135_720p_dvs_binning,
+		.desc = "imx135_720P_dvs_video",
+		.regs = imx135_720pdvs_max_clock,
 		.width = 1568,
 		.height = 880,
 		.fps_options = {
-			{
+			{/* Pixel Clock : 360.96 MHz */
 				 .fps = 30,
-				 .pixels_per_line = 5464,
-				 .lines_per_frame = 2046,
+				 .pixels_per_line = 5850,
+				 .lines_per_frame = 2000,
+			},
+			{/* Pixel Clock : 360.96 MHz */
+				 .fps = 60,
+				 .pixels_per_line = 4572,
+				 .lines_per_frame = 1310,
 			},
 			{
 			}
@@ -1978,6 +2504,28 @@ struct imx_resolution imx135_res_video[] = {
 		.bin_factor_y = 1,
 	},
 	{
+		.desc = "imx135_1936_1096_fullfov_max_clock",
+		.regs = imx135_1080p_nodvs_max_clock,
+		.width = 1936,
+		.height = 1096,
+		.fps_options = {
+			{/* Pixel Clock : 360.96 MHz */
+				 .fps = 30,
+				 .pixels_per_line = 5850,
+				 .lines_per_frame = 2000,
+			},
+			{/* Pixel Clock : 360.96 MHz */
+				 .fps = 60,
+				 .pixels_per_line = 4572,
+				 .lines_per_frame = 1310,
+			},
+			{
+			}
+		},
+		.bin_factor_x = 1,
+		.bin_factor_y = 1,
+	},
+	{
 		.desc = "imx135_1080P_dvs_video",
 		.regs = imx135_2336x1320_max_clock,
 		.width = 2336,
@@ -1987,12 +2535,37 @@ struct imx_resolution imx135_res_video[] = {
 				 .fps = 30,
 				 .pixels_per_line = 4572,
 				 .lines_per_frame = 2632,
+				 .regs = imx135_2336x1320_max_clock,
+			},
+			{/* Pixel Clock : 399.36MHz */
+				 .fps = 60,
+				 .pixels_per_line = 4754,
+				 .lines_per_frame = 1400,
+				 .regs = imx135_2336x1320_cropped_mipi499,
 			},
 			{
 			}
 		},
 		.bin_factor_x = 0,
 		.bin_factor_y = 0,
+	},
+	{
+		.desc = "imx135_8m_cropped_video",
+		.regs = imx135_8m_cropped,
+		.width = 3280,
+		.height = 2464,
+		.fps_options = {
+			{ /* Pixel clock: 360.96MHz */
+				 .fps = 30,
+				 .pixels_per_line = 4572,
+				 .lines_per_frame = 2624,
+			},
+			{
+			}
+		},
+		.bin_factor_x = 0,
+		.bin_factor_y = 0,
+		.used = 0,
 	},
 };
 

@@ -19,7 +19,7 @@
 #include <linux/platform_device.h>
 #include <asm/platform_sst_audio.h>
 #include <asm/intel-mid.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include <asm/platform_ctp_audio.h>
 #include "platform_msic.h"
 /*FIX ME:change it to get_gpio_by_name once the name is added in IFWI*/
@@ -35,7 +35,7 @@ void *ctp_audio_platform_data(void *info)
 	int ret;
 	struct sfi_device_table_entry *pentry = info;
 	char name[SFI_NAME_LEN+1];
-
+	printk("ctp_audio_platform_data \n");
 	ctp_audio_pdata.codec_gpio_hsdet = get_gpio_by_name("gpio_plugdet");
 	ctp_audio_pdata.codec_gpio_button = get_gpio_by_name("CODEC_INT_N");
 	/* ctp_audio_pdata.codec_gpio_dmic = GPIO_DMIC_1_EN; */

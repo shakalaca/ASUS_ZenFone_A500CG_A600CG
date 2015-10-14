@@ -36,7 +36,7 @@
 #include <asm/intel_mid_thermal.h>
 #include <asm/intel_crystalcove_gpadc.h>
 
-#include "../staging/iio/consumer.h"
+#include <linux/iio/consumer.h>
 
 #define DEVICE_NAME "crystal_cove_thermal"
 
@@ -763,7 +763,7 @@ static int update_temp(struct thermal_zone_device *tzd, long *temp)
 
 	if (!tdata->is_initialized ||
 			time_after(jiffies, tdata->last_updated + HZ)) {
-		ret = iio_st_read_channel_all_raw(tdata->iio_chan,
+		ret = iio_read_channel_all_raw(tdata->iio_chan,
 						tdata->cached_vals);
 		if (ret == -ETIMEDOUT) {
 			dev_err(&tzd->device,
@@ -1053,6 +1053,7 @@ static struct thermal_zone_device_ops tzd_ops = {
 
 static int byt_thermal_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
 	int i, size, ret;
 	struct intel_mid_thermal_platform_data *pdata;
 
@@ -1098,7 +1099,7 @@ static int byt_thermal_probe(struct platform_device *pdev)
 	}
 
 	/* Register with IIO to sample temperature values */
-	tdata->iio_chan = iio_st_channel_get_all("THERMAL");
+	tdata->iio_chan = iio_channel_get_all(&pdev->dev);
 	if (tdata->iio_chan == NULL) {
 		dev_err(&pdev->dev, "tdata->iio_chan is null\n");
 		ret = -EINVAL;
@@ -1106,7 +1107,7 @@ static int byt_thermal_probe(struct platform_device *pdev)
 	}
 
 	/* Check whether we got all the four channels */
-	ret = iio_st_channel_get_num(tdata->iio_chan);
+	ret = iio_channel_get_num(tdata->iio_chan);
 	if (ret != PMIC_THERMAL_SENSORS) {
 		dev_err(&pdev->dev, "incorrect number of channels:%d\n", ret);
 		ret = -EFAULT;
@@ -1120,7 +1121,7 @@ static int byt_thermal_probe(struct platform_device *pdev)
 				NUM_ALERT_LEVELS, ALERT_RW_MASK,
 				initialize_sensor(i, &tdata->sensors[i]),
 				&tzd_ops,
-				0, 0, 0, 0);
+				NULL, 0, 0);
 		if (IS_ERR(tdata->tzd[i])) {
 			ret = PTR_ERR(tdata->tzd[i]);
 			dev_err(&pdev->dev,
@@ -1158,7 +1159,7 @@ exit_reg:
 	while (--i >= 0)
 		thermal_zone_device_unregister(tdata->tzd[i]);
 exit_iio:
-	iio_st_channel_release_all(tdata->iio_chan);
+	iio_channel_release_all(tdata->iio_chan);
 exit_tzd:
 	kfree(tdata->tzd);
 exit_free:
@@ -1188,7 +1189,7 @@ static int byt_thermal_remove(struct platform_device *pdev)
 	for (i = 0; i < tdata->num_sensors; i++)
 		thermal_zone_device_unregister(tdata->tzd[i]);
 
-	iio_st_channel_release_all(tdata->iio_chan);
+	iio_channel_release_all(tdata->iio_chan);
 	free_irq(tdata->irq, tdata);
 	mutex_destroy(&tdata->thrm_irq_lock);
 	kfree(tdata->tzd);

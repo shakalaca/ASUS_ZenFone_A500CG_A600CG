@@ -194,7 +194,7 @@ static int vlv2_plat_clk_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	dev_info(&pdev->dev, "%s(%d)\n", __func__, __LINE__);
+	dev_info(&pdev->dev, "vlv2_plat_clk initialized\n");
 	return 0;
 }
 

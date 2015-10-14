@@ -93,6 +93,7 @@ enum hmm_page_type {
 #define	HMM_BO_PAGE_ALLOCED	0x2
 #define	HMM_BO_BINDED		0x4
 #define	HMM_BO_MMAPED		0x8
+#define	HMM_BO_VMAPED		0x10
 #define	HMM_BO_ACTIVE		0x1000
 #define	HMM_BO_MEM_TYPE_USER     0x1
 #define	HMM_BO_MEM_TYPE_PFN      0x2
@@ -120,7 +121,7 @@ struct hmm_buffer_object {
 #endif
 	int			status;
 	int         mem_type;
-
+	void		*vmap_addr; /* kernel virtual address by vmap */
 	/*
 	 * release callback for releasing buffer object.
 	 *
@@ -269,7 +270,7 @@ int hmm_bo_vm_allocated(struct hmm_buffer_object *bo);
  */
 int hmm_bo_alloc_pages(struct hmm_buffer_object *bo,
 		enum hmm_bo_type type, int from_highmem,
-		unsigned int userptr, bool cached);
+		void *userptr, bool cached);
 void hmm_bo_free_pages(struct hmm_buffer_object *bo);
 int hmm_bo_page_allocated(struct hmm_buffer_object *bo);
 
@@ -288,9 +289,13 @@ int hmm_bo_binded(struct hmm_buffer_object *bo);
 
 /*
  * vmap buffer object's pages to contiguous kernel virtual address.
- * user needs to call vunmap manually to unmap it.
+ * if the buffer has been vmaped, return the virtual address directly.
  */
 void *hmm_bo_vmap(struct hmm_buffer_object *bo);
+/*
+ * vunmap buffer object's kernel virtual address.
+ */
+void hmm_bo_vunmap(struct hmm_buffer_object *bo);
 
 /*
  * mmap the bo's physical pages to specific vma.

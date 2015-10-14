@@ -35,6 +35,8 @@
 #include <linux/pm_runtime.h>
 #include <linux/lnw_gpio.h>
 #include <linux/input/intel_mid_vibra.h>
+#include <asm/intel-mid.h>
+#include <trace/events/power.h>
 #include "mid_vibra.h"
 #include <asm/intel_scu_pmic.h>
 #include <linux/gpio.h>
@@ -44,9 +46,10 @@
 #define PWM0DUTYCYCLE 0x67
 #define GPIO_PWM_VIB 0
 #define VIBRA_DRV 160
-#define PCB_PR2 2 // PCB_MP as the same
 #define PCB_ER2 4
 #define PCB_PR 6
+#define PCB_PR2 2
+#define PCB_MP_RF 0
 #define PROJ_600 7
 extern  int Read_HW_ID(void);
 extern  int Read_PROJ_ID(void);
@@ -70,7 +73,6 @@ static int vibra_driver_write(struct i2c_adapter *adap, u8 i2c_addr,
 
 	buffer[0] = reg;
 	buffer[1] = value;
-
 	pr_debug("write for %x, value %x", buffer[0], buffer[1]);
 
 	msg.addr = i2c_addr;
@@ -101,7 +103,6 @@ static int vibra_driver_read(struct i2c_adapter *adap, u8 i2c_addr,
 	xfer[1].len = 1;
 	xfer[1].buf = (u8 *)value; /*Read value */
 
-
 	ret = i2c_transfer(adap, xfer, 2);
 	if (ret != 2) {
 		pr_err("%s:i2c transfer err:%d for reg %x", __func__, ret, reg);
@@ -116,7 +117,6 @@ static int vibra_driver_read(struct i2c_adapter *adap, u8 i2c_addr,
 static int vibra_soc_pwm_configure(struct vibra_info *info, bool enable)
 {
 	union sst_pwmctrl_reg pwmctrl;
-
 
 	if (enable) {
 		lnw_gpio_set_alt(info->gpio_pwm, info->alt_fn);
@@ -224,7 +224,7 @@ static void vibra_disable(struct vibra_info *info)
 	pm_runtime_put(info->dev);
 
 #endif
-        if(Read_HW_ID() == PCB_ER2 || Read_HW_ID() == PCB_PR || Read_HW_ID() == PCB_PR2){
+        if(Read_HW_ID() == PCB_ER2 || Read_HW_ID() == PCB_PR || Read_HW_ID() == PCB_PR2 || Read_HW_ID() == PCB_MP_RF){
               vibra_drvic_enable(0);
         }
 
@@ -243,7 +243,7 @@ static void vibra_drv8601_enable(struct vibra_info *info)
 	gpio_set_value_cansleep(info->gpio_en, 1);
 	info->enabled = true;
 #endif
-        if(Read_HW_ID() == PCB_ER2 || Read_HW_ID() == PCB_PR  || Read_HW_ID() == PCB_PR2){
+        if(Read_HW_ID() == PCB_ER2 || Read_HW_ID() == PCB_PR || Read_HW_ID() == PCB_PR2 || Read_HW_ID() == PCB_MP_RF){
               vibra_drvic_enable(1);
         }
 
@@ -259,7 +259,6 @@ static void vibra_drv8601_enable(struct vibra_info *info)
 static ssize_t vibra_show_vibrator(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-
 	struct vibra_info *info = dev_get_drvdata(dev);
 
 	return sprintf(buf, "%d\n", info->enabled);
@@ -269,7 +268,6 @@ static ssize_t vibra_show_vibrator(struct device *dev,
 static ssize_t vibra_set_vibrator(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t len)
 {
-
 	long vibrator_enable;
 	struct vibra_info *info = dev_get_drvdata(dev);
 
@@ -373,13 +371,16 @@ static int vibra_drv2605_calibrate(struct vibra_info *info)
 	vibra_driver_read(adap, DRV2605_I2C_ADDR, DRV2605_MODE, &mode);
 	/* Is Device Ready?? */
 	if (!((mode >> DRV2605_STANDBY_BIT) & 0x1)) {
-
 		vibra_driver_read(adap, DRV2605_I2C_ADDR, DRV2605_STATUS, &status);
 		/* Is it Auto Calibrated?? */
 		if (!((status >> DRV2605_DIAG_RESULT_BIT) & 0x1)) {
-			pr_debug("Do Nothing -  Device Calibrated\n");
-			return 0;
+			if (!((INTEL_MID_BOARD(1, PHONE, MOFD)) ||
+					(INTEL_MID_BOARD(1, TABLET, MOFD)))) {
+				pr_debug("Do Nothing -  Device Calibrated\n");
+				return 0;
+			}
 		}
+			pr_debug("Re-calibrate the vibra for moorefield");
 	}
 
 	/*enable gpio first */
@@ -408,6 +409,7 @@ static int vibra_drv2605_calibrate(struct vibra_info *info)
 struct vibra_info *mid_vibra_setup(struct device *dev, struct mid_vibra_pdata *data)
 {
 	struct vibra_info *info;
+
 	pr_debug("probe data divisor %x, base %x, alt_fn %d ext_drv %d, name: %s",
 		data->time_divisor, data->base_unit, data->alt_fn, data->ext_drv, data->name);
 
@@ -419,7 +421,7 @@ struct vibra_info *mid_vibra_setup(struct device *dev, struct mid_vibra_pdata *d
 
 	info->alt_fn = data->alt_fn;
 	info->ext_drv = data->ext_drv;
-        info->gpio_en = data->gpio_en;
+	info->gpio_en = data->gpio_en;
 	info->gpio_pwm = data->gpio_pwm;
 	info->name = data->name;
 
@@ -432,11 +434,12 @@ struct vibra_info *mid_vibra_setup(struct device *dev, struct mid_vibra_pdata *d
 	info->base_unit = &mid_vibra_base_unit;
 	info->duty_cycle = &mid_vibra_duty_cycle;
 
-
 	/* ops */
 	if (!strncmp(info->name, "drv8601", 8)) {
 		info->enable = vibra_drv8601_enable;
 	} else if (!strncmp(info->name, "drv2605", 8)) {
+		info->enable = vibra_drv2605_enable;
+	} else if (!strncmp(info->name, "drv2603", 8)) {
 		info->enable = vibra_drv2605_enable;
 	} else {
 		pr_err("%s: unsupported vibrator device", __func__);
@@ -456,6 +459,7 @@ static int intel_mid_vibra_probe(struct pci_dev *pci,
 	int ret;
 
 	pr_debug("Probe for DID %x\n", pci->device);
+
 	data = pci->dev.platform_data;
 	if (!data) {
 		dev_err(&pci->dev, "Failed to get vibrator platform data\n");
@@ -466,16 +470,12 @@ static int intel_mid_vibra_probe(struct pci_dev *pci,
 	if (!info)
 		return -ENODEV;
 
-        ret = gpio_request(VIBRA_DRV, "vibra600_dri");
-        if(ret)
-               printk("[VIB] %s: gpio_request set fail\n", __func__);
-
-        ret = gpio_direction_output(VIBRA_DRV, 0);
-        if(ret)
-               printk("[VIB] %s: gpio_direction_output set fail\n", __func__);
-
 #if GPIO_PWM_VIB
-        info->pwm_configure = vibra_soc_pwm_configure;
+	info->pwm_configure = vibra_soc_pwm_configure;
+
+	info->max_base_unit = INTEL_VIBRA_MAX_BASEUNIT;
+	info->max_duty_cycle = INTEL_VIBRA_MAX_TIMEDIVISOR;
+
 	pr_debug("using gpios en: %d, pwm %d", info->gpio_en, info->gpio_pwm);
 	ret = gpio_request_one(info->gpio_en, GPIOF_DIR_OUT, "VIBRA ENABLE");
 	if (ret != 0) {
@@ -483,17 +483,10 @@ static int intel_mid_vibra_probe(struct pci_dev *pci,
 		goto out;
 	}
 #else
-        info->pwm_configure = vibra_pmic_pwm_configure;
+	info->pwm_configure = vibra_pmic_pwm_configure;
 #endif
-        info->max_base_unit = INTEL_VIBRA_MAX_BASEUNIT;
+	info->max_base_unit = INTEL_VIBRA_MAX_BASEUNIT;
 	info->max_duty_cycle = INTEL_VIBRA_MAX_TIMEDIVISOR;
-
-//	pr_debug("using gpios en: %d, pwm %d", info->gpio_en, info->gpio_pwm);
-//	ret = gpio_request_one(info->gpio_en, GPIOF_DIR_OUT, "VIBRA ENABLE");
-//	if (ret != 0) {
-//		pr_err("gpio_request(%d) fails:%d\n", info->gpio_en, ret);
-//		goto out;
-//	}
 
 	/* Init the device */
 	ret = pci_enable_device(pci);
@@ -557,7 +550,6 @@ do_freegpio_vibra_enable:
 out:
 #endif
 	return ret;
-
 }
 
 static void intel_mid_vibra_remove(struct pci_dev *pci)
@@ -575,6 +567,7 @@ static void intel_mid_vibra_remove(struct pci_dev *pci)
 static DEFINE_PCI_DEVICE_TABLE(intel_vibra_ids) = {
 	{ PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_VIBRA_CLV), 0},
 	{ PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_VIBRA_MRFLD), 0},
+	{ PCI_VDEVICE(INTEL, PCI_DEVICE_ID_INTEL_VIBRA_MOOR), 0},
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, intel_vibra_ids);
@@ -641,7 +634,7 @@ static int __init intel_mid_vibra_init(void)
 	ret = platform_driver_register(&plat_vibra_driver);
 	if (ret)
 		pr_err("Platform register failed\n");
-        printk("intel_mid_vibra_init init\n");
+
 	return ret;
 }
 
@@ -656,8 +649,7 @@ static void __exit intel_mid_vibra_exit(void)
 {
 	pci_unregister_driver(&vibra_driver);
 	platform_driver_unregister(&plat_vibra_driver);
-	//pr_debug("intel_mid_vibra driver exited\n");
-        printk("intel_mid_vibra driver exited\n");
+	pr_debug("intel_mid_vibra driver exited\n");
 	return;
 }
 

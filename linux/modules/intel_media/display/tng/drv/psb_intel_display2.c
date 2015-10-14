@@ -31,8 +31,6 @@
 #include "mdfld_dsi_dbi_dpu.h"
 #endif
 
-#include <linux/pm_runtime.h>
-
 #include "psb_intel_display.h"
 #include "displayclass_interface.h"
 
@@ -602,22 +600,6 @@ static void mdfld_crtc_dpms(struct drm_crtc *crtc, int mode)
 	if (!power_island_get(power_island))
 		return;
 
-#if 0
-	/* Ignore if system is already in DSR and in suspended state. */
-	if (gbgfxsuspended && gbdispstatus == false && mode == 3) {
-		if (dev_priv->rpm_enabled && pipe == 1) {
-			//          dev_priv->is_mipi_on = false;
-			pm_request_idle(&gpDrmDevice->pdev->dev);
-		}
-		power_island_put(power_island);
-		return;
-	} else if (mode == 0) {
-		//do not need to set gbdispstatus=true in crtc.
-		//this will be set in encoder such as mdfld_dsi_dbi_dpms
-		//gbdispstatus = true;
-	}
-#endif
-
 	switch (pipe) {
 	case 0:
 		break;
@@ -1173,6 +1155,7 @@ static int mdfld_crtc_dsi_mode_set(struct drm_crtc *crtc,
 	ctx->vgacntr = 0x80000000;
 
 	/*set up pipe timings */
+
 	ctx->htotal = (mode->crtc_hdisplay - 1) |
 	    ((mode->crtc_htotal - 1) << 16);
 	ctx->hblank = (mode->crtc_hblank_start - 1) |
@@ -1200,11 +1183,15 @@ static int mdfld_crtc_dsi_mode_set(struct drm_crtc *crtc,
 	if (get_panel_type(dev, 0) == TMD_6X10_VID)
 		ctx->dspsize = ((mode->crtc_vdisplay - 1) << 16) |
 		    (mode->crtc_hdisplay - 200 - 1);
+	else if (is_dual_dsi(dev))
+		ctx->dspsize = ((mode->crtc_vdisplay - 1) << 16) |
+		    (mode->crtc_hdisplay / 2 - 1);
 	else
 		ctx->dspsize = ((mode->crtc_vdisplay - 1) << 16) |
 		    (mode->crtc_hdisplay - 1);
 
 	ctx->dspstride = fb_pitch;
+
 	ctx->dspsurf = mode_dev->bo_offset(dev, mdfld_fb);
 	ctx->dsplinoff = y * fb_pitch + x * (fb_bpp / 8);
 

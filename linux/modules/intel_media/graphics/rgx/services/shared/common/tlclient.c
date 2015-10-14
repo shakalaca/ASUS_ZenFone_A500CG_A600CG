@@ -180,7 +180,7 @@ PVRSRV_ERROR TLClientOpenStream(IMG_HANDLE hSrvHandle,
 	/* Now convert client cookie into a client handle on the buffer's
 	 * physical memory region */
 	eError = DevmemImport(hSrvHandle, &psSD->sExportCookie,
-						PVRSRV_MEMALLOCFLAG_CPU_READABLE, "TLClientCookie", &psSD->psUMmemDesc);
+						PVRSRV_MEMALLOCFLAG_CPU_READABLE, &psSD->psUMmemDesc);
 	PVR_LOGG_IF_ERROR(eError, "DevmemImport", e3);
 
 	/* Now map the memory into the virtual address space of this process. */

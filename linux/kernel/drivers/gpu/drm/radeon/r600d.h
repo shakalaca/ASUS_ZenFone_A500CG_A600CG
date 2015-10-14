@@ -66,6 +66,14 @@
 #define	CC_RB_BACKEND_DISABLE				0x98F4
 #define		BACKEND_DISABLE(x)				((x) << 16)
 
+#define R_028808_CB_COLOR_CONTROL			0x28808
+#define   S_028808_SPECIAL_OP(x)                       (((x) & 0x7) << 4)
+#define   G_028808_SPECIAL_OP(x)                       (((x) >> 4) & 0x7)
+#define   C_028808_SPECIAL_OP                          0xFFFFFF8F
+#define     V_028808_SPECIAL_NORMAL                     0x00
+#define     V_028808_SPECIAL_DISABLE                    0x01
+#define     V_028808_SPECIAL_RESOLVE_BOX                0x07
+
 #define	CB_COLOR0_BASE					0x28040
 #define	CB_COLOR1_BASE					0x28044
 #define	CB_COLOR2_BASE					0x28048
@@ -92,6 +100,20 @@
 #define R_028094_CB_COLOR5_VIEW                      0x028094
 #define R_028098_CB_COLOR6_VIEW                      0x028098
 #define R_02809C_CB_COLOR7_VIEW                      0x02809C
+#define R_028100_CB_COLOR0_MASK                      0x028100
+#define   S_028100_CMASK_BLOCK_MAX(x)                  (((x) & 0xFFF) << 0)
+#define   G_028100_CMASK_BLOCK_MAX(x)                  (((x) >> 0) & 0xFFF)
+#define   C_028100_CMASK_BLOCK_MAX                     0xFFFFF000
+#define   S_028100_FMASK_TILE_MAX(x)                   (((x) & 0xFFFFF) << 12)
+#define   G_028100_FMASK_TILE_MAX(x)                   (((x) >> 12) & 0xFFFFF)
+#define   C_028100_FMASK_TILE_MAX                      0x00000FFF
+#define R_028104_CB_COLOR1_MASK                      0x028104
+#define R_028108_CB_COLOR2_MASK                      0x028108
+#define R_02810C_CB_COLOR3_MASK                      0x02810C
+#define R_028110_CB_COLOR4_MASK                      0x028110
+#define R_028114_CB_COLOR5_MASK                      0x028114
+#define R_028118_CB_COLOR6_MASK                      0x028118
+#define R_02811C_CB_COLOR7_MASK                      0x02811C
 #define CB_COLOR0_INFO                                  0x280a0
 #	define CB_FORMAT(x)				((x) << 2)
 #       define CB_ARRAY_MODE(x)                         ((x) << 8)
@@ -160,6 +182,8 @@
 #define	CP_COHER_BASE					0x85F8
 #define	CP_DEBUG					0xC1FC
 #define	R_0086D8_CP_ME_CNTL			0x86D8
+#define		S_0086D8_CP_PFP_HALT(x)			(((x) & 1)<<26)
+#define		C_0086D8_CP_PFP_HALT(x)			((x) & 0xFBFFFFFF)
 #define		S_0086D8_CP_ME_HALT(x)			(((x) & 1)<<28)
 #define		C_0086D8_CP_ME_HALT(x)			((x) & 0xEFFFFFFF)
 #define	CP_ME_RAM_DATA					0xC160
@@ -568,9 +592,59 @@
 #define         WAIT_2D_IDLECLEAN_bit                           (1 << 16)
 #define         WAIT_3D_IDLECLEAN_bit                           (1 << 17)
 
+/* async DMA */
+#define DMA_TILING_CONFIG                                 0x3ec4
+#define DMA_CONFIG                                        0x3e4c
+
+#define DMA_RB_CNTL                                       0xd000
+#       define DMA_RB_ENABLE                              (1 << 0)
+#       define DMA_RB_SIZE(x)                             ((x) << 1) /* log2 */
+#       define DMA_RB_SWAP_ENABLE                         (1 << 9) /* 8IN32 */
+#       define DMA_RPTR_WRITEBACK_ENABLE                  (1 << 12)
+#       define DMA_RPTR_WRITEBACK_SWAP_ENABLE             (1 << 13)  /* 8IN32 */
+#       define DMA_RPTR_WRITEBACK_TIMER(x)                ((x) << 16) /* log2 */
+#define DMA_RB_BASE                                       0xd004
+#define DMA_RB_RPTR                                       0xd008
+#define DMA_RB_WPTR                                       0xd00c
+
+#define DMA_RB_RPTR_ADDR_HI                               0xd01c
+#define DMA_RB_RPTR_ADDR_LO                               0xd020
+
+#define DMA_IB_CNTL                                       0xd024
+#       define DMA_IB_ENABLE                              (1 << 0)
+#       define DMA_IB_SWAP_ENABLE                         (1 << 4)
+#define DMA_IB_RPTR                                       0xd028
+#define DMA_CNTL                                          0xd02c
+#       define TRAP_ENABLE                                (1 << 0)
+#       define SEM_INCOMPLETE_INT_ENABLE                  (1 << 1)
+#       define SEM_WAIT_INT_ENABLE                        (1 << 2)
+#       define DATA_SWAP_ENABLE                           (1 << 3)
+#       define FENCE_SWAP_ENABLE                          (1 << 4)
+#       define CTXEMPTY_INT_ENABLE                        (1 << 28)
+#define DMA_STATUS_REG                                    0xd034
+#       define DMA_IDLE                                   (1 << 0)
+#define DMA_SEM_INCOMPLETE_TIMER_CNTL                     0xd044
+#define DMA_SEM_WAIT_FAIL_TIMER_CNTL                      0xd048
+#define DMA_MODE                                          0xd0bc
+
+/* async DMA packets */
+#define DMA_PACKET(cmd, t, s, n)	((((cmd) & 0xF) << 28) |	\
+					 (((t) & 0x1) << 23) |		\
+					 (((s) & 0x1) << 22) |		\
+					 (((n) & 0xFFFF) << 0))
+/* async DMA Packet types */
+#define	DMA_PACKET_WRITE				  0x2
+#define	DMA_PACKET_COPY					  0x3
+#define	DMA_PACKET_INDIRECT_BUFFER			  0x4
+#define	DMA_PACKET_SEMAPHORE				  0x5
+#define	DMA_PACKET_FENCE				  0x6
+#define	DMA_PACKET_TRAP					  0x7
+#define	DMA_PACKET_CONSTANT_FILL			  0xd /* 7xx only */
+#define	DMA_PACKET_NOP					  0xf
+
 #define IH_RB_CNTL                                        0x3e00
 #       define IH_RB_ENABLE                               (1 << 0)
-#       define IH_IB_SIZE(x)                              ((x) << 1) /* log2 */
+#       define IH_RB_SIZE(x)                              ((x) << 1) /* log2 */
 #       define IH_RB_FULL_DRAIN_ENABLE                    (1 << 6)
 #       define IH_WPTR_WRITEBACK_ENABLE                   (1 << 8)
 #       define IH_WPTR_WRITEBACK_TIMER(x)                 ((x) << 9) /* log2 */
@@ -615,7 +689,10 @@
 #define TN_RLC_CLEAR_STATE_RESTORE_BASE                   0x3f20
 
 #define SRBM_SOFT_RESET                                   0xe60
+#       define SOFT_RESET_DMA                             (1 << 12)
 #       define SOFT_RESET_RLC                             (1 << 13)
+#       define SOFT_RESET_UVD                             (1 << 18)
+#       define RV770_SOFT_RESET_DMA                       (1 << 20)
 
 #define CP_INT_CNTL                                       0xc124
 #       define CNTX_BUSY_INT_ENABLE                       (1 << 19)
@@ -833,7 +910,12 @@
 #       define TARGET_LINK_SPEED_MASK                     (0xf << 0)
 #       define SELECTABLE_DEEMPHASIS                      (1 << 6)
 
-/* Audio clocks */
+/* Audio clocks DCE 2.0/3.0 */
+#define AUDIO_DTO                         0x7340
+#       define AUDIO_DTO_PHASE(x)         (((x) & 0xffff) << 0)
+#       define AUDIO_DTO_MODULE(x)        (((x) & 0xffff) << 16)
+
+/* Audio clocks DCE 3.2 */
 #define DCCG_AUDIO_DTO0_PHASE             0x0514
 #define DCCG_AUDIO_DTO0_MODULE            0x0518
 #define DCCG_AUDIO_DTO0_LOAD              0x051c
@@ -1067,21 +1149,76 @@
 #       define AFMT_AZ_AUDIO_ENABLE_CHG_ACK  (1 << 30)
 
 /*
+ * UVD
+ */
+#define UVD_SEMA_ADDR_LOW				0xef00
+#define UVD_SEMA_ADDR_HIGH				0xef04
+#define UVD_SEMA_CMD					0xef08
+
+#define UVD_GPCOM_VCPU_CMD				0xef0c
+#define UVD_GPCOM_VCPU_DATA0				0xef10
+#define UVD_GPCOM_VCPU_DATA1				0xef14
+#define UVD_ENGINE_CNTL					0xef18
+
+#define UVD_SEMA_CNTL					0xf400
+#define UVD_RB_ARB_CTRL					0xf480
+
+#define UVD_LMI_EXT40_ADDR				0xf498
+#define UVD_CGC_GATE					0xf4a8
+#define UVD_LMI_CTRL2					0xf4f4
+#define UVD_MASTINT_EN					0xf500
+#define UVD_LMI_ADDR_EXT				0xf594
+#define UVD_LMI_CTRL					0xf598
+#define UVD_LMI_SWAP_CNTL				0xf5b4
+#define UVD_MP_SWAP_CNTL				0xf5bC
+#define UVD_MPC_CNTL					0xf5dC
+#define UVD_MPC_SET_MUXA0				0xf5e4
+#define UVD_MPC_SET_MUXA1				0xf5e8
+#define UVD_MPC_SET_MUXB0				0xf5eC
+#define UVD_MPC_SET_MUXB1				0xf5f0
+#define UVD_MPC_SET_MUX					0xf5f4
+#define UVD_MPC_SET_ALU					0xf5f8
+
+#define UVD_VCPU_CNTL					0xf660
+#define UVD_SOFT_RESET					0xf680
+#define		RBC_SOFT_RESET					(1<<0)
+#define		LBSI_SOFT_RESET					(1<<1)
+#define		LMI_SOFT_RESET					(1<<2)
+#define		VCPU_SOFT_RESET					(1<<3)
+#define		CSM_SOFT_RESET					(1<<5)
+#define		CXW_SOFT_RESET					(1<<6)
+#define		TAP_SOFT_RESET					(1<<7)
+#define		LMI_UMC_SOFT_RESET				(1<<13)
+#define UVD_RBC_IB_BASE					0xf684
+#define UVD_RBC_IB_SIZE					0xf688
+#define UVD_RBC_RB_BASE					0xf68c
+#define UVD_RBC_RB_RPTR					0xf690
+#define UVD_RBC_RB_WPTR					0xf694
+#define UVD_RBC_RB_WPTR_CNTL				0xf698
+
+#define UVD_STATUS					0xf6bc
+
+#define UVD_SEMA_TIMEOUT_STATUS				0xf6c0
+#define UVD_SEMA_WAIT_INCOMPLETE_TIMEOUT_CNTL		0xf6c4
+#define UVD_SEMA_WAIT_FAULT_TIMEOUT_CNTL		0xf6c8
+#define UVD_SEMA_SIGNAL_INCOMPLETE_TIMEOUT_CNTL		0xf6cc
+
+#define UVD_RBC_RB_CNTL					0xf6a4
+#define UVD_RBC_RB_RPTR_ADDR				0xf6a8
+
+#define UVD_CONTEXT_ID					0xf6f4
+
+#	define UPLL_CTLREQ_MASK				0x00000008
+#	define UPLL_CTLACK_MASK				0x40000000
+#	define UPLL_CTLACK2_MASK			0x80000000
+
+/*
  * PM4
  */
-#define	PACKET_TYPE0	0
-#define	PACKET_TYPE1	1
-#define	PACKET_TYPE2	2
-#define	PACKET_TYPE3	3
-
-#define CP_PACKET_GET_TYPE(h) (((h) >> 30) & 3)
-#define CP_PACKET_GET_COUNT(h) (((h) >> 16) & 0x3FFF)
-#define CP_PACKET0_GET_REG(h) (((h) & 0xFFFF) << 2)
-#define CP_PACKET3_GET_OPCODE(h) (((h) >> 8) & 0xFF)
-#define PACKET0(reg, n)	((PACKET_TYPE0 << 30) |				\
+#define PACKET0(reg, n)	((RADEON_PACKET_TYPE0 << 30) |			\
 			 (((reg) >> 2) & 0xFFFF) |			\
 			 ((n) & 0x3FFF) << 16)
-#define PACKET3(op, n)	((PACKET_TYPE3 << 30) |				\
+#define PACKET3(op, n)	((RADEON_PACKET_TYPE3 << 30) |			\
 			 (((op) & 0xFF) << 8) |				\
 			 ((n) & 0x3FFF) << 16)
 
@@ -1112,6 +1249,38 @@
 #define	PACKET3_WAIT_REG_MEM				0x3C
 #define	PACKET3_MEM_WRITE				0x3D
 #define	PACKET3_INDIRECT_BUFFER				0x32
+#define	PACKET3_CP_DMA					0x41
+/* 1. header
+ * 2. SRC_ADDR_LO [31:0]
+ * 3. CP_SYNC [31] | SRC_ADDR_HI [7:0]
+ * 4. DST_ADDR_LO [31:0]
+ * 5. DST_ADDR_HI [7:0]
+ * 6. COMMAND [29:22] | BYTE_COUNT [20:0]
+ */
+#              define PACKET3_CP_DMA_CP_SYNC       (1 << 31)
+/* COMMAND */
+#              define PACKET3_CP_DMA_CMD_SRC_SWAP(x) ((x) << 22)
+                /* 0 - none
+		 * 1 - 8 in 16
+		 * 2 - 8 in 32
+		 * 3 - 8 in 64
+		 */
+#              define PACKET3_CP_DMA_CMD_DST_SWAP(x) ((x) << 24)
+                /* 0 - none
+		 * 1 - 8 in 16
+		 * 2 - 8 in 32
+		 * 3 - 8 in 64
+		 */
+#              define PACKET3_CP_DMA_CMD_SAS       (1 << 26)
+                /* 0 - memory
+		 * 1 - register
+		 */
+#              define PACKET3_CP_DMA_CMD_DAS       (1 << 27)
+                /* 0 - memory
+		 * 1 - register
+		 */
+#              define PACKET3_CP_DMA_CMD_SAIC      (1 << 28)
+#              define PACKET3_CP_DMA_CMD_DAIC      (1 << 29)
 #define	PACKET3_SURFACE_SYNC				0x43
 #              define PACKET3_CB0_DEST_BASE_ENA    (1 << 6)
 #              define PACKET3_TC_ACTION_ENA        (1 << 23)
@@ -1173,6 +1342,14 @@
 #define	PACKET3_STRMOUT_BASE_UPDATE			0x72 /* r7xx */
 #define	PACKET3_SURFACE_BASE_UPDATE			0x73
 
+#define R_000011_K8_FB_LOCATION                 0x11
+#define R_000012_MC_MISC_UMA_CNTL               0x12
+#define   G_000012_K8_ADDR_EXT(x)               (((x) >> 0) & 0xFF)
+#define R_0028F8_MC_INDEX			0x28F8
+#define   	S_0028F8_MC_IND_ADDR(x)                 (((x) & 0x1FF) << 0)
+#define   	C_0028F8_MC_IND_ADDR                    0xFFFFFE00
+#define   	S_0028F8_MC_IND_WR_EN(x)                (((x) & 0x1) << 9)
+#define R_0028FC_MC_DATA                        0x28FC
 
 #define	R_008020_GRBM_SOFT_RESET		0x8020
 #define		S_008020_SOFT_RESET_CP(x)		(((x) & 1) << 0)
@@ -1222,6 +1399,7 @@
 #define		G_008010_VC_BUSY(x)			(((x) >> 11) & 1)
 #define		G_008010_DB03_CLEAN(x)			(((x) >> 12) & 1)
 #define		G_008010_CB03_CLEAN(x)			(((x) >> 13) & 1)
+#define		G_008010_TA_BUSY(x)			(((x) >> 14) & 1)
 #define		G_008010_VGT_BUSY_NO_DMA(x)		(((x) >> 16) & 1)
 #define		G_008010_VGT_BUSY(x)			(((x) >> 17) & 1)
 #define		G_008010_TA03_BUSY(x)			(((x) >> 18) & 1)
@@ -1289,6 +1467,7 @@
 #define		G_000E50_MCDW_BUSY(x)			(((x) >> 13) & 1)
 #define		G_000E50_SEM_BUSY(x)			(((x) >> 14) & 1)
 #define		G_000E50_RLC_BUSY(x)			(((x) >> 15) & 1)
+#define		G_000E50_IH_BUSY(x)			(((x) >> 17) & 1)
 #define		G_000E50_BIF_BUSY(x)			(((x) >> 29) & 1)
 #define	R_000E60_SRBM_SOFT_RESET			0x0E60
 #define		S_000E60_SOFT_RESET_BIF(x)		(((x) & 1) << 1)
@@ -1400,6 +1579,9 @@
 #define   S_0280A0_TILE_MODE(x)                        (((x) & 0x3) << 18)
 #define   G_0280A0_TILE_MODE(x)                        (((x) >> 18) & 0x3)
 #define   C_0280A0_TILE_MODE                           0xFFF3FFFF
+#define     V_0280A0_TILE_DISABLE			0
+#define     V_0280A0_CLEAR_ENABLE			1
+#define     V_0280A0_FRAG_ENABLE			2
 #define   S_0280A0_BLEND_CLAMP(x)                      (((x) & 0x1) << 20)
 #define   G_0280A0_BLEND_CLAMP(x)                      (((x) >> 20) & 0x1)
 #define   C_0280A0_BLEND_CLAMP                         0xFFEFFFFF

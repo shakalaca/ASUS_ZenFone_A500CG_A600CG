@@ -18,9 +18,12 @@
  */
 
 #include "intel_soc_pmu.h"
+#include <linux/cpuidle.h>
 #include <linux/proc_fs.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/mwait.h>
+
+#include <asm/hypervisor.h>
+#include <asm/xen/hypercall.h>
 
 #ifdef CONFIG_DRM_INTEL_MID
 #define GFX_ENABLE
@@ -123,6 +126,40 @@ MODULE_PARM_DESC(s0ix,
 	"setup extended c state s0ix mode [s0i3|s0i1|lmp3|"
 				"i1i3|lpi1|lpi3|s0ix|none]");
 
+/* LSS without driver are powered up on the resume from standby
+ * preventing back to back S3/S0ix. IGNORE the PCI_DO transtion
+ * for such devices.
+ */
+static inline bool pmu_power_down_lss_without_driver(int index,
+			int sub_sys_index, int sub_sys_pos, pci_power_t state)
+{
+	/* Ignore NC devices */
+	if (index < PMU1_MAX_DEVS)
+		return false;
+
+	/* Only ignore D0i0 */
+	if (state != PCI_D0)
+		return false;
+
+	/* HSI not used in MRFLD. IGNORE HSI Transition to D0 for MRFLD.
+	 * Sometimes it is turned ON during resume in the absence of a driver
+	 */
+	if (platform_is(INTEL_ATOM_MRFLD))
+		return ((sub_sys_index == 0x0) && (sub_sys_pos == 0x5));
+
+	/* For MOFD ignore D0i0 on LSS 5, 7, 19 */
+	if (platform_is(INTEL_ATOM_MOORFLD)) {
+		if (sub_sys_index == 0x0)
+			/* LSS 5(HSI) & 7(SSIC)*/
+			return ((sub_sys_pos == 0x5) || (sub_sys_pos == 0x7));
+		else
+			/* LSS 19(SSP6) */
+			return ((sub_sys_index == 0x1) && (sub_sys_pos == 0x3));
+	}
+
+	return false;
+}
+
 /**
  * This function set all devices in d0i0 and deactivates pmu driver.
  * The function is used before IFWI update as it needs devices to be
@@ -145,6 +182,10 @@ int pmu_set_devices_in_d0i0(void)
 	cur_pmssc.pmu2_states[2] = D0I0_MASK;
 	cur_pmssc.pmu2_states[3] = D0I0_MASK;
 
+	/* Restrict platform Cx state to C6 */
+	pm_qos_update_request(mid_pmu_cxt->s3_restrict_qos,
+				(CSTATE_EXIT_LATENCY_S0i1-1));
+
 	down(&mid_pmu_cxt->scu_ready_sem);
 
 	mid_pmu_cxt->shutdown_started = true;
@@ -159,6 +200,10 @@ int pmu_set_devices_in_d0i0(void)
 		printk(KERN_CRIT "%s: Failed to Issue a PM command to PMU2\n",
 								__func__);
 		mid_pmu_cxt->shutdown_started = false;
+
+		/* allow s0ix now */
+		pm_qos_update_request(mid_pmu_cxt->s3_restrict_qos,
+						PM_QOS_DEFAULT_VALUE);
 		goto unlock;
 	}
 
@@ -210,15 +255,16 @@ int _pmu2_wait_not_busy(void)
 
 static int _pmu2_wait_not_busy_yield(void)
 {
-	int pmu_busy_retry = 50000; /* 500msec minimum */
+	int pmu_busy_retry = PMU2_BUSY_TIMEOUT;
 
-	/* wait for the latest pmu command finished */
+	/* wait max 500ms that the latest pmu command finished */
 	do {
-		usleep_range(10, 500);
-
-		if (!_pmu_read_status(PMU_BUSY_STATUS))
+		if (_pmu_read_status(PMU_BUSY_STATUS) == 0)
 			return 0;
-	} while (--pmu_busy_retry);
+
+		usleep_range(10, 12);
+		pmu_busy_retry -= 11;
+	} while (pmu_busy_retry > 0);
 
 	WARN(1, "pmu2 busy!");
 
@@ -236,47 +282,6 @@ static void pmu_write_subsys_config(struct pmu_ss_states *pm_ssc)
 	writel(pm_ssc->pmu2_states[3], &mid_pmu_cxt->pmu_reg->pm_ssc[3]);
 }
 
-int set_all_power_on_inpanic(void)
-{
-	int status = 0, i;
-	struct pmu_ss_states cur_pmssc;
-
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER)
-		return status;
-
-	/* Ignore request until we have initialized */
-	if (unlikely((!pmu_initialized)))
-		return PMU_FAILED;
-
-	cur_pmssc.pmu2_states[0] = D0I0_MASK;
-	cur_pmssc.pmu2_states[1] = D0I0_MASK;
-	cur_pmssc.pmu2_states[2] = D0I0_MASK;
-	cur_pmssc.pmu2_states[3] = D0I0_MASK;
-
-	for (i = 0; down_trylock(&mid_pmu_cxt->scu_ready_sem) && (i < 10); i++)
-		mdelay(100);
-
-	mid_pmu_cxt->shutdown_started = true;
-
-	pmu_nc_set_power_state(0xffff, OSPM_ISLAND_UP, APM_REG_TYPE);
-	pmu_nc_set_power_state(0xffff, OSPM_ISLAND_UP, OSPM_REG_TYPE);
-
-	if (_pmu2_wait_not_busy())
-		printk(KERN_CRIT "PMU2 is busy!! But we must go on...\n");
-
-	/* issue the cmd to SCU to set the new pm configure */
-	pmu_write_subsys_config(&cur_pmssc);
-	writel(INTERACTIVE_VALUE, &mid_pmu_cxt->pmu_reg->pm_cmd);
-
-	if (_pmu2_wait_not_busy())
-		printk(KERN_CRIT "PMU2 is busy!! But we must go on...\n");
-
-	/* Don't care hold or unhold the sem, just release it */
-	up(&mid_pmu_cxt->scu_ready_sem);
-	return status;
-}
-EXPORT_SYMBOL(set_all_power_on_inpanic);
-
 void log_wakeup_irq(void)
 {
 	unsigned int irr = 0, vector = 0;
@@ -290,7 +295,8 @@ void log_wakeup_irq(void)
 
 	for (offset = (FIRST_EXTERNAL_VECTOR/32);
 	offset < (NR_VECTORS/32); offset++) {
-		irr = apic_read(APIC_IRR + (offset * 0x10));
+		irr = apic->read(APIC_IRR + (offset * 0x10));
+
 		while (irr) {
 			vector = __ffs(irr);
 			irr &= ~(1 << vector);
@@ -444,6 +450,11 @@ int mid_s0ix_enter(int s0ix_state)
 	/* no need to proceed if schedule pending */
 	if (unlikely(need_resched())) {
 		pmu_stat_clear();
+		/*set wkc to appropriate value suitable for s0ix*/
+		writel(mid_pmu_cxt->ss_config->wake_state.wake_enable[0],
+		       &mid_pmu_cxt->pmu_reg->pm_wkc[0]);
+		writel(mid_pmu_cxt->ss_config->wake_state.wake_enable[1],
+		       &mid_pmu_cxt->pmu_reg->pm_wkc[1]);
 		up(&mid_pmu_cxt->scu_ready_sem);
 		goto ret;
 	}
@@ -451,6 +462,13 @@ int mid_s0ix_enter(int s0ix_state)
 	/* entry function for pmu driver ops */
 	if (pmu_ops->enter(s0ix_state))
 		ret = s0ix_state;
+	else  {
+		/*set wkc to appropriate value suitable for s0ix*/
+		writel(mid_pmu_cxt->ss_config->wake_state.wake_enable[0],
+		       &mid_pmu_cxt->pmu_reg->pm_wkc[0]);
+		writel(mid_pmu_cxt->ss_config->wake_state.wake_enable[1],
+		       &mid_pmu_cxt->pmu_reg->pm_wkc[1]);
+	}
 
 ret:
 	return ret;
@@ -501,7 +519,7 @@ static irqreturn_t pmu_sc_irq(int irq, void *ignored)
 		break;
 	case TRIGGERERR:
 		pmu_dump_logs();
-		BUG();
+		WARN(1, "%s: TRIGGERERR caused, but proceeding...\n", __func__);
 		break;
 	}
 
@@ -594,7 +612,8 @@ static bool is_display_subclass(unsigned int sub_class)
 	if ((sub_class == 0x0 &&
 		(platform_is(INTEL_ATOM_MFLD) ||
 		platform_is(INTEL_ATOM_CLV))) ||
-		(sub_class == 0x80 && platform_is(INTEL_ATOM_MRFLD)))
+		(sub_class == 0x80 && (platform_is(INTEL_ATOM_MRFLD)
+				|| platform_is(INTEL_ATOM_MOORFLD))))
 		return true;
 
 	return false;
@@ -724,8 +743,9 @@ static void pmu_enumerate(void)
 	struct pci_dev *pdev = NULL;
 	unsigned int base_class;
 
-	while ((pdev = pci_get_device(PCI_ID_ANY, PCI_ID_ANY, pdev)) != NULL) {
-		if (platform_is(INTEL_ATOM_MRFLD) &&
+	for_each_pci_dev(pdev) {
+		if ((platform_is(INTEL_ATOM_MRFLD) ||
+			platform_is(INTEL_ATOM_MOORFLD)) &&
 			pdev->device == MID_MRFL_HDMI_DRV_DEV_ID)
 			continue;
 
@@ -813,7 +833,8 @@ static bool update_nc_device_states(int i, pci_power_t state)
 				 platform_is(INTEL_ATOM_CLV)) {
 			islands = APM_ISP_ISLAND | APM_IPH_ISLAND;
 			reg = APM_REG_TYPE;
-		} else if (platform_is(INTEL_ATOM_MRFLD)) {
+		} else if (platform_is(INTEL_ATOM_MRFLD) ||
+				platform_is(INTEL_ATOM_MOORFLD)) {
 			islands = TNG_ISP_ISLAND;
 			reg = ISP_SS_PM0;
 		} else
@@ -870,7 +891,7 @@ int set_enable_s3(const char *val, struct kernel_param *kp)
 	if (unlikely((!pmu_initialized)))
 		return 0;
 
-	if (platform_is(INTEL_ATOM_MRFLD)) {
+	if (platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_MOORFLD)) {
 		if (!enable_s3)
 			__pm_stay_awake(mid_pmu_cxt->pmu_wake_lock);
 		else
@@ -896,15 +917,14 @@ int set_enable_s0ix(const char *val, struct kernel_param *kp)
 	if (unlikely((!pmu_initialized)))
 		return 0;
 
-	if (platform_is(INTEL_ATOM_MRFLD)) {
+	if (platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_MOORFLD)) {
 		if (!enable_s0ix) {
 			mid_pmu_cxt->cstate_ignore =
-				~((1 << MWAIT_MAX_NUM_CSTATES) - 1);
+				~((1 << CPUIDLE_STATE_MAX) - 1);
 
-			/* Ignore C2, C3, C4, C5 states */
+			/* Ignore C2, C3, C5 states */
 			mid_pmu_cxt->cstate_ignore |= (1 << 1);
 			mid_pmu_cxt->cstate_ignore |= (1 << 2);
-			mid_pmu_cxt->cstate_ignore |= (1 << 3);
 			mid_pmu_cxt->cstate_ignore |= (1 << 4);
 
 			/* For now ignore C7, C8, C9, C10 states */
@@ -918,13 +938,14 @@ int set_enable_s0ix(const char *val, struct kernel_param *kp)
 						(CSTATE_EXIT_LATENCY_S0i1-1));
 		} else {
 			mid_pmu_cxt->cstate_ignore =
-				~((1 << MWAIT_MAX_NUM_CSTATES) - 1);
+				~((1 << CPUIDLE_STATE_MAX) - 1);
 
-			/* Ignore C2, C3, C4, C5 states */
+			/* Ignore C2, C3, C5, C8 and C10 states */
 			mid_pmu_cxt->cstate_ignore |= (1 << 1);
 			mid_pmu_cxt->cstate_ignore |= (1 << 2);
-			mid_pmu_cxt->cstate_ignore |= (1 << 3);
 			mid_pmu_cxt->cstate_ignore |= (1 << 4);
+			mid_pmu_cxt->cstate_ignore |= (1 << 7);
+			mid_pmu_cxt->cstate_ignore |= (1 << 9);
 
 			pm_qos_update_request(mid_pmu_cxt->cstate_qos,
 							PM_QOS_DEFAULT_VALUE);
@@ -994,7 +1015,7 @@ int pmu_set_emmc_to_d0i0_atomic(void)
 	cur_pmssc.pmu2_states[sub_sys_index] = new_value;
 
 	/* Request SCU for PM interrupt enabling */
-	writel(PMU_PANIC_EMMC_UP_REQ_CMD, mid_pmu_cxt->emergeny_emmc_up_addr);
+	writel(PMU_PANIC_EMMC_UP_REQ_CMD, mid_pmu_cxt->emergency_emmc_up_addr);
 
 	status = pmu_issue_interactive_command(&cur_pmssc, false, false);
 
@@ -1087,14 +1108,17 @@ static void print_saved_record(struct saved_nc_power_history *record)
 	}
 }
 
+#ifndef CONFIG_64BIT
 int verify_stack_ok(unsigned int *good_ebp, unsigned int *_ebp)
 {
 	return ((unsigned int)_ebp & 0xffffe000) ==
 		((unsigned int)good_ebp & 0xffffe000);
 }
+#endif
 
 size_t backtrace_safe(void **array, size_t max_size)
 {
+#ifndef CONFIG_64BIT
 	unsigned int *_ebp, *base_ebp;
 	unsigned int *caller;
 	unsigned int i;
@@ -1117,6 +1141,12 @@ size_t backtrace_safe(void **array, size_t max_size)
 	}
 
 	return i + 1;
+#else
+	unsigned int i;
+	for (i = 0; i < max_size; i++)
+		array[i] = 0;
+	return 0;
+#endif
 }
 
 void dump_nc_power_history(void)
@@ -1135,21 +1165,19 @@ void dump_nc_power_history(void)
 }
 EXPORT_SYMBOL(dump_nc_power_history);
 
-static int debug_read_history(char *page, char **start, off_t off,
-		int count, int *eof, void *data)
+static ssize_t debug_read_history(struct file *file, char __user *buffer,
+			size_t count, loff_t *pos)
 {
-	unsigned long len = 0;
-	page[len] = 0;
-
 	dump_nc_power_history();
-	return len;
+
+	return 0;
 }
 
-static int debug_write_read_history_entry(struct file *file,
-		const char __user *buffer, unsigned long count, void *data)
+static ssize_t debug_write_read_history_entry(struct file *file,
+		const char __user *buffer, size_t count, loff_t *pos)
 {
 	char buf[20] = "0";
-	unsigned long len = min((unsigned long)sizeof(buf) - 1, count);
+	unsigned long len = min(sizeof(buf) - 1, count);
 	u32 islands;
 	u32 on;
 	int ret;
@@ -1170,14 +1198,22 @@ static int debug_write_read_history_entry(struct file *file,
 	return count;
 }
 
+static const struct file_operations proc_debug_operations = {
+	.owner	= THIS_MODULE,
+	.read	= debug_read_history,
+	.write	= debug_write_read_history_entry,
+};
+
 static int __init debug_read_history_entry(void)
 {
 	struct proc_dir_entry *res = NULL;
-	res = create_proc_entry("debug_read_history", S_IRUGO | S_IWUSR, NULL);
-	if (res) {
-		res->write_proc = debug_write_read_history_entry;
-		res->read_proc = debug_read_history;
-	}
+
+	res = proc_create("debug_read_history", S_IRUGO | S_IWUSR, NULL,
+		&proc_debug_operations);
+
+	if (!res)
+		return -ENOMEM;
+
 	return 0;
 }
 device_initcall(debug_read_history_entry);
@@ -1202,9 +1238,6 @@ int pmu_nc_set_power_state(int islands, int state_type, int reg)
 	struct saved_nc_power_history *record = NULL;
 	int ret = 0;
 	int change;
-
-	if (platform_is(INTEL_ATOM_BYT))
-		return byt_pmu_nc_set_power_state(islands, state_type, reg);
 
 	spin_lock_irqsave(&mid_pmu_cxt->nc_ready_lock, flags);
 
@@ -1252,9 +1285,6 @@ int pmu_nc_get_power_state(int island, int reg_type)
 	unsigned long flags;
 	int i, lss;
 	int ret = -EINVAL;
-
-	if (platform_is(INTEL_ATOM_BYT))
-		return byt_pmu_nc_get_power_state(island, reg_type);
 
 	/*do nothing if platform is nether medfield or clv*/
 	if (!platform_is(INTEL_ATOM_MFLD) && !platform_is(INTEL_ATOM_CLV))
@@ -1368,6 +1398,11 @@ int __ref pmu_pci_set_power_state(struct pci_dev *pdev, pci_power_t state)
 	if (status)
 		goto unlock;
 
+	/* Ignore D0i0 requests for LSS that have no drivers */
+	if (pmu_power_down_lss_without_driver(i, sub_sys_index,
+						sub_sys_pos, state))
+		goto unlock;
+
 	if (pci_need_record_power_state(pdev)) {
 		record = get_new_record_history();
 		record->cpu = raw_smp_processor_id();
@@ -1381,7 +1416,7 @@ int __ref pmu_pci_set_power_state(struct pci_dev *pdev, pci_power_t state)
 	}
 
 	/* Ignore HDMI HPD driver d0ix on LSS 0 on MRFLD */
-	if (platform_is(INTEL_ATOM_MRFLD) &&
+	if ((platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_MOORFLD)) &&
 			pdev->device == MID_MRFL_HDMI_DRV_DEV_ID)
 			goto unlock;
 
@@ -1439,7 +1474,8 @@ int __ref pmu_pci_set_power_state(struct pci_dev *pdev, pci_power_t state)
 	cur_pmssc.pmu2_states[sub_sys_index] = new_value;
 
 	/* Check if the state is D3_cold or D3_Hot in TNG platform*/
-	if (platform_is(INTEL_ATOM_MRFLD) && (state == PCI_D3cold))
+	if ((platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_MOORFLD))
+		&& (state == PCI_D3cold))
 		d3_cold = true;
 
 	/* Issue the pmu command to PMU 2
@@ -1540,6 +1576,19 @@ nc_done:
 		mid_pmu_cxt->camera_off = true;
 	}
 #endif
+
+	/* FIXME:: If S0ix is enabled when North Complex is ON we see
+	 * Fabric errors, tracked in BZ: 115181, hence hold pm_qos
+	 * to restrict s0ix during North Island in D0i0
+	 */
+	if (nc_device_state()) {
+		if (!pm_qos_request_active(mid_pmu_cxt->nc_restrict_qos))
+			pm_qos_add_request(mid_pmu_cxt->nc_restrict_qos,
+			 PM_QOS_CPU_DMA_LATENCY, (CSTATE_EXIT_LATENCY_S0i1-1));
+	} else {
+		if (pm_qos_request_active(mid_pmu_cxt->nc_restrict_qos))
+			pm_qos_remove_request(mid_pmu_cxt->nc_restrict_qos);
+	}
 
 unlock:
 	up(&mid_pmu_cxt->scu_ready_sem);
@@ -1700,12 +1749,12 @@ static int pmu_init(void)
 	}
 
 	/* initialize the state variables here */
-	ss_config = kzalloc(sizeof(struct pmu_suspend_config), GFP_KERNEL);
-
-	if (ss_config == NULL) {
+	ss_config = devm_kzalloc(&mid_pmu_cxt->pmu_dev->dev,
+			sizeof(struct pmu_suspend_config), GFP_KERNEL);
+	if (!ss_config) {
 		dev_dbg(&mid_pmu_cxt->pmu_dev->dev,
 			"Allocation of memory for ss_config has failed\n");
-		status = PMU_FAILED;
+		status = -ENOMEM;
 		goto out_err1;
 	}
 
@@ -1756,7 +1805,7 @@ static int pmu_init(void)
 		" = %d\n", status);
 		status = PMU_FAILED;
 		up(&mid_pmu_cxt->scu_ready_sem);
-		goto out_err2;
+		goto out_err1;
 	}
 
 	/*
@@ -1789,9 +1838,6 @@ retry:
 
 	return PMU_SUCCESS;
 
-out_err2:
-	kfree(ss_config);
-	mid_pmu_cxt->ss_config = NULL;
 out_err1:
 	return status;
 }
@@ -1800,12 +1846,21 @@ out_err1:
  * mid_pmu_probe - This is the function where most of the PMU driver
  *		   initialization happens.
  */
-static int __devinit mid_pmu_probe(struct pci_dev *dev,
-				   const struct pci_device_id *pci_id)
+static int
+mid_pmu_probe(struct pci_dev *dev, const struct pci_device_id *pci_id)
 {
 	int ret;
 	struct mrst_pmu_reg __iomem *pmu;
 	u32 data;
+
+	u32 dc_islands = (OSPM_DISPLAY_A_ISLAND |
+			  OSPM_DISPLAY_B_ISLAND |
+			  OSPM_DISPLAY_C_ISLAND |
+			  OSPM_MIPI_ISLAND);
+	u32 gfx_islands = (APM_VIDEO_DEC_ISLAND |
+			   APM_VIDEO_ENC_ISLAND |
+			   APM_GL3_CACHE_ISLAND |
+			   APM_GRAPHICS_ISLAND);
 
 	mid_pmu_cxt->pmu_wake_lock =
 				wakeup_source_register("pmu_wake_lock");
@@ -1852,34 +1907,34 @@ static int __devinit mid_pmu_probe(struct pci_dev *dev,
 	if (pmu == NULL) {
 		dev_dbg(&mid_pmu_cxt->pmu_dev->dev,
 				"Unable to map the PMU2 address space\n");
-		ret = PMU_FAILED;
+		ret = -EIO;
 		goto out_err2;
 	}
 
 	mid_pmu_cxt->pmu_reg = pmu;
 
 	/* Map the memory of emergency emmc up */
-	mid_pmu_cxt->emergeny_emmc_up_addr =
-		ioremap_nocache(PMU_PANIC_EMMC_UP_ADDR, 4);
-	if (mid_pmu_cxt->emergeny_emmc_up_addr == NULL) {
+	mid_pmu_cxt->emergency_emmc_up_addr =
+		devm_ioremap_nocache(&mid_pmu_cxt->pmu_dev->dev, PMU_PANIC_EMMC_UP_ADDR, 4);
+	if (!mid_pmu_cxt->emergency_emmc_up_addr) {
 		dev_dbg(&mid_pmu_cxt->pmu_dev->dev,
 		"Unable to map the emergency emmc up address space\n");
-		ret = PMU_FAILED;
+		ret = -ENOMEM;
 		goto out_err3;
 	}
 
-	if (request_irq(dev->irq, pmu_sc_irq, IRQF_NO_SUSPEND, PMU_DRV_NAME,
-			NULL)) {
+	if (devm_request_irq(&mid_pmu_cxt->pmu_dev->dev, dev->irq, pmu_sc_irq,
+			IRQF_NO_SUSPEND, PMU_DRV_NAME, NULL)) {
 		dev_dbg(&mid_pmu_cxt->pmu_dev->dev, "Registering isr has failed\n");
-		ret = PMU_FAILED;
-		goto out_err4;
+		ret = -ENOENT;
+		goto out_err3;
 	}
 
 	/* call pmu init() for initialization of pmu interface */
 	ret = pmu_init();
 	if (ret != PMU_SUCCESS) {
 		dev_dbg(&mid_pmu_cxt->pmu_dev->dev, "PMU initialization has failed\n");
-		goto out_err5;
+		goto out_err3;
 	}
 	dev_warn(&mid_pmu_cxt->pmu_dev->dev, "after pmu initialization\n");
 
@@ -1892,31 +1947,30 @@ static int __devinit mid_pmu_probe(struct pci_dev *dev,
 	 * a wake lock here. Else S3 will be triggered on display
 	 * time out and platform will hang
 	 */
-	if (platform_is(INTEL_ATOM_MRFLD) && !enable_s3)
+	if ((platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_MOORFLD))
+								 && !enable_s3)
 		__pm_stay_awake(mid_pmu_cxt->pmu_wake_lock);
 #endif
-
+#ifdef CONFIG_XEN
+	/* Force gfx subsystem to be powered up */
+	pmu_nc_set_power_state(dc_islands, OSPM_ISLAND_UP, OSPM_REG_TYPE);
+	pmu_nc_set_power_state(gfx_islands, OSPM_ISLAND_UP, APM_REG_TYPE);
+#endif
 	return 0;
 
-out_err5:
-	free_irq(dev->irq, &pmu_sc_irq);
-out_err4:
-	iounmap(mid_pmu_cxt->emergeny_emmc_up_addr);
-	mid_pmu_cxt->emergeny_emmc_up_addr = NULL;
 out_err3:
 	iounmap(mid_pmu_cxt->pmu_reg);
-	mid_pmu_cxt->base_addr.pmu1_base = NULL;
-	mid_pmu_cxt->base_addr.pmu2_base = NULL;
 out_err2:
 	pci_release_region(dev, 0);
 out_err1:
 	pci_disable_device(dev);
 out_err0:
 	wakeup_source_unregister(mid_pmu_cxt->pmu_wake_lock);
+
 	return ret;
 }
 
-static void __devexit mid_pmu_remove(struct pci_dev *dev)
+static void mid_pmu_remove(struct pci_dev *dev)
 {
 	/* Freeing up the irq */
 	free_irq(dev->irq, &pmu_sc_irq);
@@ -1924,12 +1978,7 @@ static void __devexit mid_pmu_remove(struct pci_dev *dev)
 	if (pmu_ops->remove)
 		pmu_ops->remove();
 
-	iounmap(mid_pmu_cxt->emergeny_emmc_up_addr);
-	mid_pmu_cxt->emergeny_emmc_up_addr = NULL;
-
 	pci_iounmap(dev, mid_pmu_cxt->pmu_reg);
-	mid_pmu_cxt->base_addr.pmu1_base = NULL;
-	mid_pmu_cxt->base_addr.pmu2_base = NULL;
 
 	/* disable the current PCI device */
 	pci_release_region(dev, 0);
@@ -1943,6 +1992,10 @@ static void mid_pmu_shutdown(struct pci_dev *dev)
 	dev_dbg(&mid_pmu_cxt->pmu_dev->dev, "Mid PM mid_pmu_shutdown called\n");
 
 	if (mid_pmu_cxt) {
+		/* Restrict platform Cx state to C6 */
+		pm_qos_update_request(mid_pmu_cxt->s3_restrict_qos,
+					(CSTATE_EXIT_LATENCY_S0i1-1));
+
 		down(&mid_pmu_cxt->scu_ready_sem);
 		mid_pmu_cxt->shutdown_started = true;
 		up(&mid_pmu_cxt->scu_ready_sem);
@@ -1953,7 +2006,7 @@ static struct pci_driver driver = {
 	.name = PMU_DRV_NAME,
 	.id_table = mid_pm_ids,
 	.probe = mid_pmu_probe,
-	.remove = __devexit_p(mid_pmu_remove),
+	.remove = mid_pmu_remove,
 	.shutdown = mid_pmu_shutdown
 };
 
@@ -1970,10 +2023,13 @@ static int standby_enter(void)
 	/* time stamp for end of s3 entry */
 	time_stamp_for_sleep_state_latency(s3_state, false, true);
 
+#ifdef CONFIG_XEN
+	HYPERVISOR_mwait_op(mid_pmu_cxt->s3_hint, 1, (void *) &temp, 1);
+#else
 	__monitor((void *) &temp, 0, 0);
 	smp_mb();
 	__mwait(mid_pmu_cxt->s3_hint, 1);
-
+#endif
 	/* time stamp for start of s3 exit */
 	time_stamp_for_sleep_state_latency(s3_state, true, false);
 
@@ -1988,7 +2044,7 @@ static int standby_enter(void)
 	mid_pmu_cxt->camera_off = 0;
 	mid_pmu_cxt->display_off = 0;
 
-	if (platform_is(INTEL_ATOM_MRFLD))
+	if (platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_MOORFLD))
 		up(&mid_pmu_cxt->scu_ready_sem);
 
 	return 0;
@@ -1998,6 +2054,10 @@ static int mid_suspend_begin(suspend_state_t state)
 {
 	mid_pmu_cxt->suspend_started = true;
 	pmu_s3_stats_update(1);
+
+	/* Restrict to C6 during suspend */
+	pm_qos_update_request(mid_pmu_cxt->s3_restrict_qos,
+					(CSTATE_EXIT_LATENCY_S0i1-1));
 	return 0;
 }
 
@@ -2054,6 +2114,10 @@ static int mid_suspend_enter(suspend_state_t state)
 
 static void mid_suspend_end(void)
 {
+	/* allow s0ix now */
+	pm_qos_update_request(mid_pmu_cxt->s3_restrict_qos,
+					PM_QOS_DEFAULT_VALUE);
+
 	pmu_s3_stats_update(0);
 	mid_pmu_cxt->suspend_started = false;
 }
@@ -2079,7 +2143,21 @@ static int __init mid_pci_register_init(void)
 	if (mid_pmu_cxt == NULL)
 		return -ENOMEM;
 
+	mid_pmu_cxt->s3_restrict_qos =
+		kzalloc(sizeof(struct pm_qos_request), GFP_KERNEL);
+	if (mid_pmu_cxt->s3_restrict_qos) {
+		pm_qos_add_request(mid_pmu_cxt->s3_restrict_qos,
+			 PM_QOS_CPU_DMA_LATENCY, PM_QOS_DEFAULT_VALUE);
+	} else {
+		return -ENOMEM;
+	}
+
 	init_nc_device_states();
+
+	mid_pmu_cxt->nc_restrict_qos =
+		kzalloc(sizeof(struct pm_qos_request), GFP_KERNEL);
+	if (mid_pmu_cxt->nc_restrict_qos == NULL)
+		return -ENOMEM;
 
 	/* initialize the semaphores */
 	sema_init(&mid_pmu_cxt->scu_ready_sem, 1);
@@ -2107,15 +2185,21 @@ void pmu_power_off(void)
 
 static void __exit mid_pci_cleanup(void)
 {
+	if (mid_pmu_cxt) {
+		if (mid_pmu_cxt->s3_restrict_qos)
+			pm_qos_remove_request(mid_pmu_cxt->s3_restrict_qos);
+
+		if (pm_qos_request_active(mid_pmu_cxt->nc_restrict_qos))
+			pm_qos_remove_request(mid_pmu_cxt->nc_restrict_qos);
+	}
+
 	suspend_set_ops(NULL);
 
 	/* registering PCI device */
 	pci_unregister_driver(&driver);
 
-	if (mid_pmu_cxt) {
+	if (mid_pmu_cxt)
 		pmu_stats_finish();
-		kfree(mid_pmu_cxt->ss_config);
-	}
 
 	kfree(mid_pmu_cxt);
 }

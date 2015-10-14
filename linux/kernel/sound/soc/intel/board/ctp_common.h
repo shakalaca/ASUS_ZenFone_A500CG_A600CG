@@ -99,6 +99,7 @@ struct ctp_mc_private {
 #endif
 	bool voice_call_flag;
 	bool headset_plug_flag;
+	int ext_amp_status;
 };
 
 static inline struct ctp_mc_private
@@ -138,6 +139,38 @@ static inline struct snd_soc_codec *ctp_get_codec(struct snd_soc_card *card,
 	}
 	return codec;
 }
+
+static int ext_amp_put(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_dapm_widget_list *wlist = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_dapm_widget *w = wlist->widgets[0];
+	struct snd_soc_codec *codec = snd_soc_dapm_kcontrol_codec(kcontrol);
+	struct ctp_mc_private *ctx = snd_soc_card_get_drvdata(codec->card);
+
+	pr_debug("ext_amp_put: %ld\n", ucontrol->value.integer.value[0]);
+	ctx->ext_amp_status = ucontrol->value.integer.value[0];
+
+	snd_soc_dapm_mixer_update_power(w, kcontrol,
+				!!ucontrol->value.integer.value[0]);
+
+	return 0;
+}
+
+static int ext_amp_get(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_codec *codec = snd_soc_dapm_kcontrol_codec(kcontrol);
+	struct ctp_mc_private *ctx = snd_soc_card_get_drvdata(codec->card);
+
+	ucontrol->value.integer.value[0] = ctx->ext_amp_status;
+	pr_debug("ext_amp_get: %ld\n", ucontrol->value.integer.value[0]);
+	return 0;
+}
+
+static const struct snd_kcontrol_new ext_amp_sw =
+	SOC_SINGLE_EXT("Switch", SND_SOC_NOPM, 0, 1, 0,
+			ext_amp_get, ext_amp_put);
 
 struct ctp_clk_fmt {
 	int clk_id;
@@ -180,7 +213,8 @@ int set_ssp_modem_master_mode(struct snd_kcontrol *kcontrol,
 int snd_ctp_init(struct snd_soc_pcm_runtime *runtime);
 int ctp_init(struct snd_soc_pcm_runtime *runtime);
 int ctp_vb_init(struct snd_soc_pcm_runtime *runtime);
-int ctp_amp_event(struct snd_soc_dapm_widget *w, struct snd_kcontrol *k, int event);
+int ctp_amp_event(struct snd_soc_dapm_widget *w,
+			struct snd_kcontrol *k, int event);
 int ctp_set_bias_level(struct snd_soc_card *card,
 		struct snd_soc_dapm_context *dapm,
 		enum snd_soc_bias_level level);

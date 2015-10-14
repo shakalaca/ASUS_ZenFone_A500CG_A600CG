@@ -24,7 +24,7 @@
 #include <linux/platform_device.h>
 
 #include <asm/intel-mid.h>
-#include <asm/mrst-vrtc.h>
+#include <asm/intel_mid_vrtc.h>
 #include <asm/time.h>
 #include <asm/fixmap.h>
 
@@ -79,7 +79,7 @@ unsigned long vrtc_get_time(void)
 	/* vRTC YEAR reg contains the offset to 1972 */
 	year += 1972;
 
-	printk(KERN_INFO "vRTC: sec: %d min: %d hour: %d day: %d "
+	pr_info("vRTC: sec: %d min: %d hour: %d day: %d "
 		"mon: %d year: %d\n", sec, min, hour, mday, mon, year);
 
 	return mktime(year, mon, mday, hour, min, sec);

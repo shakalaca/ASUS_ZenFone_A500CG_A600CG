@@ -103,4 +103,12 @@ PhysmemNewTDMetaCodePMR(PVRSRV_DEVICE_NODE *psDevNode,
                         PVRSRV_MEMALLOCFLAGS_T uiFlags,
                         PMR **ppsPMRPtr);
 
+PVRSRV_ERROR
+PhysmemNewTDSecureBufPMR(PVRSRV_DEVICE_NODE *psDevNode,
+                         IMG_DEVMEM_SIZE_T uiSize,
+                         IMG_UINT32 uiLog2PageSize,
+                         PVRSRV_MEMALLOCFLAGS_T uiFlags,
+                         PMR **ppsPMRPtr);
+
+
 #endif /* #ifndef _SRVSRV_PHYSMEM_OSMEM_H_ */

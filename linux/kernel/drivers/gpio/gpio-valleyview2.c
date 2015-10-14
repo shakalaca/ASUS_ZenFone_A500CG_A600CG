@@ -61,6 +61,8 @@
 #define VV_DIR_MASK		(BIT(1) | BIT(2))
 #define VV_TRIG_MASK		(BIT(26) | BIT(25) | BIT(24))
 
+static DEFINE_SPINLOCK(vlv_reg_access_lock);
+
 /*
  * Valleyview gpio controller consist of three separate sub-controllers called
  * SCORE, NCORE and SUS. The sub-controllers are identified by their acpi UID.
@@ -159,6 +161,29 @@ static void __iomem *vlv_gpio_reg(struct gpio_chip *chip, unsigned offset,
 	return ptr;
 }
 
+static u32 vlv_readl(void __iomem *reg)
+{
+	u32 value;
+	unsigned long flags;
+
+	spin_lock_irqsave(&vlv_reg_access_lock, flags);
+	value = readl(reg);
+	spin_unlock_irqrestore(&vlv_reg_access_lock, flags);
+
+	return value;
+}
+
+static void vlv_writel(u32 value, void __iomem *reg)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&vlv_reg_access_lock, flags);
+	writel(value, reg);
+	/* simple readback to confirm the bus transferring done */
+	readl(reg);
+	spin_unlock_irqrestore(&vlv_reg_access_lock, flags);
+}
+
 static int vlv_gpio_request(struct gpio_chip *chip, unsigned offset)
 {
 	return 0;
@@ -197,9 +222,9 @@ void lnw_gpio_set_alt(int gpio, int alt)
 	reg = vlv_gpio_reg(&vg->chip, offset, VV_CONF0_REG);
 
 	spin_lock_irqsave(&vg->lock, flags);
-	value = readl(reg) & (~VV_PIN_MUX);
+	value = vlv_readl(reg) & (~VV_PIN_MUX);
 	value = value | (alt & VV_PIN_MUX);
-	writel(value, reg);
+	vlv_writel(value, reg);
 	spin_unlock_irqrestore(&vg->lock, flags);
 }
 EXPORT_SYMBOL_GPL(lnw_gpio_set_alt);
@@ -229,7 +254,7 @@ int gpio_get_alt(int gpio)
 	}
 
 	reg = vlv_gpio_reg(&vg->chip, offset, VV_CONF0_REG);
-	value = readl(reg) & VV_PIN_MUX;
+	value = vlv_readl(reg) & VV_PIN_MUX;
 
 	return value;
 }
@@ -239,7 +264,7 @@ static void vlv_update_irq_type(struct vlv_gpio *vg, unsigned type, void __iomem
 {
 	u32 value;
 
-	value = readl(reg);
+	value = vlv_readl(reg);
 	value &= ~(VV_DIRECT_IRQ | VV_TRIG_POS |
 			VV_TRIG_NEG | VV_TRIG_LVL);
 
@@ -267,7 +292,7 @@ static void vlv_update_irq_type(struct vlv_gpio *vg, unsigned type, void __iomem
 			value &= ~VV_TRIG_NEG;
 	}
 
-	writel(value, reg);
+	vlv_writel(value, reg);
 }
 
 static int vlv_irq_type(struct irq_data *d, unsigned type)
@@ -300,7 +325,7 @@ static int vlv_irq_type(struct irq_data *d, unsigned type)
 static int vlv_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
 	void __iomem *reg = vlv_gpio_reg(chip, offset, VV_VAL_REG);
-	return readl(reg) & VV_LEVEL;
+	return vlv_readl(reg) & VV_LEVEL;
 }
 
 static void vlv_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
@@ -312,12 +337,12 @@ static void vlv_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 
 	spin_lock_irqsave(&vg->lock, flags);
 
-	old_val = readl(reg);
+	old_val = vlv_readl(reg);
 
 	if (value)
-		writel(old_val | VV_LEVEL, reg);
+		vlv_writel(old_val | VV_LEVEL, reg);
 	else
-		writel(old_val & ~VV_LEVEL, reg);
+		vlv_writel(old_val & ~VV_LEVEL, reg);
 
 	spin_unlock_irqrestore(&vg->lock, flags);
 }
@@ -331,9 +356,9 @@ static int vlv_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 
 	spin_lock_irqsave(&vg->lock, flags);
 
-	value = readl(reg) | VV_DIR_MASK;
+	value = vlv_readl(reg) | VV_DIR_MASK;
 	value = value & (~VV_INPUT_EN); /* active low */
-	writel(value, reg);
+	vlv_writel(value, reg);
 
 	spin_unlock_irqrestore(&vg->lock, flags);
 
@@ -350,9 +375,9 @@ static int vlv_gpio_direction_output(struct gpio_chip *chip,
 
 	spin_lock_irqsave(&vg->lock, flags);
 
-	reg_val = readl(reg) | (VV_DIR_MASK | !!value);
+	reg_val = vlv_readl(reg) | (VV_DIR_MASK | !!value);
 	reg_val &= ~(VV_DIR_MASK | !value);
-	writel(reg_val, reg);
+	vlv_writel(reg_val, reg);
 
 	spin_unlock_irqrestore(&vg->lock, flags);
 
@@ -372,15 +397,15 @@ static void vlv_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
 	spin_lock_irqsave(&vg->lock, flags);
 	for (base = 0; base < vg->chip.ngpio; base += 32) {
 		reg = vlv_gpio_reg(&vg->chip, base, VV_INT_STAT_REG);
-		pending = readl(reg);
+		pending = vlv_readl(reg);
 		seq_printf(s, "VV_INT_STAT_REG[%d-%d]: 0x%x\n",
 				base, base+32, pending);
 	}
 	for (i = 0; i < vg->chip.ngpio; i++) {
 
 		offs = vg->gpio_to_pad[i] * 16;
-		conf0 = readl(vg->reg_base + offs + VV_CONF0_REG);
-		val = readl(vg->reg_base + offs + VV_VAL_REG);
+		conf0 = vlv_readl(vg->reg_base + offs + VV_CONF0_REG);
+		val = vlv_readl(vg->reg_base + offs + VV_VAL_REG);
 
 		seq_printf(s, " gpio-%-3d %s %s %s pad-%-3d offset:0x%03x "
 				"mux:%d %s %s %s\n",
@@ -413,15 +438,15 @@ static void vlv_gpio_irq_dispatch(struct vlv_gpio *vg)
 
 	for (base = 0; base < vg->chip.ngpio; base += 32) {
 		reg = vlv_gpio_reg(&vg->chip, base, VV_INT_STAT_REG);
-		pending = readl(reg);
+		pending = vlv_readl(reg);
 		while (pending) {
 			pin = __ffs(pending);
 			DEFINE_DEBUG_IRQ_CONUNT_INCREASE(vg->chip.base +
 				base + pin);
 			mask = BIT(pin);
-			writel(mask, reg);
+			vlv_writel(mask, reg);
 			generic_handle_irq(vg->irq_base + base + pin);
-			pending = readl(reg);
+			pending = vlv_readl(reg);
 		}
 	}
 }
@@ -469,10 +494,10 @@ static void vlv_irq_mask(struct irq_data *d)
 
 	spin_lock_irqsave(&vg->lock, flags);
 
-	value = readl(reg);
+	value = vlv_readl(reg);
 	value &= ~(VV_DIRECT_IRQ | VV_TRIG_POS |
 			VV_TRIG_NEG | VV_TRIG_LVL);
-	writel(value, reg);
+	vlv_writel(value, reg);
 
 	spin_unlock_irqrestore(&vg->lock, flags);
 }
@@ -508,10 +533,9 @@ static void vlv_gpio_irq_init_hw(struct vlv_gpio *vg)
 
 	for (base = 0; base < vg->chip.ngpio; base += 32) {
 		reg = vlv_gpio_reg(&vg->chip, base, VV_INT_STAT_REG);
-		writel(0xffffffff, reg);
+		vlv_writel(0xffffffff, reg);
 	}
 }
-
 static char conf_reg_msg[] =
 	"\nGPIO configuration register:\n"
 	"\t[ 2: 0]\tpinmux\n"
@@ -558,7 +582,7 @@ static int vlv_get_normal(struct gpio_control *control, void *private_data,
 	int num;
 
 	reg = vlv_gpio_reg(&vg->chip, offset, control->reg);
-	value = readl(reg);
+	value = vlv_readl(reg);
 
 	num = (value & (mask << shift)) >> shift;
 	if (num < control->num)
@@ -581,10 +605,10 @@ static int vlv_set_normal(struct gpio_control *control, void *private_data,
 	reg = vlv_gpio_reg(&vg->chip, offset, control->reg);
 
 	spin_lock_irqsave(&vg->lock, flags);
-	value = readl(reg);
+	value = vlv_readl(reg);
 	value &= ~(mask << shift);
 	value |= (num & mask) << shift;
-	writel(value, reg);
+	vlv_writel(value, reg);
 	spin_unlock_irqrestore(&vg->lock, flags);
 
 	return 0;
@@ -602,7 +626,7 @@ static int vlv_get_irqtype(struct gpio_control *control, void *private_data,
 	int num;
 
 	reg = vlv_gpio_reg(&vg->chip, offset, control->reg);
-	value = readl(reg);
+	value = vlv_readl(reg);
 
 	if (value & (1<<control->rshift)) { /* level irq */
 		value = (value & (mask << shift)) >> shift;
@@ -650,7 +674,7 @@ static unsigned int vlv_get_conf_reg(struct gpio_debug *debug, unsigned gpio)
 	u32 value;
 
 	reg = vlv_gpio_reg(&vg->chip, offset, VV_CONF0_REG);
-	value = readl(reg);
+	value = vlv_readl(reg);
 
 	return value;
 }
@@ -666,7 +690,7 @@ static void vlv_set_conf_reg(struct gpio_debug *debug, unsigned gpio,
 	reg = vlv_gpio_reg(&vg->chip, offset, VV_CONF0_REG);
 
 	spin_lock_irqsave(&vg->lock, flags);
-	writel(value, reg);
+	vlv_writel(value, reg);
 	spin_unlock_irqrestore(&vg->lock, flags);
 }
 
@@ -871,6 +895,7 @@ vlv_gpio_pnp_probe(struct pnp_dev *pdev, const struct pnp_device_id *id)
 	}
 	dev_info(&pdev->dev, "%s: gpio base %d\n", path, gpio_base);
 
+
 	return 0;
 err:
 	kfree(vg);
@@ -879,6 +904,7 @@ err:
 
 static const struct pnp_device_id vlv_gpio_pnp_match[] = {
 	{ "INT33B2", 0 },
+	{ "INT33FC", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(pnp, vlv_gpio_pnp_match);

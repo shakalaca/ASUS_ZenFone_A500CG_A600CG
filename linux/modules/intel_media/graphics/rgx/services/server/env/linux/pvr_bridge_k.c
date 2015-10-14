@@ -121,6 +121,7 @@ PVRSRV_ERROR RegisterRGXHWPERFFunctions(IMG_VOID);
 #if defined(RGX_FEATURE_RAY_TRACING)
 PVRSRV_ERROR RegisterRGXRAYFunctions(IMG_VOID);
 #endif /* RGX_FEATURE_RAY_TRACING */
+PVRSRV_ERROR RegisterREGCONFIGFunctions(IMG_VOID);
 #endif /* SUPPORT_RGX */
 #if (CACHEFLUSH_TYPE == CACHEFLUSH_GENERIC)
 PVRSRV_ERROR RegisterCACHEGENERICFunctions(IMG_VOID);
@@ -319,7 +320,7 @@ LinuxBridgeInit(IMG_VOID)
 	{
 		return eError;
 	}
-	
+
 #if defined(RGX_FEATURE_RAY_TRACING)
 	eError = RegisterRGXRAYFunctions();
 	if (eError != PVRSRV_OK)
@@ -327,6 +328,12 @@ LinuxBridgeInit(IMG_VOID)
 		return eError;
 	}
 #endif /* RGX_FEATURE_RAY_TRACING */
+
+	eError = RegisterREGCONFIGFunctions();
+	if (eError != PVRSRV_OK)
+	{
+		return eError;
+	}
 
 #endif /* SUPPORT_RGX */
 

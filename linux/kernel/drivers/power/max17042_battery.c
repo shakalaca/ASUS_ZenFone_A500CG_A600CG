@@ -39,6 +39,8 @@
 #include <linux/notifier.h>
 #include <linux/miscdevice.h>
 #include <linux/atomic.h>
+#include <linux/acpi.h>
+#include <linux/acpi_gpio.h>
 
 /* Status register bits */
 #define STATUS_POR_BIT		(1 << 1)
@@ -57,6 +59,7 @@
 
 /* Vmax disabled, Vmin disabled */
 #define VOLT_DEF_MAX_MIN_THRLD  0xFF00
+
 /* Vmax disabled, Vmin set to 3300mV */
 #define VOLT_MIN_THRLD_ENBL	0xFFA5
 
@@ -248,8 +251,12 @@ enum max170xx_chip_type {MAX17042, MAX17050};
 /* No of times we should reset I2C lines */
 #define NR_I2C_RESET_CNT	8
 
-#define VBATT_MAX 4200
-#define VBATT_MIN 3400
+#define VBATT_MAX 4200000	/* 4200mV */
+#define VBATT_MIN 3400000	/* 3400mV */
+
+#define VBATT_MIN_OFFSET	100 /* 100mV from VMMIN */
+#define VBATT_MAX_OFFSET	50 /* 50mV from VMAX */
+#define VALERT_VOLT_OFFSET	20 /* each bit corresponds to 20mV */
 
 /* default fuel gauge cell data for debug purpose only */
 static uint16_t cell_char_tbl[] = {
@@ -364,16 +371,16 @@ static void update_runtime_params(struct max17042_chip *chip);
  * capacity value against a given voltage */
 static unsigned int voltage_capacity_lookup(unsigned int val)
 {
-	unsigned int max = VBATT_MAX;
-	unsigned int min = VBATT_MIN;
+	unsigned int max = VBATT_MAX / 1000;
+	unsigned int min = VBATT_MIN / 1000;
 	unsigned int capacity;
 	unsigned int total_diff;
 	unsigned int val_diff;
 
-	if (val > VBATT_MAX)
+	if (val > max)
 		return 100;
 
-	if (val < VBATT_MIN)
+	if (val < min)
 		return 0;
 
 	total_diff = max - min;
@@ -382,6 +389,19 @@ static unsigned int voltage_capacity_lookup(unsigned int val)
 	capacity = (total_diff - val_diff) * 100 / total_diff;
 
 	return capacity;
+}
+
+static int max17042_property_is_privileged_read(struct power_supply *psy,
+						enum power_supply_property psp)
+{
+	switch (psp) {
+	case POWER_SUPPLY_PROP_MODEL_NAME:
+	case POWER_SUPPLY_PROP_SERIAL_NUMBER:
+		return 1;
+	default:
+		break;
+	}
+	return 0;
 }
 
 static int dev_file_open(struct inode *i, struct file *f)
@@ -870,7 +890,7 @@ static int max17042_get_property(struct power_supply *psy,
 		val->intval = (ret >> 7) * 10000; /* Units of LSB = 10mV */
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
-		val->intval = chip->voltage_max * 1000;
+		val->intval = chip->voltage_max;
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		/*
@@ -1544,6 +1564,12 @@ static int max17042_get_batt_health(void)
 {
 	struct max17042_chip *chip = i2c_get_clientdata(max17042_client);
 	int vavg, temp, ret;
+	int stat;
+
+	if (!chip->pdata->valid_battery) {
+		dev_err(&chip->client->dev, "Invalid battery detected");
+		return POWER_SUPPLY_HEALTH_UNKNOWN;
+	}
 
 	ret = read_batt_pack_temp(chip, &temp);
 	if (ret < 0) {
@@ -1551,11 +1577,17 @@ static int max17042_get_batt_health(void)
 			"battery pack temp read fail:%d", ret);
 		return POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
 	}
-	if ((temp < chip->pdata->temp_min_lim) ||
-			(temp > chip->pdata->temp_max_lim)) {
+	if ((temp <= chip->pdata->temp_min_lim) ||
+			(temp >= chip->pdata->temp_max_lim)) {
 		dev_info(&chip->client->dev,
 			"Battery Over Temp condition Detected:%d\n", temp);
 		return POWER_SUPPLY_HEALTH_OVERHEAT;
+	}
+
+	stat = max17042_read_reg(chip->client, MAX17042_STATUS);
+	if (stat < 0) {
+		dev_err(&chip->client->dev, "error reading status register");
+		return POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
 	}
 
 	ret = max17042_read_reg(chip->client, MAX17042_AvgVCELL);
@@ -1571,6 +1603,11 @@ static int max17042_get_batt_health(void)
 		return POWER_SUPPLY_HEALTH_DEAD;
 	}
 	if (vavg > chip->pdata->volt_max_lim) {
+		dev_info(&chip->client->dev,
+			"Battery Over Voltage condition Detected:%d\n", vavg);
+		return POWER_SUPPLY_HEALTH_OVERVOLTAGE;
+	}
+	if (stat & STATUS_VMX_BIT) {
 		dev_info(&chip->client->dev,
 			"Battery Over Voltage condition Detected:%d\n", vavg);
 		return POWER_SUPPLY_HEALTH_OVERVOLTAGE;
@@ -1792,7 +1829,7 @@ static ssize_t set_shutdown_voltage(struct device *dev,
 	unsigned long value;
 	if (kstrtoul(buf, 10, &value))
 		return -EINVAL;
-	if ((value < VBATT_MIN * 1000) || (value > VBATT_MAX * 1000))
+	if ((value < VBATT_MIN) || (value > VBATT_MAX))
 		return -EINVAL;
 	shutdown_volt = value;
 	return count;
@@ -1841,6 +1878,7 @@ static void configure_interrupts(struct max17042_chip *chip)
 {
 	int ret;
 	unsigned int edge_type;
+	int vmax, vmin, reg_val;
 
 	/* set SOC-alert threshold sholds to lowest value */
 	max17042_write_reg(chip->client, MAX17042_SALRT_Th,
@@ -1859,8 +1897,16 @@ static void configure_interrupts(struct max17042_chip *chip)
 					CONFIG_TSTICKY_BIT_SET, 0);
 
 	/* Setting V-alrt threshold register to default values */
-	max17042_write_reg(chip->client, MAX17042_VALRT_Th,
+	if (chip->pdata->en_vmax_intr) {
+		vmax = chip->pdata->volt_max_lim + VBATT_MAX_OFFSET;
+		vmin = chip->pdata->volt_min_lim - VBATT_MIN_OFFSET;
+		reg_val = ((vmax / VALERT_VOLT_OFFSET) << 8) |
+				(vmin / VALERT_VOLT_OFFSET);
+		max17042_write_reg(chip->client, MAX17042_VALRT_Th, reg_val);
+	} else {
+		max17042_write_reg(chip->client, MAX17042_VALRT_Th,
 					VOLT_DEF_MAX_MIN_THRLD);
+	}
 
 	/* Setting T-alrt threshold register to default values */
 	max17042_write_reg(chip->client, MAX17042_TALRT_Th,
@@ -1917,13 +1963,32 @@ static void configure_interrupts(struct max17042_chip *chip)
 	}
 }
 
-static int __devinit max17042_probe(struct i2c_client *client,
+#ifdef CONFIG_ACPI
+extern void *max17042_platform_data(void *info);
+#endif
+static int max17042_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
 	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
 	struct max17042_chip *chip;
-	int ret, i;
+	int ret, i, gpio;
+	struct acpi_gpio_info gpio_info;
 
+#ifdef CONFIG_XEN
+	return -ENODEV;
+#endif
+
+#ifdef CONFIG_ACPI
+	client->dev.platform_data = max17042_platform_data(NULL);
+	dev_info(&client->dev, "%s: %d: dev->irq = %d\n",
+			 __func__, __LINE__, client->irq);
+	gpio = acpi_get_gpio_by_index(&client->dev, 0, &gpio_info);
+	dev_info(&client->dev, "%s: %d: gpio no = %d\n",
+			 __func__, __LINE__, gpio);
+	client->irq = gpio_to_irq(gpio);
+	dev_info(&client->dev, "%s: %d: irq = %d\n",
+			 __func__, __LINE__, client->irq);
+#endif
 	if (!client->dev.platform_data) {
 		dev_err(&client->dev, "Platform Data is NULL");
 		return -EFAULT;
@@ -2034,6 +2099,8 @@ static int __devinit max17042_probe(struct i2c_client *client,
 	chip->battery.type		= POWER_SUPPLY_TYPE_BATTERY;
 	chip->battery.get_property	= max17042_get_property;
 	chip->battery.set_property	= max17042_set_property;
+	chip->battery.property_is_privileged_read =
+					max17042_property_is_privileged_read;
 	chip->battery.external_power_changed = max17042_external_power_changed;
 	chip->battery.properties	= max17042_battery_props;
 	chip->battery.num_properties	= ARRAY_SIZE(max17042_battery_props);
@@ -2087,7 +2154,7 @@ static int __devinit max17042_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int __devexit max17042_remove(struct i2c_client *client)
+static int max17042_remove(struct i2c_client *client)
 {
 	struct max17042_chip *chip = i2c_get_clientdata(client);
 
@@ -2144,11 +2211,23 @@ static int max17042_suspend(struct device *dev)
 static int max17042_resume(struct device *dev)
 {
 	struct max17042_chip *chip = dev_get_drvdata(dev);
+	int vmax, vmin, reg_val;
 
 	if (chip->client->irq > 0) {
 		/* Setting V-alrt threshold register to default values */
-		max17042_write_reg(chip->client, MAX17042_VALRT_Th,
+		if (chip->pdata->en_vmax_intr) {
+			vmax = chip->pdata->volt_max_lim +
+					VBATT_MAX_OFFSET;
+			vmin = chip->pdata->volt_min_lim -
+					VBATT_MIN_OFFSET;
+			reg_val = ((vmax / VALERT_VOLT_OFFSET) << 8) |
+					(vmin / VALERT_VOLT_OFFSET);
+			max17042_write_reg(chip->client, MAX17042_VALRT_Th,
+						reg_val);
+		} else {
+			max17042_write_reg(chip->client, MAX17042_VALRT_Th,
 					VOLT_DEF_MAX_MIN_THRLD);
+		}
 		/* set SOC-alert threshold sholds to lowest value */
 		max17042_write_reg(chip->client, MAX17042_SALRT_Th,
 					SOC_DEF_MAX_MIN3_THRLD);
@@ -2200,6 +2279,9 @@ static const struct i2c_device_id max17042_id[] = {
 	{ "max17042", 0 },
 	{ "max17047", 1 },
 	{ "max17050", 2 },
+	{ "MAX17042", 0 },
+	{ "MAX17047", 1 },
+	{ "MAX17050", 2 },
 	{ },
 };
 MODULE_DEVICE_TABLE(i2c, max17042_id);
@@ -2212,14 +2294,26 @@ static const struct dev_pm_ops max17042_pm_ops = {
 	.runtime_idle		= max17042_runtime_idle,
 };
 
+#ifdef CONFIG_ACPI
+static struct acpi_device_id max17042_acpi_match[] = {
+	{"MAX17047", 0},
+	{}
+};
+MODULE_DEVICE_TABLE(acpi, max17042_acpi_match);
+
+#endif
+
 static struct i2c_driver max17042_i2c_driver = {
 	.driver	= {
 		.name	= DRV_NAME,
 		.owner	= THIS_MODULE,
 		.pm	= &max17042_pm_ops,
+#ifdef CONFIG_ACPI
+		.acpi_match_table = ACPI_PTR(max17042_acpi_match),
+#endif
 	},
 	.probe		= max17042_probe,
-	.remove		= __devexit_p(max17042_remove),
+	.remove		= max17042_remove,
 	.id_table	= max17042_id,
 };
 
@@ -2242,7 +2336,21 @@ static int max17042_reboot_callback(struct notifier_block *nfb,
 	return NOTIFY_OK;
 }
 
-module_i2c_driver(max17042_i2c_driver);
+static int __init max17042_init(void)
+{
+	return i2c_add_driver(&max17042_i2c_driver);
+}
+#ifdef CONFIG_ACPI
+late_initcall(max17042_init);
+#else
+module_init(max17042_init);
+#endif
+
+static void __exit max17042_exit(void)
+{
+	i2c_del_driver(&max17042_i2c_driver);
+}
+module_exit(max17042_exit);
 
 int __init set_fake_batt_full(char *p)
 {

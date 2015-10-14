@@ -90,4 +90,3 @@ void *msic_generic_platform_data(void *info, enum intel_msic_block block)
 
 	return NULL;
 }
-

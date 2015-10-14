@@ -28,6 +28,8 @@
 
 #include <drm/drmP.h>
 #include <displayclass_interface.h>
+#include "img_types.h"
+#include "psb_drm.h"
 
 struct psb_framebuffer;
 
@@ -52,10 +54,17 @@ void DCCBFlipSprite(struct drm_device *dev,
 			struct intel_dc_sprite_ctx *ctx);
 void DCCBFlipPrimary(struct drm_device *dev,
 			struct intel_dc_primary_ctx *ctx);
-void DCCBUpdateDbiPanel(struct drm_device *dev, int pipe);
+void DCCBSetupZorder(struct drm_device *dev,
+			struct intel_dc_plane_zorder *zorder,
+			int pipe);
+int DCCBUpdateDbiPanel(struct drm_device *dev, int pipe);
+int DCCBOverlayDisableAndWait(struct drm_device *dev, u32 ctx,
+			int index);
 int DCCBOverlayEnable(struct drm_device *dev, u32 ctx,
 			int index, int enabled);
 int DCCBSpriteEnable(struct drm_device *dev, u32 ctx,
+			int index, int enabled);
+int DCCBPrimaryEnable(struct drm_device *dev, u32 ctx,
 			int index, int enabled);
 void DCCBFlipDSRCb(struct drm_device *dev);
 void DCCBUnblankDisplay(struct drm_device *dev);

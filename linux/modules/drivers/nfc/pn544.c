@@ -350,12 +350,6 @@ static long pn544_dev_ioctl(struct file *filp,
 			gpio_set_value(pn544_dev->ven_gpio,
 					!pn544_dev->nfc_en_polarity);
 			msleep(10);
-			gpio_set_value(pn544_dev->ven_gpio,
-					pn544_dev->nfc_en_polarity);
-			msleep(10);
-			gpio_set_value(pn544_dev->ven_gpio,
-					!pn544_dev->nfc_en_polarity);
-			msleep(10);
 		} else {
 			pr_err("%s bad arg %lu\n", __func__, arg);
 			return -EINVAL;
@@ -379,6 +373,9 @@ static const struct file_operations pn544_dev_fops = {
 	.release	= pn544_dev_release,
 #ifdef HAVE_UNLOCKED_IOCTL
 	.unlocked_ioctl	= pn544_dev_ioctl,
+#endif
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = pn544_dev_ioctl
 #endif
 };
 

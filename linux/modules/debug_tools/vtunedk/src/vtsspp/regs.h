@@ -33,6 +33,12 @@
 #include <linux/compiler.h>     /* for __user */
 #include <asm/ptrace.h>
 
+#ifdef CONFIG_X86_32
+#define vtss_get_current_bp(bp) asm("movl %%ebp, %0":"=r"(bp):)
+#else
+#define vtss_get_current_bp(bp) asm("movq %%rbp, %0":"=r"(bp):)
+#endif
+
 #ifdef VTSS_AUTOCONF_X86_UNIREGS
 #define REG(name, regs) ((regs)->name)
 #else /* VTSS_AUTOCONF_X86_UNIREGS */

@@ -69,9 +69,10 @@ extern "C" {
 #define DBGPRIV_CALLTRACE		0x020UL  /*!< Debug-CallTrace. Privately used by pvr_debug. */
 #define DBGPRIV_ALLOC			0x040UL  /*!< Debug-Alloc. Privately used by pvr_debug. */
 #define DBGPRIV_BUFFERED		0x080UL  /*!< Debug-Buffered. Privately used by pvr_debug. */
-#define DBGPRIV_DBGDRV_MESSAGE	0x100UL  /*!< Debug-DbgDrivMessage. Privately used by pvr_debug. */
+#define DBGPRIV_DEBUG			0x100UL  /*!< Debug-AdHoc-Debug. Never submitted. Privately used by pvr_debug. */
+#define DBGPRIV_DBGDRV_MESSAGE	0x200UL  /*!< Debug-DbgDrivMessage. Privately used by pvr_debug. */
+#define DBGPRIV_LAST			0x200UL  /*!< Always set to highest mask value. Privately used by pvr_debug. */
 
-#define DBGPRIV_DBGLEVEL_COUNT	8
 
 #if !defined(PVRSRV_NEED_PVR_ASSERT) && defined(DEBUG)
 #define PVRSRV_NEED_PVR_ASSERT
@@ -96,10 +97,18 @@ extern "C" {
 
 #if defined(PVRSRV_NEED_PVR_ASSERT)
 
+/* Unfortunately the klocworks static analysis checker doesn't understand our
+ * ASSERT macros. Thus it reports lots of false positive. Defining our Assert
+ * macros in a special way when the code is analysed by klocworks avoids
+ * them. */
+#if defined(__KLOCWORK__) 
+  #define PVR_ASSERT(x) do { if (!(x)) abort(); } while (0)
+#else /* ! __KLOCWORKS__ */
+
 #if defined(_WIN32)
 #define PVR_ASSERT(expr) do 									\
 	{															\
-        MSC_SUPPRESS_4127										\
+		MSC_SUPPRESS_4127										\
 		if (!(expr))											\
 		{														\
 			PVRSRVDebugPrintf(DBGPRIV_FATAL, __FILE__, __LINE__,\
@@ -150,28 +159,33 @@ IMG_IMPORT IMG_VOID IMG_CALLCONV PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 #endif
 
 #endif /* defined(LINUX) && defined(__KERNEL__) */
-
+#endif /* __KLOCWORKS__ */
 #endif /* defined(PVRSRV_NEED_PVR_ASSERT)*/
 
-#if defined (WIN32)
-	#define PVR_DBG_BREAK __debugbreak();   /*!< Implementation of PVR_DBG_BREAK for (non-WinCE) Win32 */
+#if defined(__KLOCWORK__)
+	#define PVR_DBG_BREAK do { abort(); } while (0)
 #else
-	#if defined(PVR_DBG_BREAK_ASSERT_FAIL)
-	/*!< Implementation of PVR_DBG_BREAK that maps onto PVRSRVDebugAssertFail */
-		#if defined(_WIN32)
-			#define PVR_DBG_BREAK	DBG_BREAK
-		#else
-			#if defined(LINUX) && defined(__KERNEL__)
-				#define PVR_DBG_BREAK BUG()
-			#else
-				#define PVR_DBG_BREAK	PVRSRVDebugAssertFail(__FILE__, __LINE__, "PVR_DBG_BREAK")
-			#endif
-		#endif
+	#if defined (WIN32)
+		#define PVR_DBG_BREAK __debugbreak();   /*!< Implementation of PVR_DBG_BREAK for (non-WinCE) Win32 */
 	#else
-		/*!< Null Implementation of PVR_DBG_BREAK (does nothing) */
-		#define PVR_DBG_BREAK
+		#if defined(PVR_DBG_BREAK_ASSERT_FAIL)
+		/*!< Implementation of PVR_DBG_BREAK that maps onto PVRSRVDebugAssertFail */
+			#if defined(_WIN32)
+				#define PVR_DBG_BREAK	DBG_BREAK
+			#else
+				#if defined(LINUX) && defined(__KERNEL__)
+					#define PVR_DBG_BREAK BUG()
+				#else
+					#define PVR_DBG_BREAK	PVRSRVDebugAssertFail(__FILE__, __LINE__, "PVR_DBG_BREAK")
+				#endif
+			#endif
+		#else
+			/*!< Null Implementation of PVR_DBG_BREAK (does nothing) */
+			#define PVR_DBG_BREAK
+		#endif
 	#endif
 #endif
+
 
 #else  /* defined(PVRSRV_NEED_PVR_ASSERT) */
 
@@ -194,12 +208,25 @@ IMG_IMPORT IMG_VOID IMG_CALLCONV PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 	#define PVR_DBG_CALLTRACE	DBGPRIV_CALLTRACE
 	#define PVR_DBG_ALLOC		DBGPRIV_ALLOC
 	#define PVR_DBG_BUFFERED	DBGPRIV_BUFFERED
+	#define PVR_DBG_DEBUG		DBGPRIV_DEBUG
 	#define PVR_DBGDRIV_MESSAGE	DBGPRIV_DBGDRV_MESSAGE
 
 	/* These levels are always on with PVRSRV_NEED_PVR_DPF */
 	#define __PVR_DPF_0x001UL(...) PVRSRVDebugPrintf(DBGPRIV_FATAL, __VA_ARGS__)
 	#define __PVR_DPF_0x002UL(...) PVRSRVDebugPrintf(DBGPRIV_ERROR, __VA_ARGS__)
 	#define __PVR_DPF_0x080UL(...) PVRSRVDebugPrintf(DBGPRIV_BUFFERED, __VA_ARGS__)
+
+	/*
+	  The AdHoc-Debug level is only supported when enabled in the local
+	  build environment and may need to be used in both debug and release
+	  builds. An error is generated in the formal build if it is checked in.
+	*/
+#if defined(PVR_DPF_ADHOC_DEBUG_ON)
+	#define __PVR_DPF_0x100UL(...) PVRSRVDebugPrintf(DBGPRIV_DEBUG, __VA_ARGS__)
+#else
+    /* Use an undefined token here to stop compilation dead in the offending module */
+	#define __PVR_DPF_0x100UL(...) __ERROR__PVR_DBG_DEBUG_is_in_use_but_has_not_been_enabled__Note_Debug_DPF_must_not_be_checked_in_
+#endif
 
 	/* Some are compiled out completely in release builds */
 #if defined(DEBUG)
@@ -208,14 +235,14 @@ IMG_IMPORT IMG_VOID IMG_CALLCONV PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 	#define __PVR_DPF_0x010UL(...) PVRSRVDebugPrintf(DBGPRIV_VERBOSE, __VA_ARGS__)
 	#define __PVR_DPF_0x020UL(...) PVRSRVDebugPrintf(DBGPRIV_CALLTRACE, __VA_ARGS__)
 	#define __PVR_DPF_0x040UL(...) PVRSRVDebugPrintf(DBGPRIV_ALLOC, __VA_ARGS__)
-	#define __PVR_DPF_0x100UL(...) PVRSRVDebugPrintf(DBGPRIV_DBGDRV_MESSAGE, __VA_ARGS__)
+	#define __PVR_DPF_0x200UL(...) PVRSRVDebugPrintf(DBGPRIV_DBGDRV_MESSAGE, __VA_ARGS__)
 #else
 	#define __PVR_DPF_0x004UL(...)
 	#define __PVR_DPF_0x008UL(...)
 	#define __PVR_DPF_0x010UL(...)
 	#define __PVR_DPF_0x020UL(...)
 	#define __PVR_DPF_0x040UL(...)
-	#define __PVR_DPF_0x100UL(...)
+	#define __PVR_DPF_0x200UL(...)
 #endif
 
 	/* Translate the different log levels to separate macros
@@ -314,13 +341,13 @@ IMG_IMPORT IMG_VOID IMG_CALLCONV PVRSRVDebugPrintfDumpCCB(void);
         PVR_DPF((PVR_DBG_CALLTRACE, "--> %s:%d entered", __func__, __LINE__))
 
 	#define PVR_DPF_ENTERED1(p1) \
-		PVR_DPF((PVR_DBG_CALLTRACE, "--> %s:%d entered (0x%x)", __func__, __LINE__, (p1)))
+		PVR_DPF((PVR_DBG_CALLTRACE, "--> %s:%d entered (0x%lx)", __func__, __LINE__, ((unsigned long)p1)))
 
 	#define PVR_DPF_RETURN_RC(a) \
         do { int _r = (a); PVR_DPF((PVR_DBG_CALLTRACE, "-< %s:%d returned %d", __func__, __LINE__, (_r))); return (_r); MSC_SUPPRESS_4127 } while (0)
 
 	#define PVR_DPF_RETURN_RC1(a,p1) \
-		do { int _r = (a); PVR_DPF((PVR_DBG_CALLTRACE, "-< %s:%d returned %d (0x%x)", __func__, __LINE__, (_r), (p1))); return (_r); MSC_SUPPRESS_4127 } while (0)
+		do { int _r = (a); PVR_DPF((PVR_DBG_CALLTRACE, "-< %s:%d returned %d (0x%lx)", __func__, __LINE__, (_r), ((unsigned long)p1))); return (_r); MSC_SUPPRESS_4127 } while (0)
 
 	#define PVR_DPF_RETURN_VAL(a) \
 		do { PVR_DPF((PVR_DBG_CALLTRACE, "-< %s:%d returned with value", __func__, __LINE__ )); return (a); MSC_SUPPRESS_4127 } while (0)

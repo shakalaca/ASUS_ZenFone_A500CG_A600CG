@@ -98,6 +98,7 @@ struct panel_funcs {
 	int (*power_off)(struct mdfld_dsi_config *dsi_config);
 	int (*set_brightness)(struct mdfld_dsi_config *dsi_config, int level);
 	int (*drv_ic_init)(struct mdfld_dsi_config *dsi_config);
+	int (*drv_set_panel_mode)(struct mdfld_dsi_config *dsi_config);
 };
 
 struct intel_mid_panel_list {
@@ -108,5 +109,6 @@ struct intel_mid_panel_list {
 
 extern void mdfld_output_init(struct drm_device *dev);
 extern enum panel_type get_panel_type(struct drm_device *dev, int pipe);
+extern bool is_dual_dsi(struct drm_device *dev);
 
 #endif

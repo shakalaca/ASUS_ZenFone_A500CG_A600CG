@@ -143,19 +143,16 @@ static struct kmsg_dumper dw_dumper;
 static int dumper_registered;
 
 static void dw_kmsg_dump(struct kmsg_dumper *dumper,
-			enum kmsg_dump_reason reason,
-			const char *s1, unsigned long l1,
-			const char *s2, unsigned long l2)
+			 enum kmsg_dump_reason reason)
 {
-	int i;
+	static char line[1024];
+	size_t len;
 
 	/* When run to this, we'd better re-init the HW */
 	mrst_early_console_init();
 
-	for (i = 0; i < l1; i++)
-		early_mrst_console.write(&early_mrst_console, s1 + i, 1);
-	for (i = 0; i < l2; i++)
-		early_mrst_console.write(&early_mrst_console, s2 + i, 1);
+	while (kmsg_dump_get_line(dumper, true, line, sizeof(line), &len))
+		early_mrst_console.write(&early_mrst_console, line, len);
 }
 
 /* Set the ratio rate to 115200, 8n1, IRQ disabled */
@@ -275,7 +272,7 @@ static void early_mrst_spi_putc(char c)
 	}
 
 	if (!timeout)
-		pr_warning("MRST earlycon: timed out\n");
+		pr_warn("MRST earlycon: timed out\n");
 	else
 		max3110_spi_write_data(c);
 }
@@ -315,20 +312,25 @@ void mrfld_early_console_init(void)
 
 	/* mask interrupts, clear enable and set DSS config */
 	/* SSPSCLK on active transfers only */
-	if (ssp_timing_wr) {
-		dw_writel(pssp, ctrl0, 0xc12c0f);
-		dw_writel(pssp, ctrl1, 0x0);
-	} else {
-		dw_writel(pssp, ctrl0, 0xc0000f);
-		dw_writel(pssp, ctrl1, 0x10000000);
+	if (intel_mid_identify_sim() != INTEL_MID_CPU_SIMULATION_SLE) {
+		if (ssp_timing_wr) {
+			dw_writel(pssp, ctrl0, 0xc12c0f);
+			dw_writel(pssp, ctrl1, 0x0);
+		} else {
+			dw_writel(pssp, ctrl0, 0xc0000f);
+			dw_writel(pssp, ctrl1, 0x10000000);
+		}
 	}
 
 	dw_readl(pssp, sr);
 
 	/* enable port */
-	ctrlr0 = dw_readl(pssp, ctrl0);
-	ctrlr0 |= 0x80;
-	dw_writel(pssp, ctrl0, ctrlr0);
+	if (intel_mid_identify_sim() != INTEL_MID_CPU_SIMULATION_SLE) {
+		ctrlr0 = dw_readl(pssp, ctrl0);
+		ctrlr0 |= 0x80;
+		dw_writel(pssp, ctrl0, ctrlr0);
+	}
+
 }
 
 /* slave select should be called in the read/write function */
@@ -355,7 +357,7 @@ static int early_mrfld_putc(char c)
 	}
 
 	if (timeout == 0xffffffff) {
-		printk(KERN_INFO "SSP: waiting timeout\n");
+		pr_info("SSP: waiting timeout\n");
 		return -1;
 	}
 
@@ -449,9 +451,8 @@ void hsu_early_console_init(const char *s)
 			writel(0x0120, phsu + UART_MUL * 4); /* for 50M */
 		else
 			writel(0x05DC, phsu + UART_MUL * 4);  /* for 19.2M */
-	} else {
+	} else
 		writel(0x0240, phsu + UART_MUL * 4);
-	}
 
 	writel(0x3D09, phsu + UART_DIV * 4);
 

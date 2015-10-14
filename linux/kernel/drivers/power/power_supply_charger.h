@@ -164,6 +164,8 @@ static inline int get_ps_int_property(struct power_supply *psy,
 		get_ps_int_property(psy, POWER_SUPPLY_PROP_CABLE_TYPE)
 #define ONLINE(psy) \
 		get_ps_int_property(psy, POWER_SUPPLY_PROP_ONLINE)
+#define INLMT(psy) \
+		get_ps_int_property(psy, POWER_SUPPLY_PROP_INLMT)
 
 #define IS_CHARGING_ENABLED(psy) \
 		get_ps_int_property(psy, POWER_SUPPLY_PROP_ENABLE_CHARGING)
@@ -181,8 +183,7 @@ static inline int get_ps_int_property(struct power_supply *psy,
 #define IS_SUPPORTED_CABLE(psy, cable_type) \
 		(psy->supported_cables & cable_type)
 #define IS_CABLE_ACTIVE(status) \
-	(!((status == EXTCON_CHRGR_CABLE_DISCONNECTED) ||\
-			(status == EXTCON_CHRGR_CABLE_SUSPENDED)))
+	((status != EXTCON_CHRGR_CABLE_DISCONNECTED))
 
 #define IS_CHARGER_PROP_CHANGED(prop, cache_prop)\
 	((cache_prop.online != prop.online) || \
@@ -216,8 +217,9 @@ static inline int get_ps_int_property(struct power_supply *psy,
 		(((psy->throttle_states)+state)->throttle_val)
 
 #define IS_CHARGING_CAN_BE_ENABLED(psy) \
-	((CURRENT_THROTTLE_ACTION(psy) != PSY_THROTTLE_DISABLE_CHARGER)  &&\
-	(CURRENT_THROTTLE_ACTION(psy) != PSY_THROTTLE_DISABLE_CHARGING))
+	((CURRENT_THROTTLE_ACTION(psy) != PSY_THROTTLE_DISABLE_CHARGER) &&\
+	(CURRENT_THROTTLE_ACTION(psy) != PSY_THROTTLE_DISABLE_CHARGING) &&\
+	(INLMT(psy) >= 100))
 #define IS_CHARGER_CAN_BE_ENABLED(psy) \
 	(CURRENT_THROTTLE_ACTION(psy) != PSY_THROTTLE_DISABLE_CHARGER)
 

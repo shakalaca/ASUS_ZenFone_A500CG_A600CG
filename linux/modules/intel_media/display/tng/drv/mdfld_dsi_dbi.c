@@ -33,6 +33,7 @@
 #include "mdfld_dsi_dbi_dsr.h"
 #include "mrfld_clock.h"
 #include "psb_drv.h"
+#include "dispmgrnl.h"
 
 /**
  * Enter DSR
@@ -110,10 +111,12 @@ void intel_dsi_dbi_update_fb(struct mdfld_dsi_dbi_output *dbi_output)
 
 	/* if mode setting on-going, back off */
 
-	if ((dbi_output->mode_flags & MODE_SETTING_ON_GOING) ||
-	    (psb_crtc && (psb_crtc->mode_flags & MODE_SETTING_ON_GOING)) ||
-	    !(dbi_output->mode_flags & MODE_SETTING_ENCODER_DONE))
-		return;
+	if (!IS_ANN_A0(dev)) {
+		if ((dbi_output->mode_flags & MODE_SETTING_ON_GOING) ||
+				(psb_crtc && (psb_crtc->mode_flags & MODE_SETTING_ON_GOING)) ||
+				!(dbi_output->mode_flags & MODE_SETTING_ENCODER_DONE))
+			return;
+	}
 
 	if (pipe == 2) {
 		dspcntr_reg = DSPCCNTR;
@@ -132,11 +135,13 @@ void intel_dsi_dbi_update_fb(struct mdfld_dsi_dbi_output *dbi_output)
 	   !(REG_READ(pipeconf_reg) & DISPLAY_PLANE_ENABLE))
 		return;
 
-	/* refresh plane changes */
+	if (!IS_ANN_A0(dev)) {
+		/* refresh plane changes */
 
-	REG_WRITE(dsplinoff_reg, REG_READ(dsplinoff_reg));
-	REG_WRITE(dspsurf_reg, REG_READ(dspsurf_reg));
-	REG_READ(dspsurf_reg);
+		REG_WRITE(dsplinoff_reg, REG_READ(dsplinoff_reg));
+		REG_WRITE(dspsurf_reg, REG_READ(dspsurf_reg));
+		REG_READ(dspsurf_reg);
+	}
 
 	mdfld_dsi_send_dcs(sender,
 			   write_mem_start,
@@ -293,6 +298,7 @@ int __dbi_power_on(struct mdfld_dsi_config *dsi_config)
 	u32 power_island = 0;
 	u32 sprite_reg_offset = 0;
 	uint32_t pll_select = 0, ctrl_reg5 = 0;
+	int i = 0;
 
 	PSB_DEBUG_ENTRY("\n");
 
@@ -309,18 +315,10 @@ int __dbi_power_on(struct mdfld_dsi_config *dsi_config)
 	if (power_island & (OSPM_DISPLAY_A | OSPM_DISPLAY_C))
 		power_island |= OSPM_DISPLAY_MIO;
 
-	/*
-	 * FIXME: need to dynamically power un-gate DISPLAY C island for
-	 * Overlay C & Sprite D planes.
-	 */
-	if (!ctx->ovcadd || (((ctx->ovcadd & OV_PIPE_SELECT) >>
-					OV_PIPE_SELECT_POS) != OV_PIPE_B))
-		power_island |= OSPM_DISPLAY_C;
-
 	if (!power_island_get(power_island))
 		return -EAGAIN;
 
-	if (IS_TNG_B0(dev)) {
+	if (dev_priv->bUseHFPLL) {
 		/* Disable PLL*/
 		intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_DIV_REG, 0);
 		guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
@@ -338,7 +336,7 @@ int __dbi_power_on(struct mdfld_dsi_config *dsi_config)
 		guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
 		guit_val &= ~_DSI_LDO_EN;
 
-		ctx->dpll |= DPLL_VCO_ENABLE;
+		ctx->dpll |= DPLL_VCO_ENABLE| _DSI_CCK_PLL_SELECT;
 		ctx->dpll &= ~_DSI_LDO_EN;
 
 		intel_mid_msgbus_write32(CCK_PORT,
@@ -352,16 +350,35 @@ int __dbi_power_on(struct mdfld_dsi_config *dsi_config)
 					DSI_PLL_CTRL_REG,
 					_DSI_LDO_EN);
 
-		/* Program PLL */
-		intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_DIV_REG, ctx->fp);
+		if (IS_ANN_A0(dev)) {
+			if (get_panel_type(dev, dsi_config->pipe) == JDI_7x12_CMD)
+				intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_DIV_REG, 0x177);
+			else
+				intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_DIV_REG, ctx->fp);
 
-		guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
-		intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG,
-				((guit_val & ~_P1_POST_DIV_MASK) |
-				 (ctx->dpll & _P1_POST_DIV_MASK)));
+			guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
+			intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG,
+					((guit_val & ~_P1_POST_DIV_MASK) |
+					 (ctx->dpll & _P1_POST_DIV_MASK)));
+			guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
 
-		ctx->dpll |= DPLL_VCO_ENABLE;
-		ctx->dpll &= ~_DSI_LDO_EN;
+			ctx->dpll |= DPLL_VCO_ENABLE;
+			ctx->dpll &= ~(_DSI_LDO_EN |
+					_CLK_EN_CCK_DSI0 | _CLK_EN_CCK_DSI1 |
+					_DSI_MUX_SEL_CCK_DSI1 | _DSI_MUX_SEL_CCK_DSI0);
+			ctx->dpll |= _CLK_EN_PLL_DSI0 | _CLK_EN_PLL_DSI1;
+		} else {
+			/* Program PLL */
+			intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_DIV_REG, ctx->fp);
+
+			guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
+			intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG,
+					((guit_val & ~_P1_POST_DIV_MASK) |
+					 (ctx->dpll & _P1_POST_DIV_MASK)));
+
+			ctx->dpll |= DPLL_VCO_ENABLE;
+			ctx->dpll &= ~_DSI_LDO_EN;
+		}
 
 		intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG, ctx->dpll);
 	}
@@ -379,6 +396,22 @@ int __dbi_power_on(struct mdfld_dsi_config *dsi_config)
 		}
 	}
 
+	/*
+	 * Wait for DSI PLL locked on pipe, and only need to poll status of pipe
+	 * A as both MIPI pipes share the same DSI PLL.
+	 */
+	if (dsi_config->pipe == 0) {
+		retry = 20000;
+		while (!(REG_READ(regs->pipeconf_reg) & PIPECONF_DSIPLL_LOCK) &&
+				--retry)
+			udelay(150);
+		if (!retry) {
+			DRM_ERROR("PLL failed to lock on pipe\n");
+			err = -EAGAIN;
+			goto power_on_err;
+		}
+	}
+
 	/*exit ULPS*/
 	if (__dbi_exit_ulps_locked(dsi_config)) {
 		DRM_ERROR("Failed to exit ULPS\n");
@@ -391,6 +424,13 @@ int __dbi_power_on(struct mdfld_dsi_config *dsi_config)
 	/*unready dsi adapter for re-programming*/
 	REG_WRITE(regs->device_ready_reg,
 		REG_READ(regs->device_ready_reg) & ~(DSI_DEVICE_READY));
+	/*
+	 * According to MIPI D-PHY spec, if clock stop feature is enabled (EOT
+	 * Disable), un-ready MIPI adapter needs to wait for 20 cycles from HS
+	 * to LP mode. Per calculation 1us is enough.
+	 */
+	if (ctx->eot_disable & CLOCK_STOP)
+		udelay(1);
 
 	/*D-PHY parameter*/
 	REG_WRITE(regs->dphy_param_reg, ctx->dphy_param);
@@ -426,6 +466,32 @@ int __dbi_power_on(struct mdfld_dsi_config *dsi_config)
 	REG_WRITE(regs->pipesrc_reg, ctx->pipesrc);
 	REG_WRITE(regs->dsppos_reg, ctx->dsppos);
 	REG_WRITE(regs->dspstride_reg, ctx->dspstride);
+
+	if (IS_ANN_A0(dev)) {
+		/*reset registers*/
+		REG_WRITE(0x7002C, 0x000A0200);
+		REG_WRITE(0x70508, 0x0c0c0c0c);
+		REG_WRITE(0x70504, 0xffffffff);
+		REG_WRITE(0x70500, 0xffffffff);
+		DRM_DEBUG("LOADING: 0x70504 %#x\n", REG_READ(0x70504));
+	}
+
+	if (!IS_ANN_A0(dev)) {
+		/*restore color_coef (chrome) */
+		for (i = 0; i < 6; i++)
+			REG_WRITE(regs->color_coef_reg + (i<<2), ctx->color_coef[i]);
+
+
+		/* restore palette (gamma) */
+		for (i = 0; i < 256; i++)
+			REG_WRITE(regs->palette_reg + (i<<2), ctx->palette[i]);
+
+		/* restore dpst setting */
+		if (dev_priv->psb_dpst_state) {
+			dpstmgr_reg_restore_locked(dev, dsi_config);
+			psb_enable_pipestat(dev_priv, 0, PIPE_DPST_EVENT_ENABLE);
+		}
+	}
 
 	/*Setup plane*/
 	REG_WRITE(regs->dspsize_reg, ctx->dspsize);
@@ -493,8 +559,7 @@ int __dbi_power_on(struct mdfld_dsi_config *dsi_config)
 	 * Enable TE to trigger "write_mem_start" issuing
 	 * in non-normal boot modes.
 	 */
-	if (!dev_priv->um_start)
-		mdfld_enable_te(dev, dsi_config->pipe);
+	mdfld_enable_te(dev, dsi_config->pipe);
 	return err;
 
 power_on_err:
@@ -530,6 +595,7 @@ static int __dbi_panel_power_on(struct mdfld_dsi_config *dsi_config,
 
 	if (!dsi_config)
 		return -EINVAL;
+
 	regs = &dsi_config->regs;
 	ctx = &dsi_config->dsi_hw_context;
 	dev = dsi_config->dev;
@@ -566,7 +632,8 @@ reset_recovery:
 	dbi_outputs = dsr_info->dbi_outputs;
 	dbi_output = dsi_config->pipe ? dbi_outputs[1] : dbi_outputs[0];
 
-	intel_dsi_dbi_update_fb(dbi_output);
+	if (!IS_ANN_A0(dev))
+		intel_dsi_dbi_update_fb(dbi_output);
 
 	/**
 	 * Different panel may have different ways to have
@@ -586,6 +653,9 @@ reset_recovery:
 
 	/*wait for all FIFOs empty*/
 	mdfld_dsi_wait_for_fifos_empty(sender);
+
+	if (IS_ANN_A0(dev))
+		intel_dsi_dbi_update_fb(dbi_output);
 
 power_on_err:
 	if (err && reset_count) {
@@ -632,10 +702,16 @@ int __dbi_power_off(struct mdfld_dsi_config *dsi_config)
 	pipe2_enabled = (REG_READ(PIPECCONF) & BIT31) ? 1 : 0;
 
 	if (!pipe0_enabled && !pipe2_enabled) {
+		u32 val;
+
 		/* Disable PLL*/
 		intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_DIV_REG, 0);
-		intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG,
-				_DSI_LDO_EN);
+
+		val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
+		val &= ~DPLL_VCO_ENABLE;
+		val |= _DSI_LDO_EN;
+		val &= ~_CLK_EN_MASK;
+		intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG, val);
 	}
 	/*enter ulps*/
 	if (__dbi_enter_ulps_locked(dsi_config)) {
@@ -648,15 +724,6 @@ power_off_err:
 
 	if (power_island & (OSPM_DISPLAY_A | OSPM_DISPLAY_C))
 		power_island |= OSPM_DISPLAY_MIO;
-
-	/*
-	 * FIXME: need to dynamically power gate DISPLAY C island for
-	 * Overlay C & Sprite D planes.
-	 */
-	/* Don't power gate Display C when Overlay C is attahced to Pipe B. */
-	if (!ctx->ovcadd || (((ctx->ovcadd & OV_PIPE_SELECT) >>
-					OV_PIPE_SELECT_POS) != OV_PIPE_B))
-		power_island |= OSPM_DISPLAY_C;
 
 	if (!power_island_put(power_island))
 		return -EINVAL;
@@ -879,12 +946,26 @@ void mdfld_generic_dsi_dbi_dpms(struct drm_encoder *encoder, int mode)
 	PSB_DEBUG_ENTRY("%s\n", (mode == DRM_MODE_DPMS_ON ? "on" : "off"));
 
 	mutex_lock(&dev_priv->dpms_mutex);
+	DCLockMutex();
 
-	if (mode == DRM_MODE_DPMS_ON)
+	if (mode == DRM_MODE_DPMS_ON) {
 		mdfld_generic_dsi_dbi_set_power(encoder, true);
-	else
+		DCAttachPipe(dsi_config->pipe);
+		DC_MRFLD_onPowerOn(dsi_config->pipe);
+	} else {
 		mdfld_generic_dsi_dbi_set_power(encoder, false);
 
+		drm_handle_vblank(dev, dsi_config->pipe);
+
+		/* Turn off TE interrupt. */
+		drm_vblank_off(dev, dsi_config->pipe);
+
+		/* Make the pending flip request as completed. */
+		DCUnAttachPipe(dsi_config->pipe);
+		DC_MRFLD_onPowerOff(dsi_config->pipe);
+	}
+
+	DCUnLockMutex();
 	mutex_unlock(&dev_priv->dpms_mutex);
 }
 
@@ -906,13 +987,18 @@ void mdfld_generic_dsi_dbi_save(struct drm_encoder *encoder)
 	dev = dsi_config->dev;
 	pipe = mdfld_dsi_encoder_get_pipe(dsi_encoder);
 
+	DCLockMutex();
 	mdfld_generic_dsi_dbi_set_power(encoder, false);
+
+	drm_handle_vblank(dev, pipe);
 
 	/* Turn off vsync (TE) interrupt. */
 	drm_vblank_off(dev, pipe);
 
 	/* Make the pending flip request as completed. */
 	DCUnAttachPipe(pipe);
+	DC_MRFLD_onPowerOff(pipe);
+	DCUnLockMutex();
 }
 
 static
@@ -933,9 +1019,12 @@ void mdfld_generic_dsi_dbi_restore(struct drm_encoder *encoder)
 	dev = dsi_config->dev;
 	pipe = mdfld_dsi_encoder_get_pipe(dsi_encoder);
 
+	DCLockMutex();
 	mdfld_generic_dsi_dbi_set_power(encoder, true);
 
 	DCAttachPipe(pipe);
+	DC_MRFLD_onPowerOn(pipe);
+	DCUnLockMutex();
 }
 
 static
@@ -1088,7 +1177,7 @@ struct mdfld_dsi_encoder *mdfld_dsi_dbi_init(struct drm_device *dev,
 	drm_encoder_init(dev,
 			encoder,
 			&dsi_dbi_generic_encoder_funcs,
-			DRM_MODE_ENCODER_MIPI);
+			DRM_MODE_ENCODER_DSI);
 	drm_encoder_helper_add(encoder,
 			&dsi_dbi_generic_encoder_helper_funcs);
 
@@ -1184,7 +1273,7 @@ void mdfld_reset_panel_handler_work(struct work_struct *work)
 			mutex_unlock(&dsi_config->context_lock);
 			return;
 		}
-		if (get_panel_type(dev, 0) == JDI_CMD)
+		if (get_panel_type(dev, 0) == JDI_7x12_CMD)
 			if (p_funcs && p_funcs->reset)
 				p_funcs->reset(dsi_config);
 

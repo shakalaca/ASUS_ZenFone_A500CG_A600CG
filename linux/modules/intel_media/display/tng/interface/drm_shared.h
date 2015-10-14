@@ -23,22 +23,6 @@
 #ifndef _DRM_SHARED_H_
 #define _DRM_SHARED_H_
 
-/*
- * Menlow/MRST graphics driver package version
- * a.b.c.xxxx
- * a - Product Family: 5 - Linux
- * b - Major Release Version: 0 - non-Gallium (Unbuntu)
- *                            1 - Gallium (Moblin2)
- *                            2 - IMG     (Moblin2)
- *                            3 - IMG     (Meego)
- *                            4 - IMG     (Android)
- * c - Hotfix Release
- * xxxx - Graphics internal build #
- */
-#define PSB_PACKAGE_VERSION "5.4.0.1020"
-
-#define DRM_PSB_SAREA_MAJOR 0
-#define DRM_PSB_SAREA_MINOR 2
 
 /* Controlling the kernel modesetting buffers */
 

@@ -428,6 +428,10 @@ static PVRSRV_ERROR SGXRunScriptOnCore(PVRSRV_SGXDEV_INFO *psDevInfo, SGX_INIT_C
 	IMG_UINT32 ui32PC;
 	SGX_INIT_COMMAND *psComm;
 
+#if !defined(SGX_FEATURE_MP)
+	PVR_UNREFERENCED_PARAMETER(ui32CoreNum);
+#endif
+
 	for (ui32PC = 0, psComm = psScript;
 		ui32PC < ui32NumInitCommands;
 		ui32PC++, psComm++)
@@ -1415,7 +1419,6 @@ IMG_VOID SGXDumpDebugInfo (PVRSRV_SGXDEV_INFO	*psDevInfo,
 		
 		for (ui32CoreNum = 0; ui32CoreNum < SGX_FEATURE_MP_CORE_COUNT_3D; ui32CoreNum++)
 		{
-			/* Dump HW event status */
 			SGXDumpDebugReg(psDevInfo, ui32CoreNum, "EUR_CR_EVENT_STATUS:     ", EUR_CR_EVENT_STATUS);
 			SGXDumpDebugReg(psDevInfo, ui32CoreNum, "EUR_CR_EVENT_STATUS2:    ", EUR_CR_EVENT_STATUS2);
 			SGXDumpDebugReg(psDevInfo, ui32CoreNum, "EUR_CR_BIF_CTRL:         ", EUR_CR_BIF_CTRL);

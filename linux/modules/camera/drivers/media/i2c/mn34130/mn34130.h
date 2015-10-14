@@ -574,7 +574,7 @@ static const struct mn34130_reg mn34130_2064x1552[] = {
 	{MN34130_8BIT, 0x0104, 0x01},	// Hold on
 	{MN34130_8BIT, 0x3319, 0x14},	// Output V[line] setting
 	{MN34130_8BIT, 0x306F, 0x07},
-	{MN34130_8BIT, 0x3070, 0x92},
+	{MN34130_8BIT, 0x3070, 0x94},
 	{MN34130_8BIT, 0x3073, 0x00},	// H Size setting
 	{MN34130_8BIT, 0x3074, 0x18},
 	{MN34130_8BIT, 0x3077, 0x00},

@@ -45,4 +45,8 @@
 #define VTSS_ERR_BUSY       -8
 #define VTSS_ERR_DENIED     -9
 
+/// VTSS procfs errors
+/// Change this value leads the fixes in client collector function "getStatus"
+#define VTSS_ERR_INIT_FAILED -1001
+
 #endif

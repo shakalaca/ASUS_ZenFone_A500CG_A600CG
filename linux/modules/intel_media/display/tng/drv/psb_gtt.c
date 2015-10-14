@@ -1202,7 +1202,7 @@ static int psb_get_vaddr_pages(u32 vaddr, u32 size,
 	}
 
 	/*allocate page list*/
-	pfns = kzalloc(num_pages * sizeof(u32), GFP_KERNEL);
+	pfns = kzalloc(num_pages * sizeof(unsigned long), GFP_KERNEL);
 	if (!pfns) {
 		DRM_ERROR("No memory\n");
 		goto get_page_err;
@@ -1249,7 +1249,7 @@ get_page_err:
 	return -EINVAL;
 }
 
-static int psb_gtt_map_vaddr(struct drm_device *dev,
+int psb_gtt_map_vaddr(struct drm_device *dev,
 			uint32_t vaddr,
 			uint32_t size,
 			uint32_t page_align,
@@ -1319,7 +1319,7 @@ failed_pages_alloc:
 	return ret;
 }
 
-static int psb_gtt_unmap_vaddr(struct drm_device *dev,
+int psb_gtt_unmap_vaddr(struct drm_device *dev,
 			uint32_t vaddr,
 			uint32_t size)
 {

@@ -43,13 +43,33 @@ static int gc0339_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 		}
 		camera_reset = ret;
 	}
+	if (camera_power_down < 0) {
+		ret = camera_sensor_gpio(GP_CORE_080, "SUB_CAM_PWDN", GPIOF_DIR_OUT, 0);
+		if (ret < 0){
+		    printk("camera_power_down not available.\n");
+		    return ret;
+		}
+		camera_power_down = ret;
+	}
 
 	if (flag) {
 		gpio_set_value(camera_reset, 1);
 		usleep_range(150, 200);
 	} else {
-		gpio_set_value(camera_reset, 0);
-		udelay(1);
+		gpio_set_value(camera_reset, 1);
+		msleep(1);
+		gpio_set_value(camera_power_down, 0);
+		msleep(1);
+	}
+
+	if (camera_reset >= 0){
+		gpio_free(camera_reset);
+		camera_reset = -1;
+	}
+
+	if (camera_power_down >= 0){
+		gpio_free(camera_power_down);
+		camera_power_down = -1;
 	}
 
 	return 0;
@@ -133,15 +153,17 @@ static int gc0339_power_ctrl(struct v4l2_subdev *sd, int flag)
 			msleep(1);
 		}
 
-		if (camera_reset >= 0){
-			gpio_free(camera_reset);
-			camera_reset = -1;
-		}
 
-		if (camera_power_down >= 0){
-			gpio_free(camera_power_down);
-			camera_power_down = -1;
-		}
+	}
+
+	if (camera_reset >= 0){
+		gpio_free(camera_reset);
+		camera_reset = -1;
+	}
+
+	if (camera_power_down >= 0){
+		gpio_free(camera_power_down);
+		camera_power_down = -1;
 	}
 
 	return 0;
@@ -151,7 +173,7 @@ static int gc0339_csi_configure(struct v4l2_subdev *sd, int flag)
 {
 	static const int LANES = 1;
 	return camera_sensor_csi(sd, ATOMISP_CAMERA_PORT_SECONDARY, LANES,
-		ATOMISP_INPUT_FORMAT_RAW_10, atomisp_bayer_order_gbrg, flag);
+		ATOMISP_INPUT_FORMAT_RAW_10, atomisp_bayer_order_rggb, flag);
 }
 
 static int gc0339_platform_init(struct i2c_client *client)

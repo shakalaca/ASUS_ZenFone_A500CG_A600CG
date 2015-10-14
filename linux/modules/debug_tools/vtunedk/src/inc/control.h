@@ -78,6 +78,7 @@ struct GLOBAL_STATE_NODE_S {
     S32             num_em_groups;
     S32             num_descriptors;
     volatile S32    current_phase;
+    U32             num_modules;
 };
 
 // Access Macros
@@ -89,6 +90,7 @@ struct GLOBAL_STATE_NODE_S {
 #define  GLOBAL_STATE_num_descriptors(x)   ((x).num_descriptors)
 #define  GLOBAL_STATE_current_phase(x)     ((x).current_phase)
 #define  GLOBAL_STATE_sampler_id(x)        ((x).sampler_id)
+#define  GLOBAL_STATE_num_modules(x)       ((x).num_modules)
 
 /*
  *
@@ -145,6 +147,8 @@ struct CPU_STATE_NODE_S {
     U64         num_samples;
     U64         reset_mask;
     U64         group_swap;
+    U16         cpu_module_num;
+    U16         cpu_module_master;
 };
 
 #define CPU_STATE_apic_id(cpu)              (cpu)->apic_id
@@ -176,6 +180,8 @@ struct CPU_STATE_NODE_S {
 #define CPU_STATE_num_samples(cpu)          (cpu)->num_samples
 #define CPU_STATE_reset_mask(cpu)           (cpu)->reset_mask
 #define CPU_STATE_group_swap(cpu)           (cpu)->group_swap
+#define  CPU_STATE_cpu_module_num(cpu)       (cpu)->cpu_module_num
+#define  CPU_STATE_cpu_module_master(cpu)    (cpu)->cpu_module_master
 
 /*
  * For storing data for --read/--write-msr command line options

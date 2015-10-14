@@ -40,15 +40,11 @@
 #define RT5640_REG_RW 0		/* for debug */
 #define RT5640_DET_EXT_MIC 1
 #define USE_ONEBIT_DEPOP 0	/* for one bit depop */
-#define HEADSET_DET_DELAY    200 /* Delay(ms) before reading over current
+#define HEADSET_DET_DELAY    20 /* Delay(ms) before reading over current
 				    status for headset detection */
 /*#define USE_EQ*/
 #define USE_ASRC
 #define VERSION "0.8.4 alsa 1.0.25"
-static int delay_work = 500;
-module_param(delay_work, int, 0644);
-struct delayed_work enable_push_button_int_work;
-struct snd_soc_codec *rt5640_codec;
 
 struct rt5640_init_reg {
 	u8 reg;
@@ -119,7 +115,7 @@ static struct rt5640_init_reg init_list[] = {
 	{RT5640_DSP_PATH2, 0x0c00},
 #endif
 #if RT5640_DET_EXT_MIC
-	{RT5640_MICBIAS, 0x3c10},	/* enable MICBIAS short current;
+	{RT5640_MICBIAS, 0x3410},	/* disable MICBIAS short current;
 					 chopper(b5) circuit disabled */
 	{RT5640_GPIO_CTRL1, 0x8400},	/* set GPIO1 to IRQ */
 	{RT5640_GPIO_CTRL3, 0x0004},	/* set GPIO1 output */
@@ -519,23 +515,74 @@ void DC_Calibrate(struct snd_soc_codec *codec)
 	snd_soc_update_bits(codec, RT5640_PWR_ANLG2, RT5640_PWR_MB1, 0);
 }
 
+int rt5640_check_jd_status(struct snd_soc_codec *codec)
+{
+	return snd_soc_read(codec, RT5640_INT_IRQ_ST) & 0x0010;
+}
+EXPORT_SYMBOL(rt5640_check_jd_status);
+
+int rt5640_check_bp_status(struct snd_soc_codec *codec)
+{
+	return  snd_soc_read(codec, RT5640_IRQ_CTRL2) & 0x8;
+}
+EXPORT_SYMBOL(rt5640_check_bp_status);
+
+/* Function to enable/disable overcurrent detection(OVCD) and button
+   press interrupts (based on OVCD) in the codec*/
+void rt5640_enable_ovcd_interrupt(struct snd_soc_codec *codec,
+							bool enable)
+{
+	unsigned int ovcd_en; /* OVCD circuit enable/disable */
+	unsigned int bp_en;/* Button interrupt enable/disable*/
+	if (enable) {
+		pr_debug("enabling ovc detection and button intr");
+		ovcd_en = RT5640_MIC1_OVCD_EN;
+		bp_en = RT5640_IRQ_MB1_OC_NOR;
+	} else {
+		pr_debug("disabling ovc detection and button intr");
+		ovcd_en = RT5640_MIC1_OVCD_DIS;
+		bp_en = RT5640_IRQ_MB1_OC_BP;
+	}
+	snd_soc_update_bits(codec, RT5640_MICBIAS,
+			RT5640_MIC1_OVCD_MASK, ovcd_en);
+	snd_soc_update_bits(codec, RT5640_IRQ_CTRL2,
+			RT5640_IRQ_MB1_OC_MASK, bp_en);
+	return;
+}
+EXPORT_SYMBOL(rt5640_enable_ovcd_interrupt);
+
+/* Function to set the overcurrent detection threshold base and scale
+   factor. The codec uses these values to set an internal value of
+   effective threshold = threshold base * scale factor*/
+void rt5640_config_ovcd_thld(struct snd_soc_codec *codec,
+				int base, int scale_factor)
+{
+	struct rt5640_priv *rt5640 = snd_soc_codec_get_drvdata(codec);
+	rt5640->ovcd_th_base = base;
+	rt5640->ovcd_th_sf = scale_factor;
+}
+EXPORT_SYMBOL(rt5640_config_ovcd_thld);
+
 /**
- * rt5640_headset_detect - Detect headset.
+ * rt5640_detect_hs_type - Detect accessory as headset/headphone/none .
  * @codec: SoC audio codec device.
  * @jack_insert: Jack insert or not.
  *
- * Detect whether is headset or not when jack inserted.
- *
  * Returns detect status.
  */
-int rt5640_headset_detect(struct snd_soc_codec *codec, int jack_insert)
+int rt5640_detect_hs_type(struct snd_soc_codec *codec, int jack_insert)
 {
 	struct rt5640_priv *rt5640 = snd_soc_codec_get_drvdata(codec);
+	unsigned int ovcd_th_base;
+	unsigned int ovcd_th_sf;
 	if (jack_insert) {
 		if (SND_SOC_BIAS_OFF == codec->dapm.bias_level)
 			snd_soc_write(codec, RT5640_PWR_ANLG1, 0xa814);
-
-		rt5640_index_write(codec, RT5640_BIAS_CUR4, 0xa800);
+		/* Use the ovcd threshold base and scale factor from context
+		   stucture to configure the threshold */
+		ovcd_th_base = rt5640->ovcd_th_base & RT5640_MIC1_OVTH_MASK;
+		ovcd_th_sf =  rt5640->ovcd_th_sf & RT5640_MIC_OVCD_SF_MASK;
+		rt5640_index_write(codec, RT5640_BIAS_CUR4, 0xa800 | ovcd_th_sf);
 
 		snd_soc_update_bits(codec, RT5640_PWR_ANLG1,
 			RT5640_PWR_LDO2, RT5640_PWR_LDO2);
@@ -544,89 +591,43 @@ int rt5640_headset_detect(struct snd_soc_codec *codec, int jack_insert)
 		snd_soc_update_bits(codec, RT5640_MICBIAS,
 				    RT5640_MIC1_OVCD_MASK | RT5640_MIC1_OVTH_MASK
 				    | RT5640_PWR_CLK25M_MASK,
-				    RT5640_MIC1_OVCD_EN | RT5640_MIC1_OVTH_2000UA
+				    RT5640_MIC1_OVCD_EN | ovcd_th_base
 				    | RT5640_PWR_CLK25M_PU);
 		snd_soc_update_bits(codec, RT5640_GEN_CTRL1, 0x1, 0x1);
-		pr_debug("%s:jack inserted", __func__);
 		/* After turning on over current detection, wait for a while before
-		   checking the status.This will help the detection status to
-		   stabilize and also help with slow jack insertion */
+		   checking the status. */
 		msleep(HEADSET_DET_DELAY);
-		if (snd_soc_read(codec, RT5640_IRQ_CTRL2) & 0x8) {
-			/*Over current detected;i.e there is a  short between mic and
-			  ground ring. i.e the accessory does not have mic. i.e accessory
-			  is Headphone*/
-			snd_soc_update_bits(codec, RT5640_IRQ_CTRL2,
-				RT5640_IRQ_MB1_OC_MASK, RT5640_IRQ_MB1_OC_BP);
-			rt5640->jack_type = RT5640_HEADPHO_DET;
-			pr_debug("%s:detected headphone", __func__);
+		/* Make sure jack is still connected at this point before checking for HS*/
+		if (!rt5640_check_jd_status(codec)) {
+			if (rt5640_check_bp_status(codec)) {
+				/*Over current detected;i.e there is a  short between mic and
+				  ground ring. i.e the accessory does not have mic. i.e accessory
+				  is Headphone*/
+				rt5640->jack_type = RT5640_HEADPHO_DET;
+				pr_debug("%s:detected headphone", __func__);
+			} else {
+				rt5640->jack_type = RT5640_HEADSET_DET;
+				pr_debug("%s:detected headset", __func__);
+			}
 		} else {
-			rt5640->jack_type = RT5640_HEADSET_DET;
-			schedule_delayed_work(&enable_push_button_int_work,
-						msecs_to_jiffies(delay_work));
-			pr_debug("%s:detected headset:enable button after %dmsec",
-							__func__, delay_work);
+			pr_debug("%s:NO Jack detected", __func__);
+			rt5640->jack_type = RT5640_NO_JACK;
 		}
 		snd_soc_update_bits(codec, RT5640_IRQ_CTRL2,
 				    RT5640_MB1_OC_CLR, 0);
+
+		/* Disable overcurrent detection. If headset was detected, let the
+		   machine driver enable the overcurrent detection for button events */
+		rt5640_enable_ovcd_interrupt(codec, false);
 	} else {
-		snd_soc_update_bits(codec, RT5640_MICBIAS,
-				RT5640_MIC1_OVCD_MASK,
-				RT5640_MIC1_OVCD_DIS);
-		snd_soc_update_bits(codec, RT5640_IRQ_CTRL2,
-				RT5640_IRQ_MB1_OC_MASK,
-				RT5640_IRQ_MB1_OC_BP);
+		rt5640_enable_ovcd_interrupt(codec, false);
 		pr_debug("%s:NO Jack detected", __func__);
 		rt5640->jack_type = RT5640_NO_JACK;
 	}
 
 	return rt5640->jack_type;
 }
-EXPORT_SYMBOL(rt5640_headset_detect);
-
-int rt5640_check_interrupt_event(struct snd_soc_codec *codec)
-{
-	struct rt5640_priv *rt5640 = snd_soc_codec_get_drvdata(codec);
-	int event = RT5640_UN_EVENT;
-	int val;
-
-	val = snd_soc_read(codec, RT5640_INT_IRQ_ST) & 0x0010;
-	if (!rt5640->jd_status) {
-		if (!val) {  /* Jack Insert */
-			rt5640->jd_status = true;
-			rt5640->bp_status = false;
-			pr_debug("%s-RT5640_J_IN_EVENT\n", __func__);
-			return RT5640_J_IN_EVENT;
-		}
-	} else { /* handle jack remove/button press events only when jack inserted */
-		if (val) { /* Jack remove */
-			rt5640->bp_status = false;
-			rt5640->jd_status = false;
-			cancel_delayed_work(&enable_push_button_int_work);
-			pr_debug("%s-RT5640_J_OUT_EVENT\n", __func__);
-			return RT5640_J_OUT_EVENT;
-		}
-		if (rt5640->jack_type == RT5640_HEADSET_DET) {
-			val = snd_soc_read(codec, RT5640_IRQ_CTRL2) & 0x8;
-			if (rt5640->bp_status) {
-				if (!val) {
-					event = RT5640_BR_EVENT;
-					rt5640->bp_status = false;
-					pr_debug("%s-RT5640_BR_EVENT\n", __func__);
-				}
-			} else {
-				if (val) {
-					event = RT5640_BP_EVENT;
-					rt5640->bp_status = true;
-					pr_debug("%s-RT5640_BP_EVENT\n", __func__);
-				}
-			}
-		}
-	}
-	pr_debug("%s-EVENT detected:%d", __func__, event);
-	return event;
-}
-EXPORT_SYMBOL(rt5640_check_interrupt_event);
+EXPORT_SYMBOL(rt5640_detect_hs_type);
 
 static const char * const rt5640_dacr2_src[] = { "TxDC_R", "TxDP_R" };
 
@@ -924,6 +925,9 @@ static const struct snd_kcontrol_new rt5640_snd_controls[] = {
 	SOC_ENUM("DAC IF1 Data Switch", rt5640_if1_dac_enum),
 	SOC_ENUM("ADC IF2 Data Switch", rt5640_if2_adc_enum),
 	SOC_ENUM("DAC IF2 Data Switch", rt5640_if2_dac_enum),
+
+	SOC_SINGLE("ASRC1 Mode", RT5640_ASRC_1, 15, 1, 0),
+
 #ifdef RT5640_REG_RW
 	{
 	 .iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -3190,13 +3194,6 @@ static int rt5640_set_bias_level(struct snd_soc_codec *codec,
 	return 0;
 }
 
-static void do_enable_push_button_int(struct work_struct *work)
-{
-	pr_debug("enabling push button intr");
-	snd_soc_update_bits(rt5640_codec, RT5640_IRQ_CTRL2,
-			RT5640_IRQ_MB1_OC_MASK, RT5640_IRQ_MB1_OC_NOR);
-}
-
 static int rt5640_probe(struct snd_soc_codec *codec)
 {
 	struct rt5640_priv *rt5640 = snd_soc_codec_get_drvdata(codec);
@@ -3252,10 +3249,9 @@ static int rt5640_probe(struct snd_soc_codec *codec)
 	rt5640_reg_init(codec);
 	set_sys_clk(codec, RT5640_SCLK_S_RCCLK);
 	DC_Calibrate(codec);
-	codec->dapm.bias_level = SND_SOC_BIAS_STANDBY;
+	/* Set codec bias level to off during probe to avoid kernel warning */
+	rt5640_set_bias_level(codec, SND_SOC_BIAS_OFF);
 	rt5640->codec = codec;
-	rt5640->jd_status = false;
-	rt5640->bp_status = false;
 	rt5640->jack_type = RT5640_NO_JACK;
 
 #if IS_ENABLED(CONFIG_SND_SOC_RT5642)
@@ -3288,16 +3284,11 @@ static int rt5640_probe(struct snd_soc_codec *codec)
 		return ret;
 	}
 
-	rt5640_codec = codec;
-	INIT_DELAYED_WORK(&enable_push_button_int_work,
-					do_enable_push_button_int);
-
 	return 0;
 }
 
 static int rt5640_remove(struct snd_soc_codec *codec)
 {
-	cancel_delayed_work_sync(&enable_push_button_int_work);
 	rt5640_set_bias_level(codec, SND_SOC_BIAS_OFF);
 #if IS_ENABLED(CONFIG_SND_SOC_RT5642)
 	rt5640_dsp_remove(codec);
@@ -3435,12 +3426,13 @@ static struct snd_soc_codec_driver soc_codec_dev_rt5640 = {
 static const struct i2c_device_id rt5640_i2c_id[] = {
 	{"rt5640", 0},
 	{"10EC5640:00", 0},
+	{"10EC5640", 0},
 	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, rt5640_i2c_id);
 
-static int __devinit rt5640_i2c_probe(struct i2c_client *i2c,
+static int rt5640_i2c_probe(struct i2c_client *i2c,
 				      const struct i2c_device_id *id)
 {
 	struct rt5640_priv *rt5640;
@@ -3461,7 +3453,7 @@ static int __devinit rt5640_i2c_probe(struct i2c_client *i2c,
 	return ret;
 }
 
-static int __devexit rt5640_i2c_remove(struct i2c_client *i2c)
+static int rt5640_i2c_remove(struct i2c_client *i2c)
 {
 	snd_soc_unregister_codec(&i2c->dev);
 	kfree(i2c_get_clientdata(i2c));
@@ -3483,7 +3475,7 @@ struct i2c_driver rt5640_i2c_driver = {
 		   .owner = THIS_MODULE,
 		   },
 	.probe = rt5640_i2c_probe,
-	.remove = __devexit_p(rt5640_i2c_remove),
+	.remove = rt5640_i2c_remove,
 	.shutdown = rt5640_i2c_shutdown,
 	.id_table = rt5640_i2c_id,
 };

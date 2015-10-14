@@ -36,7 +36,7 @@
 #include <linux/rpmsg.h>
 #include <asm/intel_scu_pmic.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include <asm/platform_mrfld_audio.h>
 #include <asm/intel_sst_mrfld.h>
 #include <sound/pcm.h>
@@ -44,10 +44,6 @@
 #include <sound/soc.h>
 #include <sound/jack.h>
 #include "../../codecs/lm49453.h"
-
-#ifdef CONFIG_SWITCH_MID
-extern void mid_headset_report(int state);
-#endif
 
 static int mrfld_set_clk_fmt(struct snd_soc_dai *codec_dai)
 {
@@ -90,21 +86,6 @@ struct mrfld_mc_private {
 	struct snd_soc_jack jack;
 	int jack_retry;
 };
-
-inline void mrfld_jack_report(int status)
-{
-#ifdef CONFIG_SWITCH_MID
-	if (status) {
-		if (status == SND_JACK_HEADPHONE)
-			mid_headset_report((1<<1));
-		else if (status == SND_JACK_HEADSET)
-			mid_headset_report(1);
-	} else {
-		mid_headset_report(0);
-	}
-#endif
-	pr_debug("headset status: 0x%x\n", status);
-}
 
 static int mrfld_jack_gpio_detect(void);
 
@@ -197,7 +178,6 @@ static int mrfld_jack_gpio_detect(void)
 	}
 
 report_hs:
-	mrfld_jack_report(status);
 	return status;
 }
 

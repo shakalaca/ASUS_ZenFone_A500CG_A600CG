@@ -43,6 +43,14 @@
 
 #include "mdfld_hdmi_audio_if.h"
 
+/*  Name changed with kernel 3.10 gen graphics patches. */
+#if !defined DRM_MODE_ENCODER_DSI
+#define DRM_MODE_ENCODER_DSI DRM_MODE_ENCODER_MIPI
+#endif
+#if !defined DRM_MODE_CONNECTOR_DSI
+#define DRM_MODE_CONNECTOR_DSI DRM_MODE_CONNECTOR_MIPI
+#endif
+
 /*Append new drm mode definition here, align with libdrm definition*/
 #define DRM_MODE_SCALE_NO_SCALE   4
 
@@ -100,8 +108,8 @@ enum {
 #define PANEL_PROC_ENTRY "panel_status"
 #define CSC_PROC_ENTRY "csc_control"
 #define GPIO_PROC_ENTRY "hdmi_gpio_control"
-#define PANEL_ID_PROC_ENTRY "asus_panel_id"
 #define DPST_LEVEL_PROC_ENTRY "dpst_level"
+#define PANEL_ID_PROC_ENTRY "asus_panel_id"
 #define LCD_UNIQUE_ID_PROC_ENTRY "lcd_unique_id"
 
 
@@ -437,7 +445,7 @@ struct drm_psb_private {
 
 	/* IMG video context */
 	struct list_head video_ctx;
-	struct mutex video_ctx_mutex;
+	spinlock_t video_ctx_lock;
 	/* Current video context */
 	struct psb_video_ctx *topaz_ctx;
 	/* previous vieo context */
@@ -994,7 +1002,6 @@ struct drm_psb_private {
 	struct mutex gamma_csc_lock;
 	/* overlay setting lock*/
 	struct mutex overlay_lock;
-	bool overlay_disabled;
 
 	int brightness_adjusted;
 
@@ -1014,6 +1021,7 @@ struct drm_psb_private {
 	bool  vsync_te_working[PSB_NUM_PIPE];
 	atomic_t mipi_flip_abnormal;
 	struct gpu_pvr_ops * pvr_ops;
+
 #define OVERLAY_BACKBUF_NUM 2
 	struct ttm_buffer_object *overlay_backbuf[OVERLAY_BACKBUF_NUM];
 	struct ttm_bo_kmap_obj overlay_kmap[OVERLAY_BACKBUF_NUM];

@@ -129,7 +129,6 @@
 	 * (binary)->out_frame_info.width / DVS_BLOCKDIM_X \
 	 * (binary)->out_frame_info.height) / (DVS_BLOCKDIM_Y)
 
-#define DIT_NR_BINNING_MULTIPLIER 2
 
 static struct sh_css_isp_params isp_parameters;
 static struct sh_css_fpn_table fpn_table;
@@ -147,6 +146,7 @@ static const struct sh_css_tnr_config    *tnr_config;
 static const struct sh_css_ob_config     *ob_config;
 static const struct sh_css_dp_config     *dp_config;
 static const struct sh_css_nr_config     *nr_config;
+static const struct sh_css_ext_nr_config     *ext_nr_config;
 static const struct sh_css_ee_config     *ee_config;
 static const struct sh_css_de_config     *de_config;
 static const struct sh_css_gc_config     *gc_config;
@@ -183,6 +183,7 @@ static bool isp_params_changed,
 	    ob_config_changed,
 	    dp_config_changed,
 	    nr_config_changed,
+	    ext_nr_config_changed,
 	    ee_config_changed,
 	    de_config_changed,
 	    gc_config_changed,
@@ -1624,6 +1625,16 @@ static const struct sh_css_nr_config disabled_nr_config = {
 	0
 };
 
+static const struct sh_css_ext_nr_config default_ext_nr_config = {
+	1,
+	1
+};
+
+static const struct sh_css_ext_nr_config disabled_ext_nr_config = {
+	0,
+	0
+};
+
 static const struct sh_css_ee_config default_ee_config = {
 	8192,
 	128,
@@ -1658,8 +1669,7 @@ static const struct sh_css_gc_config disabled_gc_config = {
 	0
 };
 
-//static const struct sh_css_anr_config default_anr_config = { //ASUS_DIT---
-static struct sh_css_anr_config default_anr_config = { //ASUS_DIT+++
+static const struct sh_css_anr_config default_anr_config = {
 	10,
 };
 
@@ -2621,41 +2631,22 @@ sh_css_process_nr_ee(void)
 {
 	int asiWk1, asiWk2, asiWk3;
 
-	//ASUS_DIT+++
-	unsigned short dit_bnr_gain = nr_config->bnr_gain;
-	unsigned short dit_bnr_dir = nr_config->direction;
-	if (sensor_binning != 1)
-	{
-		dit_bnr_gain /= DIT_NR_BINNING_MULTIPLIER;
-		dit_bnr_dir /= DIT_NR_BINNING_MULTIPLIER;
-	}
-	//ASUS_DIT---
-
 	sh_css_dtrace(SH_DBG_TRACE_PRIVATE, "sh_css_process_nr_ee() enter:\n");
 
 	/* BNR (Bayer Noise Reduction) */
 	isp_parameters.bnr_threshold_low =
-        //uDIGIT_FITTING(nr_config->direction, 16, SH_CSS_BAYER_BITS);
-	uDIGIT_FITTING(dit_bnr_gain, 16, SH_CSS_BAYER_BITS); //ASUS_DIT+++
-
+	    uDIGIT_FITTING(nr_config->direction, 16, SH_CSS_BAYER_BITS);
 	isp_parameters.bnr_threshold_width_log2 = uFRACTION_BITS_FITTING(8);
 	isp_parameters.bnr_threshold_width =
 	    1 << isp_parameters.bnr_threshold_width_log2;
-
-	/* We disable BNR for better defect pexel performance
 	isp_parameters.bnr_gain_all =
 	    uDIGIT_FITTING(nr_config->bnr_gain, 16, SH_CSS_BNR_GAIN_SHIFT);
-	isp_parameters.bnr_gain_dir =
-	    uDIGIT_FITTING(nr_config->bnr_gain, 16, SH_CSS_BNR_GAIN_SHIFT);
-	*/
-	isp_parameters.bnr_gain_all =
-	    //uDIGIT_FITTING(nr_config->bnr_gain, 16, SH_CSS_BNR_GAIN_SHIFT);
-	    uDIGIT_FITTING(dit_bnr_gain, 16, SH_CSS_BNR_GAIN_SHIFT); //ASUS_DIT+++
-
-	isp_parameters.bnr_gain_dir =
-	    //uDIGIT_FITTING(nr_config->bnr_gain, 16, SH_CSS_BNR_GAIN_SHIFT);
-	    uDIGIT_FITTING(dit_bnr_dir, 16, SH_CSS_BNR_GAIN_SHIFT); //ASUS_DIT+++
-
+	if (ext_nr_config_changed == true)
+		isp_parameters.bnr_gain_dir =
+			uDIGIT_FITTING(ext_nr_config->bnr_gain_dir, 16, SH_CSS_BNR_GAIN_SHIFT);
+	else
+		isp_parameters.bnr_gain_dir =
+			uDIGIT_FITTING(nr_config->bnr_gain, 16, SH_CSS_BNR_GAIN_SHIFT);
 	isp_parameters.bnr_clip = uDIGIT_FITTING(
 					(unsigned)16384, 16, SH_CSS_BAYER_BITS);
 
@@ -2666,19 +2657,21 @@ sh_css_process_nr_ee(void)
 	isp_parameters.ynr_threshold =
 		uDIGIT_FITTING((unsigned)8192, 16, SH_CSS_BAYER_BITS);
 	isp_parameters.ynr_gain_all =
-        //uDIGIT_FITTING(nr_config->ynr_gain, 16, SH_CSS_YNR_GAIN_SHIFT);
-        uDIGIT_FITTING(0, 16, SH_CSS_YNR_GAIN_SHIFT); //ASUS_DIT+++
-	isp_parameters.ynr_gain_dir =
-        //uDIGIT_FITTING(nr_config->ynr_gain, 16, SH_CSS_YNR_GAIN_SHIFT);
-        uDIGIT_FITTING(0, 16, SH_CSS_YNR_GAIN_SHIFT); //ASUS_DIT+++
+	    uDIGIT_FITTING(nr_config->ynr_gain, 16, SH_CSS_YNR_GAIN_SHIFT);
+
+	if (ext_nr_config_changed == true)
+		isp_parameters.ynr_gain_dir =
+			uDIGIT_FITTING(ext_nr_config->ynr_gain_dir, 16, SH_CSS_YNR_GAIN_SHIFT);
+	else
+		isp_parameters.ynr_gain_dir =
+			uDIGIT_FITTING(nr_config->ynr_gain, 16, SH_CSS_YNR_GAIN_SHIFT);
+
 	isp_parameters.ynryee_dirthreshold_s =
-        //min((uDIGIT_FITTING(nr_config->direction, 16, SH_CSS_BAYER_BITS)
-	min((uDIGIT_FITTING(0, 16, SH_CSS_BAYER_BITS) //ASUS_DIT+++
+	    min((uDIGIT_FITTING(nr_config->direction, 16, SH_CSS_BAYER_BITS)
 				    << 1),
 		SH_CSS_BAYER_MAXVAL);
 	isp_parameters.ynryee_dirthreshold_g =
-        //min((uDIGIT_FITTING(nr_config->direction, 16, SH_CSS_BAYER_BITS)
-	min((uDIGIT_FITTING(0, 16, SH_CSS_BAYER_BITS) //ASUS_DIT+++
+	    min((uDIGIT_FITTING(nr_config->direction, 16, SH_CSS_BAYER_BITS)
 				    << 4),
 		SH_CSS_BAYER_MAXVAL);
 	isp_parameters.ynryee_dirthreshold_width_log2 =
@@ -2686,8 +2679,7 @@ sh_css_process_nr_ee(void)
 	isp_parameters.ynryee_dirthreshold_width =
 	    1 << isp_parameters.ynryee_dirthreshold_width_log2;
 	isp_parameters.yee_detailgain =
-	    //uDIGIT_FITTING(ee_config->detail_gain, 11,
-	    uDIGIT_FITTING(2047, 11, //ASUS_DIT+++
+	    uDIGIT_FITTING(ee_config->detail_gain, 11,
 			   SH_CSS_YEE_DETAIL_GAIN_SHIFT);
 	isp_parameters.yee_coring_s =
 	    (uDIGIT_FITTING((unsigned)56, 16, SH_CSS_BAYER_BITS) *
@@ -2717,6 +2709,7 @@ sh_css_process_nr_ee(void)
 	isp_parameters.ynryee_Yclip = SH_CSS_BAYER_MAXVAL;
 	isp_params_changed = true;
 	nr_config_changed = false;
+	ext_nr_config_changed = false;
 	ee_config_changed = false;
 
 	sh_css_dtrace(SH_DBG_TRACE_PRIVATE, "sh_css_process_nr_ee() leave:\n");
@@ -3807,7 +3800,6 @@ void sh_css_set_nr_config(
 		"config=%p\n",config);
 		nr_config = &disabled_nr_config;
 	}
-
 	nr_config_changed = true;
 
 	sh_css_dtrace(SH_DBG_TRACE,
@@ -3836,6 +3828,31 @@ void sh_css_get_nr_config(
 		(*config)->threshold_cb, (*config)->threshold_cr);
 }
 
+void sh_css_set_ext_nr_config(
+       const struct sh_css_ext_nr_config *config)
+{
+	/* config can be NULL */
+
+	if (config != NULL) {
+	/* Checkpatch patch */
+		sh_css_dtrace(SH_DBG_TRACE,
+			"sh_css_set_ext_nr_config() enter: "
+			"config.bnr_gain_dir=%d, config.ynr_gain_dir=%d\n",
+		config->bnr_gain_dir, config->ynr_gain_dir);
+		ext_nr_config = config;
+	} else {
+	/* Checkpatch patch */
+		sh_css_dtrace(SH_DBG_TRACE, "sh_css_set_nr_config() enter: "
+			"config=%p\n",config);
+		ext_nr_config = &disabled_ext_nr_config;
+	}
+	ext_nr_config_changed = true;
+
+	sh_css_dtrace(SH_DBG_TRACE,
+		"sh_css_set_ext_nr_config() leave: "
+		"return_void\n");
+}
+
 void sh_css_set_ee_config(
 	const struct sh_css_ee_config *config)
 {
@@ -3856,13 +3873,6 @@ void sh_css_set_ee_config(
 		ee_config = &disabled_ee_config;
 	}
 	ee_config_changed = true;
-
-	//ASUS_DIT+++
-	if (sensor_binning != 1)
-		default_anr_config.threshold = ee_config->detail_gain/DIT_NR_BINNING_MULTIPLIER;
-	else
-		default_anr_config.threshold = ee_config->detail_gain;
-	//ASUS_DIT---
 
 	sh_css_dtrace(SH_DBG_TRACE,
 		"sh_css_set_ee_config() leave: "
@@ -3979,15 +3989,17 @@ void sh_css_set_anr_config(
 
 	if (config != NULL) {
 /* Checkpatch patch */
-        sh_css_dtrace(SH_DBG_TRACE, "sh_css_set_anr_config() enter: "
-                "config.threshold=%d\n",
-                config->threshold);
-        anr_config = config;
+	sh_css_dtrace(SH_DBG_TRACE,
+		"sh_css_set_anr_config() enter: "
+		"config.threshold=%d\n",
+		config->threshold);
+		anr_config = config;
 	} else {
 /* Checkpatch patch */
-        sh_css_dtrace(SH_DBG_TRACE, "sh_css_set_anr_config() enter: "
-                "config=%p\n",config);
-        anr_config = &default_anr_config;
+	sh_css_dtrace(SH_DBG_TRACE,
+		"sh_css_set_anr_config() enter: "
+		"default_anr_config=%p\n",config);
+		anr_config = &default_anr_config;
 	}
 	anr_config_changed = true;
 
@@ -5212,6 +5224,7 @@ enum sh_css_err sh_css_params_init(void)
 	sh_css_set_ob_config(&default_ob_config);
 	sh_css_set_dp_config(&default_dp_config);
 	sh_css_set_nr_config(&default_nr_config);
+	sh_css_set_ext_nr_config(&default_ext_nr_config);
 	sh_css_set_ee_config(&default_ee_config);
 	sh_css_set_de_config(&default_de_config);
 	sh_css_set_gc_config(&default_gc_config);

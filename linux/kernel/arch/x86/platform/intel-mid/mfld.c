@@ -19,8 +19,6 @@
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/notifier.h>
-#include <linux/intel_mid_pm.h>
-#include <linux/power_supply.h>
 #include <linux/intel_pmic_gpio.h>
 #include <linux/gpio.h>
 #include <linux/gpio_keys.h>
@@ -31,11 +29,10 @@
 #include <asm/apic.h>
 #include <asm/io_apic.h>
 #include <asm/intel-mid.h>
-#include <asm/mrst-vrtc.h>
+#include <asm/intel_mid_vrtc.h>
 #include <asm/io.h>
 #include <asm/i8259.h>
 #include <asm/intel_scu_ipc.h>
-#include <asm/intel_mid_rpmsg.h>
 #include <asm/apb_timer.h>
 #include <asm/reboot.h>
 
@@ -60,7 +57,6 @@ static unsigned long __init mfld_calibrate_tsc(void)
 		ratio = 16;
 	}
 	rdmsr(MSR_FSB_FREQ, lo, hi);
-
 	switch (lo & BSEL_SOC_FUSE_MASK) {
 	case BSEL_SOC_FUSE_001:
 		fsb = FSB_FREQ_133SKU;
@@ -81,7 +77,7 @@ static unsigned long __init mfld_calibrate_tsc(void)
 	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CLOVERVIEW
 		&& fsb == FSB_FREQ_133SKU) {
 		pr_warn("See a Clovertrail+ B0/B1/B2 processor and will correct its tsc info!\n");
-		/* The 133MHz FSB for CLVP+ is actuall 133.120 MHz */
+		/* The 133MHz FSB for CLVP+ is actually 133.120 MHz */
 		fsb = 133120;
 	}
 
@@ -102,12 +98,12 @@ static void __init penwell_arch_setup()
 	x86_platform.calibrate_tsc = mfld_calibrate_tsc;
 }
 
-void *get_penwell_ops(void)
+void *get_penwell_ops()
 {
 	return &penwell_ops;
 }
 
-void *get_cloverview_ops(void)
+void *get_cloverview_ops()
 {
 	return &penwell_ops;
 }

@@ -66,6 +66,7 @@ struct hsi_mid_platform_data {
 	int	tx_priorities[HSI_MID_MAX_CHANNELS];
 
 
+
 	/* FIXME: the next four entries need to go in a separate client specific
 	 *        section */
 	int	gpio_mdm_rst_out;

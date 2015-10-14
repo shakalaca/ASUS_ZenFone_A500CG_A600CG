@@ -65,16 +65,16 @@ endef
 #
 # e.g. 'JellyBeanMR' starts with 'JellyBean', but it is not JellyBean.
 #
-ifeq ($(call version-starts-with,IceCreamSandwichMR),1)
-PLATFORM_VERSION := 4.0.3
-else ifeq ($(call version-starts-with,IceCreamSandwich),1)
-PLATFORM_VERSION := 4.0
-else ifeq ($(call version-starts-with,JellyBeanMR1),1)
+ifeq ($(call version-starts-with,JellyBeanMR1),1)
 PLATFORM_VERSION := 4.2
 else ifeq ($(call version-starts-with,JellyBeanMR),1)
 PLATFORM_VERSION := 4.3
 else ifeq ($(call version-starts-with,JellyBean),1)
 PLATFORM_VERSION := 4.1
+else ifeq ($(call version-starts-with,KeyLimePie),1)
+PLATFORM_VERSION := 4.4
+else ifeq ($(call version-starts-with,KitKat),1)
+PLATFORM_VERSION := 4.4
 else ifeq ($(shell echo $(PLATFORM_VERSION) | grep -qE "[A-Za-z]+"; echo $$?),0)
 PLATFORM_VERSION := 5.0
 endif
@@ -91,13 +91,6 @@ endif
 
 # Macros to help categorize support for features and API_LEVEL for tests.
 #
-is_at_least_icecream_sandwich := \
-	$(shell test $(PLATFORM_VERSION_MAJ) -ge 4 && echo 1 || echo 0)
-is_at_least_icecream_sandwich_mr1 := \
-	$(shell ( test $(PLATFORM_VERSION_MAJ) -gt 4 || \
-				( test $(PLATFORM_VERSION_MAJ) -eq 4 && \
-					( test $(PLATFORM_VERSION_MIN) -ge 1 || \
-					  test $(PLATFORM_VERSION_PATCH) -ge 3 ) ) ) && echo 1 || echo 0)
 is_at_least_jellybean := \
 	$(shell ( test $(PLATFORM_VERSION_MAJ) -gt 4 || \
 				( test $(PLATFORM_VERSION_MAJ) -eq 4 && \
@@ -110,6 +103,10 @@ is_at_least_jellybean_mr2 := \
 	$(shell ( test $(PLATFORM_VERSION_MAJ) -gt 4 || \
 				( test $(PLATFORM_VERSION_MAJ) -eq 4 && \
 				  test $(PLATFORM_VERSION_MIN) -ge 3 ) ) && echo 1 || echo 0)
+is_at_least_kitkat := \
+	$(shell ( test $(PLATFORM_VERSION_MAJ) -gt 4 || \
+				( test $(PLATFORM_VERSION_MAJ) -eq 4 && \
+				  test $(PLATFORM_VERSION_MIN) -ge 4 ) ) && echo 1 || echo 0)
 
 # FIXME: Assume "future versions" are >=5.0, but we don't really know
 is_future_version := \
@@ -119,6 +116,8 @@ is_future_version := \
 # against can avoid compatibility theming and affords better integration.
 #
 ifeq ($(is_future_version),1)
+API_LEVEL := 20
+else ifeq ($(is_at_least_kitkat),1)
 API_LEVEL := 19
 else ifeq ($(is_at_least_jellybean_mr2),1)
 API_LEVEL := 18
@@ -126,12 +125,8 @@ else ifeq ($(is_at_least_jellybean_mr1),1)
 API_LEVEL := 17
 else ifeq ($(is_at_least_jellybean),1)
 API_LEVEL := 16
-else ifeq ($(is_at_least_icecream_sandwich_mr1),1)
-API_LEVEL := 15
-else ifeq ($(is_at_least_icecream_sandwich),1)
-API_LEVEL := 14
 else
-$(error Must build against Android >= 4.0)
+$(error Must build against Android >= 4.1)
 endif
 
 # Each DDK is tested against only a single version of the platform.
@@ -139,6 +134,6 @@ endif
 #
 ifeq ($(is_future_version),1)
 $(info WARNING: Android version is newer than this DDK supports)
-else ifneq ($(is_at_least_jellybean_mr1),1)
+else ifneq ($(is_at_least_jellybean_mr2),1)
 $(info WARNING: Android version is older than this DDK supports)
 endif

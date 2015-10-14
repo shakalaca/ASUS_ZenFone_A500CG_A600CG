@@ -65,8 +65,6 @@
 #define HSU1_PCI_ID				0x81b
 #define HSI_PCI_ID				0x833
 
-#define PCI_ID_ANY	(~0)
-
 #define MODE_ID_MAGIC_NUM			1
 
 #define   LOG_ID_MASK				0x7F
@@ -120,10 +118,6 @@
 #define SS_IDX_MASK		0x3
 #define SS_POS_MASK		0xF
 
-#define PMU_BASE_ADDR(pmu_num) ((pmu_num == 0) ? \
-				(u32) base_addr.pmu1_base :\
-				(u32) base_addr.pmu2_base);
-
 #define SSMSK(mask, lss) ((mask) << ((lss) * 2))
 #define SSWKC(lss) (1 << (lss))
 
@@ -144,6 +138,7 @@
 enum sys_state {
 	SYS_STATE_S0I0,
 	SYS_STATE_S0I1,
+	SYS_STATE_LPMP3,
 	SYS_STATE_S0I2,
 	SYS_STATE_S0I3,
 	SYS_STATE_S3,
@@ -273,8 +268,6 @@ union pmu_pm_ics {
 };
 
 struct intel_mid_base_addr {
-	u32 *pmu1_base;
-	void __iomem *pmu2_base;
 	u32 *pm_table_base;
 	u32 __iomem *offload_reg;
 };
@@ -323,7 +316,7 @@ struct mid_pmu_dev {
 	struct pm_qos_request *cstate_qos;
 #endif
 
-	u32 __iomem *emergeny_emmc_up_addr;
+	u32 __iomem *emergency_emmc_up_addr;
 	u64 pmu_init_time;
 
 	int cmd_error_int;
@@ -348,6 +341,7 @@ struct mid_pmu_dev {
 	struct mid_pmu_stats pmu_stats[SYS_STATE_MAX];
 	struct device_residency pmu_dev_res[MAX_DEVICES];
 	struct delayed_work log_work;
+	struct pm_qos_request *s3_restrict_qos;
 
 #ifdef LOG_PMU_EVENTS
 	struct mid_pmu_cmd_log cmd_log[LOG_SIZE];
@@ -359,6 +353,7 @@ struct mid_pmu_dev {
 
 	struct pmu_suspend_config *ss_config;
 	struct pci_dev *pmu_dev;
+	struct pm_qos_request *nc_restrict_qos;
 
 	spinlock_t nc_ready_lock;
 

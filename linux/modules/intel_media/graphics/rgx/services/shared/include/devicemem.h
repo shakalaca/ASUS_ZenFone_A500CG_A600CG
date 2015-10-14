@@ -276,7 +276,7 @@ PVRSRV_ERROR DevmemAllocate(DEVMEM_HEAP *psHeap,
                             IMG_DEVMEM_SIZE_T uiSize,
                             IMG_DEVMEM_ALIGN_T uiAlign,
                             DEVMEM_FLAGS_T uiFlags,
-                            IMG_PCHAR pszText,
+                            const IMG_PCHAR pszText,
                             DEVMEM_MEMDESC **ppsMemDescPtr);
 
 PVRSRV_ERROR
@@ -285,7 +285,7 @@ DevmemAllocateExportable(IMG_HANDLE hBridge,
 						 IMG_DEVMEM_SIZE_T uiSize,
 						 IMG_DEVMEM_ALIGN_T uiAlign,
 						 DEVMEM_FLAGS_T uiFlags,
-						 IMG_PCHAR pszText,
+						 const IMG_PCHAR pszText,
 						 DEVMEM_MEMDESC **ppsMemDescPtr);
 
 PVRSRV_ERROR
@@ -298,7 +298,7 @@ DevmemAllocateSparse(IMG_HANDLE hBridge,
 					 IMG_BOOL *pabMappingTable,
 					 IMG_DEVMEM_ALIGN_T uiAlign,
 					 DEVMEM_FLAGS_T uiFlags,
-					 IMG_PCHAR pszText,
+					 const IMG_PCHAR pszText,
 					 DEVMEM_MEMDESC **ppsMemDescPtr);
 
 /*
@@ -395,7 +395,6 @@ PVRSRV_ERROR
 DevmemImport(IMG_HANDLE hBridge,
 			 DEVMEM_EXPORTCOOKIE *psCookie,
 			 DEVMEM_FLAGS_T uiFlags,
-			 IMG_CHAR *pszText,
 			 DEVMEM_MEMDESC **ppsMemDescPtr);
 
 /*

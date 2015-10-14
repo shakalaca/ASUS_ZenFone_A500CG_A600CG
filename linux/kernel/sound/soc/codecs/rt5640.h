@@ -12,6 +12,8 @@
 #ifndef __RT5640_H__
 #define __RT5640_H__
 
+#include <sound/soc.h>
+
 /* Info */
 #define RT5640_RESET				0x00
 #define RT5640_VENDOR_ID			0xfd
@@ -199,6 +201,15 @@
 #define RT5640_L_VOL_SFT			8
 #define RT5640_R_VOL_MASK			(0x3f)
 #define RT5640_R_VOL_SFT			0
+
+
+/* MIC Over current threshold scale factor (0x15) */
+#define RT5640_MIC_OVCD_SF_MASK                 (0x3 << 8)
+#define RT5640_MIC_OVCD_SF_SFT                  8
+#define RT5640_MIC_OVCD_SF_0P5                  (0x0 << 8)
+#define RT5640_MIC_OVCD_SF_0P75                 (0x1 << 8)
+#define RT5640_MIC_OVCD_SF_1P0                  (0x2 << 8)
+#define RT5640_MIC_OVCD_SF_1P5                  (0x3 << 8)
 
 /* IN1 and IN2 Control (0x0d) */
 /* IN3 and IN4 Control (0x0e) */
@@ -2070,8 +2081,6 @@ enum {
 #define RT5640_HEADSET_DET	BIT(1)
 #define RT5640_HEADPHO_DET	BIT(2)
 
-int rt5640_headset_detect(struct snd_soc_codec *codec, int jack_insert);
-int rt5640_check_interrupt_event(struct snd_soc_codec *codec);
 
 /* System Clock Source */
 enum {
@@ -2151,9 +2160,17 @@ struct rt5640_priv {
 	bool dsp_play_pass;
 	bool dsp_rec_pass;
 
-	bool jd_status; /* true if jack inserted */
-	bool bp_status; /* true if butten pressed */
 	int jack_type;
+	unsigned int ovcd_th_base; /* OVCD threshold base value*/
+	unsigned int ovcd_th_sf; /* OVCD threshold scale factor */
+
 };
+
+int rt5640_detect_hs_type(struct snd_soc_codec *codec, int jack_insert);
+int rt5640_check_jd_status(struct snd_soc_codec *codec);
+int rt5640_check_bp_status(struct snd_soc_codec *codec);
+void rt5640_enable_ovcd_interrupt(struct snd_soc_codec *codec, bool enable);
+void rt5640_config_ovcd_thld(struct snd_soc_codec *codec,
+						int base, int scale_factor);
 
 #endif /* __RT5640_H__ */

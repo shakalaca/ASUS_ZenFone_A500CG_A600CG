@@ -181,6 +181,11 @@ static void dlp_ctrl_handle_tx_timeout(struct work_struct *work)
 
 	pr_err(DRVNAME ": Processing HSI TX Timeout\n");
 
+	if (unlikely(atomic_read(&dlp_drv.is_tty_device_closed))) {
+		pr_err(DRVNAME ": Ignore HSI TX Timeout because tty was closing or closed\n");
+		return;
+	}
+
 	/* Call any register TX timeout CB */
 	for (i = 0; i < DLP_CHANNEL_COUNT; i++) {
 		ch_ctx = DLP_CHANNEL_CTX(i);
@@ -390,7 +395,11 @@ static void dlp_ctrl_complete_tx(struct hsi_msg *msg)
 	struct dlp_command *dlp_cmd = msg->context;
 	struct dlp_channel *ch_ctx = dlp_cmd->channel;
 
-	dlp_cmd->status = (msg->status == HSI_STATUS_COMPLETED) ? 0 : -EIO;
+        if(EDLP_CTRL_TX_DATA_REPORT){
+                pr_err(DRVNAME ": dlp_ctrl_complete_tx cmd:0x%X status=%d\n",
+                                dlp_cmd->params.id, msg->status);
+        }
+        dlp_cmd->status = (msg->status == HSI_STATUS_COMPLETED) ? 0 : -EIO;
 
 	/* Command done, notify the sender */
 	complete(&ch_ctx->tx.cmd_xfer_done);
@@ -425,6 +434,7 @@ static void dlp_ctrl_complete_rx(struct hsi_msg *msg)
 {
 	struct dlp_channel *ch_ctx;
 	struct dlp_ctrl_context *ctrl_ctx;
+	struct dlp_command *dlp_cmd = msg->context;
 	struct dlp_command_params params, tx_params;
 	unsigned long flags;
 	int hsi_channel, elp_channel, ret, response, msg_complete, state;
@@ -437,6 +447,11 @@ static void dlp_ctrl_complete_rx(struct hsi_msg *msg)
 			pr_debug(DRVNAME ": CTRL: CH%d RX PDU ignored (close:%d, Time out: %d)\n",
 				params.channel,
 				dlp_drv.tty_closed, dlp_drv.tx_timeout);
+		/* Delete the received msg */
+		dlp_pdu_free(msg, msg->channel);
+
+		/* Delete the command */
+		dlp_ctrl_cmd_free(dlp_cmd);
 		return;
 	}
 
@@ -473,9 +488,6 @@ static void dlp_ctrl_complete_rx(struct hsi_msg *msg)
 		/* Increase the CREDITS counter */
 		spin_lock_irqsave(&ch_ctx->lock, flags);
 		ch_ctx->credits += params.data3;
-		if (EDLP_NET_TX_DATA_LEN_REPORT)
-			pr_err(DRVNAME ": CH%d (HSI CH%d) credits =%d, params.data3=%d",
-	  				ch_ctx->ch_id, ch_ctx->hsi_channel, ch_ctx->credits, params.data3);
 		ret = ch_ctx->credits;
 		spin_unlock_irqrestore(&ch_ctx->lock, flags);
 
@@ -508,8 +520,7 @@ static void dlp_ctrl_complete_rx(struct hsi_msg *msg)
 
 			response = -1;
 
-			pr_debug(DRVNAME ": HSI CH%d OPEN_CONN received (postponed because"
-					" state is %d)\n",
+			pr_debug(DRVNAME ": HSI CH%d OPEN_CONN received (postponed) when state is %d\n",
 					params.channel, state);
 			goto push_rx;
 		} else
@@ -565,6 +576,9 @@ push_rx:
 
 		/* Delete the received msg */
 		dlp_pdu_free(msg, msg->channel);
+
+		/* Delete the command */
+		dlp_ctrl_cmd_free(dlp_cmd);
 	}
 }
 
@@ -668,6 +682,7 @@ static int dlp_ctrl_cmd_send(struct dlp_channel *ch_ctx,
 		pr_err(DRVNAME ": hsi_ch:%d, cmd:0x%X => TX timeout\n",
 			dlp_cmd->params.channel, dlp_cmd->params.id);
 
+		tx_msg->context = NULL;
 		ret = -EIO;
 		/* free only the cmd, because
 		 * the message is already in the controller fifo.
@@ -679,9 +694,10 @@ static int dlp_ctrl_cmd_send(struct dlp_channel *ch_ctx,
 
 	/* TX msg sent, check the status */
 	if (dlp_cmd->status) {
-		pr_err(DRVNAME ": Failed to send cmd:0x%X\n",
-				dlp_cmd->params.id);
+		pr_err(DRVNAME ": Failed to send cmd:0x%X status=%d\n",
+				dlp_cmd->params.id, dlp_cmd->status);
 
+		tx_msg->context = NULL;
 		ret = -EIO;
 		/* free only the command because
 		 * the message has been already freed by the complete_tx
@@ -708,6 +724,7 @@ static int dlp_ctrl_cmd_send(struct dlp_channel *ch_ctx,
 		pr_err(DRVNAME ": hsi_ch:%d, cmd:0x%X => RX timeout\n",
 			dlp_cmd->params.channel, dlp_cmd->params.id);
 
+		tx_msg->context = NULL;
 		ret = -EIO;
 		goto free_cmd;
 	}
@@ -740,6 +757,7 @@ static int dlp_ctrl_cmd_send(struct dlp_channel *ch_ctx,
 			(unsigned int)(*(u32 *)&ctrl_ctx->response.params),
 			(unsigned int)(*(u32 *)(&expected_resp)));
 
+		tx_msg->context = NULL;
 		ret = -EIO;
 		goto free_cmd;
 	}
@@ -1008,8 +1026,6 @@ int dlp_ctrl_close_channel(struct dlp_channel *ch_ctx)
 
 	/* Reset the credits counter */
 	ch_ctx->credits = 0;
-	if (EDLP_NET_TX_DATA_LEN_REPORT)
-		pr_err(DRVNAME ": CH%d (HSI CH%d) set credits=0 due to dlp_ctrl_close_channel", ch_ctx->ch_id, ch_ctx->hsi_channel);
 
 	/* Reset the RX/TX seq_num */
 	ch_ctx->rx.seq_num = 0 ;

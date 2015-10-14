@@ -44,17 +44,21 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <asm/io.h>
 #include <asm/page.h>
 #include <asm/div64.h>
+#include <asm/tlbflush.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/hugetlb.h> 
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/delay.h>
+#include <linux/genalloc.h>
 
 #include <linux/string.h>
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <asm/hardirq.h>
+#include <asm/tlbflush.h>
+#include <asm/page.h>
 #include <linux/timer.h>
 #include <linux/capability.h>
 #include <asm/uaccess.h>
@@ -72,6 +76,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "osfunc.h"
 #include "img_types.h"
 #include "mm.h"
+#include "mutils.h"
 #include "allocmem.h"
 #include "mmap.h"
 #include "env_data.h"
@@ -96,11 +101,93 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ENV_DATA *gpsEnvData = IMG_NULL;
 
+/*
+	Create a 4MB pool which should be more then enough in most cases,
+	if it becomes full then the calling code will fall back to
+	vm_map_ram.
+*/
+
+#if defined(CONFIG_GENERIC_ALLOCATOR) && defined(CONFIG_X86) && (LINUX_VERSION_CODE > KERNEL_VERSION(3,0,0))
+#define POOL_SIZE	(4*1024*1024)
+static struct gen_pool *pvrsrv_pool_writecombine = NULL;
+static char *pool_start;
+
+static void init_pvr_pool(void)
+{
+	struct vm_struct *tmp_area;
+	int ret = -1;
+
+	/* Create the pool to allocate vm space from */
+	pvrsrv_pool_writecombine = gen_pool_create(PAGE_SHIFT, -1);
+	if (!pvrsrv_pool_writecombine) {
+		printk(KERN_ERR "%s: create pvrsrv_pool failed\n", __func__);
+		return ;
+	}
+
+	/* Reserve space in the vmalloc vm range */
+	tmp_area = __get_vm_area(POOL_SIZE, VM_ALLOC,
+			VMALLOC_START, VMALLOC_END);
+        if (!tmp_area) {
+                printk(KERN_ERR "%s:get vm area failed\n",
+                                __func__);
+		return ;
+	}
+
+	pool_start = tmp_area->addr;
+
+	if (!pool_start) {
+		printk(KERN_ERR "%s:No vm space to create POOL\n",
+				__func__);
+		gen_pool_destroy(pvrsrv_pool_writecombine);
+		pvrsrv_pool_writecombine = NULL;
+		return ;
+	} else {
+		/* Add our reserved space into the pool */
+		ret = gen_pool_add(pvrsrv_pool_writecombine,
+			(unsigned long) pool_start, POOL_SIZE, -1);
+		if (ret) {
+			printk(KERN_ERR "%s:could not remainder pool\n",
+					__func__);
+			gen_pool_destroy(pvrsrv_pool_writecombine);
+			pvrsrv_pool_writecombine = NULL;
+			vfree(pool_start);
+			pool_start = NULL;
+			return;
+			}
+		}
+	return;
+}
+
+static inline IMG_BOOL vmap_from_pool(IMG_VOID *pvCPUVAddr)
+{
+	IMG_CHAR *pcTmp = pvCPUVAddr;
+	if ((pcTmp >= pool_start) && (pcTmp <= (pool_start + POOL_SIZE)))
+	{
+		return IMG_TRUE;
+	}
+	return IMG_FALSE;
+}
+#endif	/* defined(CONFIG_GENERIC_ALLOCATOR) && defined(CONFIG_X86) && (LINUX_VERSION_CODE > KERNEL_VERSION(3,0,0))*/
+
 PVRSRV_ERROR OSMMUPxAlloc(PVRSRV_DEVICE_NODE *psDevNode, IMG_SIZE_T uiSize,
 							Px_HANDLE *psMemHandle, IMG_DEV_PHYADDR *psDevPAddr)
 {
 	IMG_CPU_PHYADDR sCpuPAddr;
 	struct page *psPage;
+
+#if defined(CONFIG_GENERIC_ALLOCATOR) && defined(CONFIG_X86) && (LINUX_VERSION_CODE > KERNEL_VERSION(3,0,0))
+	/*
+		vm_ram_ram works with 2MB blocks to avoid excessive
+		TLB flushing but our allocations are always small and have
+		a long lifetime which then leads to fragmentation of vmalloc space.
+		To workaround this we create a virtual address pool in the vmap range
+		for mapping our page tables into so we don't fragment vmalloc space.
+	*/
+	if (!pvrsrv_pool_writecombine)
+	{
+		init_pvr_pool();
+	}
+#endif	/* defined(CONFIG_GENERIC_ALLOCATOR) && defined(CONFIG_X86) && (LINUX_VERSION_CODE > KERNEL_VERSION(3,0,0)) */
 
 	/* 
 		Check that we're not doing multiple pages worth of
@@ -147,7 +234,7 @@ PVRSRV_ERROR OSMMUPxAlloc(PVRSRV_DEVICE_NODE *psDevNode, IMG_SIZE_T uiSize,
 
 	PhysHeapCpuPAddrToDevPAddr(psDevNode->apsPhysHeap[PVRSRV_DEVICE_PHYS_HEAP_CPU_LOCAL], psDevPAddr, &sCpuPAddr);
 
-#if defined(PVRSRV_ENABLE_PROCESS_STATS)
+#if defined(PVRSRV_ENABLE_PROCESS_STATS) && defined(PVRSRV_ENABLE_MEMORY_STATS)
     PVRSRVStatsAddMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE_ALLOC_PAGES,
                                  psPage,
                                  sCpuPAddr,
@@ -162,7 +249,7 @@ IMG_VOID OSMMUPxFree(PVRSRV_DEVICE_NODE *psDevNode, Px_HANDLE *psMemHandle)
 {
 	struct page *psPage = (struct page*) psMemHandle->u.pvHandle;
 
-#if defined(PVRSRV_ENABLE_PROCESS_STATS)
+#if defined(PVRSRV_ENABLE_PROCESS_STATS) && defined(PVRSRV_ENABLE_MEMORY_STATS)
 	PVRSRVStatsRemoveMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE_ALLOC_PAGES, psPage);
 #endif
 
@@ -186,16 +273,45 @@ PVRSRV_ERROR OSMMUPxMap(PVRSRV_DEVICE_NODE *psDevNode, Px_HANDLE *psMemHandle,
 						IMG_SIZE_T uiSize, IMG_DEV_PHYADDR *psDevPAddr,
 						IMG_VOID **pvPtr)
 {
-	struct page *psPage = (struct page*) psMemHandle->u.pvHandle;
+	struct page **ppsPage = (struct page **) &psMemHandle->u.pvHandle;
 	IMG_UINTPTR_T uiCPUVAddr;
 	pgprot_t prot = PAGE_KERNEL;
 	PVR_UNREFERENCED_PARAMETER(psDevNode);
 
 	prot = pgprot_writecombine(prot);
-	uiCPUVAddr = (IMG_UINTPTR_T) vm_map_ram(&psPage,
-											1,
-											-1,
-											prot);
+
+#if defined(CONFIG_GENERIC_ALLOCATOR) && defined(CONFIG_X86) && (LINUX_VERSION_CODE > KERNEL_VERSION(3,0,0))
+	uiCPUVAddr = gen_pool_alloc(pvrsrv_pool_writecombine, PAGE_SIZE);
+
+	if (uiCPUVAddr) {
+		int ret = 0;
+		struct vm_struct tmp_area;
+
+		/* vmalloc and friends expect a guard page so we need to take that into account */
+		tmp_area.addr = (void *)uiCPUVAddr;
+		tmp_area.size =  2 * PAGE_SIZE;
+		ret = map_vm_area(&tmp_area, prot, &ppsPage);
+		if (ret) {
+			gen_pool_free(pvrsrv_pool_writecombine, uiCPUVAddr, PAGE_SIZE);
+			PVR_DPF((PVR_DBG_ERROR,
+					 "%s: Cannot map page to pool",
+					 __func__));
+			/* Failed the pool alloc so fall back to the vm_map path */
+			uiCPUVAddr = 0;
+		}
+	}
+
+	/* Not else as if the poll alloc fails it resets uiCPUVAddr to 0 */
+	if (uiCPUVAddr == 0)
+#endif	/* defined(CONFIG_GENERIC_ALLOCATOR) && defined(CONFIG_X86) && (LINUX_VERSION_CODE > KERNEL_VERSION(3,0,0)) */
+	{
+		uiCPUVAddr = (IMG_UINTPTR_T) vm_map_ram(ppsPage,
+												1,
+												-1,
+												prot);
+	}
+
+	/* Check that one of the above methods got us an address */
 	if (((IMG_VOID *)uiCPUVAddr) == IMG_NULL)
 	{
 		return PVRSRV_ERROR_FAILED_TO_MAP_KERNELVIRTUAL;
@@ -204,13 +320,13 @@ PVRSRV_ERROR OSMMUPxMap(PVRSRV_DEVICE_NODE *psDevNode, Px_HANDLE *psMemHandle,
 	*pvPtr = (IMG_VOID *) ((uiCPUVAddr & (~OSGetPageMask())) |
 							((IMG_UINTPTR_T) (psDevPAddr->uiAddr & OSGetPageMask())));
 
-#if defined(PVRSRV_ENABLE_PROCESS_STATS)
+#if defined(PVRSRV_ENABLE_PROCESS_STATS) && defined(PVRSRV_ENABLE_MEMORY_STATS)
 	{
 		IMG_CPU_PHYADDR sCpuPAddr;
 		sCpuPAddr.uiAddr = 0;
 
 		PVRSRVStatsAddMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE_VMAP,
-									 uiCPUVAddr,
+									 (IMG_VOID *)uiCPUVAddr,
 									 sCpuPAddr,
 									 uiSize,
 									 IMG_NULL);
@@ -225,11 +341,29 @@ IMG_VOID OSMMUPxUnmap(PVRSRV_DEVICE_NODE *psDevNode, Px_HANDLE *psMemHandle, IMG
 	PVR_UNREFERENCED_PARAMETER(psDevNode);
 	PVR_UNREFERENCED_PARAMETER(psMemHandle);
 
-#if defined(PVRSRV_ENABLE_PROCESS_STATS)
+#if defined(PVRSRV_ENABLE_PROCESS_STATS) && defined(PVRSRV_ENABLE_MEMORY_STATS)
 	PVRSRVStatsRemoveMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE_VMAP, pvPtr);
 #endif
 
-	vm_unmap_ram(pvPtr, 1);
+#if defined(CONFIG_GENERIC_ALLOCATOR) && defined(CONFIG_X86) && (LINUX_VERSION_CODE > KERNEL_VERSION(3,0,0))
+	if (vmap_from_pool(pvPtr))
+	{
+		unsigned long addr = (unsigned long)pvPtr;
+
+		/* Flush the data cache */
+		flush_cache_vunmap(addr, addr + PAGE_SIZE);
+		/* Unmap the page */
+		unmap_kernel_range_noflush(addr, PAGE_SIZE);
+		/* Flush the TLB */
+		__flush_tlb_single(addr);
+		/* Free the page back to the pool */
+		gen_pool_free(pvrsrv_pool_writecombine, addr, PAGE_SIZE);
+	}
+	else
+#endif	/* defined(CONFIG_GENERIC_ALLOCATOR) && defined(CONFIG_X86) && (LINUX_VERSION_CODE > KERNEL_VERSION(3,0,0)) */
+	{
+		vm_unmap_ram(pvPtr, 1);
+	}
 }
 
 /*************************************************************************/ /*!
@@ -977,6 +1111,11 @@ PVRSRV_ERROR OSThreadDestroy(IMG_HANDLE hThread)
 IMG_VOID OSPanic(IMG_VOID)
 {
 	BUG();
+
+#if defined(__KLOCWORK__)
+	/* Klocworks does not understand that BUG is terminal... */
+	abort();
+#endif
 }
 
 /*************************************************************************/ /*!
@@ -1204,7 +1343,6 @@ DEFINE_MUTEX(sTimerStructLock);
 #else
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39))
 /* The lock is used to control access to sTimers */
-/* PRQA S 0671,0685 1 */ /* C99 macro not understood by QAC */
 static spinlock_t sTimerStructLock = SPIN_LOCK_UNLOCKED;
 #else
 static DEFINE_SPINLOCK(sTimerStructLock);
@@ -1325,7 +1463,6 @@ IMG_HANDLE OSAddTimer(PFN_TIMER_FUNC pfnTimerFunc, IMG_VOID *pvData, IMG_UINT32 
     init_timer(&psTimerCBData->sTimer);
     
     /* setup timer object */
-    /* PRQA S 0307,0563 1 */ /* ignore warning about inconpartible ptr casting */
     psTimerCBData->sTimer.function = (IMG_VOID *)OSTimerCallbackWrapper;
     psTimerCBData->sTimer.data = (IMG_UINTPTR_T)psTimerCBData;
     

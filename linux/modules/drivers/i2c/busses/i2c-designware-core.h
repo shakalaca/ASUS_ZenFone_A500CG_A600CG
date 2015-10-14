@@ -185,7 +185,14 @@
 #define VLV2_FS_SCLK_LCNT 0xad
 #define VLV2_HS_SCLK_HCNT 0x6
 #define VLV2_HS_SCLK_LCNT 0x16
+#define VLV2_FS_P_SCLK_HCNT 0x1b
+#define VLV2_FS_P_SCLK_LCNT 0x3a
 
+#define DW_STD_SPEED	100000
+#define DW_FAST_SPEED	400000
+#define DW_HIGH_SPEED	3400000
+
+struct dw_controller;
 /**
  * struct dw_i2c_dev - private i2c-designware data
  * @dev: driver model device node
@@ -221,8 +228,8 @@ struct dw_i2c_dev {
 	u32			(*get_clk_rate_khz) (struct dw_i2c_dev *dev);
 	int			(*get_scl_cfg) (struct dw_i2c_dev *dev);
 	void			(*reset)(struct dw_i2c_dev *dev);
-	void			(*abort)(int busnum);
-	struct dw_pci_controller *controller;
+	int			(*abort)(int busnum);
+	struct dw_controller 	*controller;
 	int			enable_stop;
 	int			share_irq;
 	int			cmd_err;
@@ -247,19 +254,76 @@ struct dw_i2c_dev {
 	int			use_dyn_clk;	/* use dynamic clk setting */
 	u32			clk_khz;	/* input clock */
 	u32			speed_cfg;
+	u32			lock_flag;
+	u32			freq;
+	u32			fast_plus;
 };
 
-extern u32 dw_readl(struct dw_i2c_dev *dev, int offset);
-extern void dw_writel(struct dw_i2c_dev *dev, u32 b, int offset);
-extern int i2c_dw_init(struct dw_i2c_dev *dev);
-extern int i2c_dw_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[],
-		int num);
-extern u32 i2c_dw_func(struct i2c_adapter *adap);
-extern irqreturn_t i2c_dw_isr(int this_irq, void *dev_id);
-extern void i2c_dw_enable(struct dw_i2c_dev *dev);
-extern u32 i2c_dw_is_enabled(struct dw_i2c_dev *dev);
-extern void i2c_dw_disable(struct dw_i2c_dev *dev);
-extern void i2c_dw_clear_int(struct dw_i2c_dev *dev);
-extern void i2c_dw_disable_int(struct dw_i2c_dev *dev);
-extern u32 i2c_dw_read_comp_param(struct dw_i2c_dev *dev);
+struct dw_controller {
+	u32 bus_num;
+	u32 bus_cfg;
+	u32 tx_fifo_depth;
+	u32 rx_fifo_depth;
+	u32 clk_khz;
+	u32 fast_plus;
+	int enable_stop;
+	int share_irq;
+	char *acpi_name;
+	int (*scl_cfg) (struct dw_i2c_dev *dev);
+	void (*reset)(struct dw_i2c_dev *dev);
+};
+
+enum dw_ctl_id_t {
+	moorestown_0,
+	moorestown_1,
+	moorestown_2,
+
+	medfield_0,
+	medfield_1,
+	medfield_2,
+	medfield_3,
+	medfield_4,
+	medfield_5,
+
+	cloverview_0,
+	cloverview_1,
+	cloverview_2,
+	cloverview_3,
+	cloverview_4,
+	cloverview_5,
+
+	merrifield_0,
+	merrifield_1,
+	merrifield_2,
+	merrifield_3,
+	merrifield_4,
+	merrifield_5,
+	merrifield_6,
+
+	valleyview_0,
+	valleyview_1,
+	valleyview_2,
+	valleyview_3,
+	valleyview_4,
+	valleyview_5,
+	valleyview_6,
+	valleyview_7,
+
+	cherryview_0 = valleyview_0,
+	cherryview_1 = valleyview_1,
+	cherryview_2 = valleyview_2,
+	cherryview_3 = valleyview_3,
+	cherryview_4 = valleyview_4,
+	cherryview_5 = valleyview_5,
+	cherryview_6 = valleyview_6,
+	cherryview_7 = valleyview_7,
+};
+
 extern int intel_mid_dw_i2c_abort(int busnum);
+int i2c_dw_init(struct dw_i2c_dev *dev);
+struct dw_i2c_dev *i2c_dw_setup(struct device *pdev, int bus_idx,
+	unsigned long start, unsigned long len, int irq);
+void i2c_dw_free(struct device *pdev, struct dw_i2c_dev *dev);
+int i2c_dw_suspend(struct dw_i2c_dev *dev, bool runtime);
+int i2c_dw_resume(struct dw_i2c_dev *dev, bool runtime);
+void i2c_acpi_devices_setup(struct device *pdev, struct dw_i2c_dev *dev);

@@ -21,15 +21,19 @@
  *
  */
 
+#ifndef CSS21
 #include <host/mmu_local.h>
+#else
+#include "type_support.h"
+#endif
 
 #include "mmu/isp_mmu.h"
 #include "memory_access/memory_access.h"
 #include "atomisp_compat.h"
 
-#ifndef CONFIG_VIDEO_ATOMISP_CSS20
+#ifndef CSS20
 #include <sh_css.h>
-#endif /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#endif /* CSS20 */
 /*
  * include SH header file here
  */

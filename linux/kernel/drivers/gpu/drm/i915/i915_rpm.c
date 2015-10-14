@@ -23,6 +23,7 @@
  * Author:
  * Naresh Kumar Kachhi <naresh.kumar.kachhi@intel.com>
  */
+
 #include "i915_drv.h"
 #include "i915_reg.h"
 #include "intel_drv.h"
@@ -30,39 +31,97 @@
 #include <linux/console.h>
 #ifdef CONFIG_PM_RUNTIME
 #include <linux/pm_runtime.h>
+#endif
 #include <linux/proc_fs.h>  /* Needed for procfs access */
 #include <linux/fs.h>	    /* For the basic file system */
 #include <linux/kernel.h>
-#endif
 
 #define RPM_AUTOSUSPEND_DELAY 500
 
 #ifdef CONFIG_PM_RUNTIME
+
+/**
+ * - Where should we use get/put?
+ *   Get/put should be used very carefully as we might end up in weird states
+ *   if not used properly (see the Note below). We want to cover all the
+ *   acesses that might result in accessing rings/display/registers/gtt etc
+ *   Mostly covering ioctls and drm callbacks should be enough. You can
+ *   avoid those which does not access any HW.
+ *
+ * - When should we avoid get/put?
+ *   WQ and interrupts should be taken care in suspend path. We should
+ *   disable all the interrupts and cancel any pending WQs. Never try to
+ *   cover interrupt/WQ with get/put unless you are sure about it.
+ *
+ * Note:Following scenarios should be strictly avoided while using get_sync
+ * 1. Calling get_sync with struct_mutex or mode_config.mutex locked
+ *    - we acquire these locks in runtime_resume, so any call to get_sync
+ *    with these mutex locked might end up in a dead lock.
+ *    check_mutex_current function can be used to debug this scenario.
+ *    - Or let's say thread1 has done get_sync and is currently executing
+ *    runtime_resume function. Before thread1 is able to acquire these
+ *    mutex, thread2 acquires the mutex and does a get_sync. Now thread1
+ *    is waiting for mutex and thread2 is waiting for dev->power.lock
+ *    resulting in a deadlock. Use check_mutex to debug this.
+ * 2. Calling get_sync from runtime_resume path
+ *    runtime_resume is called with dev->power.lock held. doing get_sync
+ *    in same path will end up in deadlock
+ */
+
 #define RPM_PROC_ENTRY_FILENAME		"i915_rpm_op"
 #define RPM_PROC_ENTRY_DIRECTORY	"driver/i915rpm"
 
+int i915_rpm_get_procfs(struct inode *inode, struct file *file);
+int i915_rpm_put_procfs(struct inode *inode, struct file *file);
 /* proc file operations supported */
-static const struct file_operations fileOps_local_proc_file = {
+static const struct file_operations rpm_file_ops = {
 	.owner		= THIS_MODULE,
 	.open		= i915_rpm_get_procfs,
 	.release	= i915_rpm_put_procfs,
 };
 
-/* RPM init */
-int i915_rpm_init(struct drm_device *drm_dev)
+bool i915_pm_runtime_enabled(struct device *dev)
 {
-	int ret = 0;
+	return pm_runtime_enabled(dev);
+}
+
+void i915_rpm_enable(struct device *dev)
+{
+	int cur_status = pm_runtime_enabled(dev);
+
+	if (!cur_status) {
+		pm_runtime_enable(dev);
+		pm_runtime_allow(dev);
+	}
+
+	return;
+}
+
+void i915_rpm_disable(struct drm_device *drm_dev)
+{
 	struct device *dev = drm_dev->dev;
+	int cur_status = pm_runtime_enabled(dev);
+
+	if (cur_status) {
+		pm_runtime_forbid(dev);
+		pm_runtime_disable(dev);
+	}
+
+	return;
+}
+
+static int i915_rpm_procfs_init(struct drm_device *drm_dev)
+{
 	struct drm_i915_private *dev_priv = drm_dev->dev_private;
+	dev_priv->rpm.i915_proc_dir = NULL;
 	dev_priv->rpm.i915_proc_file = NULL;
-	dev_priv->rpm.local_proc_file = NULL;
 
 	/**
 	 * Create directory for rpm file(s)
 	 */
-	dev_priv->rpm.i915_proc_file = proc_mkdir(RPM_PROC_ENTRY_DIRECTORY,
+	dev_priv->rpm.i915_proc_dir = proc_mkdir(RPM_PROC_ENTRY_DIRECTORY,
 						 NULL);
-	if (dev_priv->rpm.i915_proc_file == NULL) {
+	if (dev_priv->rpm.i915_proc_dir == NULL) {
 		DRM_ERROR("Could not initialize %s\n",
 				RPM_PROC_ENTRY_DIRECTORY);
 		return -ENOMEM;
@@ -70,22 +129,50 @@ int i915_rpm_init(struct drm_device *drm_dev)
 	/**
 	 * Create the /proc file
 	 */
-	dev_priv->rpm.local_proc_file = proc_create_data(
-			RPM_PROC_ENTRY_FILENAME, 0644,
-			dev_priv->rpm.i915_proc_file,
-			&fileOps_local_proc_file, drm_dev);
+	dev_priv->rpm.i915_proc_file = proc_create_data(
+						RPM_PROC_ENTRY_FILENAME,
+						S_IRUGO | S_IWUSR,
+						dev_priv->rpm.i915_proc_dir,
+						&rpm_file_ops,
+						drm_dev);
 	/* check if file is created successfuly */
-	if (dev_priv->rpm.local_proc_file == NULL) {
+	if (dev_priv->rpm.i915_proc_file == NULL) {
 		DRM_ERROR("Could not initialize %s/%s\n",
 			RPM_PROC_ENTRY_DIRECTORY, RPM_PROC_ENTRY_FILENAME);
 		return -ENOMEM;
 	}
+	return 0;
+}
 
-	/* RPM functionality begins */
+static int i915_rpm_procfs_deinit(struct drm_device *drm_dev)
+{
+	struct drm_i915_private *dev_priv = drm_dev->dev_private;
+	/* Clean up proc file */
+	if (dev_priv->rpm.i915_proc_file) {
+		remove_proc_entry(RPM_PROC_ENTRY_FILENAME,
+				 dev_priv->rpm.i915_proc_dir);
+		dev_priv->rpm.i915_proc_file = NULL;
+	}
+	if (dev_priv->rpm.i915_proc_dir) {
+		remove_proc_entry(RPM_PROC_ENTRY_DIRECTORY, NULL);
+		dev_priv->rpm.i915_proc_dir = NULL;
+	}
+	return 0;
+}
+
+/* RPM init */
+int i915_rpm_init(struct drm_device *drm_dev)
+{
+	int ret = 0;
+	struct device *dev = drm_dev->dev;
+	struct drm_i915_private *dev_priv = drm_dev->dev_private;
+	ret = i915_rpm_procfs_init(drm_dev);
+	if (ret) {
+		DRM_ERROR("unable to initialize procfs entry");
+	}
 	ret = pm_runtime_set_active(dev);
 	dev_priv->rpm.ring_active = false;
 	atomic_set(&dev_priv->rpm.procfs_count, 0);
-	pm_runtime_enable(dev);
 	pm_runtime_allow(dev);
 	/* enable Auto Suspend */
 	pm_runtime_set_autosuspend_delay(dev, RPM_AUTOSUSPEND_DELAY);
@@ -99,31 +186,187 @@ int i915_rpm_init(struct drm_device *drm_dev)
 int i915_rpm_deinit(struct drm_device *drm_dev)
 {
 	struct device *dev = drm_dev->dev;
-	struct drm_i915_private *dev_priv = drm_dev->dev_private;
-	/* Clean up proc file */
-	if (dev_priv->rpm.local_proc_file) {
-		remove_proc_entry(RPM_PROC_ENTRY_FILENAME,
-				 dev_priv->rpm.i915_proc_file);
-		dev_priv->rpm.local_proc_file = NULL;
-	}
-	if (dev_priv->rpm.i915_proc_file) {
-		remove_proc_entry(RPM_PROC_ENTRY_DIRECTORY, NULL);
-		dev_priv->rpm.i915_proc_file = NULL;
-	}
 	pm_runtime_forbid(dev);
-	pm_runtime_disable(dev);
 	pm_runtime_set_suspended(dev);
 	pm_runtime_get_noresume(dev);
 	if (dev->power.runtime_error)
 		DRM_ERROR("rpm init: error = %d\n", dev->power.runtime_error);
 
+	i915_rpm_procfs_deinit(drm_dev);
 	return 0;
 }
 
-int check_mutex(struct drm_device *drm_dev)
+/**
+ * We have different flavour of get/put based on access type (ring/disp/
+ * vxd etc). this is done based on different requirements and to make
+ * debugging a little easier. Debugfs introduces seperate counter for
+ * each type.
+ */
+
+/**
+ * Once we have scheduled commands on GPU, it might take a while GPU
+ * to execute them. Following is done to make sure Gfx is in D0i0 while
+ * GPU is executing the commands.
+ * 1. For IOCTLS make sure we are in D0i0 by calling "get_ioctl".
+ * 2. if IOCTL scheudles GPU commands using rings do the following
+ *  a. For all ring accesses make sure we add a request in the request
+ *     list and schedule a work item to track the "seq no". This
+ *     is done by using "i915_add_request" or "i915_add_request_no_flush"
+ *     functions.
+ *  b. If request list was empty, we do a "get_ring". This will increment
+ *     ref count to make sure GPU will be in D0 state.
+ *  c. Once the list becomes empty call put_ring
+ *
+ * Note: All the ring accesses are covered with struct_mutex. So we
+ * don't need any synchronization to protect ring_active.
+ */
+int i915_rpm_get_ring(struct drm_device *drm_dev)
+{
+	struct intel_ring_buffer *ring;
+	struct drm_i915_private *dev_priv = drm_dev->dev_private;
+	int i;
+	bool idle = true;
+
+	for_each_ring(ring, dev_priv, i)
+		idle &= list_empty(&ring->request_list);
+
+	if (idle) {
+		if (!dev_priv->rpm.ring_active) {
+			dev_priv->rpm.ring_active = true;
+			pm_runtime_get_noresume(drm_dev->dev);
+		}
+	}
+
+	return 0;
+}
+
+int i915_rpm_put_ring(struct drm_device *drm_dev)
+{
+	struct drm_i915_private *dev_priv = drm_dev->dev_private;
+
+	if (dev_priv->rpm.ring_active) {
+		/* Mark last time it was busy and schedule a autosuspend */
+		pm_runtime_mark_last_busy(drm_dev->dev);
+		pm_runtime_put_autosuspend(drm_dev->dev);
+		dev_priv->rpm.ring_active = false;
+	}
+	return 0;
+}
+
+/**
+ * To cover the function pointers that are assigned to drm structures
+ * and can be called from drm
+ */
+int i915_rpm_get_callback(struct drm_device *drm_dev)
+{
+	return pm_runtime_get_sync(drm_dev->dev);
+}
+
+int i915_rpm_put_callback(struct drm_device *drm_dev)
+{
+	pm_runtime_mark_last_busy(drm_dev->dev);
+	return pm_runtime_put_autosuspend(drm_dev->dev);
+}
+
+/**
+ * early_suspend/DSR should call this function to notify PM Core about
+ * display idleness
+ */
+int i915_rpm_get_disp(struct drm_device *drm_dev)
+{
+	return pm_runtime_get_sync(drm_dev->dev);
+}
+
+int i915_rpm_put_disp(struct drm_device *drm_dev)
+{
+	pm_runtime_mark_last_busy(drm_dev->dev);
+	return pm_runtime_put_autosuspend(drm_dev->dev);
+}
+
+/** to cover the ioctls with get/put*/
+int i915_rpm_get_ioctl(struct drm_device *drm_dev)
+{
+	/* Don't do anything if device is not ready */
+	if (drm_device_is_unplugged(drm_dev))
+		return 0;
+
+	return pm_runtime_get_sync(drm_dev->dev);
+}
+
+int i915_rpm_put_ioctl(struct drm_device *drm_dev)
+{
+	/* Don't do anything if device is not ready */
+	if (drm_device_is_unplugged(drm_dev))
+		return 0;
+
+	pm_runtime_mark_last_busy(drm_dev->dev);
+	return pm_runtime_put_autosuspend(drm_dev->dev);
+}
+
+/* these operations are caled from user mode (CoreU) to make sure
+ * Gfx is up before register accesses from user mode
+ */
+int i915_rpm_get_procfs(struct inode *inode, struct file *file)
+{
+	struct drm_device *dev = PDE_DATA(inode);
+	drm_i915_private_t *dev_priv = dev->dev_private;
+
+	atomic_inc(&dev_priv->rpm.procfs_count);
+	pm_runtime_get_sync(dev->dev);
+	return 0;
+}
+
+int i915_rpm_put_procfs(struct inode *inode, struct file *file)
+{
+	struct drm_device *dev = PDE_DATA(inode);
+	drm_i915_private_t *dev_priv = dev->dev_private;
+
+	pm_runtime_mark_last_busy(dev->dev);
+	pm_runtime_put_autosuspend(dev->dev);
+	atomic_dec(&dev_priv->rpm.procfs_count);
+	return 0;
+}
+
+/**
+ * VXD driver need to call this to make sure Gfx is in D0i0
+ * while VXD is on
+ */
+#ifdef CONFIG_DRM_VXD_BYT
+int i915_rpm_get_vxd(struct drm_device *drm_dev)
+{
+	return pm_runtime_get_sync(drm_dev->dev);
+}
+EXPORT_SYMBOL(i915_rpm_get_vxd);
+
+/**
+ * VXD driver need to call this to notify Gfx that it is
+ * done with HW accesses
+ */
+int i915_rpm_put_vxd(struct drm_device *drm_dev)
+{
+	pm_runtime_mark_last_busy(drm_dev->dev);
+	return pm_runtime_put_autosuspend(drm_dev->dev);
+}
+EXPORT_SYMBOL(i915_rpm_put_vxd);
+#endif
+
+/* mainly for debug purpose, check if the access is valid */
+bool i915_rpm_access_check(struct drm_device *dev)
+{
+	if (dev->dev->power.runtime_status == RPM_SUSPENDED) {
+		DRM_ERROR("invalid access, will cause Hard Hang\n");
+		dump_stack();
+		return false;
+	}
+	return true;
+}
+
+/* mainly for debug purpose, check if mutex is locked by
+ * current thread
+ */
+int check_mutex_current(struct drm_device *drm_dev)
 {
 	int ret = 0;
-#ifdef RPM_DEBUG
 	if ((mutex_is_locked(&drm_dev->mode_config.mutex)) &&
 			(drm_dev->mode_config.mutex.owner == current)) {
 		DRM_ERROR("config mutex locked by current thread\n");
@@ -136,221 +379,26 @@ int check_mutex(struct drm_device *drm_dev)
 		dump_stack();
 		ret = -2;
 	}
-#endif
 	return ret;
 }
 
-int i915_rpm_get(struct drm_device *drm_dev, u32 flags)
+int check_mutex(struct drm_device *drm_dev)
 {
 	int ret = 0;
-	struct device *dev = drm_dev->dev;
-
-	if (flags & RPM_SYNC) {
-		if (dev->power.runtime_status == RPM_SUSPENDED) {
-			/* Before doing a sync get make sure mutex is not
-			 * locked
-			 */
-			check_mutex(drm_dev);
-			ret = pm_runtime_get_sync(dev);
-		} else {
-			/* Don't call sync get if we are not in suspended
-			 * state
-			 */
-			pm_runtime_get_noresume(dev);
-		}
-	} else if (flags & RPM_SYNC_STRICT) {
-		ret = pm_runtime_get_sync(dev);
-	} else if (flags & RPM_NORESUME) {
-		pm_runtime_get_noresume(dev);
-		ret = 0;
-	} else {
-		ret = pm_runtime_get(dev);
-	}
-	return ret;
-}
-
-int i915_rpm_put(struct drm_device *drm_dev, u32 flags)
-{
-	struct device *dev = drm_dev->dev;
-	int ret = 0;
-	if (flags & RPM_SYNC) {
-		ret = pm_runtime_put_sync(dev);
-	} else if (flags & RPM_AUTOSUSPEND) {
-		/* Mark last time it was busy and schedule a autosuspend */
-		pm_runtime_mark_last_busy(dev);
-		pm_runtime_put_autosuspend(dev);
-	} else if (flags & RPM_NOIDLE) {
-		pm_runtime_put_noidle(dev);
-	} else {
-		/* Normal put */
-		ret = pm_runtime_put(dev);
-	}
-	return ret;
-}
-
-/**
- * following is done to make sure Gfx is in D0i0 while
- * GPU accesses are being done
- * 1. For IOCTLS make sure we are in D0i0 by calling "get_ioctl".
- * 2. if IOCTL scheudles GPU commands using rings do the following
- *  a. For all ring accesses make sure we add a request in the request
- *     list and schedule a work item to track the "seq no". This
- *     is done by using "i915_add_request" or
- *     "i915_add_request_no_flush" functions.
- *  b. If request list was empty, we do a "get_ring". This will increment
- *     ref count to make sure GPU is kept on
- *  c. Once the list becomes empty call put_ring
- *
- * Note: All the ring accesses are covered with struct_mutex. So we
- * don't need any special synchronization here.
- */
-int i915_rpm_get_ring(struct intel_ring_buffer *ring)
-{
-	struct drm_device *drm_dev = ring->dev;
-	struct drm_i915_private *dev_priv = drm_dev->dev_private;
-	int i;
-	bool idle = true;
-
-	for_each_ring(ring, dev_priv, i)
-		idle &= list_empty(&ring->request_list);
-
-	if (idle) {
-		if (!dev_priv->rpm.ring_active) {
-			dev_priv->rpm.ring_active = true;
-			i915_rpm_get(drm_dev, RPM_NORESUME);
-		}
-	}
-
-	return 0;
-}
-
-int i915_rpm_put_ring(struct intel_ring_buffer *ring)
-{
-	struct drm_device *drm_dev = ring->dev;
-	struct drm_i915_private *dev_priv = drm_dev->dev_private;
-	if (dev_priv->rpm.ring_active) {
-		i915_rpm_put(drm_dev, RPM_AUTOSUSPEND);
-		dev_priv->rpm.ring_active = false;
-	}
-	return 0;
-}
-
-/**
- * To cover the function pointers that are assigned to drm structures
- * and can be called from drm
- */
-int i915_rpm_get_callback(struct drm_device *drm_dev)
-{
-	i915_rpm_get(drm_dev, RPM_SYNC);
-	return 0;
-}
-
-int i915_rpm_put_callback(struct drm_device *drm_dev)
-{
-	i915_rpm_put(drm_dev, RPM_AUTOSUSPEND);
-	return 0;
-}
-
-/**
- * early_suspend/DSR should call this function to notify PM Core about
- * display idleness
- */
-int i915_rpm_get_disp(struct drm_device *drm_dev)
-{
-	i915_rpm_get(drm_dev, RPM_SYNC_STRICT);
-	return 0;
-}
-
-int i915_rpm_put_disp(struct drm_device *drm_dev)
-{
-	i915_rpm_put(drm_dev, RPM_AUTOSUSPEND);
-	return 0;
-}
-
-/** to cover the ioctls with get/put*/
-int i915_rpm_get_ioctl(struct drm_device *drm_dev)
-{
-	/* Don't do anything if device is not ready */
-	if (drm_device_is_unplugged(drm_dev))
-		return 0;
-
-	i915_rpm_get(drm_dev, RPM_SYNC_STRICT);
-	return 0;
-}
-
-int i915_rpm_put_ioctl(struct drm_device *drm_dev)
-{
-	/* Don't do anything if device is not ready */
-	if (drm_device_is_unplugged(drm_dev))
-		return 0;
-
-	i915_rpm_put(drm_dev, RPM_AUTOSUSPEND);
-	return 0;
-}
-
-int i915_rpm_get_procfs(struct inode *inode, struct file *file)
-{
-	struct drm_device *dev = PDE(inode)->data;
-	drm_i915_private_t *dev_priv = NULL;
-	if (dev)
-		dev_priv = dev->dev_private;
-
-	if (dev_priv) {
-		atomic_inc(&dev_priv->rpm.procfs_count);
-		i915_rpm_get(dev, RPM_SYNC);
-		return 0;
-	} else
-		return -EINVAL;
-}
-
-int i915_rpm_put_procfs(struct inode *inode, struct file *file)
-{
-	struct drm_device *dev = PDE(inode)->data;
-	drm_i915_private_t *dev_priv = NULL;
-
-	if (dev)
-		dev_priv = dev->dev_private;
-
-	if (dev_priv) {
-		i915_rpm_put(dev, RPM_AUTOSUSPEND);
-		atomic_dec(&dev_priv->rpm.procfs_count);
-		return 0;
-	} else
-		return -EINVAL;
-}
-
-#ifdef CONFIG_DRM_VXD_BYT
-int i915_rpm_get_vxd(struct drm_device *drm_dev)
-{
-	i915_rpm_get(drm_dev, RPM_SYNC);
-	return 0;
-}
-EXPORT_SYMBOL(i915_rpm_get_vxd);
-
-/**
- * VXD driver need to call this to notify Gfx that it is
- * done with HW accesses
- */
-int i915_rpm_put_vxd(struct drm_device *drm_dev)
-{
-	i915_rpm_put(drm_dev, RPM_AUTOSUSPEND);
-	return 0;
-}
-EXPORT_SYMBOL(i915_rpm_put_vxd);
-#endif
-
-bool i915_rpm_access_check(struct drm_device *dev)
-{
-#ifdef RPM_DEBUG
-	if (dev->dev->power.runtime_status == RPM_SUSPENDED) {
-		DRM_ERROR("invalid access, will cause Hard Hang\n");
+	if (mutex_is_locked(&drm_dev->mode_config.mutex)) {
+		DRM_ERROR("config mutex locked \n");
 		dump_stack();
-		return false;
+		ret = -1;
 	}
-#endif
-	return true;
+	if (mutex_is_locked(&drm_dev->struct_mutex)) {
+		DRM_ERROR("struct mutex locked \n");
+		dump_stack();
+		ret = -2;
+	}
+	return ret;
 }
 
+/* Check for current runtime state */
 bool i915_is_device_active(struct drm_device *dev)
 {
 	return (dev->dev->power.runtime_status == RPM_ACTIVE);
@@ -376,17 +424,17 @@ int i915_rpm_init(struct drm_device *dev) {return 0; }
 int i915_rpm_deinit(struct drm_device *dev) {return 0; }
 int i915_rpm_get(struct drm_device *dev, u32 flags) {return 0; }
 int i915_rpm_put(struct drm_device *dev, u32 flags) {return 0; }
-int i915_rpm_get_ring(struct intel_ring_buffer *ring) {return 0; }
-int i915_rpm_put_ring(struct intel_ring_buffer *ring) {return 0; }
+int i915_rpm_get_ring(struct drm_device *dev) {return 0; }
+int i915_rpm_put_ring(struct drm_device *dev) {return 0; }
 int i915_rpm_get_callback(struct drm_device *dev) {return 0; }
 int i915_rpm_put_callback(struct drm_device *dev) {return 0; }
 int i915_rpm_get_ioctl(struct drm_device *dev) {return 0; }
 int i915_rpm_put_ioctl(struct drm_device *dev) {return 0; }
 int i915_rpm_get_disp(struct drm_device *dev) {return 0; }
 int i915_rpm_put_disp(struct drm_device *dev) {return 0; }
-static int i915_rpm_get_procfs(struct inode *inode,
+int i915_rpm_get_procfs(struct inode *inode,
 			      struct file *file) {return 0; }
-static int i915_rpm_put_procfs(struct inode *inode,
+int i915_rpm_put_procfs(struct inode *inode,
 			      struct file *file) {return 0; }
 #ifdef CONFIG_DRM_VXD_BYT
 int i915_rpm_get_vxd(struct drm_device *dev) {return 0; }
@@ -417,5 +465,13 @@ bool i915_rpm_access_check(struct drm_device *dev)
 {
 	return true;
 }
-#endif /*CONFIG_PM_RUNTIME*/
+bool i915_pm_runtime_enabled(struct device *dev)
+{
+	return false;
+}
 
+void i915_rpm_enable(struct device *dev) {}
+
+void i915_rpm_disable(struct drm_device *drm_dev) {}
+
+#endif /*CONFIG_PM_RUNTIME*/

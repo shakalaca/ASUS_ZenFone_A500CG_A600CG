@@ -46,6 +46,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "devicemem.h"
 #include "device.h"
+#include "rgxdevice.h"
 #include "sync_server.h"
 #include "connection_server.h"
 #include "rgx_fwif_shared.h"
@@ -68,15 +69,18 @@ typedef struct _RGX_CCB_CMD_HELPER_DATA_ {
 	RGX_CLIENT_CCB  		*psClientCCB;
 	IMG_CHAR 				*pszCommandName;
 	IMG_BOOL 				bPDumpContinuous;
+	
 	IMG_UINT32				ui32ClientFenceCount;
 	PRGXFWIF_UFO_ADDR		*pauiFenceUFOAddress;
 	IMG_UINT32				*paui32FenceValue;
 	IMG_UINT32				ui32ClientUpdateCount;
 	PRGXFWIF_UFO_ADDR		*pauiUpdateUFOAddress;
 	IMG_UINT32				*paui32UpdateValue;
+
 	IMG_UINT32				ui32ServerSyncCount;
 	IMG_UINT32				*paui32ServerSyncFlags;
 	SERVER_SYNC_PRIMITIVE	**papsServerSyncs;
+
 	RGXFWIF_KCCB_CMD_TYPE	eType;
 	IMG_UINT32				ui32CmdSize;
 	IMG_UINT8				*pui8DMCmd;
@@ -98,6 +102,7 @@ PVRSRV_ERROR RGXCreateCCB(PVRSRV_DEVICE_NODE	*psDeviceNode,
 						  IMG_UINT32			ui32CCBSizeLog2,
 						  CONNECTION_DATA		*psConnectionData,
 						  const IMG_CHAR		*pszName,
+						  RGX_SERVER_COMMON_CONTEXT *psServerCommonContext,
 						  RGX_CLIENT_CCB		**ppsClientCCB,
 						  DEVMEM_MEMDESC 		**ppsClientCCBMemDesc,
 						  DEVMEM_MEMDESC 		**ppsClientCCBCtlMemDesc);
@@ -137,9 +142,12 @@ PVRSRV_ERROR RGXCmdHelperAcquireCmdCCB(IMG_UINT32 ui32CmdCount,
 									   IMG_BOOL *pbKickRequired);
 
 IMG_VOID RGXCmdHelperReleaseCmdCCB(IMG_UINT32 ui32CmdCount,
-								   RGX_CCB_CMD_HELPER_DATA *asCmdHelperData);
+								   RGX_CCB_CMD_HELPER_DATA *asCmdHelperData,
+								   const IMG_CHAR *pcszDMName,
+								   IMG_UINT32 ui32CtxAddr);
 								   
 IMG_UINT32 RGXCmdHelperGetCommandSize(IMG_UINT32 ui32CmdCount,
 								   RGX_CCB_CMD_HELPER_DATA *asCmdHelperData);
 
+IMG_VOID DumpStalledCCBCommand(PRGXFWIF_FWCOMMONCONTEXT sFWCommonContext, RGX_CLIENT_CCB  *psCurrentClientCCB);
 #endif /* __RGXCCB_H__ */

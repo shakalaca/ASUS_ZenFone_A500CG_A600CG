@@ -17,20 +17,25 @@ struct acpi_gpio_info {
 
 int acpi_get_gpio(char *path, int pin);
 int acpi_get_gpio_by_index(struct device *dev, int index,
-			struct acpi_gpio_info *info);
+			   struct acpi_gpio_info *info);
+void acpi_gpiochip_request_interrupts(struct gpio_chip *chip);
+void acpi_gpiochip_free_interrupts(struct gpio_chip *chip);
 
 #else /* CONFIG_GPIO_ACPI */
-
-static inline int acpi_get_gpio_by_index(struct device *dev, int index,
-					struct acpi_gpio_info *info)
-{
-	return -ENODEV;
-}
 
 static inline int acpi_get_gpio(char *path, int pin)
 {
 	return -ENODEV;
 }
+
+static inline int acpi_get_gpio_by_index(struct device *dev, int index,
+					 struct acpi_gpio_info *info)
+{
+	return -ENODEV;
+}
+
+static inline void acpi_gpiochip_request_interrupts(struct gpio_chip *chip) { }
+static inline void acpi_gpiochip_free_interrupts(struct gpio_chip *chip) { }
 
 #endif /* CONFIG_GPIO_ACPI */
 

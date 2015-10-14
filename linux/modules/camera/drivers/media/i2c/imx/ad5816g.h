@@ -43,7 +43,7 @@ struct ad5816g_device {
 #define AD5816G_ID			0x24
 #define VCM_CODE_MASK	0x03ff
 
-#define AD5816G_MODE_1M_SWITCH_CLOCK	0x30
+#define AD5816G_MODE_2_5M_SWITCH_CLOCK	0x14
 
 #endif
 

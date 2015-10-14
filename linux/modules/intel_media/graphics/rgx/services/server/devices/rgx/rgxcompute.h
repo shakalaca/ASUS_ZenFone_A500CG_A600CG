@@ -144,4 +144,7 @@ PVRSRV_ERROR PVRSRVRGXSetComputeContextPriorityKM(CONNECTION_DATA *psConnection,
 												  RGX_SERVER_COMPUTE_CONTEXT *psComputeContext,
 												  IMG_UINT32 ui32Priority);
 
+/* Debug - check if compute context is waiting on a fence */
+IMG_VOID CheckForStalledComputeCtxt(PVRSRV_RGXDEV_INFO *psDevInfo);
+
 #endif /* __RGXCOMPUTE_H__ */

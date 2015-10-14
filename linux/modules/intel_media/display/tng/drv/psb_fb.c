@@ -348,6 +348,9 @@ static struct drm_framebuffer *psb_user_framebuffer_create(
 	struct psb_fbdev *fbdev = dev_priv->fbdev;
 	struct psb_gtt *pg = dev_priv->pg;
 	uint64_t size;
+	uint32_t page_offset;
+	uint32_t user_virtual_addr = (uint32_t) r->handles[0];
+	int ret;
 
 	size = r->height * r->pitches[0];
 	if (size < r->height * r->pitches[0])
@@ -365,12 +368,20 @@ static struct drm_framebuffer *psb_user_framebuffer_create(
 	psbfb = to_psb_fb(fb);
 	psbfb->size = size;
 	psbfb->hKernelMemInfo = 0;
+	psbfb->user_virtual_addr = user_virtual_addr;
 	psbfb->stolen_base = pg->stolen_base;
 	psbfb->vram_addr = pg->vram_addr;
 	psbfb->tt_pages =
 	    (pg->gatt_pages <
 	     PSB_TT_PRIV0_PLIMIT) ? pg->gatt_pages : PSB_TT_PRIV0_PLIMIT;
-	psbfb->offset = 0;
+
+	/* map GTT */
+	ret = psb_gtt_map_vaddr(dev, user_virtual_addr, size, 0, &page_offset);
+	if (ret) {
+		DRM_ERROR("Can not map cpu address (%p) to GTT handle \n", user_virtual_addr);
+		psbfb->offset = 0;
+	} else
+		psbfb->offset =  page_offset << PAGE_SHIFT;
 
 	info = framebuffer_alloc(0, &dev->pdev->dev);
 	if (!info)
@@ -494,7 +505,7 @@ static int psbfb_create(struct psb_fbdev *fbdev,
 	info->fix.smem_len = size;
 	info->screen_base = (char *)pg->vram_addr;
 	info->screen_size = size;
-	memset(info->screen_base, 0, size);
+	//memset(info->screen_base, 0xf0, size);
 
 	drm_fb_helper_fill_fix(info, fb->pitches[0], fb->depth);
 
@@ -625,6 +636,7 @@ int psb_fbdev_init(struct drm_device *dev)
 
 	drm_fb_helper_single_add_all_connectors(&fbdev->psb_fb_helper);
 	drm_fb_helper_initial_config(&fbdev->psb_fb_helper, 32);
+	drm_fb_helper_set_par(fbdev->psb_fb_helper.fbdev);
 	return 0;
 }
 
@@ -646,7 +658,8 @@ static void psbfb_output_poll_changed(struct drm_device *dev)
 	struct drm_psb_private *dev_priv =
 	    (struct drm_psb_private *)dev->dev_private;
 	struct psb_fbdev *fbdev = (struct psb_fbdev *)dev_priv->fbdev;
-	drm_fb_helper_hotplug_event(&fbdev->psb_fb_helper);
+	if (fbdev)
+		drm_fb_helper_hotplug_event(&fbdev->psb_fb_helper);
 }
 
 int psbfb_remove(struct drm_device *dev, struct drm_framebuffer *fb)
@@ -685,7 +698,7 @@ static void psb_user_framebuffer_destroy(struct drm_framebuffer *fb)
 	struct psb_framebuffer *psbfb = to_psb_fb(fb);
 
 	/*ummap gtt pages */
-	psb_gtt_unmap_meminfo(dev, psbfb->hKernelMemInfo);
+	psb_gtt_unmap_vaddr(dev, psbfb->user_virtual_addr, psbfb->size);
 	if (psbfb->fbdev)
 		psbfb_remove(dev, fb);
 

@@ -125,6 +125,7 @@ static void dbg_dump(char *buf, int len)
 
 static char *action_debug[] = {
 	"OP_ACCESS",
+	"OP_MIN", "OP_MAX",
 	"OP_LOGIC_EQ", "OP_LOGIC_NEQ", "OP_LOGIC_GREATER", "OP_LOGIC_LESS",
 	"OP_LOGIC_GE", "OP_LOGIC_LE", "OP_LOGIC_AND", "OP_LOGIC_OR",
 	"OP_ARI_ADD", "OP_ARI_SUB", "OP_ARI_MUL", "OP_ARI_DIV", "OP_ARI_MOD",
@@ -132,7 +133,6 @@ static char *action_debug[] = {
 	"OP_ENDIAN_BE16", "OP_ENDIAN_BE16_UN", "OP_ENDIAN_BE24",
 	"OP_ENDIAN_BE32", "OP_ENDIAN_LE16", "OP_ENDIAN_LE16_UN",
 	"OP_ENDIAN_LE24", "OP_ENDIAN_LE32",
-	"OP_MIN", "OP_MAX",
 	"OP_RESERVE",
 };
 
@@ -180,6 +180,7 @@ static inline void sensor_time_end(struct sensor_data *data, ktime_t *start)
 #endif
 
 static void sensor_launch_work(struct sensor_data *data);
+static void unregister_failed_devices(void);
 
 static inline void stack_init(struct sensor_data_stack *stack)
 {
@@ -1713,6 +1714,18 @@ err:
 	return ret;
 }
 
+/*
+* record registered driver for remove
+*/
+static int registered_drivers;
+static int registered_devices;
+static struct i2c_driver *i2c_sensor_drivers[MAX_SENSOR_DRIVERS] = { NULL };
+static struct i2c_client *i2c_sensor_devices[MAX_SENSOR_DRIVERS] = { NULL };
+static int failed_drivers;
+static int failed_devices;
+static char *i2c_failed_driver[MAX_SENSOR_DRIVERS] = { NULL };
+static struct i2c_client *i2c_failed_device[MAX_SENSOR_DRIVERS] = { NULL };
+
 static int sensor_probe(struct i2c_client *client,
 			const struct i2c_device_id *devid)
 {
@@ -1750,6 +1763,8 @@ static int sensor_probe(struct i2c_client *client,
 		ret = sensor_init(data + i);
 		if (ret) {
 			dev_err(&client->dev, "sensor_init\n");
+			i2c_failed_driver[failed_drivers++] = config->name;
+			i2c_failed_device[failed_devices++] = client;
 			goto err;
 		}
 
@@ -1813,14 +1828,6 @@ static int sensor_remove(struct i2c_client *client)
 static const struct dev_pm_ops sensor_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(sensor_suspend, sensor_resume)
 };
-
-/*
-* record registered driver for remove
-*/
-static int registered_drivers;
-static int registered_devices;
-static struct i2c_driver *i2c_sensor_drivers[MAX_SENSOR_DRIVERS] = { NULL };
-static struct i2c_client *i2c_sensor_devices[MAX_SENSOR_DRIVERS] = { NULL };
 
 static int register_sensor_driver(struct sensor_config *config)
 {
@@ -1932,6 +1939,30 @@ static void unregister_sensor_drivers(void)
 	registered_drivers = 0;
 }
 
+static void unregister_failed_driver(char *name)
+{
+	int failed_num = failed_drivers - 1;
+
+	while (failed_num >= 0) {
+		char *failed_name = i2c_failed_driver[failed_num];
+		if (failed_name && !strcmp(failed_name, name)) {
+			int num = registered_drivers - 1;
+			while (num >= 0) {
+				struct i2c_driver *drv = i2c_sensor_drivers[num];
+				if (drv && !strcmp(drv->driver.name, name)) {
+					i2c_del_driver(drv);
+					kfree(i2c_sensor_drivers[num]);
+					i2c_sensor_drivers[num] = NULL;
+					i2c_failed_driver[failed_num] = NULL;
+					return;
+				}
+				num--;
+			}
+		}
+		failed_num--;
+	}
+}
+
 static void unregister_sensor_devices(void)
 {
 	int num = registered_devices - 1;
@@ -1945,8 +1976,26 @@ static void unregister_sensor_devices(void)
 
 		num--;
 	}
+}
 
-	registered_devices = 0;
+static void unregister_failed_devices(void)
+{
+	int failed_num = failed_devices - 1;
+	while (failed_num >= 0) {
+		struct i2c_client *fail_cli = i2c_failed_device[failed_num];
+		int num = registered_devices - 1;
+		while (num >= 0) {
+			struct i2c_client *reg_cli = i2c_sensor_devices[num];
+			if (reg_cli && reg_cli == fail_cli){
+				i2c_unregister_device(fail_cli);
+				i2c_failed_device[failed_num] = NULL;
+				i2c_sensor_devices[num] = NULL;
+			}
+			num--;
+		}
+		failed_num--;
+	}
+	failed_devices = 0;
 }
 
 /*
@@ -1960,10 +2009,13 @@ static int sensor_parse_config(int num, struct sensor_config *configs)
 
 	general_sensor_nums = 0;
 	while (num > 0) {
+		/*two methods to support multi drivers for one i2c slave*/
+		unregister_failed_devices();
+		//unregister_failed_driver(configs->name);
+
 		ret = register_sensor_driver(configs);
 		if (ret) {
 			printk(KERN_ERR "Fail to register sensor driver\n");
-			goto err;
 		}
 
 		if (configs->i2c_bus != INVALID_I2C_BUS) {
@@ -1983,12 +2035,7 @@ static int sensor_parse_config(int num, struct sensor_config *configs)
 				((int)configs + configs->size);
 	}
 
-	return ret;
-
-err:
-	unregister_sensor_drivers();
-	unregister_sensor_devices();
-	return ret;
+	return 0;
 }
 
 static struct device general_sensor_device;
@@ -2244,6 +2291,8 @@ static int __init sensor_general_init(void)
 	sensor_general_attached	= 0;
 	registered_drivers = 0;
 	registered_devices = 0;
+	failed_drivers = 0;
+	failed_devices = 0;
 
 	/*init callback of data operations*/
 	sensor_data_op_init();

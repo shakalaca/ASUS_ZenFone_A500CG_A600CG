@@ -148,6 +148,11 @@ typedef struct _MMU_DEVICEATTRIBS_
 	/*! Callback for putting the MMU configuration obtained from pfnGetPageSizeConfiguration */
 	PVRSRV_ERROR (*pfnPutPageSizeConfiguration)(IMG_HANDLE hPriv);
 
+	/*! Callback for getting the page size from the PDE for the page table entry with 4 byte entry */
+	PVRSRV_ERROR (*pfnGetPageSizeFromPDE4)(IMG_UINT32, IMG_UINT32 *);
+	/*! Callback for getting the page size from the PDE for the page table entry with 8 byte entry */
+	PVRSRV_ERROR (*pfnGetPageSizeFromPDE8)(IMG_UINT64, IMG_UINT32 *);
+
 	/*! Private data handle */
 	IMG_HANDLE hGetPageSizeFnPriv;
 } MMU_DEVICEATTRIBS;
@@ -405,6 +410,21 @@ MMU_ReleaseBaseAddr(MMU_CONTEXT *psMMUContext);
 */
 /*****************************************************************************/
 IMG_VOID MMU_SetDeviceData(MMU_CONTEXT *psMMUContext, IMG_HANDLE hDevData);
+
+/*************************************************************************/ /*!
+@Function       MMU_CheckFaultAddress
+
+@Description    Check the specified MMU context to see if the provided address
+                should be valid
+
+@Input          psMMUContext            MMU context to store the data on
+
+@Input          psDevVAddr              Address to check
+
+@Return         None
+*/
+/*****************************************************************************/
+IMG_VOID MMU_CheckFaultAddress(MMU_CONTEXT *psMMUContext, IMG_DEV_VIRTADDR *psDevVAddr);
 
 #if defined(PDUMP)
 /*************************************************************************/ /*!

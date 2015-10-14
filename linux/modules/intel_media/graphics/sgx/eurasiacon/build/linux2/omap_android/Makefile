@@ -122,19 +122,15 @@ ifneq ($(strip $(KERNELDIR)),)
    PVR_LDM_PLATFORM_PRE_REGISTERED_DEV := "\"pvrsrvkm\""
   endif
  endif
- ifeq ($(is_at_least_icecream_sandwich),1)
-  ifeq ($(call kernel-version-at-least,3,0),true)
-   SUPPORT_DC_CMDCOMPLETE_WHEN_NO_LONGER_DISPLAYED := 1
-   SYS_OMAP_HAS_DVFS_FRAMEWORK := 1
-  endif
- endif
-else
- ifeq ($(is_at_least_icecream_sandwich),1)
-  $(warning "KERNELDIR is not set, so can't feature check DVFS or dsscomp.")
-  $(warning "Assuming we want DVFS and dsscomp support.")
+ ifeq ($(call kernel-version-at-least,3,0),true)
   SUPPORT_DC_CMDCOMPLETE_WHEN_NO_LONGER_DISPLAYED := 1
   SYS_OMAP_HAS_DVFS_FRAMEWORK := 1
  endif
+else
+ $(warning "KERNELDIR is not set, so can't feature check DVFS or dsscomp.")
+ $(warning "Assuming we want DVFS and dsscomp support.")
+ SUPPORT_DC_CMDCOMPLETE_WHEN_NO_LONGER_DISPLAYED := 1
+ SYS_OMAP_HAS_DVFS_FRAMEWORK := 1
 endif
 
 ifneq ($(LDM_PLATFORM),1)

@@ -1,7 +1,7 @@
 /*
  * platform_hsu.c: hsu platform data initilization file
  *
- * (C) Copyright 2008-2013 Intel Corporation
+ * (C) Copyright 2008 Intel Corporation
  * Author:
  *
  * This program is free software; you can redistribute it and/or
@@ -18,8 +18,9 @@
 #include <linux/lnw_gpio.h>
 #include <linux/gpio.h>
 #include <asm/setup.h>
-#include <asm/intel_mid_hsu.h>
 #include <asm/intel-mid.h>
+#include <asm/intel_mid_hsu.h>
+
 #include "platform_hsu.h"
 
 #define TNG_CLOCK_CTL 0xFF00B830
@@ -114,11 +115,11 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 			[hsu_port2] = {
 				.id = 2,
 				.name = HSU_DEBUG_PORT,
+				.wake_gpio = 67,
 				.rx_gpio = 67,
 				.rx_alt = 1,
 				.rts_fixed = false,
 			},
-#ifdef BCM2076_UART_PORT3
 			[hsu_port_share] = {
 				.id = 1,
 				.name = HSU_GPS_PORT,
@@ -133,7 +134,6 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.rts_alt = 2,
 				.rts_fixed = false,
 			},
-#endif
 		},
 		[hsu_pid_vtb_pro] = {
 			[hsu_port0] = {
@@ -392,10 +392,8 @@ static struct hsu_port_cfg hsu_port_cfgs[][hsu_port_max] = {
 			.hw_suspend = intel_mid_hsu_suspend,
 			.hw_resume = intel_mid_hsu_resume,
 			.hw_get_clk = intel_mid_hsu_get_clk,
-#ifdef BCM2076_UART_PORT3
 			.has_alt = 1,
 			.alt = hsu_port_share,
-#endif
 			.force_suspend = 0,
 		},
 		[hsu_port2] = {
@@ -410,7 +408,6 @@ static struct hsu_port_cfg hsu_port_cfgs[][hsu_port_max] = {
 			.hw_resume = intel_mid_hsu_resume,
 			.hw_get_clk = intel_mid_hsu_get_clk,
 		},
-#ifdef BCM2076_UART_PORT3
 		[hsu_port_share] = {
 			.type = gps_port,
 			.hw_ip = hsu_intel,
@@ -429,7 +426,6 @@ static struct hsu_port_cfg hsu_port_cfgs[][hsu_port_max] = {
 			.alt = hsu_port1,
 			.force_suspend = 1,
 		},
-#endif
 	},
 	[hsu_tng] = {
 		[hsu_port0] = {
@@ -509,6 +505,7 @@ static struct hsu_port_cfg hsu_port_cfgs[][hsu_port_max] = {
 			.hw_set_alt = NULL,
 			.hw_set_rts = intel_mid_hsu_rts,
 			.hw_suspend = intel_mid_hsu_suspend,
+			.hw_suspend_post = intel_mid_hsu_suspend_post,
 			.hw_resume = intel_mid_hsu_resume,
 			.hw_context_save = 1,
 		},
@@ -548,12 +545,10 @@ static struct hsu_func2port hsu_port_func_id_tlb[][hsu_port_func_max] = {
 			.func = 2,
 			.port = hsu_port2,
 		},
-#ifdef BCM2076_UART_PORT3
 		[3] = {
 			.func = -1,
 			.port = -1,
 		},
-#endif
 	},
 	[hsu_tng] = {
 		[0] = {
@@ -652,6 +647,7 @@ void intel_mid_hsu_suspend(int port, struct device *dev, irq_handler_t wake_isr)
 
 	if (info->rts_fixed)
 		return;
+
 	if (info->wake_gpio) {
 		lnw_gpio_set_alt(info->wake_gpio, LNW_GPIO);
 		gpio_direction_input(info->wake_gpio);
@@ -667,6 +663,7 @@ void intel_mid_hsu_suspend(int port, struct device *dev, irq_handler_t wake_isr)
 void intel_mid_hsu_resume(int port, struct device *dev)
 {
 	struct hsu_port_pin_cfg *info = hsu_port_gpio_mux + port;
+
 	if (info->rts_fixed)
 		return;
 
@@ -710,6 +707,7 @@ void intel_mid_hsu_rts(int port, int value)
 
 	if (info->rts_fixed)
 		return;
+
 	if (!info->rts_gpio)
 		return;
 
@@ -735,15 +733,20 @@ void intel_mid_hsu_rts_fixed(int port, bool enable)
 		}
 	} else {
 		if (info->tx_gpio) {
-			lnw_gpio_set_alt(info->tx_gpio, info->tx_alt);
+                        gpio_direction_output(info->tx_gpio, 1);
+                        lnw_gpio_set_alt(info->tx_gpio, info->tx_alt);
+                        udelay(10);
+                        gpio_direction_output(info->tx_gpio, 0);
 		}
 		if (info->rts_gpio) {
-			lnw_gpio_set_alt(info->rts_gpio, info->rts_alt);
+                        gpio_direction_output(info->rts_gpio, 0);
+                        lnw_gpio_set_alt(info->rts_gpio, info->rts_alt);
 		}
 	}
 
 	info->rts_fixed = enable;
 }
+
 void intel_mid_hsu_suspend_post(int port)
 {
 	struct hsu_port_pin_cfg *info = hsu_port_gpio_mux + port;
@@ -795,14 +798,13 @@ int intel_mid_hsu_func_to_port(unsigned int func)
 	case INTEL_MID_CPU_CHIP_ANNIEDALE:
 		tbl = &hsu_port_func_id_tlb[hsu_tng][0];
 		break;
-	case INTEL_MID_CPU_CHIP_VALLEYVIEW2:
+	case INTEL_MID_CPU_CHIP_PENWELL:
+		tbl = &hsu_port_func_id_tlb[hsu_pnw][0];
+		break;
+	default:
+		/* FIXME: VALLEYVIEW2? */
 		/* 1e.3 and 1e.4 */
 		tbl = &hsu_port_func_id_tlb[hsu_vlv2][0];
-		break;
-	case INTEL_MID_CPU_CHIP_LINCROFT:
-	case INTEL_MID_CPU_CHIP_PENWELL:
-	default:
-		tbl = &hsu_port_func_id_tlb[hsu_pnw][0];
 		break;
 	}
 
@@ -881,15 +883,14 @@ static void hsu_platform_clk(enum intel_mid_cpu_type cpu_type)
 		iounmap(clksc);
 		break;
 
-	case INTEL_MID_CPU_CHIP_VALLEYVIEW2:
-		clock = 100000;
-		break;
-
-	case INTEL_MID_CPU_CHIP_LINCROFT:
 	case INTEL_MID_CPU_CHIP_PENWELL:
 	case INTEL_MID_CPU_CHIP_CLOVERVIEW:
-	default:
 		clock = 50000;
+		break;
+	default:
+		/* FIXME: VALLEYVIEW2? */
+		clock = 100000;
+		break;
 	}
 
 	pr_info("hsu core clock %u M\n", clock / 1000);
@@ -910,11 +911,6 @@ static __init int hsu_dev_platform_data(void)
 			hsu_port_gpio_mux =
 				&hsu_port_pin_cfgs[hsu_clv][hsu_pid_rhb][0];
 		break;
-	case INTEL_MID_CPU_CHIP_VALLEYVIEW2:
-		platform_hsu_info = &hsu_port_cfgs[hsu_vlv2][0];
-		hsu_port_gpio_mux =
-			&hsu_port_pin_cfgs[hsu_vlv2][hsu_pid_def][0];
-		break;
 
 	case INTEL_MID_CPU_CHIP_TANGIER:
 	case INTEL_MID_CPU_CHIP_ANNIEDALE:
@@ -922,11 +918,15 @@ static __init int hsu_dev_platform_data(void)
 		hsu_port_gpio_mux = &hsu_port_pin_cfgs[hsu_tng][hsu_pid_def][0];
 		break;
 
-	case INTEL_MID_CPU_CHIP_LINCROFT:
 	case INTEL_MID_CPU_CHIP_PENWELL:
-	default:
 		platform_hsu_info = &hsu_port_cfgs[hsu_pnw][0];
 		hsu_port_gpio_mux = &hsu_port_pin_cfgs[hsu_pnw][hsu_pid_def][0];
+		break;
+	default:
+		/* FIXME: VALLEYVIEW2? */
+		platform_hsu_info = &hsu_port_cfgs[hsu_vlv2][0];
+		hsu_port_gpio_mux =
+			&hsu_port_pin_cfgs[hsu_vlv2][hsu_pid_def][0];
 		break;
 	}
 

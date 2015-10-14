@@ -31,7 +31,6 @@
 #include "mdfld_output.h"
 #include <asm/intel_scu_ipc.h>
 #include "mdfld_dsi_pkg_sender.h"
-#include <linux/pm_runtime.h>
 #include <linux/freezer.h>
 #include "psb_drv.h"
 #include "mdfld_dsi_esd.h"
@@ -553,37 +552,8 @@ static int mdfld_dsi_connector_mode_valid(struct drm_connector *connector,
 
 static void mdfld_dsi_connector_dpms(struct drm_connector *connector, int mode)
 {
-#ifdef CONFIG_PM_RUNTIME
-	struct drm_device *dev;
-	struct drm_psb_private *dev_priv;
-	struct mdfld_dsi_config **dsi_configs;
-	bool panel_on;
-	bool panel_on2;
-#endif
-
 	/*first, execute dpms*/
 	drm_helper_connector_dpms(connector, mode);
-
-#ifdef CONFIG_PM_RUNTIME
-	dev = connector->dev;
-	dev_priv = dev->dev_private;
-	panel_on = false;
-	panel_on2 = false;
-
-	dsi_configs = dev_priv->dsi_configs;
-
-	if (dsi_configs[0])
-		panel_on = dsi_configs[0]->dsi_hw_context.panel_on;
-	if (dsi_configs[1])
-		panel_on = dsi_configs[1]->dsi_hw_context.panel_on;
-
-	/*then check all display panels + monitors status*/
-	if (!panel_on && !panel_on2) {
-		/*request rpm idle*/
-		if (dev_priv->rpm_enabled)
-			pm_request_idle(&dev->pdev->dev);
-	}
-#endif
 }
 
 static struct drm_encoder *
@@ -778,6 +748,11 @@ static int mdfld_dsi_regs_init(struct mdfld_dsi_config *dsi_config,
 	regs->mipi_data_len_reg = MIPIA_DATA_LEN_REG + reg_offset;
 	regs->mipi_cmd_addr_reg = MIPIA_CMD_ADD_REG + reg_offset;
 	regs->mipi_cmd_len_reg = MIPIA_CMD_LEN_REG + reg_offset;
+	regs->histogram_intr_ctrl_reg = HISTOGRAM_INT_CONTROL;
+	regs->histogram_logic_ctrl_reg = HISTOGRAM_LOGIC_CONTROL;
+	regs->aimg_enhance_bin_reg = HISTOGRAM_BIN_DATA;
+	//regs->lvds_port_ctrl_reg = LVDS_PORT_CTRL;
+
 	return 0;
 }
 
@@ -970,7 +945,7 @@ int mdfld_dsi_output_init(struct drm_device *dev,
 	connector = &psb_output->base;
 	drm_connector_init(dev, connector,
 			&mdfld_dsi_connector_funcs,
-			DRM_MODE_CONNECTOR_MIPI);
+			DRM_MODE_CONNECTOR_DSI);
 
 	drm_connector_helper_add(connector, &mdfld_dsi_connector_helper_funcs);
 
@@ -1036,6 +1011,10 @@ int mdfld_dsi_output_init(struct drm_device *dev,
 	}
 
 	drm_sysfs_connector_add(connector);
+
+	/* DPST: TODO - get appropriate connector */
+	if (dev_priv->dpst_connector == 0)
+		dev_priv->dpst_connector = connector;
 
 	/*init dsr*/
 	if (mdfld_dsi_dsr_init(dsi_config))

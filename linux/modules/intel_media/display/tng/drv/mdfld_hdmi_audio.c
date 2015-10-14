@@ -19,6 +19,7 @@
  */
 
 #include <drm/drmP.h>
+#include <linux/kernel.h>
 #include "psb_drv.h"
 #include "psb_intel_reg.h"
 #include "mdfld_hdmi_audio_if.h"
@@ -37,10 +38,19 @@
  */
 static struct android_hdmi_priv *hdmi_priv;
 
+static void hdmi_suspend_work(struct work_struct *work)
+{
+	struct android_hdmi_priv *hdmi_priv =
+		container_of(work, struct android_hdmi_priv, suspend_wq);
+	struct drm_device *dev = hdmi_priv->dev;
+
+	android_hdmi_suspend_display(dev);
+}
 
 void mid_hdmi_audio_init(struct android_hdmi_priv *p_hdmi_priv)
 {
 	hdmi_priv = p_hdmi_priv;
+	INIT_WORK(&hdmi_priv->suspend_wq, hdmi_suspend_work);
 }
 
 /*
@@ -245,15 +255,15 @@ static int mid_hdmi_audio_set_caps(
 
 	PSB_DEBUG_ENTRY("\n");
 
+	if (!is_island_on(OSPM_DISPLAY_B) || !is_island_on(OSPM_DISPLAY_HDMI))
+		return -EINVAL;
+
 	switch (set_element) {
 	case HAD_SET_ENABLE_AUDIO:
 		if (hdmi_priv->hdmi_audio_enabled) {
 			pr_err("OSPM: %s: hdmi audio has been enabled\n", __func__);
 			return 0;
 		}
-		if (!is_island_on(OSPM_DISPLAY_B) ||
-				!is_island_on(OSPM_DISPLAY_HDMI))
-			return -EINVAL;
 
 		hdmib = REG_READ(hdmi_priv->hdmib_reg);
 
@@ -276,7 +286,7 @@ static int mid_hdmi_audio_set_caps(
 		hdmi_priv->hdmi_audio_enabled = false;
 		if (dev_priv->early_suspended) {
 			/* suspend hdmi display if device has been suspended */
-			android_hdmi_suspend_display(dev);
+			schedule_work(&hdmi_priv->suspend_wq);
 		}
 		break;
 	case HAD_SET_ENABLE_AUDIO_INT:

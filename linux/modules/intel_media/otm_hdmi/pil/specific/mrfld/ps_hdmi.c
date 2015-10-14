@@ -86,7 +86,7 @@
 #define PS_HDMI_HPD_PCI_DRIVER_NAME "Merrifield HDMI HPD Driver"
 
 /* Globals */
-static hdmi_context_t *g_context;
+static hdmi_context_t *g_context = NULL;
 
 #define PS_HDMI_MMIO_RESOURCE 0
 #define PS_VDC_OFFSET 0x00000000
@@ -97,6 +97,11 @@ static hdmi_context_t *g_context;
 #define PS_MSIC_LS_EN_GPIO_PIN 177
 #define PS_MSIC_HPD_GPIO_PIN_NAME "HDMI_HPD"
 #define PS_MSIC_LS_EN_GPIO_PIN_NAME "HDMI_LS_EN"
+#define PS_MSIC_CPD_HPD_GPIO_PIN 0x7F
+
+/* MOOREFIELD SPECIFIC */
+#define PMIC_GPIO0_CTRL_REG_OFST	0x7E
+#define PMIC_GPIO0_CFG_VAL	0x2A
 
 /* For Merrifield, it is required that SW pull up or pull down the
  * LS_OE GPIO pin based on cable status. This is needed before
@@ -123,7 +128,6 @@ static void __ps_gpio_configure_edid_read(void)
 		gpio_set_value(ctx->gpio_ls_en_pin, 0);
 	else
 		gpio_set_value(ctx->gpio_ls_en_pin, 1);
-
 	pr_debug("%s: MSIC_LS_OE pin = %d (%d)\n", __func__,
 		 gpio_get_value(ctx->gpio_ls_en_pin), new_pin_value);
 }
@@ -154,7 +158,7 @@ otm_hdmi_ret_t ps_hdmi_pci_dev_init(void *context, struct pci_dev *pdev)
 	pr_debug("map IO region\n");
 	/* Map IO region and save its length */
 	ctx->io_length = PS_VDC_SIZE;
-	ctx->io_address = ioremap_cache(pci_address, ctx->io_length);
+	ctx->io_address = ioremap(pci_address, ctx->io_length);
 	if (!ctx->io_address) {
 		rc = OTM_HDMI_ERR_FAILED;
 		goto exit;
@@ -202,9 +206,22 @@ otm_hdmi_ret_t ps_hdmi_pci_dev_init(void *context, struct pci_dev *pdev)
 		goto exit;
 	}
 
+	/* on moorefield V0 platform, HDMI_LS_EN is driven from SHADYCOVE PMIC */
+	if (INTEL_MID_BOARD(2, PHONE, MOFD, V0, PRO)) {
+		pr_debug("configure MSIC GPIO0(HDMI_LS_EN) for MOOREFIELD V0 \
+				o/p=1 pu=50k pu/pd=enabled od=1 dir=ouptut\n");
+
+		result = intel_scu_ipc_iowrite8(PMIC_GPIO0_CTRL_REG_OFST, PMIC_GPIO0_CFG_VAL);
+
+		if(result != 0) {
+			pr_err("%s failed to configure GPIO0(HDMI_LS_EN)\n",__func__);
+			rc = OTM_HDMI_ERR_FAILED;
+			goto exit;
+		}
+	}
+
 	/* Set the GPIO based on cable status */
 	__ps_gpio_configure_edid_read();
-
 exit:
 	return rc;
 }
@@ -244,36 +261,48 @@ otm_hdmi_ret_t ps_hdmi_i2c_edid_read(void *ctx, unsigned int sp,
 bool ps_hdmi_power_rails_on(void)
 {
 	pr_debug("Entered %s\n", __func__);
-
-	intel_scu_ipc_iowrite8(0x7F, 0x31);
-	pr_debug("Leaving %s\n", __func__);
 	return true;
 }
 
 bool ps_hdmi_power_rails_off(void)
 {
 	pr_debug("Entered %s\n", __func__);
-
 	return 0;
+}
 
+/* enable/disable IRQ and CPD_HPD */
+bool ps_hdmi_enable_hpd(bool enable)
+{
+	pr_debug("Entered %s: %s\n", __func__, enable ? "enable" : "disable");
+
+	if (enable)
+		intel_scu_ipc_iowrite8(PS_MSIC_CPD_HPD_GPIO_PIN, 0x31);
+	else
+		intel_scu_ipc_iowrite8(PS_MSIC_CPD_HPD_GPIO_PIN, 0x30);
+	return true;
 }
 
 bool ps_hdmi_power_islands_on()
 {
-	return ospm_power_using_hw_begin(OSPM_DISPLAY_B | OSPM_DISPLAY_HDMI,
+	/* power on display island C to use overlay C and sprite D planes */
+	return ospm_power_using_hw_begin(
+			OSPM_DISPLAY_B | OSPM_DISPLAY_HDMI | OSPM_DISPLAY_C,
 			OSPM_UHB_FORCE_POWER_ON);
 }
 
 bool ps_hdmi_hdcp_power_islands_on()
 {
-	return ospm_power_using_hw_begin(OSPM_DISPLAY_B | OSPM_DISPLAY_HDMI,
+	/* power on display island C to use overlay C and sprite D planes */
+	return ospm_power_using_hw_begin(
+			OSPM_DISPLAY_B | OSPM_DISPLAY_HDMI | OSPM_DISPLAY_C,
 			OSPM_UHB_FORCE_POWER_ON);
 }
 
 
 void ps_hdmi_power_islands_off()
 {
-	ospm_power_using_hw_end(OSPM_DISPLAY_HDMI | OSPM_DISPLAY_B);
+	ospm_power_using_hw_end(
+		OSPM_DISPLAY_HDMI | OSPM_DISPLAY_B | OSPM_DISPLAY_C);
 }
 
 void ps_hdmi_vblank_control(struct drm_device *dev, bool on)

@@ -409,7 +409,7 @@ bool ips_hdcp_is_ready(void)
 		}
 	}
 
-	pr_info("hdcp - read count left=%d\n", count);
+	pr_debug("hdcp: read count left = %d\n", count);
 	return ret;
 }
 

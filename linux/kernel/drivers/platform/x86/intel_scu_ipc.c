@@ -3,8 +3,6 @@
  *
  * (C) Copyright 2008-2010 Intel Corporation
  * Author: Sreedhara DS (sreedhara.ds@intel.com)
- * (C) Copyright 2010-2012 Intel Corporation
- * Author: Sudha Krishnakumar (sudha.krishnakumar@intel.com)
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -18,7 +16,6 @@
  * IPC-1 Driver provides an API for power control unit registers (e.g. MSIC)
  * along with other APIs.
  */
-
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -47,35 +44,35 @@ enum {
 };
 
 /* intel scu ipc driver data*/
-struct intel_scu_ipc_ddata_t {
+struct intel_scu_ipc_pdata_t {
 	u32 ipc_base;
 	u32 i2c_base;
 	u32 ipc_len;
 	u32 i2c_len;
 };
 
-static struct intel_scu_ipc_ddata_t intel_scu_ipc_ddata[] = {
+static struct intel_scu_ipc_pdata_t intel_scu_ipc_pdata[] = {
 	[SCU_IPC_LINCROFT] = {
-		.ipc_base = 0xFF11C000,
-		.i2c_base = 0xFF12B000,
+		.ipc_base = 0xff11c000,
+		.i2c_base = 0xff12b000,
 		.ipc_len = 0x100,
 		.i2c_len = 0x10,
 	},
 	[SCU_IPC_PENWELL] = {
-		.ipc_base = 0xFF11C000,
-		.i2c_base = 0xFF12B000,
+		.ipc_base = 0xff11c000,
+		.i2c_base = 0xff12b000,
 		.ipc_len = 0x100,
 		.i2c_len = 0x10,
 	},
 	[SCU_IPC_CLOVERVIEW] = {
-		.ipc_base = 0xFF11C000,
-		.i2c_base = 0xFF12B000,
+		.ipc_base = 0xff11c000,
+		.i2c_base = 0xff12b000,
 		.ipc_len = 0x100,
 		.i2c_len = 0x10,
 	},
 	[SCU_IPC_TANGIER] = {
-		.ipc_base = 0xFF009000,
-		.i2c_base  = 0xFF00D000,
+		.ipc_base = 0xff009000,
+		.i2c_base  = 0xff00d000,
 		.ipc_len  = 0x100,
 		.i2c_len = 0x10,
 	},
@@ -118,7 +115,6 @@ struct intel_ipc_controller {
 	struct pci_dev *pdev;
 	void __iomem *ipc_base;
 	void __iomem *i2c_base;
-	void __iomem *mip_base;
 	int ioc;
 	int cmd;
 	struct completion cmd_complete;
@@ -142,7 +138,9 @@ static char *ipc_err_sources[] = {
 	[IPC_ERR_CMD_FAILED] =
 		"command failed",
 	[IPC_ERR_EMSECURITY] =
-		"unsigned kernel",
+		"Invalid Battery",
+	[IPC_ERR_UNSIGNEDKERNEL] =
+		"Unsigned kernel",
 };
 
 #define IPC_I2C_CNTRL_ADDR	0
@@ -277,6 +275,8 @@ int intel_scu_ipc_check_status(void)
 			dev_err(&ipcdev.pdev->dev,
 				"IPC failed: unknown error, IPC_STS=0x%x, "
 				"IPC_CMD=0x%x\n", status, ipcdev.cmd);
+		if ((i == IPC_ERR_UNSIGNEDKERNEL) || (i == IPC_ERR_EMSECURITY))
+			ret = -EACCES;
 	}
 
 	return ret;
@@ -383,7 +383,20 @@ int intel_scu_ipc_raw_cmd(u32 cmd, u32 sub, u8 *in, u32 inlen, u32 *out,
 	 */
 	if ((cmd & 0xFF) == IPCMSG_WATCHDOG_TIMER)
 		inlen = (inlen + 3) / 4;
-
+	/*
+	 *  In case of 3 pmic writes or read-modify-writes
+	 *  there are holes in the middle of the buffer which are
+	 *  ignored by SCU. These bytes should not be included into
+	 *  size of the ipc msg. Holes are as follows:
+	 *  write: wbuf[6 & 7]
+	 *  read-modifu-write: wbuf[6 & 7 & 11]
+	 */
+	else if ((cmd & 0xFF) == IPCMSG_PCNTRL) {
+		if (sub == IPC_CMD_PCNTRL_W && inlen == 11)
+			inlen -= 2;
+		else if (sub == IPC_CMD_PCNTRL_M && inlen == 15)
+			inlen -= 3;
+	}
 	intel_scu_ipc_send_command((inlen << 16) | (sub << 12) | cmd);
 	err = intel_scu_ipc_check_status();
 
@@ -429,14 +442,14 @@ static irqreturn_t ioc(int irq, void *dev_id)
 static int ipc_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	int err, pid;
-	struct intel_scu_ipc_ddata_t *ddata;
+	struct intel_scu_ipc_pdata_t *pdata;
 	resource_size_t pci_resource;
 
 	if (ipcdev.pdev)		/* We support only one SCU */
 		return -EBUSY;
 
 	pid = id->driver_data;
-	ddata = &intel_scu_ipc_ddata[pid];
+	pdata = &intel_scu_ipc_pdata[pid];
 
 	ipcdev.pdev = pci_dev_get(dev);
 
@@ -458,11 +471,11 @@ static int ipc_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		&ipcdev))
 		return -EBUSY;
 
-	ipcdev.ipc_base = ioremap_nocache(ddata->ipc_base, ddata->ipc_len);
+	ipcdev.ipc_base = ioremap_nocache(pdata->ipc_base, pdata->ipc_len);
 	if (!ipcdev.ipc_base)
 		return -ENOMEM;
 
-	ipcdev.i2c_base = ioremap_nocache(ddata->i2c_base, ddata->i2c_len);
+	ipcdev.i2c_base = ioremap_nocache(pdata->i2c_base, pdata->i2c_len);
 	if (!ipcdev.i2c_base) {
 		iounmap(ipcdev.ipc_base);
 		return -ENOMEM;
@@ -510,7 +523,7 @@ static struct pci_driver ipc_driver = {
 	.remove = ipc_remove,
 };
 
-static int __init intel_scu_ipc_init(void)
+static int intel_scu_ipc_init(void)
 {
 	platform = intel_mid_identify_cpu();
 	if (platform == 0)

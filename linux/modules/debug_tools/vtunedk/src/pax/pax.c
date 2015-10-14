@@ -456,15 +456,14 @@ pax_Reserve_All (
  * <I>Special Notes</I>
  */
 extern IOCTL_OP_TYPE
-pax_Device_Control (
+pax_Service_IOCTL (
     IOCTL_USE_INODE
     struct   file   *filp,
     unsigned int     cmd,
-    unsigned long    arg
+    IOCTL_ARGS_NODE  local_args
 )
 {
     int             status = OS_SUCCESS;
-    IOCTL_ARGS_NODE local_args;
 
     PAX_PRINT_DEBUG("device control (0x%x) called on maj:%d, min:%d\n",
                     cmd, imajor(inode), iminor(inode));
@@ -473,23 +472,15 @@ pax_Device_Control (
     switch (cmd) {
         case PAX_IOCTL_INFO:
             PAX_PRINT_DEBUG("PAX_IOCTL_INFO\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
             status = pax_Get_Info(&local_args);
             break;
 
         case PAX_IOCTL_STATUS:
             PAX_PRINT_DEBUG("PAX_IOCTL_STATUS\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
             status = pax_Get_Status(&local_args);
             break;
 
-        case PAX_IOCTL_RESERVE_ALL:
+       case PAX_IOCTL_RESERVE_ALL:
             PAX_PRINT_DEBUG("PAX_IOCTL_RESERVE_ALL\n");
             status = pax_Reserve_All();
             break;
@@ -506,13 +497,58 @@ pax_Device_Control (
             break;
     }
 
-cleanup:
+    return status;
+}
 
-    PAX_PRINT_DEBUG("cmd: %d device type: %d, subcommand: %d, returned %d\n",
-                    cmd, _IOC_TYPE(cmd), _IOC_NR(cmd),status);
+extern long
+pax_Device_Control (
+    IOCTL_USE_INODE
+    struct   file   *filp,
+    unsigned int     cmd,
+    unsigned long    arg
+)
+{
+    int                     status = OS_SUCCESS;
+    IOCTL_ARGS_NODE         local_args;
+
+    if (arg) {
+        status = copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE)); 
+        }
+
+    status = pax_Service_IOCTL (IOCTL_USE_INODE filp, cmd, local_args);
+    return status;
+}
+
+#if defined(HAVE_COMPAT_IOCTL) && defined(DRV_EM64T)
+extern IOCTL_OP_TYPE
+pax_Device_Control_Compat (
+    struct   file   *filp,
+    unsigned int     cmd,
+    unsigned long    arg
+)
+{
+    int                     status = OS_SUCCESS;
+    IOCTL_COMPAT_ARGS_NODE  local_args_compat;
+    IOCTL_ARGS_NODE         local_args;
+
+    if (arg) {
+        status = copy_from_user(&local_args_compat, (IOCTL_COMPAT_ARGS)arg, sizeof(IOCTL_COMPAT_ARGS_NODE)); 
+        }
+
+    local_args.r_len = local_args_compat.r_len;
+    local_args.w_len = local_args_compat.w_len;
+    local_args.r_buf = (char *) compat_ptr (local_args_compat.r_buf);
+    local_args.w_buf = (char *) compat_ptr (local_args_compat.w_buf);
+
+    if (cmd == PAX_IOCTL_COMPAT_INFO) {
+        cmd = PAX_IOCTL_INFO;
+    }
+
+    status = pax_Service_IOCTL (filp, cmd, local_args);
 
     return status;
 }
+#endif
 
 // **************************************************************************
 //
@@ -527,6 +563,9 @@ cleanup:
 static struct file_operations pax_Fops = {
     .owner =   THIS_MODULE,
     IOCTL_OP = pax_Device_Control,
+#if defined(HAVE_COMPAT_IOCTL) && defined(DRV_EM64T)
+    .compat_ioctl = pax_Device_Control_Compat,
+#endif
     .read =    NULL,
     .write =   NULL,
     .open =    pax_Open,

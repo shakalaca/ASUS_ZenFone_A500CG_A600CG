@@ -51,7 +51,7 @@
 #include <linux/workqueue.h>
 #include <linux/mfd/intel_msic.h>
 
-#ifdef CONFIG_BOARD_CTP
+#ifndef CONFIG_ACPI
 
  #define DRIVER_NAME	"msic_vdd"
  #define DEVICE_NAME	"msic_vdd"
@@ -61,6 +61,8 @@
  #define MBCUIRQ	0x019
 
  #define VWARNA_THRES	0x04 /*2.9v*/
+ #define VWARNB_THRES	0x04 /*2.9v*/
+ #define VWARNCRIT_THRES	0x01 /*3.2v*/
 
 #else
 
@@ -71,7 +73,10 @@
  #define BCUIRQ		0x007
  #define MBCUIRQ	0x014
 
- #define VWARNA_THRES	0x07 /*2.9v*/
+ #define VWARNA_THRES		0x06 /*3.0V*/
+ #define VWARNB_THRES		0x04 /*2.9V*/
+ #define VWARNCRIT_THRES	0x06 /*2.7V*/
+
 #endif
 
 #define VWARNA_CFG	(OFFSET + 0)
@@ -86,14 +91,16 @@
 #define SBCUCTRL	(OFFSET + 8)
 
 #define VWARNA_VOLT_THRES	VWARNA_THRES
-#define VWARNB_VOLT_THRES	0x04 /* 2.9v*/
-#define VCRIT_VOLT_THRES	0x01 /*3.2v*/
+#define VWARNB_VOLT_THRES	VWARNB_THRES
+#define VCRIT_VOLT_THRES	VWARNCRIT_THRES
 
-#define SBCUCTRL_CLEAR_ASSERT	0x02
-#define SBCUCTRL_STICKY_WARNB	0x04
-#define SBCUCTRL_STICKY_WARNA	0x08
+#define SBCUDISCRIT_MASK	0x02
+#define SBCUDISB_MASK		0x04
+#define SBCUDISA_MASK		0x08
+#define SPROCHOT_B_MASK		0x01
 
-#define IRQLVL1MSK		0x021
+/* bcu control pin status register set */
+#define SBCUCTRL_SET		0x0F
 
 /* BCUIRQ register settings */
 #define VCRIT_IRQ		(1 << 2)
@@ -122,7 +129,6 @@
 
 /* check whether bit is sticky or not by checking 3rd bit */
 #define IS_STICKY(data)		(data & 0x04)
-#define MASK_VCRIT		0x04
 
 #define SET_ACTION_MASK(data, value, bit) (data | (value << bit))
 
@@ -139,10 +145,16 @@
 #define MAX_VOLTAGE             3300
 #define MIN_VOLTAGE             2600
 
-/* mask to clear interrupt bit*/
-#define BCUIRQ_CLEARCRIT        0X04
-#define BCUIRQ_CLEARA           0x02
-#define BCUIRQ_CLEARB           0x01
+/* mask level 2 interrupt register set */
+#define MBCUIRQ_SET		0x07
+
+/* interrupt bit masks for MBCUIRQ reg*/
+#define VCRIT_MASK		0x04
+#define VWARNA_MASK		0x02
+#define VWARNB_MASK		0x01
+
+/* Vsys status bit mask for SBCUIRQ register */
+#define SBCUIRQ_MASK		(VCRIT_MASK | VWARNA_MASK | VWARNB_MASK)
 
 /* default values for register configuration */
 #define INIT_VWARNA		(VWARNA_VOLT_THRES | DEBOUNCE | VCOMP_ENABLE)
@@ -157,11 +169,18 @@
 #define BCU_QUEUE		"bcu-queue"
 #define BASE_TIME		30
 #define STEP_TIME		15
+#define VWARNA_INTR_EN_DELAY	(30 * HZ)
 
-#define CAMFLASH_STATE_ON       1
-#define CAMFLASH_STATE_OFF      0
+/* Generic macro and string to send the
+ * uevent along with env to userspace
+ */
+#define EVT_STR			"BCUEVT="
+#define GET_ENVP(EVT)		(EVT_STR#EVT)
 
-/* Defined to match the correponding bit positions of the interrupt */
+#define CAMFLASH_STATE_NORMAL       0
+#define CAMFLASH_STATE_CRITICAL      3
+
+/* Defined to match the corresponding bit positions of the interrupt */
 enum { VWARNB_EVENT = 1, VWARNA_EVENT = 2, VCRIT_EVENT = 4};
 
 static DEFINE_MUTEX(vdd_update_lock);
@@ -173,13 +192,16 @@ static struct intel_msic_vdd_pdata *pdata;
 
 struct vdd_info {
 	unsigned int irq;
+	uint32_t intr_count_lvl1;
+	uint32_t intr_count_lvl2;
+	uint32_t intr_count_lvl3;
 	struct device *dev;
 	struct platform_device *pdev;
 	/* mapping SRAM address for BCU interrupts */
 	void __iomem *bcu_intr_addr;
 	unsigned int delay;
 	u64 seed_time;
-	struct delayed_work vcrit_burst;
+	struct delayed_work vdd_intr_dwork;
 };
 
 static uint8_t cam_flash_state;
@@ -365,13 +387,24 @@ static ssize_t store_volt_thres(struct device *dev,
 	int ret;
 	uint8_t data;
 	long volt;
+	long volt_limit_offset = 0;
 	struct sensor_device_attribute_2 *s_attr =
 					to_sensor_dev_attr_2(attr);
 
 	if (kstrtol(buf, 10, &volt))
 		return -EINVAL;
+	/*
+	 * In case of baytrail, VWARNA's range is from
+	 * 3.6 volt to 2.9 volt.For this we set
+	 * volt_limit_offset to 300mV.
+	 * It remains zero for all other cases. i.e. Cases
+	 * were the range is from 3.3 volt to 2.6 volt.
+	 */
+	if ((!pdata->is_clvp) && (!s_attr->nr))
+		volt_limit_offset = 300;
 
-	if (volt > MAX_VOLTAGE || volt < MIN_VOLTAGE)
+	if (volt > (MAX_VOLTAGE + volt_limit_offset) ||
+			volt < (MIN_VOLTAGE + volt_limit_offset))
 		return -EINVAL;
 
 	mutex_lock(&vdd_update_lock);
@@ -387,7 +420,8 @@ static ssize_t store_volt_thres(struct device *dev,
 	 * 100(since the values are entered as mV). Then, set bits
 	 * [0-2] to 'diff'
 	 */
-	data = (data & 0xF8) | ((MAX_VOLTAGE - volt)/100);
+	data = (data & 0xF8) | (((MAX_VOLTAGE + volt_limit_offset)
+				- volt)/100);
 
 	ret = intel_scu_ipc_iowrite8(VWARNA_CFG + s_attr->nr, data);
 	if (ret)
@@ -405,6 +439,7 @@ static ssize_t show_volt_thres(struct device *dev,
 {
 	int ret, volt;
 	uint8_t data;
+	long volt_limit_offset = 0;
 	struct sensor_device_attribute_2 *s_attr =
 					to_sensor_dev_attr_2(attr);
 
@@ -412,10 +447,13 @@ static ssize_t show_volt_thres(struct device *dev,
 	if (ret)
 		return ret;
 
+	if ((!pdata->is_clvp) && (!s_attr->nr))
+		volt_limit_offset = 300;
+
 	/* Read bits [0-2] of data and multiply by 100(for mV) */
 	volt = (data & 0x07) * 100;
 
-	return sprintf(buf, "%d\n", MAX_VOLTAGE - volt);
+	return sprintf(buf, "%d\n", (MAX_VOLTAGE + volt_limit_offset) - volt);
 }
 
 static ssize_t show_irq_status(struct device *dev,
@@ -444,6 +482,35 @@ static ssize_t show_action_status(struct device *dev,
 	return sprintf(buf, "%x\n", action_status);
 }
 
+static ssize_t show_intr_count(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	uint32_t value;
+	int level = to_sensor_dev_attr(attr)->index;
+	struct vdd_info *vinfo = dev_get_drvdata(dev);
+
+	if (vinfo == NULL) {
+		dev_err(dev, "Unable to get driver private data.\n");
+		return -EIO;
+	}
+
+	switch (level) {
+	case VWARNA_EVENT:
+		value = vinfo->intr_count_lvl1;
+		break;
+	case VWARNB_EVENT:
+		value = vinfo->intr_count_lvl2;
+		break;
+	case VCRIT_EVENT:
+		value = vinfo->intr_count_lvl3;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return sprintf(buf, "%d\n", value);
+}
+
 static ssize_t store_camflash_ctrl(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -451,7 +518,8 @@ static ssize_t store_camflash_ctrl(struct device *dev,
 	if (kstrtou8(buf, 10, &value))
 		return -EINVAL;
 
-	if ((value != CAMFLASH_STATE_ON) && (value != CAMFLASH_STATE_OFF))
+	if ((value < CAMFLASH_STATE_NORMAL) ||
+		(value > CAMFLASH_STATE_CRITICAL))
 		return -EINVAL;
 
 	cam_flash_state = value;
@@ -466,31 +534,66 @@ static ssize_t show_camflash_ctrl(struct device *dev,
 
 static void unmask_theburst(struct work_struct *work)
 {
+	int ret;
+	uint8_t irq_data;
 	struct delayed_work *dwork = to_delayed_work(work);
 	struct vdd_info *vinfo = container_of(dwork, struct vdd_info,
-				 vcrit_burst);
-	intel_scu_ipc_update_register(MBCUIRQ, ~MASK_VCRIT, MASK_VCRIT);
-	vinfo->seed_time = jiffies_64;
+				 vdd_intr_dwork);
+	if (pdata->is_clvp) {
+		intel_scu_ipc_update_register(MBCUIRQ,
+				~MBCUIRQ_SET, VCRIT_MASK);
+		vinfo->seed_time = jiffies_64;
+	} else {
+		intel_scu_ipc_update_register(MBCUIRQ,
+				~MBCUIRQ_SET, VWARNA_MASK);
+		ret = intel_scu_ipc_ioread8(SBCUIRQ, &irq_data);
+		if (ret) {
+			dev_warn(&vinfo->pdev->dev,
+				"Read VSYS flag failed\n");
+		} else {
+			/* Clear the BCUDISA and PROCHOT_B signal
+			 * if Vsys is above VWARNA threshold.
+			 */
+			if (!(irq_data & SVWARNA))
+				intel_scu_ipc_update_register(SBCUCTRL,
+					SBCUCTRL_SET, SBCUDISA_MASK);
+				intel_scu_ipc_update_register(SBCUCTRL,
+					SBCUCTRL_SET, SPROCHOT_B_MASK);
+		}
+	}
 }
 
 /**
   * handle_events - handle different type of interrupts related to BCU
-  * @flag - define what type of interrupt it is
+  * @flag - is the enumeration value for VWARNA, VWARNB or
+  * a VCRIT interrupt.
   * @dev_data - device information
   */
 static void handle_events(int flag, void *dev_data)
 {
 	uint8_t irq_data, sticky_data;
 	struct vdd_info *vinfo = (struct vdd_info *)dev_data;
+	char *bcu_envp[2] = {NULL};
 	int ret;
 
 	ret = intel_scu_ipc_ioread8(SBCUIRQ, &irq_data);
 	if (ret)
 		goto handle_ipc_fail;
 
-	if (flag & VCRIT_EVENT) {
+	switch (flag) {
+	case VCRIT_EVENT:
 		pr_info_ratelimited("%s: VCRIT_EVENT occurred\n",
 					DRIVER_NAME);
+		if (!pdata->is_clvp) {
+			bcu_envp[0] = GET_ENVP(VCRIT);
+
+			/* Masking VCRIT after one event occurs */
+			ret = intel_scu_ipc_update_register(MBCUIRQ,
+					MBCUIRQ_SET, VCRIT_MASK);
+			if (ret)
+				dev_err(&vinfo->pdev->dev,
+					"VCRIT mask failed\n");
+		}
 		if (vinfo->seed_time && time_before((unsigned long)(jiffies_64 -
 			vinfo->seed_time), (unsigned long)
 			msecs_to_jiffies(STEP_TIME))) {
@@ -500,14 +603,16 @@ static void handle_events(int flag, void *dev_data)
 		}
 		if (bcu_workqueue) {
 			ret = intel_scu_ipc_update_register(MBCUIRQ,
-				MASK_VCRIT, MASK_VCRIT);
+				MBCUIRQ_SET, VCRIT_MASK);
 			if (ret) {
 				dev_err(&vinfo->pdev->dev,
 				"VCRIT mask failed\n");
 			} else {
-				queue_delayed_work(bcu_workqueue,
-				&(vinfo->vcrit_burst),
-				msecs_to_jiffies(vinfo->delay));
+				if (pdata->is_clvp) {
+					queue_delayed_work(bcu_workqueue,
+					&(vinfo->vdd_intr_dwork),
+					msecs_to_jiffies(vinfo->delay));
+				}
 			}
 		} else {
 			dev_warn(&vinfo->pdev->dev,
@@ -526,16 +631,29 @@ static void handle_events(int flag, void *dev_data)
 				 * automatically in case sticky bit is set.
 				 */
 				ret = intel_scu_ipc_update_register(SBCUCTRL,
-					(1 << 1), SBCUCTRL_CLEAR_ASSERT);
+						SBCUCTRL_SET, SBCUDISCRIT_MASK);
 				if (ret)
 					goto handle_ipc_fail;
 			}
 		}
-		kobject_uevent(&vinfo->pdev->dev.kobj, KOBJ_CHANGE);
-	}
-	if (flag & VWARNB_EVENT) {
+		break;
+	case VWARNB_EVENT:
 		pr_info_ratelimited("%s: VWARNB_EVENT occurred\n",
 					DRIVER_NAME);
+		if (!pdata->is_clvp) {
+			bcu_envp[0] = GET_ENVP(VWARN2);
+
+			ret = intel_scu_ipc_update_register(MBCUIRQ,
+					MBCUIRQ_SET, VWARNB_MASK);
+			if (ret)
+				dev_err(&vinfo->pdev->dev,
+					"VWARNB mask failed\n");
+
+			/* No need to process further for byt, as user-space
+			 * initiates a graceful shutdown on VWARNB
+			 */
+			break;
+		}
 		if (!(irq_data & SVWARNB)) {
 			/* Vsys is above WARNB level */
 			intel_scu_ipc_ioread8(BCUDISB_BEH, &sticky_data);
@@ -548,15 +666,32 @@ static void handle_events(int flag, void *dev_data)
 				 * in case sticky bit is set.
 				 */
 				ret = intel_scu_ipc_update_register(SBCUCTRL,
-					(1 << 2), SBCUCTRL_STICKY_WARNB);
+						SBCUCTRL_SET, SBCUDISB_MASK);
 				if (ret)
 					goto handle_ipc_fail;
 			}
 		}
-	}
-	if (flag & VWARNA_EVENT) {
+		break;
+	case VWARNA_EVENT:
 		pr_info_ratelimited("%s: VWARNA_EVENT occurred\n",
 					DRIVER_NAME);
+		if (!pdata->is_clvp && bcu_workqueue) {
+			bcu_envp[0] = GET_ENVP(VWARN1);
+
+			ret = intel_scu_ipc_update_register(MBCUIRQ,
+					MBCUIRQ_SET, VWARNA_MASK);
+			if (ret) {
+				dev_err(&vinfo->pdev->dev,
+					"VWARNA mask failed\n");
+			} else {
+				/* Schedule to unmask after
+				 * 30 seconds
+				 */
+				queue_delayed_work(bcu_workqueue,
+					&vinfo->vdd_intr_dwork,
+					VWARNA_INTR_EN_DELAY);
+			}
+		}
 		if (!(irq_data & SVWARNA)) {
 			/* Vsys is above WARNA level */
 			intel_scu_ipc_ioread8(BCUDISA_BEH, &sticky_data);
@@ -569,12 +704,21 @@ static void handle_events(int flag, void *dev_data)
 				 * in case sticky bit is set.
 				 */
 				ret = intel_scu_ipc_update_register(SBCUCTRL,
-					(1 << 3), SBCUCTRL_STICKY_WARNA);
+						SBCUCTRL_SET, SBCUDISA_MASK);
 				if (ret)
 					goto handle_ipc_fail;
 			}
 		}
+		break;
+	default:
+		dev_warn(&vinfo->pdev->dev, "Unresolved interrupt occurred\n");
 	}
+
+	/* For baytrail notify event type
+	 * using Uevent to userspace */
+	if (bcu_envp[0] && !pdata->is_clvp)
+		kobject_uevent_env(&vinfo->dev->kobj, KOBJ_CHANGE, bcu_envp);
+
 	return;
 handle_ipc_fail:
 	if (flag & VCRIT_EVENT)
@@ -593,7 +737,7 @@ static irqreturn_t vdd_intrpt_handler(int id, void *dev)
 	uint8_t irq_data;
 	unsigned long __flags;
 
-#ifdef CONFIG_BOARD_CTP
+#ifndef CONFIG_ACPI
 	irq_data = readb(vinfo->bcu_intr_addr);
 	spin_lock_irqsave(&vdd_interrupt_lock, __flags);
 	global_irq_data |= irq_data;
@@ -612,7 +756,7 @@ static irqreturn_t vdd_interrupt_thread_handler(int irq, void *dev_data)
 	uint8_t irq_data, event = 0, clear_irq, ret;
 	struct vdd_info *vinfo = (struct vdd_info *)dev_data;
 
-#ifndef CONFIG_BOARD_CTP
+#ifdef CONFIG_ACPI
 	ret = intel_scu_ipc_ioread8(BCUIRQ, &global_irq_data);
 	if (ret)
 		dev_warn(&vinfo->pdev->dev, "ipc read/write failed\n");
@@ -628,19 +772,29 @@ static irqreturn_t vdd_interrupt_thread_handler(int irq, void *dev_data)
 	}
 
 	mutex_lock(&vdd_update_lock);
-	if (irq_data & VCRIT_IRQ)
+	if (irq_data & VCRIT_IRQ) {
 		/* BCU VCRIT Interrupt */
-		event |= VCRIT_EVENT;
-	if (irq_data & VWARNA_IRQ)
+		event = VCRIT_EVENT;
+		vinfo->intr_count_lvl3 += 1;
+
+		handle_events(event, dev_data);
+	}
+	if (irq_data & VWARNA_IRQ) {
 		/* BCU WARNA Interrupt */
-		event |= VWARNA_EVENT;
-	if (irq_data & VWARNB_IRQ)
+		event = VWARNA_EVENT;
+		vinfo->intr_count_lvl1 += 1;
+
+		handle_events(event, dev_data);
+	}
+	if (irq_data & VWARNB_IRQ) {
 		/* BCU WARNB Interrupt */
-		event |= VWARNB_EVENT;
+		event = VWARNB_EVENT;
+		vinfo->intr_count_lvl2 += 1;
 
-	handle_events(event, dev_data);
+		handle_events(event, dev_data);
+	}
 
-#ifndef CONFIG_BOARD_CTP
+#ifdef CONFIG_ACPI
 	ret = intel_scu_ipc_iowrite8(BCUIRQ, clear_irq);
 	clear_irq = 0;
 	if (ret)
@@ -664,6 +818,12 @@ static SENSOR_DEVICE_ATTR_2(irq_status, S_IRUGO, show_irq_status,
 				NULL, 0, 0);
 static SENSOR_DEVICE_ATTR_2(action_status, S_IRUGO, show_action_status,
 				NULL, 0, 0);
+static SENSOR_DEVICE_ATTR(intr_count_level1, S_IRUGO,
+				show_intr_count, NULL, 2);
+static SENSOR_DEVICE_ATTR(intr_count_level2, S_IRUGO,
+				show_intr_count, NULL, 1);
+static SENSOR_DEVICE_ATTR(intr_count_level3, S_IRUGO,
+				show_intr_count, NULL, 4);
 static SENSOR_DEVICE_ATTR(camflash_ctrl, S_IRUGO | S_IWUSR,
 				show_camflash_ctrl, store_camflash_ctrl, 0);
 
@@ -675,6 +835,9 @@ static struct attribute *mid_vdd_attrs[] = {
 	&sensor_dev_attr_bcu_status.dev_attr.attr,
 	&sensor_dev_attr_irq_status.dev_attr.attr,
 	&sensor_dev_attr_action_status.dev_attr.attr,
+	&sensor_dev_attr_intr_count_level1.dev_attr.attr,
+	&sensor_dev_attr_intr_count_level2.dev_attr.attr,
+	&sensor_dev_attr_intr_count_level3.dev_attr.attr,
 	&sensor_dev_attr_camflash_ctrl.dev_attr.attr,
 	NULL
 };
@@ -708,14 +871,33 @@ static void restore_default_value(struct vdd_smip_data *vdata)
 static int program_bcu(struct platform_device *pdev, struct vdd_info *vinfo)
 {
 	int ret;
+	uint8_t irq_data;
 	struct vdd_smip_data vdata = {0};
 
+	/* will be useful in case of clvp only
+	 * in baytrail we are calling a dummy function
+	 */
 	ret = intel_scu_ipc_read_mip((u8 *)&vdata, sizeof(struct
 		vdd_smip_data), BCU_SMIP_OFFSET, 1);
 	if (ret) {
 		dev_err(&pdev->dev, "scu ipc read failed\n");
 		restore_default_value(&vdata);
 		goto configure_register;
+	}
+
+	/* clear all bcu actions that are already set if
+	 * system voltage is above thresholds
+	 */
+	ret = intel_scu_ipc_ioread8(SBCUIRQ, &irq_data);
+	if (ret) {
+		dev_warn(&pdev->dev, "Read VSYS flag failed\n");
+		goto vdd_init_error;
+	} else if (!(irq_data & SBCUIRQ_MASK)) {
+		ret = intel_scu_ipc_iowrite8(SBCUCTRL, SBCUCTRL_SET);
+		if (ret) {
+			dev_warn(&pdev->dev, "scu ipc write failed\n");
+			goto vdd_init_error;
+		}
 	}
 
 	/*
@@ -759,6 +941,9 @@ vdd_init_error:
 	return ret;
 }
 
+#ifdef CONFIG_ACPI
+extern void *msic_vdd_platform_data(void *);
+#endif
 static int mid_vdd_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -773,20 +958,10 @@ static int mid_vdd_probe(struct platform_device *pdev)
 	vinfo->irq = platform_get_irq(pdev, 0);
 	platform_set_drvdata(pdev, vinfo);
 	pdata = pdev->dev.platform_data;
-#ifdef CONFIG_BOARD_CTP
+#ifndef CONFIG_ACPI
 	vinfo->bcu_intr_addr = ioremap(MSIC_BCU_STAT, MSIC_BCU_LEN);
 #else
-	if (pdata == NULL) {
-		pdata = devm_kzalloc(&pdev->dev,
-				sizeof(struct intel_msic_vdd_pdata),
-				GFP_KERNEL);
-		if (!pdata) {
-			dev_err(&pdev->dev, "kzalloc failed");
-			return -ENOMEM;
-		}
-		pdata->disable_unused_comparator = DISABLE_VWARNA |
-						DISABLE_VCRIT;
-	}
+	pdata = msic_vdd_platform_data(NULL);
 	vinfo->bcu_intr_addr = BCUIRQ;
 #endif
 	if (!vinfo->bcu_intr_addr) {
@@ -822,10 +997,10 @@ static int mid_vdd_probe(struct platform_device *pdev)
 	bcu_workqueue = create_singlethread_workqueue(BCU_QUEUE);
 	if (!bcu_workqueue)
 		dev_err(&pdev->dev, "workqueue creation failed\n");
-	else
-		INIT_DELAYED_WORK(&(vinfo->vcrit_burst), unmask_theburst);
 
-	cam_flash_state = CAMFLASH_STATE_ON;
+	INIT_DELAYED_WORK(&(vinfo->vdd_intr_dwork), unmask_theburst);
+
+	cam_flash_state = CAMFLASH_STATE_NORMAL;
 
 	ret = program_bcu(pdev, vinfo);
 	if (!ret)

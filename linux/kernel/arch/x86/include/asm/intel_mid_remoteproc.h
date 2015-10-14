@@ -35,6 +35,7 @@
 #define RP_FW_UPDATE		0xFE
 #define RP_VRTC			0xFA
 #define RP_PMDB			0xE0
+#define RP_INDIRECT_WRITE	0x05
 
 /*
  * Assigning some temp ids for following devices
@@ -67,6 +68,7 @@
 #define RP_MRFL_OCD		0x26
 #define RP_FW_LOGGING		0x27
 #define RP_PMIC_CHARGER		0x28
+#define RP_SCOVE_THERMAL	0x29
 
 enum rproc_type {
 	RPROC_SCU = 0,

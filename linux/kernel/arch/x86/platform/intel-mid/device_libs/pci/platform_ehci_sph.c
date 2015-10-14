@@ -82,7 +82,7 @@ static struct ehci_sph_pdata *get_sph_platform_data(struct pci_dev *pdev)
 	return pdata;
 }
 
-static void __devinit sph_pci_early_quirks(struct pci_dev *pci_dev)
+static void sph_pci_early_quirks(struct pci_dev *pci_dev)
 {
 	pci_dev->dev.platform_data = get_sph_platform_data(pci_dev);
 }

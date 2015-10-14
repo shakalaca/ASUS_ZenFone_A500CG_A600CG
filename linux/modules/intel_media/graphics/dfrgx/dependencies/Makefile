@@ -1,11 +1,11 @@
 INCLUDES_RGX += \
-	-I../modules/intel_media/graphics/dfrgx \
-	-I../modules/intel_media/graphics/rgx/services/server/include \
-	-I../modules/intel_media/graphics/rgx/services/shared/include \
-	-I../modules/intel_media/graphics/rgx/services/include \
-	-I../modules/intel_media/graphics/rgx/services/include/shared \
-	-I../modules/intel_media/graphics/rgx/include \
-	-I../modules/intel_media/graphics/rgx/hwdefs \
-	-I../modules/intel_media/graphics/rgx/hwdefs/km \
-	-I../modules/intel_media/graphics/rgx/services/system/rgx_nohw \
-	-I../modules/intel_media/graphics/rgx/services/server/devices/rgx
+	-Idrivers/external_drivers/intel_media/graphics/dfrgx \
+	-Idrivers/external_drivers/intel_media/graphics/rgx/services/server/include \
+	-Idrivers/external_drivers/intel_media/graphics/rgx/services/shared/include \
+	-Idrivers/external_drivers/intel_media/graphics/rgx/services/include \
+	-Idrivers/external_drivers/intel_media/graphics/rgx/services/include/shared \
+	-Idrivers/external_drivers/intel_media/graphics/rgx/include \
+	-Idrivers/external_drivers/intel_media/graphics/rgx/hwdefs \
+	-Idrivers/external_drivers/intel_media/graphics/rgx/hwdefs/km \
+	-Idrivers/external_drivers/intel_media/graphics/rgx/services/system/rgx_nohw \
+	-Idrivers/external_drivers/intel_media/graphics/rgx/services/3rdparty/intel_devfreq

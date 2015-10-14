@@ -24,35 +24,22 @@
 
 int vcm_power_up(struct v4l2_subdev *sd)
 {
-	/*ChungYi : 
-	   For A500CG , we don't use this GPIO for power-up VCM,
-	   So always return 0 for in default for A500CG.
-	*/
-#if 0
 	const struct camera_af_platform_data *vcm_platform_data;
 
 	vcm_platform_data = camera_get_af_platform_data();
 	if (NULL == vcm_platform_data)
 		return -ENODEV;
+	/* Enable power */
 	return vcm_platform_data->power_ctrl(sd, 1);
-#endif
-	return 0;
 }
 
 int vcm_power_down(struct v4l2_subdev *sd)
 {
-	/*ChungYi : 
-	   For A500CG , we don't use this GPIO for power-up VCM,
-	   So always return 0 for in default for A500CG.
-	*/
-#if 0
 	const struct camera_af_platform_data *vcm_platform_data;
 
 	vcm_platform_data = camera_get_af_platform_data();
 	if (NULL == vcm_platform_data)
 		return -ENODEV;
 	return vcm_platform_data->power_ctrl(sd, 0);
-#endif
-	return 0;
 }
 

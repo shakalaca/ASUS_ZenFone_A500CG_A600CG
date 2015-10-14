@@ -17,12 +17,13 @@
 #include <media/lm3554.h>
 
 #include "platform_lm3554.h"
+#include "platform_camera.h"
 
 void *lm3554_platform_data_func(void *info)
 {
 	static struct lm3554_platform_data platform_data;
 
-	if (intel_mid_identify_cpu() != INTEL_MID_CPU_CHIP_VALLEYVIEW2) {
+	if (!IS_BYT) {
 		platform_data.gpio_reset  = get_gpio_by_name("GP_FLASH_RESET");
 		platform_data.gpio_strobe = get_gpio_by_name("GP_FLASH_STROBE");
 		platform_data.gpio_torch  = get_gpio_by_name("GP_FLASH_TORCH");

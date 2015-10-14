@@ -38,6 +38,7 @@ int  vtss_procfs_init(void);
 const char *vtss_procfs_path(void);
 struct proc_dir_entry *vtss_procfs_get_root(void);
 int  vtss_procfs_ctrl_wake_up(void *msg, size_t size);
+int vtss_procfs_ctrl_wake_up_2(void *msg1, size_t size1, void *msg2, size_t size2);
 void vtss_procfs_ctrl_flush(void);
 const struct cpumask* vtss_procfs_cpumask(void);
 int vtss_procfs_defsav(void);

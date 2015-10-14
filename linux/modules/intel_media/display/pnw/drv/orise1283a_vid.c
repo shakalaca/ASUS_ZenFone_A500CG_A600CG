@@ -815,7 +815,7 @@ static int orise1283a_vid_drv_ic_init(struct mdfld_dsi_config *dsi_config){
 	int i;
 	u8 data2[3] = {0};
 
-
+	sender->status = MDFLD_DSI_PKG_SENDER_FREE;
 	/* panel initial settings */
 	mdfld_dsi_read_mcs_lp(sender, 0xB9, data2, 3);
 	if (board_proj_id == PROJ_ID_A500CG || board_proj_id == PROJ_ID_A501CG || board_proj_id == PROJ_ID_A502CG) {
@@ -2883,6 +2883,7 @@ static int orise1283a_vid_power_off(struct mdfld_dsi_config *dsi_config)
 	}
 
 	/* Send power off command*/
+	sender->status = MDFLD_DSI_PKG_SENDER_FREE;
 	mdfld_dsi_send_mcs_short_lp(sender, 0x28, 0x00, 0, 0);
 	mdfld_dsi_send_mcs_short_lp(sender, 0x10, 0x00, 0, 0);
 	if (sender->status == MDFLD_DSI_CONTROL_ABNORMAL) {
@@ -3009,12 +3010,12 @@ struct drm_display_mode *orise1283a_vid_get_config_mode(void)
 
 static void orise1283a_vid_get_panel_info(int pipe, struct panel_info *pi)
 {
-	if (board_proj_id == PROJ_ID_A500CG || board_proj_id == PROJ_ID_A501CG || board_proj_id == PROJ_ID_A502CG) {
-		pi->width_mm = 62;
-		pi->height_mm = 110;
-	} else {
+	if (board_proj_id == PROJ_ID_A600CG) {
 		pi->width_mm = 74;
 		pi->height_mm = 131;
+	} else {
+		pi->width_mm = 62;
+		pi->height_mm = 110;
 	}
 }
 
@@ -3173,9 +3174,10 @@ static int orise1283a_vid_shutdown(struct platform_device *pdev)
 	struct orise1283a_vid_data *pdata = &gpio_settings_data;
 	printk("[DISP] %s\n", __func__);
 
-	intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0);
-	orise1283a_vid_set_brightness(orise1283a_dsi_config, 0);
-	orise1283a_vid_power_off(orise1283a_dsi_config);
+	mdfld_dsi_dpi_set_power(encoder_lcd, 0);
+//	intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0);
+//	orise1283a_vid_set_brightness(orise1283a_dsi_config, 0);
+//	orise1283a_vid_power_off(orise1283a_dsi_config);
 	usleep_range(50000, 55000);
 	gpio_direction_output(pdata->gpio_lcd_rst, 0);
 	usleep_range(120000, 121000);

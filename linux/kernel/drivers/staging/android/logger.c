@@ -17,28 +17,80 @@
  * GNU General Public License for more details.
  */
 
-#include <linux/console.h>
+#define pr_fmt(fmt) "logger: " fmt
+
 #include <linux/sched.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/miscdevice.h>
 #include <linux/uaccess.h>
 #include <linux/poll.h>
 #include <linux/slab.h>
 #include <linux/time.h>
-#include <linux/hardirq.h>
+#include <linux/vmalloc.h>
+#include <linux/aio.h>
+#include "logger.h"
+
 #include <asm/ioctls.h>
 
-#include "logger.h"
-#include "logger_pti.h"
+/**
+ * struct logger_log - represents a specific log, such as 'main' or 'radio'
+ * @buffer:	The actual ring buffer
+ * @misc:	The "misc" device representing the log
+ * @wq:	The wait queue for @readers
+ * @readers:	This log's readers
+ * @mutex:	The mutex that protects the @buffer
+ * @w_off:	The current write head offset
+ * @head:	The head, or location that readers start reading at.
+ * @size:	The size of the log
+ * @logs:	The list of log channels
+ * @plugins:    The list of plugins (to export traces to different outputs)
+ *
+ * This structure lives from module insertion until module removal, so it does
+ * not need additional reference counting. The structure is protected by the
+ * mutex 'mutex'.
+ */
+struct logger_log {
+	unsigned char		*buffer;
+	struct miscdevice	misc;
+	wait_queue_head_t	wq;
+	struct list_head	readers;
+	struct mutex		mutex;
+	size_t			w_off;
+	size_t			head;
+	size_t			size;
+	struct list_head	logs;
+	struct list_head        plugins;
+};
 
-static DEFINE_SPINLOCK(log_lock);
-static struct work_struct write_console_wq;
+static LIST_HEAD(log_list);
+
+
+/**
+ * struct logger_reader - a logging device open for reading
+ * @log:	The associated log
+ * @list:	The associated entry in @logger_log's list
+ * @r_off:	The current read head offset.
+ * @r_all:	Reader can read all entries
+ * @r_ver:	Reader ABI version
+ *
+ * This object lives from open to release, so we don't need additional
+ * reference counting. The structure is protected by log->mutex.
+ */
+struct logger_reader {
+	struct logger_log	*log;
+	struct list_head	list;
+	size_t			r_off;
+	bool			r_all;
+	int			r_ver;
+};
 
 /* logger_offset - returns index 'n' into the log via (optimized) modulus */
-size_t logger_offset(struct logger_log *log, size_t n)
+static size_t logger_offset(struct logger_log *log, size_t n)
 {
-	return n & (log->size-1);
+	return n & (log->size - 1);
 }
+
 
 /*
  * file_get_log - Given a file structure, return the associated log
@@ -94,7 +146,7 @@ static struct logger_entry *get_entry_header(struct logger_log *log,
  *
  * Caller needs to hold log->mutex.
  */
-__u32 get_entry_msg_len(struct logger_log *log, size_t off)
+static __u32 get_entry_msg_len(struct logger_log *log, size_t off)
 {
 	struct logger_entry scratch;
 	struct logger_entry *entry;
@@ -192,7 +244,7 @@ static ssize_t do_read_log_to_user(struct logger_log *log,
  * 'log->buffer' which contains the first entry readable by 'euid'
  */
 static size_t get_next_entry_by_uid(struct logger_log *log,
-		size_t off, uid_t euid)
+		size_t off, kuid_t euid)
 {
 	while (off != log->w_off) {
 		struct logger_entry *entry;
@@ -201,7 +253,7 @@ static size_t get_next_entry_by_uid(struct logger_log *log,
 
 		entry = get_entry_header(log, off, &scratch);
 
-		if (entry->euid == euid)
+		if (uid_eq(entry->euid, euid))
 			return off;
 
 		next_len = sizeof(struct logger_entry) + entry->len;
@@ -209,37 +261,6 @@ static size_t get_next_entry_by_uid(struct logger_log *log,
 	}
 
 	return off;
-}
-
-/*
- * do_read_log - reads exactly 'count' bytes from 'log' into the
- * kernel buffer 'buf'.
- *
- * Caller must hold log->mutex.
- */
-void do_read_log(struct logger_log *log,
-			struct logger_reader *reader,
-			char *buf,
-			size_t count)
-{
-	size_t len;
-
-	/*
-	 * We read from the log in two disjoint operations. First, we read from
-	 * the current read head offset up to 'count' bytes or to the end of
-	 * the log, whichever comes first.
-	 */
-	len = min(count, log->size - reader->r_off);
-	memcpy(buf, log->buffer + reader->r_off, len);
-
-	/*
-	 * Second, we read any remaining bytes, starting back at the head of
-	 * the log.
-	 */
-	if (count != len)
-		memcpy(buf + len, log->buffer, count - len);
-
-	reader->r_off = logger_offset(log, reader->r_off + count);
 }
 
 /*
@@ -446,14 +467,16 @@ static ssize_t do_write_log_from_user(struct logger_log *log,
  * writev(), and aio_write(). Writes are our fast path, and we try to optimize
  * them above all else.
  */
-ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
+static ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
 			 unsigned long nr_segs, loff_t ppos)
 {
 	struct logger_log *log = file_get_log(iocb->ki_filp);
-	size_t orig = log->w_off;
+	size_t orig;
 	struct logger_entry header;
 	struct timespec now;
-	ssize_t len, ret = 0;
+	ssize_t ret = 0;
+	unsigned long num_segs = nr_segs;
+	struct logger_plugin *plugin;
 
 	now = current_kernel_time();
 
@@ -471,6 +494,8 @@ ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
 
 	mutex_lock(&log->mutex);
 
+	orig = log->w_off;
+
 	/*
 	 * Fix up any readers, pulling them forward to the first readable
 	 * entry after (what will be) the new write offset. We do this now
@@ -482,15 +507,26 @@ ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	do_write_log(log, &header, sizeof(struct logger_entry));
 
 	while (nr_segs-- > 0) {
+		size_t len;
 		ssize_t nr;
 
 		/* figure out how much of this vector we can keep */
 		len = min_t(size_t, iov->iov_len, header.len - ret);
 
-		/* write out this segment's payload */
+		/* send this segment's payload to the different plugins */
+		list_for_each_entry(plugin, &log->plugins, list)
+			plugin->write_seg(iov->iov_base, len,
+				true, /* from_user */
+				(nr_segs + 1 == num_segs), /* start of msg ? */
+				(nr_segs == 0), /* end of msg ? */
+				plugin->data); /* call-back data */
+
+		/* write out this segment's payload to the log's buffer */
 		nr = do_write_log_from_user(log, iov->iov_base, len);
 		if (unlikely(nr < 0)) {
 			log->w_off = orig;
+			list_for_each_entry(plugin, &log->plugins, list)
+				plugin->write_seg_recover(plugin->data);
 			mutex_unlock(&log->mutex);
 			return nr;
 		}
@@ -499,14 +535,33 @@ ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
 		ret += nr;
 	}
 
-	log_write_to_pti(log);
-
 	mutex_unlock(&log->mutex);
 
 	/* wake up any blocked readers */
 	wake_up_interruptible(&log->wq);
 
 	return ret;
+}
+
+static struct logger_log *get_log_from_minor(int minor)
+{
+	struct logger_log *log;
+
+	list_for_each_entry(log, &log_list, logs)
+		if (log->misc.minor == minor)
+			return log;
+	return NULL;
+}
+
+static struct logger_log *get_log_from_name(const char *name)
+{
+	struct logger_log *log;
+
+	list_for_each_entry(log, &log_list, logs)
+		if (strncmp(log->misc.name, name, strlen(name)) == 0)
+			return log;
+
+	return NULL;
 }
 
 /*
@@ -562,10 +617,11 @@ static int logger_release(struct inode *ignored, struct file *file)
 {
 	if (file->f_mode & FMODE_READ) {
 		struct logger_reader *reader = file->private_data;
+		struct logger_log *log = reader->log;
 
-		mutex_lock(&reader->log->mutex);
+		mutex_lock(&log->mutex);
 		list_del(&reader->list);
-		mutex_unlock(&reader->log->mutex);
+		mutex_unlock(&log->mutex);
 
 		kfree(reader);
 	}
@@ -712,257 +768,152 @@ static const struct file_operations logger_fops = {
 };
 
 /*
- * Defines a log structure with name 'NAME' and a size of 'SIZE' bytes, which
- * must be a power of two, and greater than
+ * Log size must must be a power of two, and greater than
  * (LOGGER_ENTRY_MAX_PAYLOAD + sizeof(struct logger_entry)).
  */
-#define DEFINE_LOGGER_DEVICE(VAR, NAME, SIZE) \
-static unsigned char _buf_ ## VAR[SIZE]; \
-static struct logger_log VAR = { \
-	.buffer = _buf_ ## VAR, \
-	.misc = { \
-		.minor = MISC_DYNAMIC_MINOR, \
-		.name = NAME, \
-		.fops = &logger_fops, \
-		.parent = NULL, \
-	}, \
-	.wq = __WAIT_QUEUE_HEAD_INITIALIZER(VAR .wq), \
-	.readers = LIST_HEAD_INIT(VAR .readers), \
-	.mutex = __MUTEX_INITIALIZER(VAR .mutex), \
-	.w_off = 0, \
-	.head = 0, \
-	.size = SIZE, \
-};
-
-DEFINE_LOGGER_DEVICE(log_main, LOGGER_LOG_MAIN, 256*1024)
-DEFINE_LOGGER_DEVICE(log_events, LOGGER_LOG_EVENTS, 256*1024)
-DEFINE_LOGGER_DEVICE(log_radio, LOGGER_LOG_RADIO, 256*1024)
-DEFINE_LOGGER_DEVICE(log_kernel, LOGGER_LOG_KERNEL, 256*1024)
-DEFINE_LOGGER_DEVICE(log_system, LOGGER_LOG_SYSTEM, 256*1024)
-
-DEFINE_LOGGER_DEVICE(log_kernel_bottom, LOGGER_LOG_KERNEL_BOT, 256*1024)
-
-static struct logger_log *log_list[] = {	\
-	&log_main,	\
-	&log_events,	\
-	&log_radio,	\
-	&log_kernel,	\
-	&log_system,	\
-};
-
-static void flush_to_bottom_log(struct logger_log *log,
-					const char *buf, unsigned int count)
+static int __init create_log(char *log_name, int size)
 {
-	struct logger_entry header;
-	char extendedtag[8] = "\4KERNEL";
-	struct timespec now;
-	unsigned long flags;
+	int ret = 0;
+	struct logger_log *log;
+	unsigned char *buffer;
 
-	now = current_kernel_time();
-
-	header.pid = current->tgid;
-	header.tid = task_pid_nr(current);
-	header.sec = now.tv_sec;
-	header.nsec = now.tv_nsec;
-	header.euid = current_euid();
-
-	/* length is computed like this:
-	 * 1 byte for the log priority (harcoded to 4 meaning INFO)
-	 * 6 bytes for the tag string (harcoded to KERNEL)
-	 * 1 byte added at the end of the tag required by logcat
-	 * the length of the buf added into the kernel log buffer
-	 * 1 byte added at the end of the buf required by logcat
-	 */
-	header.len = min_t(size_t, sizeof(extendedtag) + count + 1,
-					LOGGER_ENTRY_MAX_PAYLOAD);
-	header.hdr_size = sizeof(struct logger_entry);
-
-	/* null writes succeed, return zero */
-	if (unlikely(!header.len))
-		return;
-
-	if (oops_in_progress) {
-		if (!spin_trylock_irqsave(&log_lock, flags))
-			return;
-	} else
-		spin_lock_irqsave(&log_lock, flags);
-
-	fix_up_readers(log, sizeof(struct logger_entry) + header.len);
-
-	do_write_log(log, &header, sizeof(struct logger_entry));
-	do_write_log(log, &extendedtag, sizeof(extendedtag));
-	do_write_log(log, buf, header.len - (sizeof(extendedtag)) - 1);
-
-	/* the write offset is updated to add the final extra byte */
-	log->w_off = logger_offset(log, log->w_off + 1);
-	spin_unlock_irqrestore(&log_lock, flags);
-};
-
-
-/*
- * update_log_from_bottom - copy bottom log buffer into a log buffer
- */
-static void update_log_from_bottom(struct logger_log *log_dst,
-					struct logger_log *log)
-{
-	struct logger_reader *reader;
-	size_t len, ret;
-	unsigned long flags;
-
-	mutex_lock(&log_dst->mutex);
-	spin_lock_irqsave(&log_lock, flags);
-
-	list_for_each_entry(reader, &log->readers, list)
-		while (log->w_off != reader->r_off) {
-
-			ret = sizeof(struct logger_entry) +
-				get_entry_msg_len(log, reader->r_off);
-
-			fix_up_readers(log_dst, ret);
-
-			/*
-			 * We read from the log in two disjoint operations.
-			 * First, we read from the current read head offset
-			 * up to 'count' bytes or to the end of the log,
-			 * whichever comes first.
-			 */
-			len = min(ret, log->size - reader->r_off);
-			do_write_log(log_dst, log->buffer + reader->r_off, len);
-
-			/*
-			 * Second, we read any remaining bytes, starting back at
-			 * the head of the log.
-			 */
-			if (ret != len)
-				do_write_log(log_dst, log->buffer, ret - len);
-
-			reader->r_off = logger_offset(log, reader->r_off + ret);
-		}
-	spin_unlock_irqrestore(&log_lock, flags);
-	mutex_unlock(&log_dst->mutex);
-
-	/* wake up any blocked readers */
-	wake_up_interruptible(&log_dst->wq);
-}
-
-/*
- * write_console - a write method for kernel logs
- */
-static void write_console(struct work_struct *work)
-{
-	struct logger_log *log_bottom = &log_kernel_bottom;
-	struct logger_log *log = &log_kernel;
-
-	update_log_from_bottom(log, log_bottom);
-}
-
-struct logger_log *get_log_from_minor(int minor)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(log_list); i++)
-		if (log_list[i]->misc.minor == minor)
-			return log_list[i];
-	return NULL;
-}
-
-struct logger_log **get_log_list(void)
-{
-	return log_list;
-}
-
-static int init_log_kernel_bottom(void)
-{
-	struct logger_log *log = &log_kernel_bottom;
-	struct logger_reader *reader;
-
-	reader = kmalloc(sizeof(struct logger_reader), GFP_KERNEL);
-	if (!reader)
+	buffer = vmalloc(size);
+	if (buffer == NULL)
 		return -ENOMEM;
 
-	reader->log = log;
-	INIT_LIST_HEAD(&reader->list);
+	log = kzalloc(sizeof(struct logger_log), GFP_KERNEL);
+	if (log == NULL) {
+		ret = -ENOMEM;
+		goto out_free_buffer;
+	}
+	log->buffer = buffer;
 
-	mutex_lock(&log->mutex);
-	reader->r_off = log->head;
-	list_add_tail(&reader->list, &log->readers);
-	mutex_unlock(&log->mutex);
-	return 0;
-}
-
-static int __init init_log(struct logger_log *log)
-{
-	int ret;
-
-	ret = misc_register(&log->misc);
-	if (unlikely(ret)) {
-		printk(KERN_ERR "logger: failed to register misc "
-		       "device for log '%s'!\n", log->misc.name);
-		return ret;
+	log->misc.minor = MISC_DYNAMIC_MINOR;
+	log->misc.name = kstrdup(log_name, GFP_KERNEL);
+	if (log->misc.name == NULL) {
+		ret = -ENOMEM;
+		goto out_free_log;
 	}
 
-	printk(KERN_INFO "logger: created %luK log '%s'\n",
-	       (unsigned long) log->size >> 10, log->misc.name);
+	log->misc.fops = &logger_fops;
+	log->misc.parent = NULL;
+
+	init_waitqueue_head(&log->wq);
+	INIT_LIST_HEAD(&log->readers);
+	INIT_LIST_HEAD(&log->plugins);
+	mutex_init(&log->mutex);
+	log->w_off = 0;
+	log->head = 0;
+	log->size = size;
+
+	INIT_LIST_HEAD(&log->logs);
+	list_add_tail(&log->logs, &log_list);
+
+	/* finally, initialize the misc device for this log */
+	ret = misc_register(&log->misc);
+	if (unlikely(ret)) {
+		pr_err("failed to register misc device for log '%s'!\n",
+				log->misc.name);
+		goto out_free_log;
+	}
+
+	pr_info("created %luK log '%s'\n",
+		(unsigned long) log->size >> 10, log->misc.name);
 
 	return 0;
+
+out_free_log:
+	kfree(log);
+
+out_free_buffer:
+	vfree(buffer);
+	return ret;
 }
 
 static int __init logger_init(void)
 {
-	int ret, i;
+	int ret;
 
-	for (i = 0; i < ARRAY_SIZE(log_list); i++) {
-		ret = init_log(log_list[i]);
-		if (unlikely(ret))
-			goto out;
-		ret = init_pti(log_list[i]);
-		if (unlikely(ret))
-			printk(KERN_ERR "logger: failed to init pti for %s, ignoring\n",
-			       log_list[i]->misc.name);
-	}
+	ret = create_log(LOGGER_LOG_MAIN, 256*1024);
+	if (unlikely(ret))
+		goto out;
 
-	ret = init_log_kernel_bottom();
+	ret = create_log(LOGGER_LOG_EVENTS, 256*1024);
+	if (unlikely(ret))
+		goto out;
+
+	ret = create_log(LOGGER_LOG_RADIO, 256*1024);
+	if (unlikely(ret))
+		goto out;
+
+	ret = create_log(LOGGER_LOG_SYSTEM, 256*1024);
 	if (unlikely(ret))
 		goto out;
 
 out:
 	return ret;
 }
+
+static void __exit logger_exit(void)
+{
+	struct logger_log *current_log, *next_log;
+
+	list_for_each_entry_safe(current_log, next_log, &log_list, logs) {
+		/* we have to delete all the entry inside log_list */
+		misc_deregister(&current_log->misc);
+		vfree(current_log->buffer);
+		kfree(current_log->misc.name);
+		list_del(&current_log->logs);
+		kfree(current_log);
+	}
+}
+
 device_initcall(logger_init);
+module_exit(logger_exit);
 
-static void
-logger_console_write(struct console *console, const char *s, unsigned int count)
-{
-	struct logger_log *log = &log_kernel_bottom;
-	struct logger_log *log_dst = &log_kernel;
+#include "logger_kernel.c"
 
-	flush_to_bottom_log(log, s, count);
-	log_kernel_write_to_pti(log_dst, s, count);
-
-	if (unlikely(!keventd_up()))
-		return;
-	if (!oops_in_progress && !in_nmi())
-		schedule_work(&write_console_wq);
-}
-
-/* logger console uses CON_IGNORELEVEL that provides a way to ignore
- * the log level set in the kernel command line
+/**
+ * @logger_add_plugin() - adds a plugin to a given log
+ *
+ * @plugin: The @logger_plugin to be added
+ * @name:   The name of the targetted log
  */
-
-static struct console logger_console = {
-	.name	= "logk",
-	.write	= logger_console_write,
-	.flags	= CON_PRINTBUFFER | CON_IGNORELEVEL,
-	.index	= -1,
-};
-
-static int __init logger_console_init(void)
+void logger_add_plugin(struct logger_plugin *plugin, const char *name)
 {
-	INIT_WORK(&write_console_wq, write_console);
+	struct logger_log *log = get_log_from_name(name);
 
-	printk(KERN_INFO "register logcat console\n");
-	register_console(&logger_console);
-	return 0;
+	if ((plugin == NULL) || (log == NULL))
+		return;
+
+	mutex_lock(&log->mutex);
+	list_add_tail(&plugin->list, &log->plugins);
+	plugin->init(plugin->data);
+	mutex_unlock(&log->mutex);
 }
+EXPORT_SYMBOL(logger_add_plugin);
 
-console_initcall(logger_console_init);
+/**
+ * @logger_remove_plugin() - removes a plugin from a given log
+ *
+ * @plugin: The @logger_plugin to be removed
+ * @name:   The name of the targetted log
+ */
+void logger_remove_plugin(struct logger_plugin *plugin, const char *name)
+{
+	struct logger_log *log = get_log_from_name(name);
+
+	if ((plugin == NULL) || (log == NULL))
+		return;
+
+	mutex_lock(&log->mutex);
+	plugin->exit(plugin->data);
+	list_del(&plugin->list);
+	mutex_unlock(&log->mutex);
+}
+EXPORT_SYMBOL(logger_remove_plugin);
+
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Robert Love, <rlove@google.com>");
+MODULE_DESCRIPTION("Android Logger");

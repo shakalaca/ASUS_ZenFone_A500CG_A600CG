@@ -13,7 +13,7 @@
 #include <linux/pm_runtime.h>
 #include <asm/intel-mid.h>
 
-static void __devinit xhci_pci_early_quirks(struct pci_dev *pci_dev)
+static void xhci_pci_early_quirks(struct pci_dev *pci_dev)
 {
 	dev_dbg(&pci_dev->dev, "set run wake flag\n");
 	device_set_run_wake(&pci_dev->dev, true);

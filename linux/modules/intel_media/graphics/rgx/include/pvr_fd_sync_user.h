@@ -48,6 +48,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "img_types.h"
 #include "pvrsrv_error.h"
+#include "util_android.h"
 
 #include "sync_external.h"
 
@@ -104,8 +105,8 @@ struct PVR_SYNC_DEBUG_FENCE_IOCTL_DATA
 PVRSRV_ERROR PVRFDSyncOpen(int *piSyncFd);
 PVRSRV_ERROR PVRFDSyncClose(int iSyncFd);
 
-PVRSRV_ERROR PVRFDSyncWaitFence(int iSyncFd,
-								int iFenceFd);
+PVRSRV_ERROR PVRFDSyncWaitFence(int iFenceFd);
+PVRSRV_ERROR PVRFDSyncCheckFence(int iFenceFd);
 
 PVRSRV_ERROR PVRFDSyncMergeFences(const char *pcszName,
 								  int iFenceFd1,
@@ -116,10 +117,13 @@ PVRSRV_ERROR PVRFDSyncCreateFence(int iSyncFd,
 								  const char *pcszName,
 								  int *piFenceFd);
 
-PVRSRV_ERROR PVRFDSyncDumpFence(int iSyncFd,
-								int iFenceFd,
-								const char *pcszPrefix,
-								const char *pcszFile,
-								int iLine);
+PVRSRV_ERROR PVRFDSyncQueryFence(int iSyncFd,
+								 int iFenceFd,
+								 struct PVR_SYNC_DEBUG_FENCE_IOCTL_DATA *psData);
+
+PVRSRV_ERROR IMG_FORMAT_PRINTF(4, 5) PVRFDSyncDumpFence(int iSyncFd,
+														int iFenceFd,
+														const char *pcszModule,
+														const char *pcszFmt, ...);
 
 #endif /* _PVR_FD_SYNC_USER_H_ */

@@ -151,10 +151,10 @@ static struct atomisp_css_macc_table green_macc_table = {
 	}
 };
 
-#if defined(CONFIG_ISP2400) || defined(CONFIG_ISP2400B0)
+#if defined(ISP2400) || defined(ISP2400B0) || defined(ISP2401)
 /* this table is from CSS1.5 default_ctc_table(20121003) */
 static struct atomisp_css_ctc_table vivid_ctc_table = {
-#ifdef CONFIG_VIDEO_ATOMISP_CSS20
+#ifdef CSS20
 	.data.vamem_2 = {
 	0,  384,  837,  957, 1011, 1062, 1083, 1080,
 	1078, 1077, 1053, 1039, 1012,  992,  969,  951,
@@ -190,7 +190,7 @@ static struct atomisp_css_ctc_table vivid_ctc_table = {
 	25,   23,   24,   20,   13,    9,   12,    0,
 	0
 	}
-#else /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#else /* CSS20 */
 	.data = {
 	0,  384,  837,  957, 1011, 1062, 1083, 1080,
 	1078, 1077, 1053, 1039, 1012,  992,  969,  951,
@@ -226,7 +226,7 @@ static struct atomisp_css_ctc_table vivid_ctc_table = {
 	25,   23,   24,   20,   13,    9,   12,    0,
 	0
 	}
-#endif /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#endif /* CSS20 */
 };
 #else
 /*Color enhancement image effect table*/

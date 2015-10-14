@@ -43,6 +43,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "device.h"
 #include "rgxdevice.h"
+#include "rgxdebug.h"
 #include "pvrsrv.h"
 
 /*!
@@ -78,7 +79,8 @@ IMG_BOOL RGXIsDevicePowered(PVRSRV_DEVICE_NODE *psDeviceNode);
 PVRSRV_ERROR RGXRunScript(PVRSRV_RGXDEV_INFO	*psDevInfo,
 						 RGX_INIT_COMMAND	*psScript,
 						 IMG_UINT32			ui32NumCommands,
-						 IMG_UINT32				ui32PdumpFlags);
+						 IMG_UINT32				ui32PdumpFlags,
+						 DUMPDEBUG_PRINTF_FUNC  *pfnDumpDebugPrintf);
 
 /******************************************************************************
  End of file (rgxutils.h)

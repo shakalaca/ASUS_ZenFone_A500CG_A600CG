@@ -278,7 +278,7 @@ IMG_BOOL OSGetReleasePVRLock(IMG_VOID);
 
 typedef struct _OSWR_LOCK_ *POSWR_LOCK;
 
-#if defined(__linux__) || (UNDER_CE)
+#if defined(__linux__) || (UNDER_CE) || defined(__QNXNTO__)
 PVRSRV_ERROR OSWRLockCreate(POSWR_LOCK *ppsLock);
 IMG_VOID OSWRLockDestroy(POSWR_LOCK psLock);
 IMG_VOID OSWRLockAcquireRead(POSWR_LOCK psLock);

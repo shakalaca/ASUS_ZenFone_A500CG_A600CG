@@ -70,6 +70,7 @@ static struct {
 
 };
 
+static struct dentry *gpio_root[ARCH_NR_GPIOS];
 static struct gpiodebug_data global_data[ARCH_NR_GPIOS][TYPE_MAX];
 
 static struct dentry *gpiodebug_debugfs_root;
@@ -114,7 +115,7 @@ static struct dentry *gpiodebug_create_file(const char *name,
 
 	ret = debugfs_create_file(name, mode, parent, data, fops);
 	if (!ret)
-		pr_warning("Could not create debugfs '%s' entry\n", name);
+		pr_warn("Could not create debugfs '%s' entry\n", name);
 
 	return ret;
 }
@@ -253,7 +254,8 @@ static ssize_t gpio_conf_write(struct file *filp, const char __user *ubuf,
 	for (i = cnt - 1; i > 0 && isspace(buf[i]); i--)
 		buf[i] = 0;
 
-	kstrtoul(start, 16, &value);
+	if (kstrtouint(start, 16, &value))
+		return -EINVAL;
 
 	if (debug->ops->set_conf_reg)
 		debug->ops->set_conf_reg(debug, gpio, value);
@@ -431,22 +433,32 @@ struct gpio_debug *gpio_debug_alloc(void)
 	struct gpio_debug *debug;
 
 	debug = kzalloc(sizeof(struct gpio_debug), GFP_KERNEL);
-	__set_bit(TYPE_CONF_REG, debug->typebit);
-	__set_bit(TYPE_PIN_VALUE, debug->typebit);
-	__set_bit(TYPE_DIRECTION, debug->typebit);
-	__set_bit(TYPE_IRQ_TYPE, debug->typebit);
-	__set_bit(TYPE_PINMUX, debug->typebit);
-	__set_bit(TYPE_PULLMODE, debug->typebit);
-	__set_bit(TYPE_PULLSTRENGTH, debug->typebit);
-	__set_bit(TYPE_OPEN_DRAIN, debug->typebit);
-	__set_bit(TYPE_IRQ_COUNT, debug->typebit);
-	__set_bit(TYPE_DEBOUNCE, debug->typebit);
+	if (debug) {
+		__set_bit(TYPE_CONF_REG, debug->typebit);
+		__set_bit(TYPE_PIN_VALUE, debug->typebit);
+		__set_bit(TYPE_DIRECTION, debug->typebit);
+		__set_bit(TYPE_IRQ_TYPE, debug->typebit);
+		__set_bit(TYPE_PINMUX, debug->typebit);
+		__set_bit(TYPE_PULLMODE, debug->typebit);
+		__set_bit(TYPE_PULLSTRENGTH, debug->typebit);
+		__set_bit(TYPE_OPEN_DRAIN, debug->typebit);
+		__set_bit(TYPE_IRQ_COUNT, debug->typebit);
+		__set_bit(TYPE_DEBOUNCE, debug->typebit);
+	}
 
 	return debug;
 }
 
 void gpio_debug_remove(struct gpio_debug *debug)
 {
+	struct gpio_chip *chip = debug->chip;
+	int base = chip->base;
+	unsigned ngpio = chip->ngpio;
+	int i;
+
+	for (i = base; i < base+ngpio; i++)
+		debugfs_remove_recursive(gpio_root[i]);
+
 	kfree(debug);
 }
 
@@ -455,25 +467,20 @@ int gpio_debug_register(struct gpio_debug *debug)
 	struct gpio_chip *chip = debug->chip;
 	int base = chip->base;
 	unsigned ngpio = chip->ngpio;
-	struct dentry *gpio_root;
 	int i, j;
 	char gpioname[32];
 
-	/* readme */
-	gpiodebug_create_file("readme", 0444, gpiodebug_debugfs_root,
-		debug, &gpio_readme_fops);
-
 	for (i = base; i < base+ngpio; i++) {
 		sprintf(gpioname, "gpio%d", i);
-		gpio_root = debugfs_create_dir(gpioname,
+		gpio_root[i] = debugfs_create_dir(gpioname,
 				gpiodebug_debugfs_root);
-		if (!gpio_root) {
+		if (!gpio_root[i]) {
 			pr_warn("gpiodebug: Failed to create debugfs directory\n");
 			return -ENOMEM;
 		}
 
 		/* register info */
-		gpiodebug_create_file("register_info", 0444, gpio_root,
+		gpiodebug_create_file("register_info", 0444, gpio_root[i],
 			debug, &gpio_reginfo_fops);
 
 		for (j = 0; j < ARRAY_SIZE(global_array); j++) {
@@ -485,25 +492,25 @@ int gpio_debug_register(struct gpio_debug *debug)
 				switch (global_array[j].fops_type) {
 				case REGISTER_FOPS:
 					gpiodebug_create_file(
-					  global_array[j].current_name,
-					  0644, gpio_root, &global_data[i][j],
+					  global_array[j].current_name, 0644,
+					  gpio_root[i], &global_data[i][j],
 					  &gpio_conf_fops);
 					break;
 				case NORMAL_FOPS:
 					gpiodebug_create_file(
-					  global_array[j].available_name,
-					  0444, gpio_root, &global_data[i][j],
+					  global_array[j].available_name, 0444,
+					  gpio_root[i], &global_data[i][j],
 					  &show_gpiodebug_fops);
 
 					gpiodebug_create_file(
-					  global_array[j].current_name,
-					  0644, gpio_root, &global_data[i][j],
+					  global_array[j].current_name, 0644,
+					  gpio_root[i], &global_data[i][j],
 					  &set_gpiodebug_fops);
 					break;
 				case COUNT_FOPS:
 					gpiodebug_create_file(
-					  global_array[j].current_name,
-					  0444, gpio_root, &global_data[i][j],
+					  global_array[j].current_name, 0444,
+					  gpio_root[i], &global_data[i][j],
 					  &show_count_fops);
 					break;
 				default:
@@ -523,6 +530,10 @@ static int __init gpio_debug_init(void)
 		pr_warn("gpiodebug: Failed to create debugfs directory\n");
 		gpiodebug_debugfs_root = NULL;
 	}
+
+	/* readme */
+	gpiodebug_create_file("readme", 0444, gpiodebug_debugfs_root,
+		NULL, &gpio_readme_fops);
 
 	return 0;
 }

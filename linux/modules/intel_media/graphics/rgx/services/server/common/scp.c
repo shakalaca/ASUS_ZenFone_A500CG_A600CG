@@ -54,10 +54,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
 #include <linux/file.h>
 #include <linux/seq_file.h>
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
+#include <linux/version.h>
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0))
 #include <linux/sw_sync.h>
 #else
-#include <sw_sync.h>
+#include <../drivers/staging/android/sw_sync.h>
 #endif
 static PVRSRV_ERROR AllocReleaseFence(struct sw_sync_timeline *psTimeline, const char *szName, IMG_UINT32 ui32FenceVal, int *piFenceFd)
 {
@@ -429,12 +430,17 @@ static IMG_VOID _SCPDumpCommand(SCP_COMMAND *psCommand)
 	{
 		for (i = 0; i < psCommand->ui32SyncCount; i++)
 		{
+			if (!psCommand->pasSCPSyncData)
+				continue;
+
 			SCP_SYNC_DATA *psSCPSyncData = &psCommand->pasSCPSyncData[i];
 		   
 			/*
 				Only dump this sync if there is a fence operation on it
 			*/
-			if (psSCPSyncData->ui32Flags & SCP_SYNC_DATA_FENCE)
+			if (psSCPSyncData &&
+					(psSCPSyncData->ui32Flags & SCP_SYNC_DATA_FENCE) &&
+					(psSCPSyncData->psSync))
 			{
 				PVR_LOG(("\t\tFenced on 0x%08x = 0x%08x (?= 0x%08x)",
 						ServerSyncGetFWAddr(psSCPSyncData->psSync),
@@ -828,6 +834,9 @@ IMG_VOID SCPCommandComplete(SCP_CONTEXT *psContext)
 IMG_EXPORT
 IMG_VOID IMG_CALLCONV SCPDumpStatus(SCP_CONTEXT *psContext)
 {
+	if (psContext == IMG_NULL)
+		return;
+
 	/*
 		Acquire the lock to ensure that the SCP isn't run while
 		while we're dumping info

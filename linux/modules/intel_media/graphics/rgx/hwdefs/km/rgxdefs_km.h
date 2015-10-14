@@ -73,6 +73,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * RGX Defines
  *****************************************************************************/
 
+/* META cores (required for the RGX_FEATURE_META) */
+#define MTP218   (1)
+#define MTP219   (2)
+#define LTP218   (3)
+#define LTP217   (4)
+
 /* ISP requires valid state on all three pipes regardless of the number of
  * active pipes/tiles in flight.
  */
@@ -81,6 +87,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define ROGUE_CACHE_LINE_SIZE				((RGX_FEATURE_SLC_CACHE_LINE_SIZE_BITS)/8)
 
 #define MAX_HW_TA3DCONTEXTS	2
+
+
+/* useful extra defines for clock ctrl*/
+#define RGX_CR_CLK_CTRL_ALL_ON   (IMG_UINT64_C(0x5555555555555555)&RGX_CR_CLK_CTRL_MASKFULL)
+#define RGX_CR_CLK_CTRL_ALL_AUTO (IMG_UINT64_C(0xaaaaaaaaaaaaaaaa)&RGX_CR_CLK_CTRL_MASKFULL)
 
 /* SOFT_RESET Rascal and DUSTs bits */
 #define RGX_CR_SOFT_RESET_RASCALDUSTS_EN	(RGX_CR_SOFT_RESET_RASCAL_CORE_EN | \
@@ -108,6 +119,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #undef RGX_CR_SOFT_RESET_SLC_CLRMSK
 #undef RGX_CR_SOFT_RESET_SLC_SHIFT
 
+#define RGX_CR_SOFT_RESET_SLC_SHIFT                       (27U)
+#define RGX_CR_SOFT_RESET_SLC_CLRMSK                      (IMG_UINT64_C(0XFFFFFFFFF7FFFFFF))
+#define RGX_CR_SOFT_RESET_SLC_EN                          (IMG_UINT64_C(0X0000000008000000))
+
 /* Remove the SOFT_RESET_SLC_EN bit from SOFT_RESET_MASKFULL */
 #undef RGX_CR_SOFT_RESET_MASKFULL 
 #define RGX_CR_SOFT_RESET_MASKFULL IMG_UINT64_C(0x000001FFF7FFFC1D)
@@ -115,5 +130,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #endif /* FIX_HW_BRN_36492 */
 
 #define DPX_MAX_RAY_CONTEXTS 4 /* FIXME should this be in dpx file? */
+
+#if !defined(RGX_FEATURE_SLC_SIZE_IN_BYTES)
+#define RGX_FEATURE_SLC_SIZE_IN_BYTES (RGX_FEATURE_SLC_SIZE_IN_KILOBYTES * 1024)
+#endif
 
 #endif /* _RGXDEFS_KM_H_ */

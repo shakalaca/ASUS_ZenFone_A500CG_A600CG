@@ -51,6 +51,8 @@
 #define VALLEYVIEW2_FAMILY	0x30670
 #define CPUID_MASK		0xffff0
 
+#define DRV_VERSION	"1.00"
+
 struct OSII {                   /* os image identifier */
 	uint16_t os_rev_minor;
 	uint16_t os_rev_major;
@@ -78,13 +80,10 @@ struct OSIP_header {            /* os image profile */
 	struct OSII desc[MAX_OSII];
 };
 
+#ifdef CONFIG_INTEL_SCU_IPC
 /* A boolean variable, that is set, when wants to make the platform
     force shuts down */
 static int force_shutdown_occured;
-
-/* A boolean variable, that is set to check if a power supply
-   is present during shutdown. */
-static int shutdown_power_supply_supplied;
 
 module_param(force_shutdown_occured, int, 0644);
 MODULE_PARM_DESC(force_shutdown_occured,
@@ -92,36 +91,23 @@ MODULE_PARM_DESC(force_shutdown_occured,
 		" when a force shudown condition occurs, to allow"
 		" system shut down even with charger connected");
 
-enum cpuid_regs {
-	CR_EAX = 0,
-	CR_ECX,
-	CR_EDX,
-	CR_EBX
-};
 
-static int is_valleyview()
-{
-	u32 regs[4];
-	cpuid(1, &regs[CR_EAX], &regs[CR_EBX], &regs[CR_ECX], &regs[CR_EDX]);
-
-	return ((regs[CR_EAX] & CPUID_MASK) == VALLEYVIEW2_FAMILY);
-}
-
-int get_force_shutdown_occured()
+int get_force_shutdown_occured(void)
 {
 	pr_info("%s, force_shutdown_occured=%d\n",
 		__func__, force_shutdown_occured);
 	return force_shutdown_occured;
 }
 EXPORT_SYMBOL(get_force_shutdown_occured);
+#endif
 
-int emmc_match(struct device *dev, void *data)
+int emmc_match(struct device *dev, const void *data)
 {
 	if (strcmp(dev_name(dev), EMMC_OSIP_BLKDEVICE) == 0)
 		return 1;
 	return 0;
 }
-int hdd_match(struct device *dev, void *data)
+int hdd_match(struct device *dev, const void *data)
 {
 	if (strcmp(dev_name(dev), HDD_OSIP_BLKDEVICE) == 0)
 		return 1;
@@ -155,7 +141,8 @@ static struct block_device *get_bdev(void)
 static uint8_t calc_checksum(void *_buf, int size)
 {
 	int i;
-	uint8_t checksum = 0, *buf = (uint8_t *)_buf;
+	uint8_t checksum = 0;
+	uint8_t *buf = (uint8_t *)_buf;
 	for (i = 0; i < size; i++)
 		checksum = checksum ^ (buf[i]);
 	return checksum;
@@ -237,6 +224,8 @@ bd_put:
 	return 0;
 }
 
+
+#ifdef CONFIG_INTEL_SCU_IPC
 /*
    OSHOB - OS Handoff Buffer
    OSNIB - OS No Init Buffer
@@ -247,11 +236,26 @@ bd_put:
    The attribute of OS image is selected for Reboot/boot reason.
 */
 
-#define SIGNED_MOS_ATTR		0x0
-#define SIGNED_COS_ATTR		0x0A
-#define SIGNED_POS_ATTR		0x0E
-#define SIGNED_RECOVERY_ATTR	0x0C
-#define SIGNED_POSCOS_ATTR	0x10
+static int osip_invalidate(struct OSIP_header *osip, void *data)
+{
+	unsigned int id = (unsigned int)(uintptr_t)data;
+	osip->desc[id].ddr_load_address = 0;
+	osip->desc[id].entry_point = 0;
+	return 1;
+}
+
+static int osip_restore(struct OSIP_header *osip, void *data)
+{
+	unsigned int id = (unsigned int)(uintptr_t)data;
+	/* hardcoding addresses. According to the FAS, this is how
+	   the OS image blob has to be loaded, and where is the
+	   bootstub entry point.
+	*/
+	osip->desc[id].ddr_load_address = 0x1100000;
+	osip->desc[id].entry_point = 0x1101000;
+	return 1;
+
+}
 
 static int osip_reboot_notifier_call(struct notifier_block *notifier,
 				     unsigned long what, void *data)
@@ -278,19 +282,20 @@ static int osip_reboot_notifier_call(struct notifier_block *notifier,
 			/*
 			* PNW and CLVP depend on watchdog driver to
 			* send COLD OFF message to SCU.
-			* SCU watchdog is not available from TNG A0,
-			* so SCU FW provides a new IPC message to shut
+			* TNG and ANN use COLD_OFF IPC message to shut
 			* down the system.
 			*/
-			if (intel_mid_identify_cpu() ==
-			    INTEL_MID_CPU_CHIP_TANGIER) {
-				    pr_err("[SHTDWN] %s, executing COLD_OFF...\n",
-					    __func__);
-				    ret = rpmsg_send_generic_simple_command(
-					    RP_COLD_OFF, 0);
-				    if (ret)
-					    pr_err("%s(): COLD_OFF ipc failed\n",
-						    __func__);
+			if ((intel_mid_identify_cpu() ==
+					INTEL_MID_CPU_CHIP_TANGIER) ||
+					(intel_mid_identify_cpu() ==
+					INTEL_MID_CPU_CHIP_ANNIEDALE)) {
+				pr_err("[SHTDWN] %s, executing COLD_OFF...\n",
+								__func__);
+				ret = rpmsg_send_generic_simple_command(
+							RP_COLD_OFF, 0);
+				if (ret)
+					pr_err("%s(): COLD_OFF ipc failed\n",
+								__func__);
 			}
 		} else {
 			pr_warn("[SHTDWN] %s, invalid value\n", __func__);
@@ -300,7 +305,8 @@ static int osip_reboot_notifier_call(struct notifier_block *notifier,
 	}
 
 	if (data && 0 == strncmp(cmd, "recovery", 9)) {
-		pr_warn("[SHTDWN] %s, rebooting into Recovery\n", __func__);
+		pr_warn("[SHTDWN] %s, invalidating osip and rebooting into "
+			"Recovery\n", __func__);
 #ifdef DEBUG
 		intel_scu_ipc_read_osnib_rr(&rbt_reason);
 #endif
@@ -308,6 +314,7 @@ static int osip_reboot_notifier_call(struct notifier_block *notifier,
 		if (ret_ipc < 0)
 			pr_err("%s cannot write Recovery reboot reason in OSNIB\n",
 				__func__);
+		access_osip_record(osip_invalidate, (void *)0);
 		ret = NOTIFY_OK;
 	} else if (data && 0 == strncmp(cmd, "bootloader", 11)) {
 		pr_warn("[SHTDWN] %s, rebooting into Fastboot\n", __func__);
@@ -325,11 +332,13 @@ static int osip_reboot_notifier_call(struct notifier_block *notifier,
 		ret = NOTIFY_OK;
 	} else {
 		/* By default, reboot to Android. */
-		pr_warn("[SHTDWN] %s, rebooting into Android\n", __func__);
+		pr_warn("[SHTDWN] %s, restoring OSIP and rebooting into "
+			"Android\n", __func__);
 		ret_ipc = intel_scu_ipc_write_osnib_rr(SIGNED_MOS_ATTR);
 		if (ret_ipc < 0)
 			pr_err("%s cannot write Android reboot reason in OSNIB\n",
 				 __func__);
+		access_osip_record(osip_restore, (void *)0);
 		ret = NOTIFY_OK;
 	}
 	return ret;
@@ -359,6 +368,7 @@ module_param_call(test, osip_test_write,
 static struct notifier_block osip_reboot_notifier = {
 	.notifier_call = osip_reboot_notifier_call,
 };
+#endif
 
 /* useful for engineering, not for product */
 #ifdef CONFIG_INTEL_MID_OSIP_DEBUG_FS
@@ -367,12 +377,16 @@ static struct notifier_block osip_reboot_notifier = {
 /* number N of sectors (512bytes) needed for the cmdline, N+1 needed */
 #define OSIP_MAX_CMDLINE_SECTOR ((OSIP_MAX_CMDLINE_SIZE >> 9) + 1)
 
+/* Size used by signature is not the same for valleyview */
+#define OSIP_SIGNATURE_SIZE 		0x1E0
+#define OSIP_VALLEYVIEW_SIGNATURE_SIZE 	0x400
+
 struct cmdline_priv {
 	Sector sect[OSIP_MAX_CMDLINE_SECTOR];
 	struct block_device *bdev;
 	int lba;
 	char *cmdline;
-	int osip_id;
+	unsigned int osip_id;
 	uint8_t attribute;
 };
 
@@ -389,14 +403,14 @@ int open_cmdline(struct inode *i, struct file *f)
 {
 	struct cmdline_priv *p;
 	int ret, j;
-	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	p = kzalloc(sizeof(struct cmdline_priv), GFP_KERNEL);
 	if (!p) {
 		pr_err("%s: unable to allocate p!\n", __func__);
 		ret = -ENOMEM;
 		goto end;
 	}
 	if (i->i_private)
-		p->osip_id = (int) i->i_private;
+		p->osip_id = (unsigned int)(uintptr_t) i->i_private;
 	f->private_data = 0;
 	access_osip_record(osip_find_cmdline, (void *)p);
 	if (!p->lba) {
@@ -433,8 +447,12 @@ int open_cmdline(struct inode *i, struct file *f)
 		goto put;
 	}
 	if (!(p->attribute & 1))
-		/* even number: signed plus 480 bytes for VRL header. */
-		p->cmdline += 0x1E0;
+		/* even number: signed add size of signature header. */
+#ifdef CONFIG_INTEL_SCU_IPC
+		p->cmdline += OSIP_SIGNATURE_SIZE;
+#else
+		p->cmdline += OSIP_VALLEYVIEW_SIGNATURE_SIZE;
+#endif
 
 	f->private_data = p;
 	return 0;
@@ -460,9 +478,13 @@ static ssize_t read_cmdline(struct file *file, char __user *buf,
 static ssize_t write_cmdline(struct file *file, const char __user *buf,
 			     size_t count, loff_t *ppos)
 {
-	struct cmdline_priv *p =
-		(struct cmdline_priv *)file->private_data;
 	int ret, i;
+	struct cmdline_priv *p;
+
+	if (!file)
+		return -ENODEV;
+
+	p = (struct cmdline_priv *)file->private_data;
 	if (!p)
 		return -ENODEV;
 	/* @todo detect if image is signed, and prevent write */
@@ -622,36 +644,27 @@ static void remove_debugfs_files(void)
 
 static int osip_init(void)
 {
-	/*
-	 * FIXME: shouldn't be cpu based, scu flag needed
-	 */
-	if (!is_valleyview()) {
-		pr_info("%s: reboot_notifier registered\n", __func__);
-		if (register_reboot_notifier(&osip_reboot_notifier))
-			pr_warning("osip: unable to register reboot notifier");
+#ifdef CONFIG_INTEL_SCU_IPC
+	pr_info("%s: reboot_notifier registered\n", __func__);
+	if (register_reboot_notifier(&osip_reboot_notifier))
+		pr_warning("osip: unable to register reboot notifier");
 
-	} else
-		pr_info("%s: reboot_notifier not registered\n", __func__);
-
+#endif
 	create_debugfs_files();
 	return 0;
 }
 
 static void osip_exit(void)
 {
-	/*
-	 * FIXME: shouldn't be cpu based, scu flag needed
-	 */
-	if (!is_valleyview()) {
-		pr_info("%s: reboot_notifier unregistered\n", __func__);
-		unregister_reboot_notifier(&osip_reboot_notifier);
+#ifdef CONFIG_INTEL_SCU_IPC
+	pr_info("%s: reboot_notifier unregistered\n", __func__);
+	unregister_reboot_notifier(&osip_reboot_notifier);
 
-	} else
-		pr_info("%s: reboot_notifier not unregistered\n", __func__);
-
+#endif
 	remove_debugfs_files();
 }
 
+#ifdef CONFIG_INTEL_SCU_IPC
 static int osip_rpmsg_probe(struct rpmsg_channel *rpdev)
 {
 	if (rpdev == NULL) {
@@ -705,6 +718,48 @@ static void __exit osip_rpmsg_exit(void)
 	return unregister_rpmsg_driver(&osip_rpmsg_driver);
 }
 module_exit(osip_rpmsg_exit);
+
+#else /* ! defined(CONFIG_INTEL_SCU_IPC) */
+
+static int __init osip_probe(struct platform_device *dev)
+{
+	return osip_init();
+}
+
+static int osip_remove(struct platform_device *dev)
+{
+	osip_exit();
+	return 0;
+}
+
+static struct platform_driver osip_driver = {
+	.remove         = osip_remove,
+	.driver         = {
+		.owner  = THIS_MODULE,
+		.name   = KBUILD_MODNAME,
+	},
+};
+
+static int __init osip_init_module(void)
+{
+	int err=0;
+
+	pr_info("Intel OSIP Driver v%s\n", DRV_VERSION);
+
+        platform_device_register_simple(KBUILD_MODNAME, -1, NULL, 0);
+	err =  platform_driver_probe(&osip_driver,osip_probe);
+
+	return err;
+}
+
+static void __exit osip_cleanup_module(void)
+{
+	platform_driver_unregister(&osip_driver);
+	pr_info("OSIP Module Unloaded\n");
+}
+module_init(osip_init_module);
+module_exit(osip_cleanup_module);
+#endif
 
 MODULE_AUTHOR("Pierre Tardy <pierre.tardy@intel.com>");
 MODULE_AUTHOR("Xiaokang Qin <xiaokang.qin@intel.com>");

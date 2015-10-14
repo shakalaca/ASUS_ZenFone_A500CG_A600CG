@@ -79,6 +79,7 @@ PVRSRV_PCI_DEV_HANDLE OSPCISetDev(IMG_VOID *pvPCICookie, HOST_PCI_INIT_FLAGS eFl
 	if (err != 0)
 	{
 		printk(KERN_ERR "OSPCISetDev: Couldn't enable device (%d)\n", err);
+		kfree(psPVRPCI);
 		return IMG_NULL;
 	}
 

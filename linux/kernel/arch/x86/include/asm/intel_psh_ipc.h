@@ -30,4 +30,6 @@ int intel_ia2psh_command(struct psh_msg *in, struct psh_msg *out,
 int intel_psh_ipc_bind(int ch, psh_channel_handle_t handle, void *data);
 void intel_psh_ipc_unbind(int ch);
 
+void intel_psh_ipc_disable_irq(void);
+void intel_psh_ipc_enable_irq(void);
 #endif

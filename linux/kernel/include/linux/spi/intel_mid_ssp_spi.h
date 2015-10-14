@@ -34,6 +34,8 @@
 
 #define PCI_MRST_DMAC1_ID	0x0814
 #define PCI_MDFL_DMAC1_ID	0x0827
+#define PCI_BYT_DMAC1_ID	0x0f06
+#define PCI_MRFL_DMAC_ID	0x11A2
 
 #define SSP_NOT_SYNC 0x400000
 #define MAX_SPI_TRANSFER_SIZE 8192
@@ -44,17 +46,6 @@
 #define MIN_EXIT_LATENCY 20
 
 /* SSP assignement configuration from PCI config */
-
-#if defined(CONFIG_X86_MRFLD)
-/* SSP ADID format for MRFLD */
-#define SSP_CFG_GET_MODE(ssp_cfg)	((ssp_cfg) & 0x03)
-#define SSP_CFG_GET_SPI_BUS_NB(ssp_cfg)	(((ssp_cfg) >> 2) & 0x07)
-#define SSP_CFG_IS_SPI_SLAVE(ssp_cfg)	((ssp_cfg) & 0x20)
-#else
-#define SSP_CFG_GET_MODE(ssp_cfg)	((ssp_cfg) & 0x07)
-#define SSP_CFG_GET_SPI_BUS_NB(ssp_cfg)	(((ssp_cfg) >> 3) & 0x07)
-#define SSP_CFG_IS_SPI_SLAVE(ssp_cfg)	((ssp_cfg) & 0x40)
-#endif /* CONFIG_X86_MDFLD */
 
 #define SSP_CFG_SPI_MODE_ID		1
 /* adid field offset is 6 inside the vendor specific capability */
@@ -84,6 +75,10 @@
 #define QUIRKS_BIT_BANGING		32
 /* If set, SPI is in slave clock mode                               */
 #define QUIRKS_SPI_SLAVE_CLOCK_MODE	64
+/* Add more platform here. */
+/* This quirks is set on Baytrail. */
+#define QUIRKS_PLATFORM_BYT		128
+#define QUIRKS_PLATFORM_MRFL		256
 
 /* Uncomment to get RX and TX short dumps after each transfer */
 /* #define DUMP_RX 1 */
@@ -169,6 +164,8 @@ DEFINE_SSP_REG(GAFR1_U, 0x44);
 #define SSSR_RFS		(1 << 6)	/* Rx FIFO Service Request */
 #define SSSR_ROR		(1 << 7)	/* Rx FIFO Overrun */
 #define SSSR_TFL_MASK           (0x0F << 8)     /* Tx FIFO level field mask */
+#define SSSR_RFL_SHIFT		12		/* Rx FIFO MASK shift */
+#define SSSR_RFL_MASK		(0x0F << SSSR_RFL_SHIFT)/* RxFIFOlevel mask */
 
 #define SSCR0_TIM    (1 << 23)          /* Transmit FIFO Under Run Int Mask */
 #define SSCR0_RIM    (1 << 22)          /* Receive FIFO Over Run int Mask */
@@ -223,6 +220,11 @@ DEFINE_SSP_REG(GAFR1_U, 0x44);
 				| SSCR1_IFS | SSCR1_STRF | SSCR1_EFWR \
 				| SSCR1_RFT | SSCR1_TFT | SSCR1_MWDS \
 				| SSCR1_SPH | SSCR1_SPO | SSCR1_LBM)
+
+/* add CS control call back feature to give user capability
+to control CS signal by themselves*/
+#define CS_DEASSERT	0
+#define CS_ASSERT		1
 
 struct callback_param {
 	void *drv_context;
@@ -300,6 +302,9 @@ struct ssp_drv_context {
 
 	unsigned long quirks;
 	u32 rx_fifo_threshold;
+
+	int cs_change;
+	void (*cs_control)(u32 command);
 };
 
 struct chip_data {
@@ -313,6 +318,7 @@ struct chip_data {
 	u32 speed_hz;
 	int (*write)(struct ssp_drv_context *sspc);
 	int (*read)(struct ssp_drv_context *sspc);
+	void (*cs_control)(u32 command);
 };
 
 
@@ -330,6 +336,7 @@ struct intel_mid_ssp_spi_chip {
 	u32 timeout;
 	u8 enable_loopback;
 	u8 dma_enabled;
+	void (*cs_control)(u32 command);
 };
 
 #define SPI_DIB_NAME_LEN  16

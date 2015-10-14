@@ -32,52 +32,105 @@
 #include <linux/slab.h>
 #include <linux/vlv2_plat_clock.h>
 #include <linux/acpi_gpio.h>
-#include <linux/extcon-mid.h>
 #include <asm/intel-mid.h>
+#include <linux/mutex.h>
 #include <asm/platform_byt_audio.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/jack.h>
 #include "../../codecs/rt5640.h"
+#include "byt_bl_rt5642.h"
+#include "../ssp/mid_ssp.h"
 
 #define BYT_PLAT_CLK_3_HZ	25000000
 
-static int debounce = 100;
-module_param(debounce, int, 0644);
+#define BYT_INTR_DEBOUNCE               0
+#define BYT_HS_INSERT_DET_DELAY         500
+#define BYT_HS_REMOVE_DET_DELAY         500
+#define BYT_BUTTON_DET_DELAY            100
+#define BYT_HS_DET_POLL_INTRVL          100
+#define BYT_BUTTON_EN_DELAY             1500
 
+#define BYT_HS_DET_RETRY_COUNT          6
 
 struct byt_mc_private {
+	struct byt_comms_mc_private comms_ctl;
 	struct snd_soc_jack jack;
+	struct delayed_work hs_insert_work;
+	struct delayed_work hs_remove_work;
+	struct delayed_work hs_button_work;
+	struct mutex jack_mlock;
+	/* To enable button press interrupts after a delay after HS detection.
+	   This is to avoid spurious button press events during slow HS insertion */
+	struct delayed_work hs_button_en_work;
+	int intr_debounce;
+	int hs_insert_det_delay;
+	int hs_remove_det_delay;
+	int button_det_delay;
+	int button_en_delay;
+	int hs_det_poll_intrvl;
+	int hs_det_retry;
+	bool process_button_events;
+	int tristate_buffer_gpio;
 };
 
-static int byt_hp_detection(void);
+static inline struct byt_comms_mc_private *kcontrol2ctl(struct snd_kcontrol *kcontrol)
+{
+	struct snd_soc_card *card =  snd_kcontrol_chip(kcontrol);
+	struct byt_mc_private *ctx = snd_soc_card_get_drvdata(card);
+	struct byt_comms_mc_private *ctl = &(ctx->comms_ctl);
+	return ctl;
+}
+
+int byt_get_ssp_bt_sco_master_mode(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+
+	struct byt_comms_mc_private *ctl = kcontrol2ctl(kcontrol);
+	ucontrol->value.integer.value[0] = ctl->ssp_bt_sco_master_mode;
+	return 0;
+}
+
+int byt_set_ssp_bt_sco_master_mode(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct byt_comms_mc_private *ctl = kcontrol2ctl(kcontrol);
+	if (ucontrol->value.integer.value[0] != ctl->ssp_bt_sco_master_mode)
+		ctl->ssp_bt_sco_master_mode = ucontrol->value.integer.value[0];
+
+	return 0;
+}
+
+int byt_get_ssp_modem_master_mode(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	struct byt_comms_mc_private *ctl = kcontrol2ctl(kcontrol);
+	ucontrol->value.integer.value[0] = ctl->ssp_modem_master_mode;
+	return 0;
+}
+
+int byt_set_ssp_modem_master_mode(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	struct byt_comms_mc_private *ctl = kcontrol2ctl(kcontrol);
+	if (ucontrol->value.integer.value[0] != ctl->ssp_modem_master_mode)
+		ctl->ssp_modem_master_mode = ucontrol->value.integer.value[0];
+
+	return 0;
+}
+
+static int byt_hs_detection(void);
 static struct snd_soc_jack_gpio hs_gpio = {
 		.name			= "byt-codec-int",
 		.report			= SND_JACK_HEADSET |
 					  SND_JACK_HEADPHONE |
 					  SND_JACK_BTN_0,
-		.debounce_time		= 100,
-		.jack_status_check	= byt_hp_detection,
+		.debounce_time		= BYT_INTR_DEBOUNCE,
+		.jack_status_check	= byt_hs_detection,
 };
 
-static inline void byt_jack_report(int status)
-{
-	switch (status) {
-	case SND_JACK_HEADPHONE:
-		mid_extcon_headset_report(HEADSET_NO_MIC);
-		break;
-	case SND_JACK_HEADSET:
-		mid_extcon_headset_report(HEADSET_WITH_MIC);
-		break;
-	default:
-		mid_extcon_headset_report(HEADSET_PULL_OUT);
-		break;
-	}
-	pr_debug("%s: headset reported: 0x%x\n", __func__, status);
-}
-
-static void set_mic_bias(struct snd_soc_codec *codec,
+static inline void byt_force_enable_pin(struct snd_soc_codec *codec,
 			 const char *bias_widget, bool enable)
 {
 	pr_debug("%s %s\n", enable ? "enable" : "disable", bias_widget);
@@ -88,66 +141,266 @@ static void set_mic_bias(struct snd_soc_codec *codec,
 	snd_soc_dapm_sync(&codec->dapm);
 }
 
-static int byt_hp_detection(void)
+static inline void byt_set_mic_bias_ldo(struct snd_soc_codec *codec, bool enable)
+{
+	if (enable) {
+		byt_force_enable_pin(codec, "micbias1", true);
+		byt_force_enable_pin(codec, "LDO2", true);
+	} else {
+		byt_force_enable_pin(codec, "micbias1", false);
+		byt_force_enable_pin(codec, "LDO2", false);
+	}
+}
+/* Identify the jack type as Headset/Headphone/None */
+static int byt_check_jack_type(void)
 {
 	struct snd_soc_jack_gpio *gpio = &hs_gpio;
 	struct snd_soc_jack *jack = gpio->jack;
 	struct snd_soc_codec *codec = jack->codec;
 	int status, jack_type = 0;
+	struct byt_mc_private *ctx = container_of(jack, struct byt_mc_private, jack);
 
-	pr_debug("Enter:%s", __func__);
-	status = rt5640_check_interrupt_event(codec);
-	switch (status) {
-	case RT5640_J_IN_EVENT:
+	status = rt5640_check_jd_status(codec);
+	/* jd status low indicates some accessory has been connected */
+	if (!status) {
 		pr_debug("Jack insert intr");
-		set_mic_bias(codec, "micbias1", true);
-		set_mic_bias(codec, "LDO2", true);
-		status = rt5640_headset_detect(codec, true);
+		/* Do not process button events until accessory is detected as headset*/
+		ctx->process_button_events = false;
+		byt_set_mic_bias_ldo(codec, true);
+		status = rt5640_detect_hs_type(codec, true);
 		if (status == RT5640_HEADPHO_DET)
 			jack_type = SND_JACK_HEADPHONE;
 		else if (status == RT5640_HEADSET_DET) {
 			jack_type = SND_JACK_HEADSET;
-			if (debounce)
-				gpio->debounce_time = debounce;
-			pr_debug("debounce = %d\n", gpio->debounce_time);
+			ctx->process_button_events = true;
+			/* If headset is detected, enable button interrupts after a delay */
+			schedule_delayed_work(&ctx->hs_button_en_work,
+					msecs_to_jiffies(ctx->button_en_delay));
 		} else /* RT5640_NO_JACK */
 			jack_type = 0;
 
-		byt_jack_report(jack_type);
+		if (jack_type != SND_JACK_HEADSET)
+			byt_set_mic_bias_ldo(codec, false);
 
-		if (jack_type != SND_JACK_HEADSET) {
-			set_mic_bias(codec, "micbias1", false);
-			set_mic_bias(codec, "LDO2", false);
-		}
-
-		pr_debug("Jack type detected:%d", jack_type);
-		break;
-	case RT5640_J_OUT_EVENT:
-		pr_debug("Jack remove intr");
-		gpio->debounce_time = 100;
-		status = rt5640_headset_detect(codec, false);
+	} else
 		jack_type = 0;
-		byt_jack_report(jack_type);
-		set_mic_bias(codec, "micbias1", false);
-		set_mic_bias(codec, "LDO2", false);
-		break;
-	case RT5640_BR_EVENT:
-		pr_debug("BR event received");
-		jack_type = SND_JACK_HEADSET;
-		break;
-	case RT5640_BP_EVENT:
-		pr_debug("BP event received");
-		jack_type = SND_JACK_HEADSET | SND_JACK_BTN_0;
-		break;
-	case RT5640_UN_EVENT:
-		pr_debug("Reported invalid/RT5640_UN_EVENT");
-		/* return previous status */
-		jack_type = jack->status;
-		break;
-	default:
-		pr_err("Error: Invalid event");
-	}
+
+	pr_debug("Jack type detected:%d", jack_type);
+
 	return jack_type;
+}
+
+/* Work function invoked by the Jack Infrastructure. Other delayed works
+   for jack detection/removal/button press are scheduled from this function */
+static int byt_hs_detection(void)
+{
+	struct snd_soc_jack_gpio *gpio = &hs_gpio;
+	struct snd_soc_jack *jack = gpio->jack;
+	struct snd_soc_codec *codec = jack->codec;
+	int status, jack_type = 0;
+	int ret;
+	struct byt_mc_private *ctx = container_of(jack, struct byt_mc_private, jack);
+
+	mutex_lock(&ctx->jack_mlock);
+	/* Initialize jack status with previous status. The delayed work will confirm
+	   the event and send updated status later */
+	jack_type = jack->status;
+	pr_debug("Enter:%s", __func__);
+
+	if (!jack->status) {
+		ctx->hs_det_retry = BYT_HS_DET_RETRY_COUNT;
+		ret = schedule_delayed_work(&ctx->hs_insert_work,
+				msecs_to_jiffies(ctx->hs_insert_det_delay));
+		if (!ret)
+			pr_debug("byt_check_hs_insert_status already queued");
+		else
+			pr_debug("%s:Check hs insertion  after %d msec",
+					__func__, ctx->hs_insert_det_delay);
+
+	} else {
+		/* First check for accessory removal; If not removed,
+		   check for button events*/
+		status = rt5640_check_jd_status(codec);
+		/* jd status high indicates accessory has been disconnected.
+		   However, confirm the removal in the delayed work */
+		if (status) {
+			/* Do not process button events while we make sure
+			   accessory is disconnected*/
+			ctx->process_button_events = false;
+			ret = schedule_delayed_work(&ctx->hs_remove_work,
+					msecs_to_jiffies(ctx->hs_remove_det_delay));
+			if (!ret)
+				pr_debug("byt_check_hs_remove_status already queued");
+			else
+				pr_debug("%s:Check hs removal after %d msec",
+						__func__, ctx->hs_remove_det_delay);
+		} else { /* Must be button event. Confirm the event in delayed work*/
+			if (((jack->status & SND_JACK_HEADSET) == SND_JACK_HEADSET) &&
+					ctx->process_button_events) {
+				ret = schedule_delayed_work(&ctx->hs_button_work,
+						msecs_to_jiffies(ctx->button_det_delay));
+				if (!ret)
+					pr_debug("byt_check_hs_button_status already queued");
+				else
+					pr_debug("%s:check BP/BR after %d msec",
+							__func__, ctx->button_det_delay);
+			}
+		}
+	}
+
+	pr_debug("Exit:%s", __func__);
+	mutex_unlock(&ctx->jack_mlock);
+	return jack_type;
+}
+
+/*Checks jack insertion and identifies the jack type.
+  Retries the detection if necessary */
+static void byt_check_hs_insert_status(struct work_struct *work)
+{
+	struct snd_soc_jack_gpio *gpio = &hs_gpio;
+	struct snd_soc_jack *jack = gpio->jack;
+	struct byt_mc_private *ctx = container_of(work, struct byt_mc_private, hs_insert_work.work);
+	int jack_type = 0;
+
+	mutex_lock(&ctx->jack_mlock);
+	pr_debug("Enter:%s", __func__);
+
+	jack_type = byt_check_jack_type();
+
+	/* Report jack immediately only if jack is headset. If headphone or no jack was detected,
+	   dont report it until the last HS det try. This is to avoid reporting any temporary
+	   jack removal or accessory change(eg, HP to HS) during the detection tries.
+	   This provides additional debounce that will help in the case of slow insertion.
+	   This also avoids the pause in audio due to accessory change from HP to HS */
+	if (ctx->hs_det_retry <= 0) /* end of retries; report the status */
+		snd_soc_jack_report(jack, jack_type, gpio->report);
+	else {
+		/* Schedule another detection try if headphone or no jack is detected.
+		   During slow insertion of headset, first a headphone may be detected.
+		   Hence retry until headset is detected */
+		if (jack_type == SND_JACK_HEADSET) {
+			ctx->hs_det_retry = 0; /* HS detected, no more retries needed */
+			snd_soc_jack_report(jack, jack_type, gpio->report);
+		} else {
+			ctx->hs_det_retry--;
+			schedule_delayed_work(&ctx->hs_insert_work,
+					msecs_to_jiffies(ctx->hs_det_poll_intrvl));
+			pr_debug("%s:re-try hs detection after %d msec",
+					__func__, ctx->hs_det_poll_intrvl);
+		}
+	}
+
+	pr_debug("Exit:%s", __func__);
+	mutex_unlock(&ctx->jack_mlock);
+}
+/* Checks jack removal. */
+static void byt_check_hs_remove_status(struct work_struct *work)
+{
+	struct snd_soc_jack_gpio *gpio = &hs_gpio;
+	struct snd_soc_jack *jack = gpio->jack;
+	struct snd_soc_codec *codec = jack->codec;
+	struct byt_mc_private *ctx = container_of(work, struct byt_mc_private, hs_remove_work.work);
+	int status = 0, jack_type = 0;
+
+	/* Cancel any pending insertion detection. There could be pending insertion detection in the
+	   case of very slow insertion or insertion and immediate removal.*/
+	cancel_delayed_work_sync(&ctx->hs_insert_work);
+
+	mutex_lock(&ctx->jack_mlock);
+	pr_debug("Enter:%s", __func__);
+	/* Initialize jack_type with previous status.
+	   If the event was an invalid one, we return the preious state*/
+	jack_type = jack->status;
+
+	if (jack->status) { /* jack is in connected state; look for removal event */
+		status = rt5640_check_jd_status(codec);
+		if (status) { /* jd status high implies accessory disconnected */
+			pr_debug("Jack remove event");
+			ctx->process_button_events = false;
+			cancel_delayed_work_sync(&ctx->hs_button_en_work);
+			status = rt5640_detect_hs_type(codec, false);
+			jack_type = 0;
+			byt_set_mic_bias_ldo(codec, false);
+
+		} else if (((jack->status & SND_JACK_HEADSET) == SND_JACK_HEADSET) && !ctx->process_button_events) {
+			/* Jack is still connected. We may come here if there was a spurious
+			   jack removal event. No state change is done until removal is confirmed
+			   by the check_jd_status above.i.e. jack status remains Headset or headphone.
+			   But as soon as the interrupt thread(byt_hs_detection) detected a jack
+			   removal, button processing gets disabled. Hence re-enable button processing
+			   in the case of headset */
+			pr_debug(" spurious Jack remove event for headset; re-enable button events");
+			ctx->process_button_events = true;
+		}
+	}
+	snd_soc_jack_report(jack, jack_type, gpio->report);
+	pr_debug("Exit:%s", __func__);
+	mutex_unlock(&ctx->jack_mlock);
+}
+/* Check for button press/release */
+static void byt_check_hs_button_status(struct work_struct *work)
+{
+	struct snd_soc_jack_gpio *gpio = &hs_gpio;
+	struct snd_soc_jack *jack = gpio->jack;
+	struct snd_soc_codec *codec = jack->codec;
+	struct byt_mc_private *ctx = container_of(work, struct byt_mc_private, hs_button_work.work);
+	int status = 0, jack_type = 0;
+	int ret;
+
+	mutex_lock(&ctx->jack_mlock);
+	pr_debug("Enter:%s", __func__);
+	/* Initialize jack_type with previous status.
+	   If the event was an invalid one, we return the preious state*/
+	jack_type = jack->status;
+
+	if (((jack->status & SND_JACK_HEADSET) == SND_JACK_HEADSET)
+			&& ctx->process_button_events) {
+
+		status = rt5640_check_jd_status(codec);
+		if (!status) { /* confirm jack is connected */
+
+			status = rt5640_check_bp_status(codec);
+			if (jack->status & SND_JACK_BTN_0) { /* if button was previosly in pressed state*/
+				if (!status) {
+					pr_debug("BR event received");
+					jack_type = SND_JACK_HEADSET;
+				}
+			} else { /* If button was previously in released state */
+				if (status) {
+					pr_debug("BP event received");
+					jack_type = SND_JACK_HEADSET | SND_JACK_BTN_0;
+				}
+			}
+		}
+		/* There could be button interrupts during jack removal. There can be
+		   situations where a button interrupt is generated first but no jack
+		   removal interrupt is generated. This can happen on platforrms where
+		   jack detection is aligned to Headset Left pin instead of the ground
+		   pin and codec multiplexes (ORs) the jack and button interrupts.
+		   So schedule a jack removal detection work */
+		ret = schedule_delayed_work(&ctx->hs_remove_work,
+				msecs_to_jiffies(ctx->hs_remove_det_delay));
+		if (!ret)
+			pr_debug("byt_check_hs_remove_status already queued");
+		else
+			pr_debug("%s:Check hs removal after %d msec",
+					__func__, ctx->hs_remove_det_delay);
+
+	}
+	snd_soc_jack_report(jack, jack_type, gpio->report);
+	pr_debug("Exit:%s", __func__);
+	mutex_unlock(&ctx->jack_mlock);
+}
+
+/* Delayed work for enabling the overcurrent detection circuit and interrupt
+   for generating button events */
+static void byt_enable_hs_button_events(struct work_struct *work)
+{
+	struct snd_soc_jack_gpio *gpio = &hs_gpio;
+	struct snd_soc_jack *jack = gpio->jack;
+	struct snd_soc_codec *codec = jack->codec;
+
+	rt5640_enable_ovcd_interrupt(codec, true);
 }
 
 static inline struct snd_soc_codec *byt_get_codec(struct snd_soc_card *card)
@@ -240,20 +493,11 @@ static const struct snd_kcontrol_new byt_mc_controls[] = {
 	SOC_DAPM_PIN_SWITCH("Ext Spk"),
 };
 
-
-static int byt_aif1_hw_params(struct snd_pcm_substream *substream,
-			     struct snd_pcm_hw_params *params)
+/* Sets dai format and pll */
+static int byt_set_dai_fmt_pll(struct snd_soc_dai *codec_dai, int unsigned fmt,
+				int source, unsigned int freq_out)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
-	unsigned int fmt;
 	int ret;
-
-	pr_debug("Enter:%s", __func__);
-	/* I2S Slave Mode`*/
-	fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
-	      SND_SOC_DAIFMT_CBS_CFS;
-
 	/* Set codec DAI configuration */
 	ret = snd_soc_dai_set_fmt(codec_dai, fmt);
 	if (ret < 0) {
@@ -261,13 +505,28 @@ static int byt_aif1_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	}
 
-	ret = snd_soc_dai_set_pll(codec_dai, 0, RT5640_PLL1_S_MCLK,
-				  BYT_PLAT_CLK_3_HZ, params_rate(params) * 512);
+	ret = snd_soc_dai_set_pll(codec_dai, 0, source,
+				  BYT_PLAT_CLK_3_HZ, freq_out * 512);
 	if (ret < 0) {
 		pr_err("can't set codec pll: %d\n", ret);
 		return ret;
 	}
 	return 0;
+}
+static int byt_aif1_hw_params(struct snd_pcm_substream *substream,
+			     struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	unsigned int fmt;
+
+	pr_debug("Enter:%s", __func__);
+	/* I2S Slave Mode*/
+	fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+	      SND_SOC_DAIFMT_CBS_CFS;
+	return byt_set_dai_fmt_pll(codec_dai, fmt, RT5640_PLL1_S_MCLK,
+						params_rate(params));
+
 }
 
 static int byt_aif2_hw_params(struct snd_pcm_substream *substream,
@@ -275,28 +534,48 @@ static int byt_aif2_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct byt_mc_private *ctx = snd_soc_card_get_drvdata(rtd->card);
 	unsigned int fmt;
 	int ret;
 
 	pr_debug("Enter:%s", __func__);
-	/* I2S  Slave Mode`*/
+	/* I2S  Slave Mode*/
 	fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 	      SND_SOC_DAIFMT_CBS_CFS;
-
-	/* Set codec DAI configuration */
-	ret = snd_soc_dai_set_fmt(codec_dai, fmt);
+	ret = byt_set_dai_fmt_pll(codec_dai, fmt, RT5640_PLL1_S_MCLK,
+						params_rate(params));
 	if (ret < 0) {
-		pr_err("can't set codec DAI configuration %d\n", ret);
+		pr_err("can't set codec dai fmt/pll: %d\n", ret);
 		return ret;
 	}
 
-	ret = snd_soc_dai_set_pll(codec_dai, 0, RT5640_PLL1_S_MCLK,
-				  BYT_PLAT_CLK_3_HZ, params_rate(params) * 512);
-	if (ret < 0) {
-		pr_err("can't set codec pll: %d\n", ret);
-		return ret;
-	}
+	if (ctx->tristate_buffer_gpio >= 0)
+		gpio_set_value(ctx->tristate_buffer_gpio, 1);
+
 	return 0;
+}
+
+static int byt_aif2_hw_free(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct byt_mc_private *ctx = snd_soc_card_get_drvdata(rtd->card);
+
+	if (ctx->tristate_buffer_gpio >= 0)
+		gpio_set_value(ctx->tristate_buffer_gpio, 0);
+	return 0;
+}
+
+static int byt_compr_set_params(struct snd_compr_stream *cstream)
+{
+	struct snd_soc_pcm_runtime *rtd = cstream->private_data;
+	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	unsigned int fmt;
+
+	pr_debug("Enter:%s", __func__);
+	/* I2S  Slave Mode*/
+	fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
+	      SND_SOC_DAIFMT_CBS_CFS;
+	return byt_set_dai_fmt_pll(codec_dai, fmt, RT5640_PLL1_S_MCLK, 48000);
 }
 
 static int byt_set_bias_level(struct snd_soc_card *card,
@@ -319,6 +598,202 @@ static int byt_set_bias_level(struct snd_soc_card *card,
 	return 0;
 }
 
+static int byt_comms_dai_link_startup(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *str_runtime;
+
+	str_runtime = substream->runtime;
+
+	WARN(!substream->pcm, "BYT Comms Machine: ERROR NULL substream->pcm\n");
+
+	if (!substream->pcm)
+		return -EINVAL;
+
+    /* set the runtime hw parameter with local snd_pcm_hardware struct */
+	switch (substream->pcm->device) {
+	case BYT_COMMS_BT:
+		str_runtime->hw = BYT_COMMS_BT_hw_param;
+		break;
+
+	case BYT_COMMS_MODEM:
+		str_runtime->hw = BYT_COMMS_MODEM_hw_param;
+		break;
+	default:
+		pr_err("BYT Comms Machine: bad PCM Device = %d\n",
+		       substream->pcm->device);
+	}
+	return snd_pcm_hw_constraint_integer(str_runtime,
+					 SNDRV_PCM_HW_PARAM_PERIODS);
+}
+
+static int byt_comms_dai_link_hw_params(struct snd_pcm_substream *substream,
+					struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_card *soc_card = rtd->card;
+	struct byt_mc_private *ctx = snd_soc_card_get_drvdata(soc_card);
+	struct byt_comms_mc_private *ctl = &(ctx->comms_ctl);
+
+	int ret = 0;
+	unsigned int tx_mask, rx_mask;
+	unsigned int nb_slot = 0;
+	unsigned int slot_width = 0;
+	unsigned int tristate_offset = 0;
+	unsigned int device = substream->pcm->device;
+
+
+	pr_debug("ssp_bt_sco_master_mode %d\n", ctl->ssp_bt_sco_master_mode);
+	pr_debug("ssp_modem_master_mode %d\n", ctl->ssp_modem_master_mode);
+
+	switch (device) {
+	case BYT_COMMS_BT:
+		/*
+		 * set cpu DAI configuration
+		 * frame_format = PSP_FORMAT
+		 * ssp_serial_clk_mode = SSP_CLK_MODE_1
+		 * ssp_frmsync_pol_bit = SSP_FRMS_ACTIVE_HIGH
+		 */
+		ret = snd_soc_dai_set_fmt(cpu_dai,
+					  SND_SOC_DAIFMT_I2S |
+					  SSP_DAI_SCMODE_1 |
+					  SND_SOC_DAIFMT_NB_NF |
+					  (ctl->ssp_bt_sco_master_mode ?
+					   SND_SOC_DAIFMT_CBM_CFM :
+					   SND_SOC_DAIFMT_CBS_CFS));
+
+		if (ret < 0) {
+			pr_err("BYT Comms Machine: Set FMT Fails %d\n",
+				ret);
+			return -EINVAL;
+		}
+
+		/*
+		 * BT SCO SSP Config
+		 * ssp_active_tx_slots_map = 0x01
+		 * ssp_active_rx_slots_map = 0x01
+		 * frame_rate_divider_control = 1
+		 * data_size = 16
+		 * tristate = 1
+		 * ssp_frmsync_timing_bit = 0
+		 * (NEXT_FRMS_ASS_AFTER_END_OF_T4)
+		 * ssp_frmsync_timing_bit = 1
+		 * (NEXT_FRMS_ASS_WITH_LSB_PREVIOUS_FRM)
+		 * ssp_psp_T2 = 1
+		 * (Dummy start offset = 1 bit clock period)
+		 */
+		nb_slot = BYT_SSP_BT_SLOT_NB_SLOT;
+		slot_width = BYT_SSP_BT_SLOT_WIDTH;
+		tx_mask = BYT_SSP_BT_SLOT_TX_MASK;
+		rx_mask = BYT_SSP_BT_SLOT_RX_MASK;
+
+		if (ctl->ssp_bt_sco_master_mode)
+			tristate_offset = BIT(TRISTATE_BIT);
+		else
+			tristate_offset = BIT(FRAME_SYNC_RELATIVE_TIMING_BIT);
+		break;
+
+	case BYT_COMMS_MODEM:
+		/*
+		 * set cpu DAI configuration
+		 * frame_format = PSP_FORMAT
+		 * ssp_serial_clk_mode = SSP_CLK_MODE_0
+		 * ssp_frmsync_pol_bit = SSP_FRMS_ACTIVE_HIGH
+		 */
+		ret = snd_soc_dai_set_fmt(cpu_dai,
+						SND_SOC_DAIFMT_I2S |
+						SSP_DAI_SCMODE_0 |
+						SND_SOC_DAIFMT_NB_NF |
+						(ctl->ssp_modem_master_mode ?
+						SND_SOC_DAIFMT_CBM_CFM :
+						SND_SOC_DAIFMT_CBS_CFS));
+		if (ret < 0) {
+			pr_err("BYT Comms Machine:  Set FMT Fails %d\n", ret);
+			return -EINVAL;
+		}
+
+		/*
+		 * Modem Mixing SSP Config
+		 * ssp_active_tx_slots_map = 0x01
+		 * ssp_active_rx_slots_map = 0x01
+		 * frame_rate_divider_control = 1
+		 * data_size = 32
+		 * Master:
+		 *	tristate = 3
+		 *	ssp_frmsync_timing_bit = 1, for MASTER
+		 *	(NEXT_FRMS_ASS_WITH_LSB_PREVIOUS_FRM)
+		 * Slave:
+		 *	tristate = 1
+		 *	ssp_frmsync_timing_bit = 0, for SLAVE
+		 *	(NEXT_FRMS_ASS_AFTER_END_OF_T4)
+		 *
+		 */
+		nb_slot = BYT_SSP_MIXING_SLOT_NB_SLOT;
+		slot_width = BYT_SSP_MIXING_SLOT_WIDTH;
+		tx_mask = BYT_SSP_MIXING_SLOT_TX_MASK;
+		rx_mask = BYT_SSP_MIXING_SLOT_RX_MASK;
+
+		tristate_offset = BIT(TRISTATE_BIT) |
+		    BIT(FRAME_SYNC_RELATIVE_TIMING_BIT);
+
+		break;
+	default:
+		pr_err("BYT Comms Machine: bad PCM Device ID = %d\n", device);
+		return -EINVAL;
+	}
+
+	ret = snd_soc_dai_set_tdm_slot(cpu_dai, tx_mask,
+				   rx_mask, nb_slot, slot_width);
+
+	if (ret < 0) {
+		pr_err("BYT Comms Machine:  Set TDM Slot Fails %d\n", ret);
+		return -EINVAL;
+	}
+
+	ret = snd_soc_dai_set_tristate(cpu_dai, tristate_offset);
+	if (ret < 0) {
+		pr_err("BYT Comms Machine: Set Tristate Fails %d\n", ret);
+		return -EINVAL;
+	}
+
+	pr_debug("BYT Comms Machine: slot_width = %d\n",
+	     slot_width);
+	pr_debug("BYT Comms Machine: tx_mask = %d\n",
+	     tx_mask);
+	pr_debug("BYT Comms Machine: rx_mask = %d\n",
+	     rx_mask);
+	pr_debug("BYT Comms Machine: tristate_offset = %d\n",
+	     tristate_offset);
+
+	return 0;
+}
+
+static int byt_comms_dai_link_prepare(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct byt_mc_private *ctx = snd_soc_card_get_drvdata(rtd->card);
+	struct byt_comms_mc_private *ctl = &(ctx->comms_ctl);
+
+	unsigned int device = substream->pcm->device;
+
+	pr_debug("%s substream->runtime->rate %d\n",
+		__func__,
+		substream->runtime->rate);
+
+	/* select clock source (if master) */
+	/* BT SCO: CPU DAI is master */
+	/* FM: CPU DAI is master */
+	/* BT_VOIP: CPU DAI is master */
+	if ((device == BYT_COMMS_BT && ctl->ssp_bt_sco_master_mode) ||
+	    (device == BYT_COMMS_MODEM && ctl->ssp_modem_master_mode)) {
+		snd_soc_dai_set_sysclk(cpu_dai, SSP_CLK_ONCHIP,
+				substream->runtime->rate, 0);
+	}
+
+	return 0;
+}
+
 static int byt_init(struct snd_soc_pcm_runtime *runtime)
 {
 	int ret;
@@ -331,6 +806,20 @@ static int byt_init(struct snd_soc_pcm_runtime *runtime)
 	/* Set codec bias level */
 	byt_set_bias_level(card, dapm, SND_SOC_BIAS_OFF);
 	card->dapm.idle_bias_off = true;
+	/* Set overcurrent detection threshold base and scale factor
+	   for jack type identification and button events. */
+
+	if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR1))
+		/* The mic bias resistor in BYT FFRD8 PR1 is reduced from
+		2.1K to 1.5K. Therefore the correct over current threshold
+		for this bias resistance is 1500uA. */
+		rt5640_config_ovcd_thld(codec, RT5640_MIC1_OVTH_1500UA,
+					RT5640_MIC_OVCD_SF_1P0);
+	else
+		/* Threshold base = 2000uA; scale factor = 0.5 =>
+		effective threshold of 1000uA */
+		rt5640_config_ovcd_thld(codec, RT5640_MIC1_OVTH_2000UA,
+					RT5640_MIC_OVCD_SF_0P5);
 
 	/* FFRD8 uses codec's JD1 for jack detection */
 	if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR0) ||
@@ -355,6 +844,18 @@ static int byt_init(struct snd_soc_pcm_runtime *runtime)
 					ARRAY_SIZE(byt_mc_controls));
 	if (ret) {
 		pr_err("unable to add card controls\n");
+		return ret;
+	}
+
+	/* Add Comms specific controls */
+	ctx->comms_ctl.ssp_bt_sco_master_mode = false;
+	ctx->comms_ctl.ssp_modem_master_mode = false;
+
+	ret = snd_soc_add_card_controls(card, byt_ssp_comms_controls,
+					ARRAY_SIZE(byt_ssp_comms_controls));
+
+	if (ret) {
+		pr_err("unable to add COMMS card controls\n");
 		return ret;
 	}
 
@@ -400,6 +901,16 @@ static struct snd_soc_ops byt_aif1_ops = {
 };
 static struct snd_soc_ops byt_aif2_ops = {
 	.hw_params = byt_aif2_hw_params,
+	.hw_free = byt_aif2_hw_free,
+};
+static struct snd_soc_compr_ops byt_compr_ops = {
+	.set_params = byt_compr_set_params,
+};
+
+static struct snd_soc_ops byt_comms_dai_link_ops = {
+	.startup = byt_comms_dai_link_startup,
+	.hw_params = byt_comms_dai_link_hw_params,
+	.prepare = byt_comms_dai_link_prepare,
 };
 
 static struct snd_soc_dai_link byt_dailink[] = {
@@ -425,6 +936,37 @@ static struct snd_soc_dai_link byt_dailink[] = {
 		.init = NULL,
 		.ignore_suspend = 1,
 		.ops = &byt_aif2_ops,
+	},
+	[BYT_AUD_COMPR_DEV] = {
+		.name = "Baytrail Compressed Audio",
+		.stream_name = "Compress",
+		.cpu_dai_name = "Compress-cpu-dai",
+		.codec_dai_name = "rt5640-aif1",
+		.codec_name = "rt5640.2-001c",
+		.platform_name = "sst-platform",
+		.init = NULL,
+		.ignore_suspend = 1,
+		.compr_ops = &byt_compr_ops,
+	},
+	[BYT_COMMS_BT] = {
+		.name = "Baytrail Comms BT SCO",
+		.stream_name = "BYT_BTSCO",
+		.cpu_dai_name = SSP_BT_DAI_NAME,
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+		.platform_name = "mid-ssp-dai",
+		.init = NULL,
+		.ops = &byt_comms_dai_link_ops,
+	},
+	[BYT_COMMS_MODEM] = {
+		.name = "Baytrail Comms MODEM",
+		.stream_name = "BYT_MODEM_MIXING",
+		.cpu_dai_name = SSP_MODEM_DAI_NAME,
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+		.platform_name = "mid-ssp-dai",
+		.init = NULL,
+		.ops = &byt_comms_dai_link_ops,
 	},
 };
 
@@ -468,7 +1010,7 @@ static int snd_byt_mc_probe(struct platform_device *pdev)
 {
 	int ret_val = 0;
 	struct byt_mc_private *drv;
-	struct byt_audio_platform_data *pdata = pdev->dev.platform_data;
+	int codec_gpio;
 
 	pr_debug("Entry %s\n", __func__);
 
@@ -478,13 +1020,39 @@ static int snd_byt_mc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	pdata->codec_gpio = acpi_get_gpio("\\_SB.GPO2", 4); /* GPIO_SUS4 */
-	pdata->hsdet_gpio = acpi_get_gpio("\\_SB.GPO2", 28); /* GPIO_SUS28 */
-	pdata->dock_hs_gpio = acpi_get_gpio("\\_SB.GPO2", 27); /* GPIO_SUS27 */
-	pr_info("%s: GPIOs - codec %d, hsdet %d, dock_hs %d", __func__,
-		pdata->codec_gpio, pdata->hsdet_gpio, pdata->dock_hs_gpio);
+	codec_gpio = acpi_get_gpio_by_index(&pdev->dev, 0, NULL);  /* GPIO_SUS4 */
+	pr_debug("%s: GPIOs - codec %d", __func__, codec_gpio);
+	hs_gpio.gpio = codec_gpio;
 
-	hs_gpio.gpio = pdata->codec_gpio;
+	drv->intr_debounce = BYT_INTR_DEBOUNCE;
+	drv->hs_insert_det_delay = BYT_HS_INSERT_DET_DELAY;
+	drv->hs_remove_det_delay = BYT_HS_REMOVE_DET_DELAY;
+	drv->button_det_delay = BYT_BUTTON_DET_DELAY;
+	drv->hs_det_poll_intrvl = BYT_HS_DET_POLL_INTRVL;
+	drv->hs_det_retry = BYT_HS_DET_RETRY_COUNT;
+	drv->button_en_delay = BYT_BUTTON_EN_DELAY;
+	drv->process_button_events = false;
+
+	INIT_DELAYED_WORK(&drv->hs_insert_work, byt_check_hs_insert_status);
+	INIT_DELAYED_WORK(&drv->hs_remove_work, byt_check_hs_remove_status);
+	INIT_DELAYED_WORK(&drv->hs_button_work, byt_check_hs_button_status);
+	INIT_DELAYED_WORK(&drv->hs_button_en_work, byt_enable_hs_button_events);
+	mutex_init(&drv->jack_mlock);
+	drv->tristate_buffer_gpio = -1;
+	/* Configure GPIO_SCORE56 for BT SCO workaround on FFRD8 PR1 */
+	if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR1)) {
+		drv->tristate_buffer_gpio = acpi_get_gpio("\\_SB.GPO0", 56);
+		ret_val = devm_gpio_request_one(&pdev->dev,
+					drv->tristate_buffer_gpio,
+					GPIOF_OUT_INIT_LOW,
+					"byt_ffrd8_tristate_buffer_gpio");
+		if (ret_val) {
+			pr_err("Tri-state buffer gpio config failed %d\n",
+				ret_val);
+			return ret_val;
+		}
+	}
+
 	/* register the soc card */
 	snd_soc_card_byt.dev = &pdev->dev;
 	snd_soc_card_set_drvdata(&snd_soc_card_byt, drv);
@@ -498,13 +1066,25 @@ static int snd_byt_mc_probe(struct platform_device *pdev)
 	return ret_val;
 }
 
+static void snd_byt_unregister_jack(struct byt_mc_private *ctx)
+{
+	/* Set process button events to false so that the button
+	   delayed work will not be scheduled.*/
+	ctx->process_button_events = false;
+	cancel_delayed_work_sync(&ctx->hs_insert_work);
+	cancel_delayed_work_sync(&ctx->hs_button_en_work);
+	cancel_delayed_work_sync(&ctx->hs_button_work);
+	cancel_delayed_work_sync(&ctx->hs_remove_work);
+	snd_soc_jack_free_gpios(&ctx->jack, 1, &hs_gpio);
+}
+
 static int snd_byt_mc_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *soc_card = platform_get_drvdata(pdev);
 	struct byt_mc_private *drv = snd_soc_card_get_drvdata(soc_card);
 
 	pr_debug("In %s\n", __func__);
-	snd_soc_jack_free_gpios(&drv->jack, 1, &hs_gpio);
+	snd_byt_unregister_jack(drv);
 	snd_soc_card_set_drvdata(soc_card, NULL);
 	snd_soc_unregister_card(soc_card);
 	platform_set_drvdata(pdev, NULL);
@@ -517,7 +1097,7 @@ static void snd_byt_mc_shutdown(struct platform_device *pdev)
 	struct byt_mc_private *drv = snd_soc_card_get_drvdata(soc_card);
 
 	pr_debug("In %s\n", __func__);
-	snd_soc_jack_free_gpios(&drv->jack, 1, &hs_gpio);
+	snd_byt_unregister_jack(drv);
 }
 
 const struct dev_pm_ops snd_byt_mc_pm_ops = {

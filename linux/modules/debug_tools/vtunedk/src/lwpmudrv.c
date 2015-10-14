@@ -46,6 +46,7 @@
 #include <linux/sched.h>
 #include <linux/syscalls.h>
 #include <asm/unistd.h>
+#include <linux/compat.h>
 
 #include "lwpmudrv_types.h"
 #include "rise_errors.h"
@@ -637,7 +638,9 @@ lwpmudrv_Initialize (
         CPU_STATE_num_samples(&pcb[cpu_num])      = 0;
     }
 
-    dispatch = UTILITY_Configure_CPU(DRV_CONFIG_dispatch_id(pcfg));
+    if (dispatch == NULL) {
+        dispatch = UTILITY_Configure_CPU(DRV_CONFIG_dispatch_id(pcfg));
+    }
     if (dispatch == NULL) {
         return OS_FAULT;
     }
@@ -1082,8 +1085,13 @@ lwpmudrv_Switch_Group (
 {
     S32            idx;
     CPU_STATE      pcpu;
-    OS_STATUS      status = OS_SUCCESS;
+    OS_STATUS      status        = OS_SUCCESS;
+    U32            current_state = GLOBAL_STATE_current_phase(driver_state);
 
+    if (current_state != DRV_STATE_RUNNING &&
+        current_state != DRV_STATE_PAUSED) {
+        return status;
+    }
     status = lwpmudrv_Pause();
     for (idx = 0; idx < GLOBAL_STATE_num_cpus(driver_state); idx++) {
         pcpu = &pcb[idx];
@@ -3108,19 +3116,37 @@ lwpmudrv_Get_Platform_Info (
     IOCTL_ARGS args
 )
 {
-    U64        value  = 0;
-    OS_STATUS  status = OS_SUCCESS;
-
-    if (args->r_len == 0 || args->r_buf == NULL) {
+    U32                    size          = sizeof(DRV_PLATFORM_INFO_NODE);
+    int                    dispatchid    = -1;
+    OS_STATUS              status = OS_SUCCESS;
+    //DRV_PLATFORM_INFO_NODE platform_data;
+    DRV_PLATFORM_INFO      platform_data;
+ 
+    if (!dispatch) {
+        if (args->r_len > 0 && args->r_buf != NULL) {
+            dispatchid = *((int *)args->r_buf);
+            if (dispatchid >= 0) {
+                dispatch = UTILITY_Configure_CPU(dispatchid);
+    }
+        }
+    }
+    //memset(&platform_data, 0, sizeof(DRV_PLATFORM_INFO_NODE));
+    platform_data = CONTROL_Allocate_Memory(size);
+    if (!platform_data) {
         return OS_FAULT;
     }
-
+    
     if (dispatch && dispatch->platform_info) {
-        value = dispatch->platform_info();
+        dispatch->platform_info((PVOID)platform_data);
     }
-    status  = put_user(value, (U64*)args->r_buf);
-
+    if (args->w_len < size || args->w_buf == NULL) {
+        return OS_FAULT;
+    }
+    status = copy_to_user(args->w_buf, platform_data, size);
+    platform_data = CONTROL_Free_Memory(platform_data);
+ 
     return status;
+
 }
 /* ------------------------------------------------------------------------- */
 /*!
@@ -3172,6 +3198,8 @@ lwpmudrv_Setup_Cpu_Topology (
         num_packages                              += CPU_STATE_socket_master(&pcb[cpu_num]);
         CPU_STATE_core_master(&pcb[cpu_num])       = DRV_TOPOLOGY_INFO_core_master(dt);
         CPU_STATE_thr_master(&pcb[cpu_num])        = DRV_TOPOLOGY_INFO_thr_master(dt);
+        CPU_STATE_cpu_module_num(&pcb[cpu_num])    = (U16)DRV_TOPOLOGY_INFO_cpu_module_num(&drv_topology[iter]);
+        CPU_STATE_cpu_module_master(&pcb[cpu_num]) = (U16)DRV_TOPOLOGY_INFO_cpu_module_master(&drv_topology[iter]);
         SEP_PRINT_DEBUG("cpu %d sm = %d cm = %d tm = %d\n",
                   cpu_num,
                   CPU_STATE_socket_master(&pcb[cpu_num]),
@@ -3330,7 +3358,7 @@ lwpmu_Write (
 
 /* ------------------------------------------------------------------------- */
 /*!
- * @fn  extern IOCTL_OP_TYPE lwpmu_Device_Control(IOCTL_USE_NODE, filp, cmd, arg)
+ * @fn  extern IOCTL_OP_TYPE lwpmu_Service_IOCTL(IOCTL_USE_NODE, filp, cmd, arg)
  *
  * @param   IOCTL_USE_INODE       - Used for pre 2.6.32 kernels
  * @param   struct   file   *filp - file pointer
@@ -3339,11 +3367,357 @@ lwpmu_Write (
  *
  * @return OS_STATUS
  *
- * @brief  Worker function that handles IOCTL requests from the user mode.
+ * @brief  SEP Worker function that handles IOCTL requests from the user mode.
  *
  * <I>Special Notes</I>
  */
 extern IOCTL_OP_TYPE
+lwpmu_Service_IOCTL (
+    IOCTL_USE_INODE
+    struct   file   *filp,
+    unsigned int     cmd,
+    IOCTL_ARGS_NODE  local_args
+)
+{
+    int              status = OS_SUCCESS;
+
+    if (cmd ==  DRV_OPERATION_GET_DRIVER_STATE) {
+        SEP_PRINT_DEBUG("DRV_OPERATION_GET_DRIVER_STATE\n");
+        status = lwpmudrv_Get_Driver_State(&local_args);
+        return status;
+    }
+
+    MUTEX_LOCK(ioctl_lock);
+    switch (cmd) {
+
+       /*
+        * Common IOCTL commands
+        */
+
+        case DRV_OPERATION_VERSION:
+            SEP_PRINT_DEBUG("DRV_OPERATION_VERSION\n");
+            status = lwpmudrv_Version(&local_args);
+            break;
+
+        case DRV_OPERATION_RESERVE:
+            SEP_PRINT_DEBUG("DRV_OPERATION_RESERVE\n");
+            status = lwpmudrv_Reserve(&local_args);
+            break;
+
+        case DRV_OPERATION_INIT:
+            SEP_PRINT_DEBUG("DRV_OPERATION_INIT\n");
+            status = lwpmudrv_Initialize(local_args.w_buf, local_args.w_len);
+            break;
+
+        case DRV_OPERATION_INIT_PMU:
+            SEP_PRINT_DEBUG("DRV_OPERATION_INIT_PMU\n");
+            status = lwpmudrv_Init_PMU();
+            break;
+
+        case DRV_OPERATION_SET_CPU_MASK:
+            SEP_PRINT_DEBUG("DRV_OPERATION_SET_CPU_MASK\n");
+            status = lwpmudrv_Set_CPU_Mask(local_args.w_buf, local_args.w_len);
+            break;
+
+        case DRV_OPERATION_START:
+            SEP_PRINT_DEBUG("DRV_OPERATION_START\n");
+            status = lwpmudrv_Start();
+            break;
+
+        case DRV_OPERATION_STOP:
+            SEP_PRINT_DEBUG("DRV_OPERATION_STOP\n");
+            status = lwpmudrv_Prepare_Stop();
+            break;
+
+        case DRV_OPERATION_PAUSE:
+            SEP_PRINT_DEBUG("DRV_OPERATION_PAUSE\n");
+            status = lwpmudrv_Pause();
+            break;
+
+        case DRV_OPERATION_RESUME:
+            SEP_PRINT_DEBUG("DRV_OPERATION_RESUME\n");
+            status = lwpmudrv_Resume();
+            break;
+
+        case DRV_OPERATION_EM_GROUPS:
+            SEP_PRINT_DEBUG("DRV_OPERATION_EM_GROUPS\n");
+            status = lwpmudrv_Set_EM_Config(&local_args);
+            break;
+
+        case DRV_OPERATION_EM_CONFIG_NEXT:
+            SEP_PRINT_DEBUG("DRV_OPERATION_EM_CONFIG_NEXT\n");
+            status = lwpmudrv_Configure_Events(&local_args);
+            break;
+
+        case DRV_OPERATION_NUM_DESCRIPTOR:
+            SEP_PRINT_DEBUG("DRV_OPERATION_NUM_DESCRIPTOR\n");
+            status = lwpmudrv_Set_Sample_Descriptors(&local_args);
+            break;
+
+        case DRV_OPERATION_DESC_NEXT:
+            SEP_PRINT_DEBUG("DRV_OPERATION_DESC_NEXT\n");
+            status = lwpmudrv_Configure_Descriptors(&local_args);
+            break;
+
+        case DRV_OPERATION_GET_NORMALIZED_TSC:
+            SEP_PRINT_DEBUG("DRV_OPERATION_GET_NORMALIZED_TSC\n");
+            status = lwpmudrv_Get_Normalized_TSC(&local_args);
+            break;
+
+        case DRV_OPERATION_GET_NORMALIZED_TSC_STANDALONE:
+            SEP_PRINT_DEBUG("DRV_OPERATION_GET_NORMALIZED_TSC_STANDALONE\n");
+            status = lwpmudrv_Get_Normalized_TSC(&local_args);
+            break;
+
+        case DRV_OPERATION_NUM_CORES:
+            SEP_PRINT_DEBUG("DRV_OPERATION_NUM_CORES\n");
+            status = lwpmudrv_Get_Num_Cores(&local_args);
+            break;
+
+        case DRV_OPERATION_KERNEL_CS:
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+            SEP_PRINT_DEBUG("DRV_OPERATION_KERNEL_CS\n");
+            status = lwpmudrv_Get_KERNEL_CS(&local_args);
+#endif
+            break;
+
+        case DRV_OPERATION_SET_UID:
+            SEP_PRINT_DEBUG("DRV_OPERATION_SET_UID\n");
+            status = lwpmudrv_Set_UID(&local_args);
+            break;
+
+        case DRV_OPERATION_TSC_SKEW_INFO:
+            SEP_PRINT_DEBUG("DRV_OPERATION_TSC_SKEW_INFO\n");
+            status = lwpmudrv_Get_TSC_Skew_Info(&local_args);
+            break;
+
+        case DRV_OPERATION_COLLECT_SYS_CONFIG:
+            SEP_PRINT_DEBUG("DRV_OPERATION_COLLECT_SYS_CONFIG\n");
+            status = lwpmudrv_Collect_Sys_Config(&local_args);
+            break;
+
+        case DRV_OPERATION_GET_SYS_CONFIG:
+            SEP_PRINT_DEBUG("DRV_OPERATION_GET_SYS_CONFIG\n");
+            status = lwpmudrv_Sys_Config(&local_args);
+            break;
+
+        case DRV_OPERATION_TERMINATE:
+            SEP_PRINT_DEBUG("DRV_OPERATION_TERMINATE\n");
+            status = lwpmudrv_Terminate();
+            break;
+
+        case DRV_OPERATION_SET_CPU_TOPOLOGY:
+            SEP_PRINT_DEBUG("DRV_OPERATION_SET_CPU_TOPOLOGY\n");
+            status = lwpmudrv_Setup_Cpu_Topology(&local_args);
+            break;
+
+        case DRV_OPERATION_GET_NUM_CORE_CTRS:
+            SEP_PRINT_DEBUG("DRV_OPERATION_GET_NUM_CORE_CTRS\n");
+            status = lwpmudrv_Samp_Read_Num_Of_Core_Counters(&local_args);
+            break;
+
+        case DRV_OPERATION_GET_PLATFORM_INFO:
+            SEP_PRINT_DEBUG("DRV_OPERATION_GET_PLATFORM_INFO\n");
+            status = lwpmudrv_Get_Platform_Info(&local_args);
+            break;
+
+        case DRV_OPERATION_READ_MSRS:
+            SEP_PRINT_DEBUG("DRV_OPERATION_READ_MSRs\n");
+            status = lwpmudrv_Read_MSRs(&local_args);
+            break;
+
+        case DRV_OPERATION_SWITCH_GROUP:
+            SEP_PRINT_DEBUG("DRV_OPERATION_SWITCH_GROUP\n");
+            status = lwpmudrv_Switch_Group();
+            break;
+
+       /*
+        * EMON-specific IOCTL commands
+        */
+
+        case DRV_OPERATION_READ_MSR:
+            SEP_PRINT_DEBUG("DRV_OPERATION_READ_MSR\n");
+            status = lwpmudrv_Read_MSR_All_Cores(&local_args);
+            break;
+
+#if defined(EMON)
+#if defined(EMON_INTERNAL)
+        case DRV_OPERATION_WRITE_MSR:
+            SEP_PRINT_DEBUG("DRV_OPERATION_WRITE_MSR\n");
+            status = lwpmudrv_Write_MSR_All_Cores(&local_args);
+            break;
+#endif  // EMON_INTERNAL
+
+        case DRV_OPERATION_READ_SWITCH_GROUP:
+            SEP_PRINT_DEBUG("DRV_OPERATION_READ_SWITCH_GROUP\n");
+            status = lwpmudrv_Read_Counters_And_Switch_Group(&local_args);
+            break;
+
+        case DRV_OPERATION_READ_AND_RESET:
+            SEP_PRINT_DEBUG("DRV_OPERATION_READ_AND_RESET\n");
+            status = lwpmudrv_Read_And_Reset_Counters(&local_args);
+            break;
+#endif  // EMON
+
+       /*
+        * Platform-specific IOCTL commands (IA64 only)
+        */
+
+#if defined(DRV_IA64)
+        case DRV_OPERATION_RO_INFO:
+            SEP_PRINT_DEBUG("DRV_OPERATION_RO_INFO\n");
+            status = lwpmudrv_RO_Info(&local_args);
+            break;
+#endif
+
+       /*
+        * Platform-specific IOCTL commands (IA32 and Intel64)
+        */
+
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+        case DRV_OPERATION_INIT_UNC:
+            SEP_PRINT_DEBUG("DRV_OPERATION_INIT_UNC\n");
+            status = lwpmudrv_Initialize_UNC(local_args.w_buf, local_args.w_len);
+            break;
+
+        case DRV_OPERATION_EM_GROUPS_UNC:
+            SEP_PRINT_DEBUG("DRV_OPERATION_EM_GROUPS_UNC\n");
+            status = lwpmudrv_Set_EM_Config_UNC(&local_args);
+            break;
+
+        case DRV_OPERATION_EM_CONFIG_NEXT_UNC:
+            SEP_PRINT_DEBUG("DRV_OPERATION_EM_CONFIG_NEXT_UNC\n");
+            status = lwpmudrv_Configure_Events_UNC(&local_args);
+            break;
+
+        case DRV_OPERATION_LBR_INFO:
+            SEP_PRINT_DEBUG("DRV_OPERATION_LBR_INFO\n");
+            status = lwpmudrv_LBR_Info(&local_args);
+            break;
+
+        case DRV_OPERATION_PWR_INFO:
+            SEP_PRINT_DEBUG("DRV_OPERATION_PWR_INFO\n");
+            status = lwpmudrv_PWR_Info(&local_args);
+            break;
+
+        case DRV_OPERATION_INIT_NUM_DEV:
+            SEP_PRINT_DEBUG("DRV_OPERATION_INIT_NUM_DEV\n");
+            status = lwpmudrv_Initialize_Num_Devices(&local_args);
+            break;
+#endif
+        case DRV_OPERATION_GET_NUM_SAMPLES:
+            SEP_PRINT_DEBUG("DRV_OPERATION_GET_NUM_SAMPLES\n");
+            status = lwpmudrv_Get_Num_Samples(&local_args);
+            break;
+
+        case DRV_OPERATION_SET_DEVICE_NUM_UNITS:
+            SEP_PRINT_DEBUG("DRV_OPERATION_SET_DEVICE_NUM_UNITS\n");
+            status = lwpmudrv_Set_Device_Num_Units(&local_args);
+            break;
+        case DRV_OPERATION_TIMER_TRIGGER_READ:
+            lwpmudrv_Trigger_Read();
+            break;
+
+       /*
+        * Graphics IOCTL commands
+        */
+
+
+       /*
+        * Chipset IOCTL commands
+        */
+
+#if defined(BUILD_CHIPSET)
+        case DRV_OPERATION_PCI_READ:
+            {
+                CHIPSET_PCI_ARG_NODE pci_data;
+
+                SEP_PRINT_DEBUG("DRV_OPERATION_PCI_READ\n");
+                if (copy_from_user(&pci_data, (CHIPSET_PCI_ARG)local_args.w_buf, sizeof(CHIPSET_PCI_ARG_NODE))) {
+                    status = OS_FAULT;
+                    goto cleanup;
+                }
+
+                status = PCI_Read_From_Memory_Address(CHIPSET_PCI_ARG_address(&pci_data),
+                                               &CHIPSET_PCI_ARG_value(&pci_data));
+
+                if (copy_to_user(local_args.r_buf, &pci_data, sizeof(CHIPSET_PCI_ARG_NODE))) {
+                    status =  OS_FAULT;
+                    goto cleanup;
+                }
+
+                break;
+            }
+
+        case DRV_OPERATION_PCI_WRITE:
+            {
+                CHIPSET_PCI_ARG_NODE pci_data;
+
+                SEP_PRINT_DEBUG("DRV_OPERATION_PCI_WRITE\n");
+
+                if (copy_from_user(&pci_data, (CHIPSET_PCI_ARG)local_args.w_buf, sizeof(CHIPSET_PCI_ARG_NODE))) {
+                   status = OS_FAULT;
+                    goto cleanup;
+                }
+
+                status = PCI_Write_To_Memory_Address(CHIPSET_PCI_ARG_address(&pci_data),
+                                                     CHIPSET_PCI_ARG_value(&pci_data));
+                break;
+            }
+
+        case DRV_OPERATION_FD_PHYS:
+            SEP_PRINT_DEBUG("DRV_OPERATION_FD_PHYS\n");
+            status = lwpmudrv_Samp_Find_Physical_Address(&local_args);
+            break;
+
+        case DRV_OPERATION_READ_PCI_CONFIG:
+            SEP_PRINT_DEBUG("DRV_OPERATION_READ_PCI_CONFIG\n");
+            status = lwpmudrv_Samp_Read_PCI_Config(&local_args);
+            break;
+
+        case DRV_OPERATION_WRITE_PCI_CONFIG:
+            SEP_PRINT_DEBUG("DRV_OPERATION_WRITE_PCI_CONFIG\n");
+            status = lwpmudrv_Samp_Write_PCI_Config(&local_args);
+            break;
+
+        case DRV_OPERATION_CHIPSET_INIT:
+            SEP_PRINT_DEBUG("DRV_OPERATION_CHIPSET_INIT\n");
+            SEP_PRINT_DEBUG("lwpmudrv_Device_Control: enable_chipset=%d\n", (int)DRV_CONFIG_enable_chipset(pcfg));
+            status = lwpmudrv_Samp_Chipset_Init(&local_args);
+            break;
+
+        case DRV_OPERATION_GET_CHIPSET_DEVICE_ID:
+            SEP_PRINT_DEBUG("DRV_OPERATION_GET_CHIPSET_DEVICE_ID\n");
+            status = lwpmudrv_Samp_Read_PCI_Config(&local_args);
+            break;
+#endif  // BUILD_CHIPSET
+
+       /*
+        * if none of the above, treat as unknown/illegal IOCTL command
+        */
+
+        default:
+            SEP_PRINT_ERROR("Unknown IOCTL number:%d\n", cmd);
+            status = OS_ILLEGAL_IOCTL;
+            break;
+    }
+cleanup:
+
+    MUTEX_UNLOCK(ioctl_lock);
+    if (cmd == DRV_OPERATION_STOP &&
+        GLOBAL_STATE_current_phase(driver_state) == DRV_STATE_PREPARE_STOP) {
+        status = lwpmudrv_Finish_Stop();
+        if (status == OS_SUCCESS) {
+            // if stop was successful, relevant memory should have been freed,
+            // so try to compact the memory tracker
+            CONTROL_Memory_Tracker_Compaction();
+        }
+    }
+
+    return status;
+}
+
+extern long
 lwpmu_Device_Control (
     IOCTL_USE_INODE
     struct   file   *filp,
@@ -3358,510 +3732,20 @@ lwpmu_Device_Control (
     SEP_PRINT_DEBUG("lwpmu_DeviceControl(0x%x) called on inode maj:%d, min:%d\n",
             cmd, imajor(inode), iminor(inode));
 #endif
-    SEP_PRINT_DEBUG("type: %d, subcommand: %d\n",_IOC_TYPE(cmd),_IOC_NR(cmd));
+    SEP_PRINT_DEBUG("type: %d, subcommand: %d\n", _IOC_TYPE(cmd), _IOC_NR(cmd));
 
     if (_IOC_TYPE(cmd) != LWPMU_IOC_MAGIC) {
+        SEP_PRINT_ERROR("Unknown IOCTL magic:%d\n", _IOC_TYPE(cmd));
         return OS_ILLEGAL_IOCTL;
     }
 
-    if (cmd ==  LWPMUDRV_IOCTL_GET_DRIVER_STATE) {
-        SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_DRIVER_STATE\n");
-        if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-            return OS_FAULT;
-        }
-        status = lwpmudrv_Get_Driver_State(&local_args);
-        return status;
+    if (arg) {
+        status = copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE));
     }
 
-    MUTEX_LOCK(ioctl_lock);
-    switch (cmd) {
+    status = lwpmu_Service_IOCTL (IOCTL_USE_INODE filp, _IOC_NR(cmd), local_args);
 
-       /*
-        * Common IOCTL commands
-        */
-
-        case LWPMUDRV_IOCTL_VERSION:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_VERSION\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Version(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_RESERVE:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_RESERVE\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Reserve(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_INIT:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_INIT\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Initialize(local_args.w_buf, local_args.w_len);
-            break;
-
-        case LWPMUDRV_IOCTL_INIT_PMU:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_INIT_PMU\n");
-            status = lwpmudrv_Init_PMU();
-            break;
-
-        case LWPMUDRV_IOCTL_SET_CPU_MASK:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_SET_CPU_MASK\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Set_CPU_Mask(local_args.w_buf, local_args.w_len);
-            break;
-
-        case LWPMUDRV_IOCTL_START:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_START\n");
-            status = lwpmudrv_Start();
-            break;
-
-        case LWPMUDRV_IOCTL_STOP:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_STOP\n");
-            status = lwpmudrv_Prepare_Stop();
-            break;
-
-        case LWPMUDRV_IOCTL_PAUSE:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_PAUSE\n");
-            status = lwpmudrv_Pause();
-            break;
-
-        case LWPMUDRV_IOCTL_RESUME:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_RESUME\n");
-            status = lwpmudrv_Resume();
-            break;
-
-        case LWPMUDRV_IOCTL_EM_GROUPS:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_EM_GROUPS\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Set_EM_Config(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_EM_CONFIG_NEXT:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_EM_CONFIG_NEXT\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Configure_Events(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_NUM_DESCRIPTOR:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_NUM_DESCRIPTOR\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Set_Sample_Descriptors(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_DESC_NEXT:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_DESC_NEXT\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Configure_Descriptors(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_GET_NORMALIZED_TSC:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_NORMALIZED_TSC\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Get_Normalized_TSC(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_GET_NORMALIZED_TSC_STANDALONE:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_NORMALIZED_TSC_STANDALONE\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Get_Normalized_TSC(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_NUM_CORES:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_NUM_CORES\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Get_Num_Cores(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_KERNEL_CS:
-#if defined(DRV_IA32) || defined(DRV_EM64T)
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_KERNEL_CS\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Get_KERNEL_CS(&local_args);
-#endif
-            break;
-
-        case LWPMUDRV_IOCTL_SET_UID:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_SET_UID\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Set_UID(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_TSC_SKEW_INFO:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_TSC_SKEW_INFO\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Get_TSC_Skew_Info(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_COLLECT_SYS_CONFIG:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_COLLECT_SYS_CONFIG\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Collect_Sys_Config(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_GET_SYS_CONFIG:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_SYS_CONFIG\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Sys_Config(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_TERMINATE:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_TERMINATE\n");
-            status = lwpmudrv_Terminate();
-            break;
-
-        case LWPMUDRV_IOCTL_SET_CPU_TOPOLOGY:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_SET_CPU_TOPOLOGY\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Setup_Cpu_Topology(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_GET_NUM_CORE_CTRS:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_NUM_CORE_CTRS\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Samp_Read_Num_Of_Core_Counters(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_GET_PLATFORM_INFO:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_PLATFORM_INFO\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Get_Platform_Info(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_READ_MSRS:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_READ_MSRs\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Read_MSRs(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_SWITCH_GROUP:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_SWITCH_GROUP\n");
-            status = lwpmudrv_Switch_Group();
-            break;
-
-       /*
-        * EMON-specific IOCTL commands
-        */
-
-        case LWPMUDRV_IOCTL_READ_MSR:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_READ_MSR\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Read_MSR_All_Cores(&local_args);
-            break;
-
-#if defined(EMON)
-#if defined(EMON_INTERNAL)
-        case LWPMUDRV_IOCTL_WRITE_MSR:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_WRITE_MSR\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Write_MSR_All_Cores(&local_args);
-            break;
-#endif  // EMON_INTERNAL
-
-        case LWPMUDRV_IOCTL_READ_SWITCH_GROUP:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_READ_SWITCH_GROUP\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Read_Counters_And_Switch_Group(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_READ_AND_RESET:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_READ_AND_RESET\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Read_And_Reset_Counters(&local_args);
-            break;
-#endif  // EMON
-
-       /*
-        * Platform-specific IOCTL commands (IA64 only)
-        */
-
-#if defined(DRV_IA64)
-        case LWPMUDRV_IOCTL_RO_INFO:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_RO_INFO\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_RO_Info(&local_args);
-            break;
-#endif
-
-       /*
-        * Platform-specific IOCTL commands (IA32 and Intel64)
-        */
-
-#if defined(DRV_IA32) || defined(DRV_EM64T)
-        case LWPMUDRV_IOCTL_INIT_UNC:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_INIT_UNC\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Initialize_UNC(local_args.w_buf, local_args.w_len);
-            break;
-
-        case LWPMUDRV_IOCTL_EM_GROUPS_UNC:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_EM_GROUPS_UNC\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Set_EM_Config_UNC(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_EM_CONFIG_NEXT_UNC:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_EM_CONFIG_NEXT_UNC\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Configure_Events_UNC(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_LBR_INFO:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_LBR_INFO\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_LBR_Info(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_PWR_INFO:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_PWR_INFO\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_PWR_Info(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_INIT_NUM_DEV:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_INIT_NUM_DEV\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Initialize_Num_Devices(&local_args);
-            break;
-#endif
-        case LWPMUDRV_IOCTL_GET_NUM_SAMPLES:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_NUM_SAMPLES\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Get_Num_Samples(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_SET_DEVICE_NUM_UNITS:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_SET_DEVICE_NUM_UNITS\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Set_Device_Num_Units(&local_args);
-            break;
-        case LWPMUDRV_IOCTL_TIMER_TRIGGER_READ:
-            lwpmudrv_Trigger_Read();
-            break;
-
-       /*
-        * Graphics IOCTL commands
-        */
-
-
-       /*
-        * Chipset IOCTL commands
-        */
-
-#if defined(BUILD_CHIPSET)
-        case LWPMUDRV_IOCTL_PCI_READ:
-            {
-                CHIPSET_PCI_ARG_NODE pci_data;
-
-                SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_PCI_READ\n");
-                if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                    status = OS_FAULT;
-                    goto cleanup;
-                }
-                if (copy_from_user(&pci_data, (CHIPSET_PCI_ARG)local_args.w_buf, sizeof(CHIPSET_PCI_ARG_NODE))) {
-                    status = OS_FAULT;
-                    goto cleanup;
-                }
-
-                status = PCI_Read_From_Memory_Address(CHIPSET_PCI_ARG_address(&pci_data),
-                                               &CHIPSET_PCI_ARG_value(&pci_data));
-
-                if (copy_to_user(((IOCTL_ARGS)arg)->r_buf, &pci_data, sizeof(CHIPSET_PCI_ARG_NODE))) {
-                    status =  OS_FAULT;
-                    goto cleanup;
-                }
-
-                break;
-            }
-
-        case LWPMUDRV_IOCTL_PCI_WRITE:
-            {
-                CHIPSET_PCI_ARG_NODE pci_data;
-
-                SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_PCI_WRITE\n");
-
-                if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                    status = OS_FAULT;
-                    goto cleanup;
-                }
-                if (copy_from_user(&pci_data, (CHIPSET_PCI_ARG)local_args.w_buf, sizeof(CHIPSET_PCI_ARG_NODE))) {
-                   status = OS_FAULT;
-                    goto cleanup;
-                }
-
-                status = PCI_Write_To_Memory_Address(CHIPSET_PCI_ARG_address(&pci_data),
-                                                     CHIPSET_PCI_ARG_value(&pci_data));
-                break;
-            }
-
-        case LWPMUDRV_IOCTL_FD_PHYS:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_FD_PHYS\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Samp_Find_Physical_Address(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_READ_PCI_CONFIG:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_READ_PCI_CONFIG\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Samp_Read_PCI_Config(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_WRITE_PCI_CONFIG:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_WRITE_PCI_CONFIG\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Samp_Write_PCI_Config(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_CHIPSET_INIT:
-            SEP_PRINT_DEBUG("DRV_OPERATION_CHIPSET_INIT\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            SEP_PRINT_DEBUG("lwpmudrv_Device_Control: enable_chipset=%d\n", (int)DRV_CONFIG_enable_chipset(pcfg));
-            status = lwpmudrv_Samp_Chipset_Init(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_GET_CHIPSET_DEVICE_ID:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_CHIPSET_DEVICE_ID\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-            }
-            status = lwpmudrv_Samp_Read_PCI_Config(&local_args);
-            break;
-#endif  // BUILD_CHIPSET
-
-       /*
-        * if none of the above, treat as unknown/illegal IOCTL command
-        */
-
-        default:
-            SEP_PRINT_ERROR("Unknown IOCTL magic:%d number:%d\n",
-                    _IOC_TYPE(cmd), _IOC_NR(cmd));
-            status = OS_ILLEGAL_IOCTL;
-            break;
-    }
-cleanup:
-    MUTEX_UNLOCK(ioctl_lock);
-
-    if (cmd == LWPMUDRV_IOCTL_STOP &&
-        GLOBAL_STATE_current_phase(driver_state) == DRV_STATE_PREPARE_STOP) {
-        status = lwpmudrv_Finish_Stop();
-        if (status == OS_SUCCESS) {
-            // if stop was successful, relevant memory should have been freed,
-            // so try to compact the memory tracker
-            CONTROL_Memory_Tracker_Compaction();
-        }
-    }
-
-    return status;
+    return  status;
 }
 
 #if defined(HAVE_COMPAT_IOCTL) && defined(DRV_EM64T)
@@ -3872,47 +3756,26 @@ lwpmu_Device_Control_Compat (
     unsigned long    arg
 )
 {
-    int              status = OS_SUCCESS;
-    IOCTL_ARGS_NODE  local_args;
+    int                     status = OS_SUCCESS;
+    IOCTL_COMPAT_ARGS_NODE  local_args_compat;
+    IOCTL_ARGS_NODE         local_args;
 
-    SEP_PRINT_DEBUG("Compat: type: %d, subcommand: %d\n",_IOC_TYPE(cmd),_IOC_NR(cmd));
+    SEP_PRINT_DEBUG("Compat: type: %d, subcommand: %d\n", _IOC_TYPE(cmd), _IOC_NR(cmd));
 
     if (_IOC_TYPE(cmd) != LWPMU_IOC_MAGIC) {
+        SEP_PRINT_ERROR("Unknown IOCTL magic:%d\n", _IOC_TYPE(cmd));
         return OS_ILLEGAL_IOCTL;
     }
 
-    MUTEX_LOCK(ioctl_lock);
-    switch (cmd) {
-        case LWPMUDRV_IOCTL_VERSION:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_VERSION\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-        }
-            status = lwpmudrv_Version(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_GET_DRIVER_STATE:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_DRIVER_STATE\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
-}
-            status = lwpmudrv_Get_Driver_State(&local_args);
-            break;
-
-        case LWPMUDRV_IOCTL_GET_NORMALIZED_TSC:
-            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_NORMALIZED_TSC\n");
-            if (copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE))) {
-                status = OS_FAULT;
-                goto cleanup;
+    if (arg) {
+        status = copy_from_user(&local_args_compat, (IOCTL_COMPAT_ARGS)arg, sizeof(IOCTL_COMPAT_ARGS_NODE));
     }
-            status = lwpmudrv_Get_Normalized_TSC(&local_args);
-            break;
+    local_args.r_len = local_args_compat.r_len;
+    local_args.w_len = local_args_compat.w_len;
+    local_args.r_buf = (char *) compat_ptr(local_args_compat.r_buf);
+    local_args.w_buf = (char *) compat_ptr(local_args_compat.w_buf);
 
-        }
-cleanup:
-    MUTEX_UNLOCK(ioctl_lock);
+    status = lwpmu_Service_IOCTL (filp, _IOC_NR(cmd), local_args);
     
     return status;
 }

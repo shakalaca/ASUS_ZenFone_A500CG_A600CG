@@ -47,7 +47,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <linux/hardirq.h>
 #include <linux/module.h>
 #include <linux/spinlock.h>
-#include <linux/string.h>			// strncpy, strlen
+#include <linux/string.h>
 #include <linux/slab.h>
 #include <stdarg.h>
 
@@ -62,6 +62,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvr_uaccess.h"
 #include "pvrsrv.h"
 #include "rgxdevice.h"
+#include "rgxdebug.h"
 #include "lists.h"
 
 #if defined(PVRSRV_NEED_PVR_DPF)
@@ -123,16 +124,18 @@ IMG_EXPORT IMG_VOID PVRSRVDebugPrintfDumpCCB(void)
 
 	LinuxLockMutex(&gsDebugCCBMutex);
 	
-	for(i = 0; i < PVRSRV_DEBUG_CCB_MAX; i++)
+	for (i = 0; i < PVRSRV_DEBUG_CCB_MAX; i++)
 	{
 		PVRSRV_DEBUG_CCB *psDebugCCBEntry =
 			&gsDebugCCB[(giOffset + i) % PVRSRV_DEBUG_CCB_MAX];
 
 		/* Early on, we won't have PVRSRV_DEBUG_CCB_MAX messages */
-		if(!psDebugCCBEntry->pszFile)
+		if (!psDebugCCBEntry->pszFile)
+		{
 			continue;
+		}
 
-		printk("%s:%d: (%ld.%ld,tid=%u) %s\n",
+		printk(KERN_ERR "%s:%d: (%ld.%ld,tid=%u) %s\n",
 			   psDebugCCBEntry->pszFile,
 			   psDebugCCBEntry->iLine,
 			   (long)psDebugCCBEntry->sTimeVal.tv_sec,
@@ -167,7 +170,7 @@ IMG_EXPORT IMG_VOID PVRSRVDebugPrintfDumpCCB(void)
 #endif /* defined(PVRSRV_NEED_PVR_DPF) */
 
 static IMG_BOOL VBAppend(IMG_CHAR *pszBuf, IMG_UINT32 ui32BufSiz,
-						 const IMG_CHAR* pszFormat, va_list VArgs)
+						 const IMG_CHAR *pszFormat, va_list VArgs)
 						 IMG_FORMAT_PRINTF(3, 0);
 
 
@@ -183,9 +186,14 @@ static IMG_BOOL BAppend(IMG_CHAR *pszBuf, IMG_UINT32 ui32BufSiz,
 IMG_UINT32 gPVRDebugLevel =
 	(
 	 DBGPRIV_FATAL | DBGPRIV_ERROR | DBGPRIV_WARNING
+
 #if defined(PVRSRV_DEBUG_CCB_MAX)
 	 | DBGPRIV_BUFFERED
 #endif /* defined(PVRSRV_DEBUG_CCB_MAX) */
+
+#if defined(PVR_DPF_ADHOC_DEBUG_ON)
+	 | DBGPRIV_DEBUG
+#endif /* defined(PVR_DPF_ADHOC_DEBUG_ON) */
 	);
 
 #endif /* defined(PVRSRV_NEED_PVR_DPF) || defined(PVRSRV_NEED_PVR_TRACE) */
@@ -203,15 +211,12 @@ static PVRSRV_LINUX_MUTEX gsDebugMutexNonIRQ;
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39))
 /* The lock is used to control access to gszBufferIRQ */
-/* PRQA S 0671,0685 1 */ /* ignore warnings about C99 style initialisation */
 static spinlock_t gsDebugLockIRQ = SPIN_LOCK_UNLOCKED;
 #else
 static DEFINE_SPINLOCK(gsDebugLockIRQ);
 #endif
 
-#if !defined (USE_SPIN_LOCK) /* to keep QAC happy */ 
 #define	USE_SPIN_LOCK (in_interrupt() || !preemptible())
-#endif
 
 static inline void GetBufferLock(unsigned long *pulLockFlags)
 {
@@ -256,7 +261,7 @@ static inline void SelectBuffer(IMG_CHAR **ppszBuf, IMG_UINT32 *pui32BufSiz)
  * The function takes a variable number of arguments, pointed
  * to by the var args list.
  */
-static IMG_BOOL VBAppend(IMG_CHAR *pszBuf, IMG_UINT32 ui32BufSiz, const IMG_CHAR* pszFormat, va_list VArgs)
+static IMG_BOOL VBAppend(IMG_CHAR *pszBuf, IMG_UINT32 ui32BufSiz, const IMG_CHAR *pszFormat, va_list VArgs)
 {
 	IMG_UINT32 ui32Used;
 	IMG_UINT32 ui32Space;
@@ -278,7 +283,7 @@ static IMG_BOOL VBAppend(IMG_CHAR *pszBuf, IMG_UINT32 ui32BufSiz, const IMG_CHAR
 IMG_VOID PVRDPFInit(IMG_VOID)
 {
 	LinuxInitMutex(&gsDebugMutexNonIRQ);
-#if defined(PVRSRV_DEBUG_CCB_MAX)
+#if defined(PVRSRV_DEBUG_CCB_MAX) && defined(PVRSRV_NEED_PVR_DPF)
 	LinuxInitMutex(&gsDebugCCBMutex);
 #endif
 }
@@ -301,7 +306,8 @@ IMG_VOID PVRSRVReleasePrintf(const IMG_CHAR *pszFormat, ...)
 	va_start(vaArgs, pszFormat);
 
 	GetBufferLock(&ulLockFlags);
-	strncpy (pszBuf, "PVR_K: ", (ui32BufSiz -1));
+	strncpy(pszBuf, "PVR_K: ", (ui32BufSiz - 2));
+	pszBuf[ui32BufSiz - 1] = '\0';
 
 	if (VBAppend(pszBuf, ui32BufSiz, pszFormat, vaArgs))
 	{
@@ -324,7 +330,7 @@ IMG_VOID PVRSRVReleasePrintf(const IMG_CHAR *pszFormat, ...)
 @Input          pszFormat   The message format string
 @Input          ...         Zero or more arguments for use by the format string
 */ /**************************************************************************/
-IMG_VOID PVRSRVTrace(const IMG_CHAR* pszFormat, ...)
+IMG_VOID PVRSRVTrace(const IMG_CHAR *pszFormat, ...)
 {
 	va_list VArgs;
 	unsigned long ulLockFlags = 0;
@@ -337,7 +343,8 @@ IMG_VOID PVRSRVTrace(const IMG_CHAR* pszFormat, ...)
 
 	GetBufferLock(&ulLockFlags);
 
-	strncpy(pszBuf, "PVR: ", (ui32BufSiz -1));
+	strncpy(pszBuf, "PVR: ", (ui32BufSiz - 2));
+	pszBuf[ui32BufSiz - 1] = '\0';
 
 	if (VBAppend(pszBuf, ui32BufSiz, pszFormat, VArgs))
 	{
@@ -385,13 +392,11 @@ static IMG_BOOL BAppend(IMG_CHAR *pszBuf, IMG_UINT32 ui32BufSiz, const IMG_CHAR 
 @Input          pszFormat   The message format string
 @Input          ...         Zero or more arguments for use by the format string
 */ /**************************************************************************/
-IMG_VOID PVRSRVDebugPrintf	(
-						IMG_UINT32	ui32DebugLevel,
-						const IMG_CHAR*	pszFullFileName,
-						IMG_UINT32	ui32Line,
-						const IMG_CHAR*	pszFormat,
-						...
-					)
+IMG_VOID PVRSRVDebugPrintf(IMG_UINT32 ui32DebugLevel,
+			   const IMG_CHAR *pszFullFileName,
+			   IMG_UINT32 ui32Line,
+			   const IMG_CHAR *pszFormat,
+			   ...)
 {
 	IMG_BOOL bNoLoc;
 	const IMG_CHAR *pszFileName = pszFullFileName;
@@ -413,54 +418,50 @@ IMG_VOID PVRSRVDebugPrintf	(
 
 		GetBufferLock(&ulLockFlags);
 
-		/* Add in the level of warning */
-		if (bNoLoc == IMG_FALSE)
+		switch (ui32DebugLevel)
 		{
-			switch(ui32DebugLevel)
+			case DBGPRIV_FATAL:
 			{
-				case DBGPRIV_FATAL:
-				{
-					strncpy (pszBuf, "PVR_K:(Fatal): ", (ui32BufSiz -1));
-					break;
-				}
-				case DBGPRIV_ERROR:
-				{
-					strncpy (pszBuf, "PVR_K:(Error): ", (ui32BufSiz -1));
-					break;
-				}
-				case DBGPRIV_WARNING:
-				{
-					strncpy (pszBuf, "PVR_K:(Warn): ", (ui32BufSiz -1));
-					break;
-				}
-				case DBGPRIV_MESSAGE:
-				{
-					strncpy (pszBuf, "PVR_K:(Mesg): ", (ui32BufSiz -1));
-					break;
-				}
-				case DBGPRIV_VERBOSE:
-				{
-					strncpy (pszBuf, "PVR_K:(Verb): ", (ui32BufSiz -1));
-					break;
-				}
-				case DBGPRIV_BUFFERED:
-				{
-					strncpy (pszBuf, "PVR_K:", (ui32BufSiz -1));
-					break;
-				}
-				default:
-				{
-					strncpy (pszBuf, "PVR_K:(Unkn)", (ui32BufSiz -1));
-					break;
-				}
+				strncpy(pszBuf, "PVR_K:(Fatal): ", (ui32BufSiz - 2));
+				break;
+			}
+			case DBGPRIV_ERROR:
+			{
+				strncpy(pszBuf, "PVR_K:(Error): ", (ui32BufSiz - 2));
+				break;
+			}
+			case DBGPRIV_WARNING:
+			{
+				strncpy(pszBuf, "PVR_K:(Warn):  ", (ui32BufSiz - 2));
+				break;
+			}
+			case DBGPRIV_MESSAGE:
+			{
+				strncpy(pszBuf, "PVR_K:(Mesg):  ", (ui32BufSiz - 2));
+				break;
+			}
+			case DBGPRIV_VERBOSE:
+			{
+				strncpy(pszBuf, "PVR_K:(Verb):  ", (ui32BufSiz - 2));
+				break;
+			}
+			case DBGPRIV_DEBUG:
+			{
+				strncpy(pszBuf, "PVR_K:(Debug): ", (ui32BufSiz - 2));
+				break;
+			}
+			case DBGPRIV_CALLTRACE:
+			case DBGPRIV_ALLOC:
+			case DBGPRIV_BUFFERED:
+			default:
+			{
+				strncpy(pszBuf, "PVR_K:  ", (ui32BufSiz - 2));
+				break;
 			}
 		}
-		else
-		{
-			strncpy (pszBuf, "PVR_K: ", (ui32BufSiz -1));
-		}
+		pszBuf[ui32BufSiz - 1] = '\0';
 
-		(void) BAppend(pszBuf, ui32BufSiz, "%5u: ", current->pid);
+		(void) BAppend(pszBuf, ui32BufSiz, "%u: ", current->pid);
 
 
 		if (VBAppend(pszBuf, ui32BufSiz, pszFormat, vaArgs))
@@ -835,7 +836,7 @@ static int _DebugStatusSeqShow(struct seq_file *psSeqFile, void *pvData)
 					break;
 			}
 
-			/* Write other useful stats to aid the test cylce... */
+			/* Write other useful stats to aid the test cycle... */
 			if (psDeviceNode->pvDevice != NULL)
 			{
 				PVRSRV_RGXDEV_INFO *psDevInfo = psDeviceNode->pvDevice;
@@ -845,14 +846,17 @@ static int _DebugStatusSeqShow(struct seq_file *psSeqFile, void *pvData)
 				if (psRGXFWIfTraceBufCtl != NULL)
 				{
 					IMG_UINT32 ui32HWREventCount = 0;
+					IMG_UINT32 ui32CRREventCount = 0;
 					IMG_UINT32 ui32DMIndex;
 
 					for (ui32DMIndex = 0; ui32DMIndex < RGXFWIF_DM_MAX; ui32DMIndex++)
 					{
-						ui32HWREventCount += psRGXFWIfTraceBufCtl->aui16HwrDmRecoveredCount[ui32DMIndex];
+						ui32HWREventCount += psRGXFWIfTraceBufCtl->aui16HwrDmLockedUpCount[ui32DMIndex];
+						ui32CRREventCount += psRGXFWIfTraceBufCtl->aui16HwrDmOverranCount[ui32DMIndex];
 					}
 
 					seq_printf(psSeqFile, "HWR Event Count: %d\n", ui32HWREventCount);
+					seq_printf(psSeqFile, "CRR Event Count: %d\n", ui32CRREventCount);
 				}
 				
 				/* Write the number of APM events... */
@@ -881,13 +885,250 @@ static int _DebugStatusSeqShow(struct seq_file *psSeqFile, void *pvData)
 	return 0;
 }
 
-static struct seq_operations gsDebugStatusReadOps = 
+static IMG_INT DebugStatusSet(const char __user *pcBuffer,
+			     size_t uiCount,
+			     loff_t uiPosition,
+			     void *pvData)
+{
+	IMG_CHAR acDataBuffer[6];
+
+	if (uiPosition != 0)
+	{
+		return -EIO;
+	}
+
+	if (uiCount > (sizeof(acDataBuffer) / sizeof(acDataBuffer[0])))
+	{
+		return -EINVAL;
+	}
+
+	if (pvr_copy_from_user(acDataBuffer, pcBuffer, uiCount))
+	{
+		return -EINVAL;
+	}
+
+	if (acDataBuffer[uiCount - 1] != '\n')
+	{
+		return -EINVAL;
+	}
+
+	if (((acDataBuffer[0] == 'k') || ((acDataBuffer[0] == 'K'))) && uiCount == 2)
+	{
+		PVRSRV_DATA *psPVRSRVData = PVRSRVGetPVRSRVData();
+		psPVRSRVData->eServicesState = PVRSRV_SERVICES_STATE_BAD;
+	}
+	else
+	{
+		return -EINVAL;
+	}
+
+	return uiCount;
+}
+
+static struct seq_operations gsDebugStatusReadOps =
 {
 	.start = _DebugStatusSeqStart,
 	.stop = _DebugStatusSeqStop,
 	.next = _DebugStatusSeqNext,
 	.show = _DebugStatusSeqShow,
 };
+
+/*************************************************************************/ /*!
+ Dump Debug DebugFS entry
+*/ /**************************************************************************/
+
+static void *_DebugDumpDebugCompare_AnyVaCb(PVRSRV_DEVICE_NODE *psDevNode, va_list va)
+{
+	loff_t *puiCurrentPosition = va_arg(va, loff_t *);
+	loff_t uiPosition = va_arg(va, loff_t);
+	loff_t uiCurrentPosition = *puiCurrentPosition;
+
+	(*puiCurrentPosition)++;
+
+	return (uiCurrentPosition == uiPosition) ? psDevNode : NULL;
+}
+
+static void *_DebugDumpDebugSeqStart(struct seq_file *psSeqFile, loff_t *puiPosition)
+{
+	PVRSRV_DATA *psPVRSRVData = (PVRSRV_DATA *)psSeqFile->private;
+	loff_t uiCurrentPosition = 1;
+
+	if (*puiPosition == 0)
+	{
+		return SEQ_START_TOKEN;
+	}
+
+	return List_PVRSRV_DEVICE_NODE_Any_va(psPVRSRVData->psDeviceNodeList,
+					      _DebugDumpDebugCompare_AnyVaCb,
+					      &uiCurrentPosition,
+					      *puiPosition);
+}
+
+static void _DebugDumpDebugSeqStop(struct seq_file *psSeqFile, void *pvData)
+{
+	PVR_UNREFERENCED_PARAMETER(psSeqFile);
+	PVR_UNREFERENCED_PARAMETER(pvData);
+}
+
+static void *_DebugDumpDebugSeqNext(struct seq_file *psSeqFile,
+				    void *pvData,
+				    loff_t *puiPosition)
+{
+	PVRSRV_DATA *psPVRSRVData = (PVRSRV_DATA *)psSeqFile->private;
+	loff_t uiCurrentPosition = 1;
+
+	PVR_UNREFERENCED_PARAMETER(pvData);
+
+	(*puiPosition)++;
+
+	return List_PVRSRV_DEVICE_NODE_Any_va(psPVRSRVData->psDeviceNodeList,
+					      _DebugDumpDebugCompare_AnyVaCb,
+					      &uiCurrentPosition,
+					      *puiPosition);
+}
+
+static struct seq_file *gpsDumpDebugPrintfSeqFile = IMG_NULL;
+
+static IMG_VOID _DumpDebugSeqPrintf(const IMG_CHAR *pszFormat, ...)
+{
+	if (gpsDumpDebugPrintfSeqFile)
+	{
+		IMG_CHAR  szBuffer[PVR_MAX_DEBUG_MESSAGE_LEN];
+		va_list  ArgList;
+
+		va_start(ArgList, pszFormat);
+		vsnprintf(szBuffer, PVR_MAX_DEBUG_MESSAGE_LEN, pszFormat, ArgList);
+		seq_printf(gpsDumpDebugPrintfSeqFile, "%s\n", szBuffer);
+		va_end(ArgList);
+	}
+}
+
+static int _DebugDumpDebugSeqShow(struct seq_file *psSeqFile, void *pvData)
+{
+	if (pvData != NULL  &&  pvData != SEQ_START_TOKEN)
+	{
+		PVRSRV_DEVICE_NODE *psDeviceNode = (PVRSRV_DEVICE_NODE *)pvData;
+		
+		if (psDeviceNode->pvDevice != NULL)
+		{
+			PVRSRV_RGXDEV_INFO *psDevInfo = psDeviceNode->pvDevice;
+
+			gpsDumpDebugPrintfSeqFile = psSeqFile;
+			RGXDumpDebugInfo(_DumpDebugSeqPrintf, psDevInfo);
+			gpsDumpDebugPrintfSeqFile = IMG_NULL;
+		}
+	}
+
+	return 0;
+}
+
+static struct seq_operations gsDumpDebugReadOps = 
+{
+	.start = _DebugDumpDebugSeqStart,
+	.stop  = _DebugDumpDebugSeqStop,
+	.next  = _DebugDumpDebugSeqNext,
+	.show  = _DebugDumpDebugSeqShow,
+};
+
+
+/*************************************************************************/ /*!
+ Firmware Trace DebugFS entry
+*/ /**************************************************************************/
+
+#if defined(PVRSRV_ENABLE_FW_TRACE_DEBUGFS)
+static void *_DebugFWTraceCompare_AnyVaCb(PVRSRV_DEVICE_NODE *psDevNode, va_list va)
+{
+	loff_t *puiCurrentPosition = va_arg(va, loff_t *);
+	loff_t uiPosition = va_arg(va, loff_t);
+	loff_t uiCurrentPosition = *puiCurrentPosition;
+
+	(*puiCurrentPosition)++;
+
+	return (uiCurrentPosition == uiPosition) ? psDevNode : NULL;
+}
+
+static void *_DebugFWTraceSeqStart(struct seq_file *psSeqFile, loff_t *puiPosition)
+{
+	PVRSRV_DATA *psPVRSRVData = (PVRSRV_DATA *)psSeqFile->private;
+	loff_t uiCurrentPosition = 1;
+
+	if (*puiPosition == 0)
+	{
+		return SEQ_START_TOKEN;
+	}
+
+	return List_PVRSRV_DEVICE_NODE_Any_va(psPVRSRVData->psDeviceNodeList,
+					      _DebugFWTraceCompare_AnyVaCb,
+					      &uiCurrentPosition,
+					      *puiPosition);
+}
+
+static void _DebugFWTraceSeqStop(struct seq_file *psSeqFile, void *pvData)
+{
+	PVR_UNREFERENCED_PARAMETER(psSeqFile);
+	PVR_UNREFERENCED_PARAMETER(pvData);
+}
+
+static void *_DebugFWTraceSeqNext(struct seq_file *psSeqFile,
+				    void *pvData,
+				    loff_t *puiPosition)
+{
+	PVRSRV_DATA *psPVRSRVData = (PVRSRV_DATA *)psSeqFile->private;
+	loff_t uiCurrentPosition = 1;
+
+	PVR_UNREFERENCED_PARAMETER(pvData);
+
+	(*puiPosition)++;
+
+	return List_PVRSRV_DEVICE_NODE_Any_va(psPVRSRVData->psDeviceNodeList,
+					      _DebugFWTraceCompare_AnyVaCb,
+					      &uiCurrentPosition,
+					      *puiPosition);
+}
+
+static struct seq_file *gpsFWTracePrintfSeqFile = IMG_NULL;
+
+static IMG_VOID _FWTraceSeqPrintf(const IMG_CHAR *pszFormat, ...)
+{
+	if (gpsFWTracePrintfSeqFile)
+	{
+		IMG_CHAR  szBuffer[PVR_MAX_DEBUG_MESSAGE_LEN];
+		va_list  ArgList;
+
+		va_start(ArgList, pszFormat);
+		vsnprintf(szBuffer, PVR_MAX_DEBUG_MESSAGE_LEN, pszFormat, ArgList);
+		seq_printf(gpsFWTracePrintfSeqFile, "%s\n", szBuffer);
+		va_end(ArgList);
+	}
+}
+
+static int _DebugFWTraceSeqShow(struct seq_file *psSeqFile, void *pvData)
+{
+	if (pvData != NULL  &&  pvData != SEQ_START_TOKEN)
+	{
+		PVRSRV_DEVICE_NODE *psDeviceNode = (PVRSRV_DEVICE_NODE *)pvData;
+		
+		if (psDeviceNode->pvDevice != NULL)
+		{
+			PVRSRV_RGXDEV_INFO *psDevInfo = psDeviceNode->pvDevice;
+
+			gpsFWTracePrintfSeqFile = psSeqFile;
+			RGXDumpFirmwareTrace(_FWTraceSeqPrintf, psDevInfo);
+			gpsFWTracePrintfSeqFile = IMG_NULL;
+		}
+	}
+
+	return 0;
+}
+
+static struct seq_operations gsFWTraceReadOps = 
+{
+	.start = _DebugFWTraceSeqStart,
+	.stop  = _DebugFWTraceSeqStop,
+	.next  = _DebugFWTraceSeqNext,
+	.show  = _DebugFWTraceSeqShow,
+};
+#endif
 
 
 /*************************************************************************/ /*!
@@ -973,21 +1214,13 @@ static IMG_INT DebugLevelSet(const char __user *pcBuffer,
 		return -EINVAL;
 	}
 
-	/* FIXME: debug_level shouldn't be misused to set the services state */
-	if (((acDataBuffer[0] == 'k') || ((acDataBuffer[0] == 'K'))) && uiCount == 2)
+	if (sscanf(acDataBuffer, "%i", &gPVRDebugLevel) == 0)
 	{
-		PVRSRV_DATA *psPVRSRVData = PVRSRVGetPVRSRVData();
-		psPVRSRVData->eServicesState = PVRSRV_SERVICES_STATE_BAD;
+		return -EINVAL;
 	}
-	else
-	{
-		if (sscanf(acDataBuffer, "%i", &gPVRDebugLevel) == 0)
-		{
-			return -EINVAL;
-		}
 
-		(*uiDebugLevel) &= (1 << DBGPRIV_DBGLEVEL_COUNT) - 1;
-	}
+	/* As this is Linux the next line uses a GCC builtin function */
+	(*uiDebugLevel) &= (1 << __builtin_ffsl(DBGPRIV_LAST)) - 1;
 
 	return uiCount;
 }
@@ -996,6 +1229,10 @@ static IMG_INT DebugLevelSet(const char __user *pcBuffer,
 static struct dentry *gpsVersionDebugFSEntry;
 static struct dentry *gpsNodesDebugFSEntry;
 static struct dentry *gpsStatusDebugFSEntry;
+static struct dentry *gpsDumpDebugDebugFSEntry;
+#if defined(PVRSRV_ENABLE_FW_TRACE_DEBUGFS)
+static struct dentry *gpsFWTraceDebugFSEntry;
+#endif
 
 #if defined(DEBUG)
 static struct dentry *gpsDebugLevelDebugFSEntry;
@@ -1034,13 +1271,37 @@ int PVRDebugCreateDebugFSEntries(void)
 	iResult = PVRDebugFSCreateEntry("status",
 					NULL,
 					&gsDebugStatusReadOps,
-					NULL,
+					(PVRSRV_ENTRY_WRITE_FUNC *)DebugStatusSet,
 					psPVRSRVData,
 					&gpsStatusDebugFSEntry);
 	if (iResult != 0)
 	{
 		goto ErrorRemoveNodesEntry;
 	}
+
+	iResult = PVRDebugFSCreateEntry("debug_dump",
+					NULL,
+					&gsDumpDebugReadOps,
+					NULL,
+					psPVRSRVData,
+					&gpsDumpDebugDebugFSEntry);
+	if (iResult != 0)
+	{
+		goto ErrorRemoveStatusEntry;
+	}
+
+#if defined(PVRSRV_ENABLE_FW_TRACE_DEBUGFS)
+	iResult = PVRDebugFSCreateEntry("firmware_trace",
+					NULL,
+					&gsFWTraceReadOps,
+					NULL,
+					psPVRSRVData,
+					&gpsFWTraceDebugFSEntry);
+	if (iResult != 0)
+	{
+		goto ErrorRemoveDumpDebugEntry;
+	}
+#endif
 
 #if defined(DEBUG)
 	iResult = PVRDebugFSCreateEntry("debug_level",
@@ -1051,17 +1312,31 @@ int PVRDebugCreateDebugFSEntries(void)
 					&gpsDebugLevelDebugFSEntry);
 	if (iResult != 0)
 	{
-		goto ErrorRemoveStatusEntry;
+#if defined(PVRSRV_ENABLE_FW_TRACE_DEBUGFS)
+		goto ErrorRemoveFWTraceLogEntry;
+#else
+		goto ErrorRemoveDumpDebugEntry;
+#endif
 	}
 #endif
 
 	return 0;
 
-#if defined(DEBUG)
+#if (defined(DEBUG) && defined(PVRSRV_ENABLE_FW_TRACE_DEBUGFS))
+ErrorRemoveFWTraceLogEntry:
+	PVRDebugFSRemoveEntry(gpsFWTraceDebugFSEntry);
+	gpsFWTraceDebugFSEntry = NULL;
+#endif
+
+#if (defined(DEBUG) || defined(PVRSRV_ENABLE_FW_TRACE_DEBUGFS))
+ErrorRemoveDumpDebugEntry:
+	PVRDebugFSRemoveEntry(gpsDumpDebugDebugFSEntry);
+	gpsDumpDebugDebugFSEntry = NULL;
+#endif
+
 ErrorRemoveStatusEntry:
 	PVRDebugFSRemoveEntry(gpsStatusDebugFSEntry);
 	gpsStatusDebugFSEntry = NULL;
-#endif
 
 ErrorRemoveNodesEntry:
 	PVRDebugFSRemoveEntry(gpsNodesDebugFSEntry);
@@ -1083,6 +1358,20 @@ void PVRDebugRemoveDebugFSEntries(void)
 		gpsDebugLevelDebugFSEntry = NULL;
 	}
 #endif
+
+#if defined(PVRSRV_ENABLE_FW_TRACE_DEBUGFS)
+	if (gpsFWTraceDebugFSEntry != NULL)
+	{
+		PVRDebugFSRemoveEntry(gpsFWTraceDebugFSEntry);
+		gpsFWTraceDebugFSEntry = NULL;
+	}
+#endif
+
+	if (gpsDumpDebugDebugFSEntry != NULL)
+	{
+		PVRDebugFSRemoveEntry(gpsDumpDebugDebugFSEntry);
+		gpsDumpDebugDebugFSEntry = NULL;
+	}
 
 	if (gpsStatusDebugFSEntry != NULL)
 	{

@@ -562,9 +562,9 @@ int ctp_init(struct snd_soc_pcm_runtime *runtime)
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
 	struct snd_soc_card *card = runtime->card;
 	struct ctp_mc_private *ctx = snd_soc_card_get_drvdata(runtime->card);
-#ifndef UART_DEBUG
-	static int hp_enable;
-#endif
+//#ifndef UART_DEBUG
+//	static int hp_enable;
+//#endif
 
 	pr_debug("%s\n", __func__);
 
@@ -611,6 +611,25 @@ int ctp_init(struct snd_soc_pcm_runtime *runtime)
 	snd_soc_dapm_ignore_suspend(dapm, "SPOL");
 	snd_soc_dapm_ignore_suspend(dapm, "SPOR");
 
+        snd_soc_dapm_ignore_suspend(dapm, "AIF2 Playback");
+        snd_soc_dapm_ignore_suspend(dapm, "AIF2 Capture");
+        snd_soc_dapm_ignore_suspend(dapm, "AIF2TX");
+        snd_soc_dapm_ignore_suspend(dapm, "AIF2RX");
+        snd_soc_dapm_ignore_suspend(dapm, "MonoP");
+        snd_soc_dapm_ignore_suspend(dapm, "MonoN");
+        snd_soc_dapm_ignore_suspend(dapm, "Headset Mic");
+        snd_soc_dapm_ignore_suspend(dapm, "Headphone");
+        snd_soc_dapm_ignore_suspend(dapm, "Ext Spk");
+        snd_soc_dapm_ignore_suspend(dapm, "Int Mic");
+        snd_soc_dapm_ignore_suspend(dapm, "Receiver");
+        snd_soc_dapm_ignore_suspend(dapm, "DMIC L2");
+        snd_soc_dapm_ignore_suspend(dapm, "DMIC R2");
+        snd_soc_dapm_ignore_suspend(dapm, "IN1P");
+        snd_soc_dapm_ignore_suspend(dapm, "IN1N");
+
+	snd_soc_dapm_ignore_suspend(dapm, "IN2P");
+	snd_soc_dapm_ignore_suspend(dapm, "IN2N");
+
 	snd_soc_dapm_enable_pin(dapm, "Headset Mic");
 	snd_soc_dapm_enable_pin(dapm, "Headphone");
 	snd_soc_dapm_enable_pin(dapm, "Ext Spk");
@@ -629,22 +648,22 @@ int ctp_init(struct snd_soc_pcm_runtime *runtime)
 
 	rt5647_codec = codec;
 
-#ifndef UART_DEBUG
-	/* use hard-coded GPIO value before IFWI ready */
-	/* hp_enable = get_gpio_by_name("AUDIO_DEBUG"); */
-	hp_enable = 172;
-	if (hp_enable > 0) {
-		pr_info("Get AUDIO_DEBUG name!\n");
-		ret = gpio_request_one(hp_enable, GPIOF_DIR_OUT, "AUDIO_DEBUG");
-		if (ret)
-			pr_err("gpio_request AUDIO_DEBUG failed!\n");
-
-		/*Set GPIO O(H) to default => Low:UART; High:headset */
-		gpio_direction_output(hp_enable, 1);
-		pr_info("AUDIO_DEBUG value = %d\n", gpio_get_value(hp_enable));
-	} else
-		pr_err("get_gpio AUDIO_DEBUG failed!\n");
-#endif
+//#ifndef UART_DEBUG
+//	/* use hard-coded GPIO value before IFWI ready */
+//	/* hp_enable = get_gpio_by_name("AUDIO_DEBUG"); */
+//	hp_enable = 172;
+//	if (hp_enable > 0) {
+//		pr_info("Get AUDIO_DEBUG name!\n");
+//		ret = gpio_request_one(hp_enable, GPIOF_DIR_OUT, "AUDIO_DEBUG");
+//		if (ret)
+//			pr_err("gpio_request AUDIO_DEBUG failed!\n");
+//
+//		/*Set GPIO O(H) to default => Low:UART; High:headset */
+//		gpio_direction_output(hp_enable, 1);
+//		pr_info("AUDIO_DEBUG value = %d\n", gpio_get_value(hp_enable));
+//	} else
+//		pr_err("get_gpio AUDIO_DEBUG failed!\n");
+//#endif
 	return ret;
 }
 
@@ -832,6 +851,47 @@ struct snd_soc_machine_ops ctp_rhb_ops = {
 	.micsdet_debounce = MIC2SDET_DEBOUNCE_DELAY,
 	.mic_bias = MICBIAS_NAME,
 };
+
+//<ASUS-Wade+>
+#ifdef UART_DEBUG
+static int enable_audio_out=0;
+#else
+static int enable_audio_out=1;
+#endif
+
+static int __init setup_debug_gpio_value(char *s)
+{
+        if (!strcmp(s,"on"))
+                enable_audio_out = 0;
+        if (!strcmp(s,"off"))
+                enable_audio_out = 1;
+        return 1;
+}
+__setup("asus.dbg.debug_console=", setup_debug_gpio_value);
+
+static int __init setup_debug_console_gpio(void)
+{
+        int hp_enable=0,ret=0;
+        /* use hard-coded GPIO value before IFWI ready */
+        /* hp_enable = get_gpio_by_name("AUDIO_DEBUG"); */
+        hp_enable = 172;
+        if (hp_enable > 0) {
+                pr_info("Get AUDIO_DEBUG name!\n");
+                ret = gpio_request_one(hp_enable, GPIOF_DIR_OUT, "AUDIO_DEBUG");
+                if (ret)
+                        pr_err("gpio_request AUDIO_DEBUG failed!\n");
+
+                /*Set GPIO O(H) to default => Low:UART; High:headset */
+                gpio_direction_output(hp_enable, enable_audio_out);
+                pr_info("AUDIO_DEBUG value = %d\n", gpio_get_value(hp_enable));
+        } else
+                pr_err("get_gpio AUDIO_DEBUG failed!\n");
+
+        return 0;
+}
+fs_initcall_sync(setup_debug_console_gpio);
+//<ASUS-Wade->
+
 MODULE_DESCRIPTION("ASoC Intel(R) Cloverview MID Machine driver");
 MODULE_AUTHOR("Jeeja KP<jeeja.kp@intel.com>");
 MODULE_AUTHOR("Dharageswari R<dharageswari.r@intel.com>");

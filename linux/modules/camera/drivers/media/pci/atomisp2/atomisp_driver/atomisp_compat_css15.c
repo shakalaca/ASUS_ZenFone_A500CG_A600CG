@@ -35,6 +35,21 @@
 #include "sh_css_accelerate.h"
 #include <asm/intel-mid.h>
 
+void atomisp_css_debug_dump_sp_sw_debug_info(void)
+{
+	sh_css_dump_sp_sw_debug_info();
+}
+
+void atomisp_css_debug_dump_debug_info(const char *context)
+{
+	sh_css_dump_debug_info(context);
+}
+
+void atomisp_css_debug_set_dtrace_level(const unsigned int trace_level)
+{
+	sh_css_set_dtrace_level(trace_level);
+}
+
 void atomisp_store_uint32(hrt_address addr, uint32_t data)
 {
 	device_store_uint32(addr, data);
@@ -82,7 +97,7 @@ int atomisp_css_init(struct atomisp_device *isp)
 
 	/* CSS has default zoom factor of 61x61, we want no zoom
 	   because the zoom binary for capture is broken (XNR). */
-	if (IS_ISP2400(isp))
+	if (IS_ISP24XX(isp))
 		sh_css_set_zoom_factor(MRFLD_MAX_ZOOM_FACTOR,
 					MRFLD_MAX_ZOOM_FACTOR);
 	else
@@ -142,7 +157,7 @@ void atomisp_css_rx_clear_irq_info(unsigned int infos)
 
 void atomisp_css_rx_clear_irq_status(unsigned int infos)
 {
-	sh_css_rx_clear_interrupt_status(infos);
+       sh_css_rx_clear_interrupt_status(infos);
 }
 
 int atomisp_css_irq_enable(struct atomisp_device *isp,
@@ -205,6 +220,7 @@ void atomisp_css_init_struct(struct atomisp_sub_device *asd)
 
 int atomisp_q_video_buffer_to_css(struct atomisp_sub_device *asd,
 			struct videobuf_vmalloc_memory *vm_mem,
+			enum atomisp_input_stream_id stream_id,
 			enum atomisp_css_buffer_type css_buf_type,
 			enum atomisp_css_pipe_id css_pipe_id)
 {
@@ -219,6 +235,7 @@ int atomisp_q_video_buffer_to_css(struct atomisp_sub_device *asd,
 
 int atomisp_q_s3a_buffer_to_css(struct atomisp_sub_device *asd,
 			struct atomisp_s3a_buf *s3a_buf,
+			enum atomisp_input_stream_id stream_id,
 			enum atomisp_css_pipe_id css_pipe_id)
 {
 	if (sh_css_queue_buffer(css_pipe_id, SH_CSS_BUFFER_TYPE_3A_STATISTICS,
@@ -232,6 +249,7 @@ int atomisp_q_s3a_buffer_to_css(struct atomisp_sub_device *asd,
 
 int atomisp_q_dis_buffer_to_css(struct atomisp_sub_device *asd,
 			struct atomisp_dis_buf *dis_buf,
+			enum atomisp_input_stream_id stream_id,
 			enum atomisp_css_pipe_id css_pipe_id)
 {
 	if (sh_css_queue_buffer(css_pipe_id,
@@ -279,6 +297,7 @@ void atomisp_css_update_isp_params(struct atomisp_sub_device *asd)
 }
 
 int atomisp_css_queue_buffer(struct atomisp_sub_device *asd,
+			     enum atomisp_input_stream_id stream_id,
 			     enum atomisp_css_pipe_id pipe_id,
 			     enum atomisp_css_buffer_type buf_type,
 			     struct atomisp_css_buffer *isp_css_buffer)
@@ -309,6 +328,7 @@ int atomisp_css_queue_buffer(struct atomisp_sub_device *asd,
 }
 
 int atomisp_css_dequeue_buffer(struct atomisp_sub_device *asd,
+				enum atomisp_input_stream_id stream_id,
 				enum atomisp_css_pipe_id pipe_id,
 				enum atomisp_css_buffer_type buf_type,
 				struct atomisp_css_buffer *isp_css_buffer)
@@ -407,7 +427,8 @@ void atomisp_css_free_3a_dis_buffers(struct atomisp_sub_device *asd)
 }
 
 int atomisp_css_get_grid_info(struct atomisp_sub_device *asd,
-				enum atomisp_css_pipe_id pipe_id)
+				enum atomisp_css_pipe_id pipe_id,
+				int stream_index)
 {
 	enum sh_css_err err;
 	struct atomisp_css_grid_info old_info = asd->params.curr_grid_info;
@@ -585,6 +606,7 @@ void atomisp_css_temp_pipe_to_pipe_id(struct atomisp_css_event *current_event)
 }
 
 int atomisp_css_input_set_resolution(struct atomisp_sub_device *asd,
+					enum atomisp_input_stream_id stream_id,
 					struct v4l2_mbus_framefmt *ffmt)
 {
 	if (sh_css_input_set_resolution(ffmt->width, ffmt->height)
@@ -595,25 +617,29 @@ int atomisp_css_input_set_resolution(struct atomisp_sub_device *asd,
 }
 
 void atomisp_css_input_set_binning_factor(struct atomisp_sub_device *asd,
-						unsigned int bin_factor)
+					enum atomisp_input_stream_id stream_id,
+					unsigned int bin_factor)
 {
 	sh_css_input_set_binning_factor(bin_factor);
 }
 
 void atomisp_css_input_set_bayer_order(struct atomisp_sub_device *asd,
+				enum atomisp_input_stream_id stream_id,
 				enum atomisp_css_bayer_order bayer_order)
 {
 	sh_css_input_set_bayer_order(bayer_order);
 }
 
 void atomisp_css_input_set_format(struct atomisp_sub_device *asd,
-					enum atomisp_css_stream_format format)
+				enum atomisp_input_stream_id stream_id,
+				enum atomisp_css_stream_format format)
 {
 	sh_css_input_set_format(format);
 }
 
 int atomisp_css_input_set_effective_resolution(
 					struct atomisp_sub_device *asd,
+					enum atomisp_input_stream_id stream_id,
 					unsigned int width, unsigned int height)
 {
 	if (sh_css_input_set_effective_resolution(width, height)
@@ -809,32 +835,12 @@ void atomisp_css_disable_vf_pp(struct atomisp_sub_device *asd,
 	sh_css_disable_vf_pp(disable);
 }
 
-/*
- * HACK: align width to GFX/SGX constraints
- */
-static unsigned int align_to_gfx(int width)
-{
-	/*
-	 * SGX requires 64-byte alignment and
-	 * minimum width of 512.
-	 */
-	unsigned int align;
-
-	if (width <= 512)
-		align = 512;
-	else
-		align = ALIGN(width, 64);
-	return align;
-}
-
 int atomisp_css_preview_configure_output(struct atomisp_sub_device *asd,
 				unsigned int width, unsigned int height,
+				unsigned int min_width,
 				enum atomisp_css_frame_format format)
 {
-	/* HACK: align width to GFX/SGX constraints */
-	unsigned int align = align_to_gfx(width);
-
-	if (sh_css_preview_configure_output(width, height, align, format)
+	if (sh_css_preview_configure_output(width, height, min_width, format)
 	    != sh_css_success)
 		return -EINVAL;
 
@@ -843,12 +849,10 @@ int atomisp_css_preview_configure_output(struct atomisp_sub_device *asd,
 
 int atomisp_css_capture_configure_output(struct atomisp_sub_device *asd,
 				unsigned int width, unsigned int height,
+				unsigned int min_width,
 				enum atomisp_css_frame_format format)
 {
-	/* HACK: align width to GFX/SGX constraints */
-	unsigned int align = align_to_gfx(width);
-
-	if (sh_css_capture_configure_output(width, height, align, format)
+	if (sh_css_capture_configure_output(width, height, min_width, format)
 	    != sh_css_success)
 		return -EINVAL;
 
@@ -857,12 +861,10 @@ int atomisp_css_capture_configure_output(struct atomisp_sub_device *asd,
 
 int atomisp_css_video_configure_output(struct atomisp_sub_device *asd,
 				unsigned int width, unsigned int height,
+				unsigned int min_width,
 				enum atomisp_css_frame_format format)
 {
-	/* HACK: align width to GFX/SGX constraints */
-	unsigned int align = align_to_gfx(width);
-
-	if (sh_css_video_configure_output(width, height, align, format)
+	if (sh_css_video_configure_output(width, height, min_width, format)
 	    != sh_css_success)
 		return -EINVAL;
 
@@ -872,12 +874,10 @@ int atomisp_css_video_configure_output(struct atomisp_sub_device *asd,
 int atomisp_css_video_configure_viewfinder(
 				struct atomisp_sub_device *asd,
 				unsigned int width, unsigned int height,
+				unsigned int min_width,
 				enum atomisp_css_frame_format format)
 {
-	/* HACK: align width to GFX/SGX constraints */
-	unsigned int align = align_to_gfx(width);
-
-	if (sh_css_video_configure_viewfinder(width, height, align, format)
+	if (sh_css_video_configure_viewfinder(width, height, min_width, format)
 	    != sh_css_success)
 		return -EINVAL;
 
@@ -887,13 +887,11 @@ int atomisp_css_video_configure_viewfinder(
 int atomisp_css_capture_configure_viewfinder(
 				struct atomisp_sub_device *asd,
 				unsigned int width, unsigned int height,
+				unsigned int min_width,
 				enum atomisp_css_frame_format format)
 {
-	/* HACK: align width to GFX/SGX constraints */
-	unsigned int align = align_to_gfx(width);
-
-	if (sh_css_capture_configure_viewfinder(width, height, align, format)
-	    != sh_css_success)
+	if (sh_css_capture_configure_viewfinder(width, height, min_width,
+						format) != sh_css_success)
 		return -EINVAL;
 
 	return 0;
@@ -969,6 +967,7 @@ int atomisp_get_css_frame_info(struct atomisp_sub_device *asd,
 
 	switch (source_pad) {
 	case ATOMISP_SUBDEV_PAD_SOURCE_CAPTURE:
+	case ATOMISP_SUBDEV_PAD_SOURCE_VIDEO:
 		if (asd->run_mode->val == ATOMISP_RUN_MODE_VIDEO
 		    || asd->vfpp->val == ATOMISP_VFPP_DISABLE_SCALER)
 			ret = sh_css_video_get_output_frame_info(frame_info);
@@ -1016,6 +1015,14 @@ int atomisp_css_capture_configure_pp_input(
 	if (sh_css_capture_configure_pp_input(width, height) != sh_css_success)
 		return -EINVAL;
 
+	return 0;
+}
+
+int atomisp_css_video_configure_pp_input(
+				struct atomisp_sub_device *asd,
+				unsigned int width, unsigned int height)
+{
+	/* Not supported on CSS1.5, Dummy function for compiling. */
 	return 0;
 }
 
@@ -1094,6 +1101,12 @@ void atomisp_css_set_nr_config(struct atomisp_sub_device *asd,
 	sh_css_set_nr_config(nr_config);
 }
 
+void atomisp_css_set_ext_nr_config(struct atomisp_sub_device *asd,
+                        struct atomisp_css_ext_nr_config *ext_nr_config)
+{
+       sh_css_set_ext_nr_config(ext_nr_config);
+}
+
 void atomisp_css_set_ee_config(struct atomisp_sub_device *asd,
 			struct atomisp_css_ee_config *ee_config)
 {
@@ -1134,6 +1147,12 @@ void atomisp_css_set_gc_config(struct atomisp_sub_device *asd,
 			struct atomisp_css_gc_config *gc_config)
 {
 	sh_css_set_gc_config(gc_config);
+}
+
+void atomisp_css_set_anr_config(struct atomisp_sub_device *asd,
+                        struct atomisp_css_anr_config *anr_config)
+{
+       sh_css_set_anr_config(anr_config);
 }
 
 void atomisp_css_set_3a_config(struct atomisp_sub_device *asd,
@@ -1274,6 +1293,56 @@ int atomisp_css_get_zoom_factor(struct atomisp_sub_device *asd,
 					unsigned int *zoom)
 {
 	sh_css_get_zoom_factor(zoom, zoom);
+	return 0;
+}
+
+/*
+ * Function to set/get image stablization statistics
+ */
+int atomisp_css_get_dis_stat(struct atomisp_sub_device *asd,
+			 struct atomisp_dis_statistics *stats)
+{
+	struct atomisp_device *isp = asd->isp;
+	unsigned long flags;
+	int error;
+
+	if (stats->vertical_projections   == NULL ||
+	    stats->horizontal_projections == NULL ||
+	    asd->params.dis_hor_proj_buf  == NULL ||
+	    asd->params.dis_ver_proj_buf  == NULL)
+		return -EINVAL;
+
+	/* isp needs to be streaming to get DIS statistics */
+	spin_lock_irqsave(&isp->lock, flags);
+	if (asd->streaming != ATOMISP_DEVICE_STREAMING_ENABLED) {
+		spin_unlock_irqrestore(&isp->lock, flags);
+		return -EINVAL;
+	}
+	spin_unlock_irqrestore(&isp->lock, flags);
+
+	if (!asd->params.video_dis_en)
+		return -EINVAL;
+
+	if (atomisp_compare_grid(asd, &stats->grid_info) != 0)
+		/* If the grid info in the argument differs from the current
+		   grid info, we tell the caller to reset the grid size and
+		   try again. */
+		return -EAGAIN;
+
+	if (!asd->params.dis_proj_data_valid)
+		return -EBUSY;
+
+	error = copy_to_user(stats->vertical_projections,
+			     asd->params.dis_ver_proj_buf,
+			     asd->params.dis_ver_proj_bytes);
+
+	error |= copy_to_user(stats->horizontal_projections,
+			     asd->params.dis_hor_proj_buf,
+			     asd->params.dis_hor_proj_bytes);
+
+	if (error)
+		return -EFAULT;
+
 	return 0;
 }
 
@@ -1488,24 +1557,28 @@ int atomisp_css_isr_thread(struct atomisp_device *isp,
 		case CSS_EVENT_OUTPUT_FRAME_DONE:
 			frame_done_found[asd->index] = true;
 			atomisp_buf_done(asd, 0, CSS_BUFFER_TYPE_OUTPUT_FRAME,
-					 current_event.pipe, true);
+					 current_event.pipe, true,
+					 ATOMISP_INPUT_STREAM_GENERAL);
 			break;
 		case CSS_EVENT_3A_STATISTICS_DONE:
 			atomisp_buf_done(asd, 0,
 					 CSS_BUFFER_TYPE_3A_STATISTICS,
 					 current_event.pipe,
-					 css_pipe_done[asd->index]);
+					 css_pipe_done[asd->index],
+					 ATOMISP_INPUT_STREAM_GENERAL);
 			break;
 		case CSS_EVENT_VF_OUTPUT_FRAME_DONE:
 			atomisp_buf_done(asd, 0,
 					 CSS_BUFFER_TYPE_VF_OUTPUT_FRAME,
-					 current_event.pipe, true);
+					 current_event.pipe, true,
+					 ATOMISP_INPUT_STREAM_GENERAL);
 			break;
 		case CSS_EVENT_DIS_STATISTICS_DONE:
 			atomisp_buf_done(asd, 0,
 					 CSS_BUFFER_TYPE_DIS_STATISTICS,
 					 current_event.pipe,
-					 css_pipe_done[asd->index]);
+					 css_pipe_done[asd->index],
+					 ATOMISP_INPUT_STREAM_GENERAL);
 			break;
 		case CSS_EVENT_PIPELINE_DONE:
 			break;

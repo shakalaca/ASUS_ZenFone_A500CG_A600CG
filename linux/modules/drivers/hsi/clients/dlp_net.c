@@ -487,7 +487,7 @@ static void dlp_net_complete_rx(struct hsi_msg *pdu)
 			pr_debug(DRVNAME ": NET: CH%d RX PDU ignored (close:%d, Time out: %d)\n",
 				ch_ctx->ch_id,
 				dlp_drv.tty_closed, dlp_drv.tx_timeout);
-		return;
+		goto recycle;
 	}
 
 	/* Pop the CTRL queue */

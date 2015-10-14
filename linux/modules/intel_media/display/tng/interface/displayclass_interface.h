@@ -60,81 +60,18 @@ struct psb_framebuffer {
 	uint32_t depth;
 	uint32_t size;
 	uint32_t offset;
+	uint32_t user_virtual_addr;  /* user space address */
 };
 
 #endif /*__KERNEL__*/
 
-typedef enum intel_dc_plane_types {
-	DC_UNKNOWN_PLANE = 0,
-	DC_SPRITE_PLANE = 1,
-	DC_OVERLAY_PLANE,
-	DC_PRIMARY_PLANE,
-} DC_MRFLD_PLANE_TYPE;
-
-#define SPRITE_UPDATE_SURFACE			(0x00000001UL)
-#define SPRITE_UPDATE_CONTROL			(0x00000002UL)
-#define SPRITE_UPDATE_POSITION			(0x00000004UL)
-#define SPRITE_UPDATE_SIZE			(0x00000008UL)
-#define SPRITE_UPDATE_WAIT_VBLANK		(0X00000010UL)
-#define SPRITE_UPDATE_ALL			(0x0000001fUL)
-
-typedef struct intel_dc_overlay_ctx {
-	uint32_t index;
-	uint32_t pipe;
-	uint32_t ovadd;
-} DC_MRFLD_OVERLAY_CONTEXT;
-
-typedef struct intel_dc_sprite_ctx {
-	uint32_t update_mask;
-	/*plane index 0-A, 1-B, 2-C,etc*/
-	uint32_t index;
-	uint32_t pipe;
-
-	uint32_t cntr;
-	uint32_t linoff;
-	uint32_t stride;
-	uint32_t pos;
-	uint32_t size;
-	uint32_t keyminval;
-	uint32_t keymask;
-	uint32_t surf;
-	uint32_t keymaxval;
-	uint32_t tileoff;
-	uint32_t contalpa;
-} DC_MRFLD_SPRITE_CONTEXT;
-
-typedef struct intel_dc_primary_ctx {
-	uint32_t update_mask;
-	/*plane index 0-A, 1-B, 2-C,etc*/
-	uint32_t index;
-	uint32_t pipe;
-
-	uint32_t cntr;
-	uint32_t linoff;
-	uint32_t stride;
-	uint32_t pos;
-	uint32_t size;
-	uint32_t keyminval;
-	uint32_t keymask;
-	uint32_t surf;
-	uint32_t keymaxval;
-	uint32_t tileoff;
-	uint32_t contalpa;
-} DC_MRFLD_PRIMARY_CONTEXT;
-
-typedef struct intel_dc_plane_ctx {
-	enum intel_dc_plane_types type;
-	union {
-		struct intel_dc_overlay_ctx ov_ctx;
-		struct intel_dc_sprite_ctx sp_ctx;
-		struct intel_dc_primary_ctx prim_ctx;
-	} ctx;
-} DC_MRFLD_SURF_CUSTOM;
-
 void DCAttachPipe(uint32_t uiPipe);
 void DCUnAttachPipe(uint32_t uiPipe);
+void DC_MRFLD_onPowerOn(uint32_t iPipe);
+void DC_MRFLD_onPowerOff(uint32_t iPipe);
 int DC_MRFLD_Enable_Plane(int type, int index, uint32_t ctx);
 int DC_MRFLD_Disable_Plane(int type, int index, uint32_t ctx);
-
+void DCLockMutex(void);
+void DCUnLockMutex(void);
 
 #endif				/* __DC_INTERFACE_H__ */

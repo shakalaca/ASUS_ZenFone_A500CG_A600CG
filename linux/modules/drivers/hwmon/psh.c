@@ -60,6 +60,8 @@ struct psh_plt_priv {
 	void __iomem *io_imr;
 	void *imr;
 	u32 imr_phy;
+	struct loop_buffer lbuf;
+	struct page *pg;
 };
 
 int process_send_cmd(struct psh_ia_priv *psh_ia_data,
@@ -69,6 +71,11 @@ int process_send_cmd(struct psh_ia_priv *psh_ia_data,
 	int ret = 0;
 	u8 *pcmd = (u8 *)cmd;
 	struct psh_msg in;
+
+	if (ch == PSH2IA_CHANNEL0 && cmd->cmd_id == CMD_RESET) {
+		intel_psh_ipc_disable_irq();
+		ia_lbuf_read_reset(psh_ia_data->lbuf);
+	}
 
 	/* map from virtual channel to real channel */
 	ch = ch - PSH2IA_CHANNEL0 + PSH_SEND_CH0;
@@ -94,12 +101,17 @@ int process_send_cmd(struct psh_ia_priv *psh_ia_data,
 
 		ret = intel_ia2psh_command(&in, NULL, ch, 1000000);
 		if (ret) {
-			pr_err("sendcmd through IPC channel fail!\n");
-			return -1;
+			psh_err("sendcmd %d by IPC %d failed!, ret=%d\n",
+					cmd->cmd_id, ch, ret);
+			ret = -EIO;
+			goto f_out;
 		}
 	}
 
-	return 0;
+f_out:
+	if (ch == PSH2IA_CHANNEL0 && cmd->cmd_id == CMD_RESET)
+		intel_psh_ipc_enable_irq();
+	return ret;
 }
 
 
@@ -109,13 +121,17 @@ int do_setup_ddr(struct device *dev)
 			(struct psh_ia_priv *)dev_get_drvdata(dev);
 	struct psh_plt_priv *plt_priv =
 			(struct psh_plt_priv *)ia_data->platform_priv;
-	u32 ddr_phy = page_to_phys(ia_data->pg);
+	u32 ddr_phy = page_to_phys(plt_priv->pg);
 	u32 imr_phy = plt_priv->imr_phy;
 	const struct firmware *fw_entry;
 	struct ia_cmd cmd_user = {
 		.cmd_id = CMD_SETUP_DDR,
 		.sensor_id = 0,
 		};
+	static int fw_load_done;
+
+	if (fw_load_done)
+		return 0;
 
 #ifdef VPROG2_SENSOR
 	intel_scu_ipc_msic_vprog2(1);
@@ -124,10 +140,10 @@ int do_setup_ddr(struct device *dev)
 		if (!fw_entry)
 			return -ENOMEM;
 
-		pr_debug("psh fw size %d virt:0x%p\n",
+		psh_debug("psh fw size %d virt:0x%p\n",
 				fw_entry->size, fw_entry->data);
 		if (fw_entry->size > APP_IMR_SIZE) {
-			pr_err("psh fw size too big\n");
+			psh_err("psh fw size too big\n");
 		} else {
 			struct ia_cmd cmd = {
 				.cmd_id = CMD_RESET,
@@ -138,16 +154,18 @@ int do_setup_ddr(struct device *dev)
 				fw_entry->size);
 			*(u32 *)(&cmd.param) = imr_phy;
 			cmd.tran_id = 0x1;
-			if (ia_send_cmd(ia_data, PSH2IA_CHANNEL3, &cmd, 7))
+			if (process_send_cmd(ia_data, PSH2IA_CHANNEL3, &cmd, 7))
 				return -1;
 			ia_data->load_in_progress = 1;
 			wait_for_completion_timeout(&ia_data->cmd_load_comp,
 					3 * HZ);
+			fw_load_done = 1;
 		}
 		release_firmware(fw_entry);
 	}
+	ia_lbuf_read_reset(ia_data->lbuf);
 	*(unsigned long *)(&cmd_user.param) = ddr_phy;
-	return ia_send_cmd(ia_data, PSH2IA_CHANNEL0, &cmd_user, 7);
+	return ia_send_cmd(ia_data, &cmd_user, 7);
 }
 
 static void psh2ia_channel_handle(u32 msg, u32 param, void *data)
@@ -155,8 +173,17 @@ static void psh2ia_channel_handle(u32 msg, u32 param, void *data)
 	struct pci_dev *pdev = (struct pci_dev *)data;
 	struct psh_ia_priv *ia_data =
 			(struct psh_ia_priv *)dev_get_drvdata(&pdev->dev);
+	struct psh_plt_priv *plt_priv =
+			(struct psh_plt_priv *)ia_data->platform_priv;
+	u8 *dbuf = NULL;
+	u16 size = 0;
 
-	ia_process_lbuf(&pdev->dev);
+	while (!ia_lbuf_read_next(ia_data,
+			&plt_priv->lbuf, &dbuf, &size)) {
+		ia_handle_frame(ia_data, dbuf, size);
+	}
+	sysfs_notify(&pdev->dev.kobj, NULL, "data_size");
+
 	if (unlikely(ia_data->load_in_progress)) {
 		ia_data->load_in_progress = 0;
 		complete(&ia_data->cmd_load_comp);
@@ -184,6 +211,8 @@ static int psh_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	plt_priv->stepping = intel_mid_soc_stepping();
+	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)
+		plt_priv->stepping = 1;
 
 	if (plt_priv->stepping == 0) {
 		/* A stepping */
@@ -217,6 +246,17 @@ static int psh_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto psh_ia_err;
 	}
 
+	plt_priv->pg = alloc_pages(GFP_KERNEL | GFP_DMA32 | __GFP_ZERO,
+			get_order(BUF_IA_DDR_SIZE));
+	if (!plt_priv->pg) {
+		dev_err(&pdev->dev, "can not allocate ddr buffer\n");
+		goto pg_err;
+	}
+	ia_lbuf_read_init(&plt_priv->lbuf,
+				page_address(plt_priv->pg),
+				BUF_IA_DDR_SIZE, NULL);
+	ia_data->lbuf = &plt_priv->lbuf;
+
 	plt_priv->hwmon_dev = hwmon_device_register(&pdev->dev);
 	if (!plt_priv->hwmon_dev) {
 		dev_err(&pdev->dev, "fail to register hwmon device\n");
@@ -239,6 +279,8 @@ static int psh_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 irq_err:
 	hwmon_device_unregister(plt_priv->hwmon_dev);
 hwmon_err:
+	__free_pages(plt_priv->pg, get_order(BUF_IA_DDR_SIZE));
+pg_err:
 	psh_ia_common_deinit(&pdev->dev);
 psh_ia_err:
 	if (plt_priv->page_imr)
@@ -271,6 +313,8 @@ static void psh_remove(struct pci_dev *pdev)
 
 	hwmon_device_unregister(plt_priv->hwmon_dev);
 
+	__free_pages(plt_priv->pg, get_order(BUF_IA_DDR_SIZE));
+
 	kfree(plt_priv);
 
 	psh_ia_common_deinit(&pdev->dev);
@@ -278,7 +322,16 @@ static void psh_remove(struct pci_dev *pdev)
 	/* pci_dev_put(pdev); */
 }
 
-#ifdef CONFIG_PM_RUNTIME
+static int psh_suspend(struct device *dev)
+{
+	return psh_ia_comm_suspend(dev);
+}
+
+static int psh_resume(struct device *dev)
+{
+	return psh_ia_comm_resume(dev);
+}
+
 static int psh_runtime_suspend(struct device *dev)
 {
 	dev_dbg(dev, "runtime suspend called\n");
@@ -291,16 +344,11 @@ static int psh_runtime_resume(struct device *dev)
 	return 0;
 }
 
-#else
-
-#define psh_ipc_runtime_suspend	NULL
-#define psh_ipc_runtime_resume	NULL
-
-#endif
-
 static const struct dev_pm_ops psh_drv_pm_ops = {
-	.runtime_suspend	= psh_runtime_suspend,
-	.runtime_resume		= psh_runtime_resume,
+	SET_SYSTEM_SLEEP_PM_OPS(psh_suspend,
+			psh_resume)
+	SET_RUNTIME_PM_OPS(psh_runtime_suspend,
+			psh_runtime_resume, NULL)
 };
 
 static DEFINE_PCI_DEVICE_TABLE(pci_ids) = {

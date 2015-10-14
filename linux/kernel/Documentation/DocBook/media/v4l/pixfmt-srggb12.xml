@@ -1,4 +1,4 @@
-    <refentry id="pixfmt-srggb10">
+    <refentry>
       <refmeta>
 	<refentrytitle>V4L2_PIX_FMT_SRGGB12 ('RG12'),
 	 V4L2_PIX_FMT_SGRBG12 ('BA12'),

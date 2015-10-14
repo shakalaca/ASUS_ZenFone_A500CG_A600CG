@@ -20,8 +20,10 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  *
- * Author: Jani Nikula <jani.nikula@intel.com>  */
+ * Author: Jani Nikula <jani.nikula@intel.com>
+ */
 
+#include <linux/export.h>
 #include <drm/drmP.h>
 #include <drm/drm_crtc.h>
 #include <video/mipi_display.h>
@@ -30,45 +32,94 @@
 #include "intel_dsi.h"
 #include "intel_dsi_cmd.h"
 
-/**
- * XXX:
+/*
+ * XXX: MIPI_DATA_ADDRESS, MIPI_DATA_LENGTH, MIPI_COMMAND_LENGTH, and
+ * MIPI_COMMAND_ADDRESS registers.
  *
- * Is intel_dsi good handle to pass here?
+ * Apparently these registers provide a MIPI adapter level way to send (lots of)
+ * commands and data to the receiver, without having to write the commands and
+ * data to MIPI_{HS,LP}_GEN_{CTRL,DATA} registers word by word.
  *
- * Is the pipe static throughout the lifetime of a encoder/connector?!?!
+ * Presumably for anything other than MIPI_DCS_WRITE_MEMORY_START and
+ * MIPI_DCS_WRITE_MEMORY_CONTINUE (which are used to update the external
+ * framebuffer in command mode displays) these are just an optimization that can
+ * come later.
  *
- * DPI vs. DBI in the old code... separate files?
- *
- * DSI error handling
- *
- * MEM WRITE
- *
- * Locking?
- *
- * XXX: use of these registers??? for mem write?
- *
- * MIPI_DATA_ADDRESS, updated data for the display panel
- * MIPI_DATA_LENGTH, remaining length of data that needs to be read
- *
- * MIPI_COMMAND_ADDRESS, address to read new commands from?! has "command data
- * mode" to use data for memory write from pipe A rendering.
- *
- * MIPI_COMMAND_LENGTH, lengths of up to four commands. wtf.
- *
- * MIPI_READ_DATA_RETURN, configuration reads only. max read should be no
- * greater than 32 bytes.
- *
- * MIPI_READ_DATA_VALID, bits 0-7 indicate validity of MIPI_READ_DATA_RETURN(n).
- *
- *
- * XXX: do we need sync vs. nosync variants?
+ * For memory writes, these should probably be used for performance.
  */
+
+static void print_stat(struct intel_dsi *intel_dsi)
+{
+	struct drm_encoder *encoder = &intel_dsi->base.base;
+	struct drm_device *dev = encoder->dev;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct intel_crtc *intel_crtc = to_intel_crtc(encoder->crtc);
+	enum pipe pipe = intel_crtc->pipe;
+	u32 val;
+
+	val = I915_READ(MIPI_INTR_STAT(pipe));
+
+#define STAT_BIT(val, bit) (val) & (bit) ? " " #bit : ""
+	DRM_DEBUG_KMS("MIPI_INTR_STAT(%d) = %08x"
+		      "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s"
+		      "\n", pipe, val,
+		      STAT_BIT(val, TEARING_EFFECT),
+		      STAT_BIT(val, SPL_PKT_SENT_INTERRUPT),
+		      STAT_BIT(val, GEN_READ_DATA_AVAIL),
+		      STAT_BIT(val, LP_GENERIC_WR_FIFO_FULL),
+		      STAT_BIT(val, HS_GENERIC_WR_FIFO_FULL),
+		      STAT_BIT(val, RX_PROT_VIOLATION),
+		      STAT_BIT(val, RX_INVALID_TX_LENGTH),
+		      STAT_BIT(val, ACK_WITH_NO_ERROR),
+		      STAT_BIT(val, TURN_AROUND_ACK_TIMEOUT),
+		      STAT_BIT(val, LP_RX_TIMEOUT),
+		      STAT_BIT(val, HS_TX_TIMEOUT),
+		      STAT_BIT(val, DPI_FIFO_UNDERRUN),
+		      STAT_BIT(val, LOW_CONTENTION),
+		      STAT_BIT(val, HIGH_CONTENTION),
+		      STAT_BIT(val, TXDSI_VC_ID_INVALID),
+		      STAT_BIT(val, TXDSI_DATA_TYPE_NOT_RECOGNISED),
+		      STAT_BIT(val, TXCHECKSUM_ERROR),
+		      STAT_BIT(val, TXECC_MULTIBIT_ERROR),
+		      STAT_BIT(val, TXECC_SINGLE_BIT_ERROR),
+		      STAT_BIT(val, TXFALSE_CONTROL_ERROR),
+		      STAT_BIT(val, RXDSI_VC_ID_INVALID),
+		      STAT_BIT(val, RXDSI_DATA_TYPE_NOT_REGOGNISED),
+		      STAT_BIT(val, RXCHECKSUM_ERROR),
+		      STAT_BIT(val, RXECC_MULTIBIT_ERROR),
+		      STAT_BIT(val, RXECC_SINGLE_BIT_ERROR),
+		      STAT_BIT(val, RXFALSE_CONTROL_ERROR),
+		      STAT_BIT(val, RXHS_RECEIVE_TIMEOUT_ERROR),
+		      STAT_BIT(val, RX_LP_TX_SYNC_ERROR),
+		      STAT_BIT(val, RXEXCAPE_MODE_ENTRY_ERROR),
+		      STAT_BIT(val, RXEOT_SYNC_ERROR),
+		      STAT_BIT(val, RXSOT_SYNC_ERROR),
+		      STAT_BIT(val, RXSOT_ERROR));
+#undef STAT_BIT
+}
 
 enum dsi_type {
 	DSI_DCS,
 	DSI_GENERIC,
 };
 
+/* enable or disable command mode hs transmissions */
+void dsi_hs_mode_enable(struct intel_dsi *intel_dsi, bool enable)
+{
+	struct drm_encoder *encoder = &intel_dsi->base.base;
+	struct drm_device *dev = encoder->dev;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct intel_crtc *intel_crtc = to_intel_crtc(encoder->crtc);
+	enum pipe pipe = intel_crtc->pipe;
+	u32 mask = DBI_FIFO_EMPTY;
+
+	if (wait_for((I915_READ(MIPI_GEN_FIFO_STAT(pipe)) & mask) == mask, 50))
+		DRM_ERROR("Timeout waiting for DBI FIFO empty\n");
+
+	I915_WRITE(MIPI_HS_LP_DBI_ENABLE(pipe), enable ? DBI_HS_MODE : DBI_LP_MODE);
+
+	intel_dsi->hs = enable;
+}
 
 static int dsi_vc_send_short(struct intel_dsi *intel_dsi, int channel,
 			     u8 data_type, u16 data)
@@ -80,23 +131,29 @@ static int dsi_vc_send_short(struct intel_dsi *intel_dsi, int channel,
 	enum pipe pipe = intel_crtc->pipe;
 	u32 ctrl_reg;
 	u32 ctrl;
-	u32 mask = DBI_FIFO_EMPTY;
+	u32 mask;
 
-	/* XXX: set MIPI_HS_LS_DBI_ENABLE? wait for dbi fifo empty first */
+	DRM_DEBUG_KMS("channel %d, data_type %d, data %04x\n",
+		      channel, data_type, data);
 
-	/* XXX: short write, do we need to wait for data FIFO? */
 	if (intel_dsi->hs) {
 		ctrl_reg = MIPI_HS_GEN_CTRL(pipe);
-		mask |= HS_CTRL_FIFO_EMPTY | HS_DATA_FIFO_EMPTY;
+		mask = HS_CTRL_FIFO_FULL;
 	} else {
 		ctrl_reg = MIPI_LP_GEN_CTRL(pipe);
-		mask |= LP_CTRL_FIFO_EMPTY | LP_DATA_FIFO_EMPTY;
+		mask = LP_CTRL_FIFO_FULL;
 	}
 
-	/* Note: Could also wait for !full instead of empty. */
-	if (wait_for((I915_READ(MIPI_GEN_FIFO_STAT(pipe)) & mask) == mask, 50))
-		DRM_ERROR("Timeout waiting for FIFO empty\n");
+	if (wait_for((I915_READ(MIPI_GEN_FIFO_STAT(pipe)) & mask) == 0, 50)) {
+		DRM_ERROR("Timeout waiting for HS/LP CTRL FIFO !full\n");
+		print_stat(intel_dsi);
+	}
 
+	/*
+	 * Note: This function is also used for long packets, with length passed
+	 * as data, since SHORT_PACKET_PARAM_SHIFT ==
+	 * LONG_PACKET_WORD_COUNT_SHIFT.
+	 */
 	ctrl = data << SHORT_PACKET_PARAM_SHIFT |
 		channel << VIRTUAL_CHANNEL_SHIFT |
 		data_type << DATA_TYPE_SHIFT;
@@ -107,55 +164,49 @@ static int dsi_vc_send_short(struct intel_dsi *intel_dsi, int channel,
 }
 
 static int dsi_vc_send_long(struct intel_dsi *intel_dsi, int channel,
-			    u8 data_type, const u8 *data, u16 len) {
+			    u8 data_type, const u8 *data, int len)
+{
 	struct drm_encoder *encoder = &intel_dsi->base.base;
 	struct drm_device *dev = encoder->dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct intel_crtc *intel_crtc = to_intel_crtc(encoder->crtc);
 	enum pipe pipe = intel_crtc->pipe;
-	u32 data_reg, ctrl_reg, ctrl;
-	u16 i, j, n;
-	u32 mask = DBI_FIFO_EMPTY;
+	u32 data_reg;
+	int i, j, n;
+	u32 mask;
 
-	/* XXX: set MIPI_HS_LS_DBI_ENABLE? wait for dbi fifo empty first */
+	DRM_DEBUG_KMS("channel %d, data_type %d, len %04x\n",
+		      channel, data_type, len);
 
-	/* XXX: pipe, hs */
 	if (intel_dsi->hs) {
 		data_reg = MIPI_HS_GEN_DATA(pipe);
-		ctrl_reg = MIPI_HS_GEN_CTRL(pipe);
-		mask |= HS_CTRL_FIFO_EMPTY | HS_DATA_FIFO_EMPTY;
+		mask = HS_DATA_FIFO_FULL;
 	} else {
 		data_reg = MIPI_LP_GEN_DATA(pipe);
-		ctrl_reg = MIPI_LP_GEN_CTRL(pipe);
-		mask |= LP_CTRL_FIFO_EMPTY | LP_DATA_FIFO_EMPTY;
+		mask = LP_DATA_FIFO_FULL;
 	}
 
-	/* Note: Could also wait for !full instead of empty. */
-	if (wait_for((I915_READ(MIPI_GEN_FIFO_STAT(pipe)) & mask) == mask, 50))
-		DRM_ERROR("Timeout waiting for FIFO empty\n");
+	if (wait_for((I915_READ(MIPI_GEN_FIFO_STAT(pipe)) & mask) == 0, 50))
+		DRM_ERROR("Timeout waiting for HS/LP DATA FIFO !full\n");
 
 	for (i = 0; i < len; i += n) {
 		u32 val = 0;
-		n = min(len - i, 4);
+		n = min_t(int, len - i, 4);
 
 		for (j = 0; j < n; j++)
 			val |= *data++ << 8 * j;
 
 		I915_WRITE(data_reg, val);
+		/* XXX: check for data fifo full, once that is set, write 4
+		 * dwords, then wait for not set, then continue. */
 	}
 
-	ctrl = len << LONG_PACKET_WORD_COUNT_SHIFT;
-	ctrl |= channel << VIRTUAL_CHANNEL_SHIFT;
-	ctrl |= data_type << DATA_TYPE_SHIFT;
-
-	I915_WRITE(ctrl_reg, ctrl);
-
-	return 0;
+	return dsi_vc_send_short(intel_dsi, channel, data_type, len);
 }
 
-static int dsi_vc_write_nosync_common(struct intel_dsi *intel_dsi,
-				      int channel, const u8 *data, int len,
-				      enum dsi_type type)
+static int dsi_vc_write_common(struct intel_dsi *intel_dsi,
+			       int channel, const u8 *data, int len,
+			       enum dsi_type type)
 {
 	int ret;
 
@@ -185,58 +236,17 @@ static int dsi_vc_write_nosync_common(struct intel_dsi *intel_dsi,
 	return ret;
 }
 
-static int dsi_vc_dcs_write_nosync(struct intel_dsi *intel_dsi,
-				   int channel, const u8 *data, int len)
-{
-	return dsi_vc_write_nosync_common(intel_dsi, channel, data, len,
-					  DSI_DCS);
-}
-
-static int dsi_vc_generic_write_nosync(struct intel_dsi *intel_dsi,
-				       int channel, const u8 *data, int len)
-{
-	return dsi_vc_write_nosync_common(intel_dsi, channel, data, len,
-					  DSI_GENERIC);
-}
-
-static int dsi_vc_sync(struct intel_dsi *intel_dsi, int channel)
-{
-	/* XXX: wait for bta from device */
-	return 0;
-}
-
-static int dsi_vc_write_common(struct intel_dsi *intel_dsi, int channel,
-			       const u8 *data, int len, enum dsi_type type)
-{
-	int ret;
-
-	ret = dsi_vc_write_nosync_common(intel_dsi, channel, data, len, type);
-	if (ret)
-		return ret;
-
-	ret = dsi_vc_sync(intel_dsi, channel);
-	if (ret)
-		return ret;
-
-	/* XXX: fifo check */
-
-	return 0;
-}
-
 int dsi_vc_dcs_write(struct intel_dsi *intel_dsi, int channel,
 		     const u8 *data, int len)
 {
 	return dsi_vc_write_common(intel_dsi, channel, data, len, DSI_DCS);
 }
-EXPORT_SYMBOL(dsi_vc_dcs_write);
 
 int dsi_vc_generic_write(struct intel_dsi *intel_dsi, int channel,
 			 const u8 *data, int len)
 {
 	return dsi_vc_write_common(intel_dsi, channel, data, len, DSI_GENERIC);
 }
-EXPORT_SYMBOL(dsi_vc_generic_write);
-
 
 static int dsi_vc_dcs_send_read_request(struct intel_dsi *intel_dsi,
 					int channel, u8 dcs_cmd)
@@ -280,22 +290,20 @@ static int dsi_read_data_return(struct intel_dsi *intel_dsi,
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct intel_crtc *intel_crtc = to_intel_crtc(encoder->crtc);
 	enum pipe pipe = intel_crtc->pipe;
-	int i, j, len = 0;
-	u32 data_valid, val;
+	int i, len = 0;
+	u32 data_reg, val;
 
-	data_valid = I915_READ(MIPI_READ_DATA_VALID(pipe));
-
-	/* XXX: byte order of data in return registers? */
-	for (i = 0; i < 8 && len < buflen; i++) {
-		if (!(data_valid & (1 << i)))
-			break;
-
-		val = I915_READ(MIPI_READ_DATA_RETURN(pipe, i));
-		for (j = 0; j < 4 && len < buflen; j++, len++)
-			buf[len] = val >> 8 * j;
+	if (intel_dsi->hs) {
+		data_reg = MIPI_HS_GEN_DATA(pipe);
+	} else {
+		data_reg = MIPI_LP_GEN_DATA(pipe);
 	}
 
-	I915_WRITE(MIPI_READ_DATA_VALID(pipe), data_valid);
+	while (len < buflen) {
+		val = I915_READ(data_reg);
+		for (i = 0; i < 4 && len < buflen; i++, len++)
+			buf[len] = val >> 8 * i;
+	}
 
 	return len;
 }
@@ -303,17 +311,28 @@ static int dsi_read_data_return(struct intel_dsi *intel_dsi,
 int dsi_vc_dcs_read(struct intel_dsi *intel_dsi, int channel, u8 dcs_cmd,
 		    u8 *buf, int buflen)
 {
+	struct drm_encoder *encoder = &intel_dsi->base.base;
+	struct drm_device *dev = encoder->dev;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct intel_crtc *intel_crtc = to_intel_crtc(encoder->crtc);
+	enum pipe pipe = intel_crtc->pipe;
+	u32 mask;
 	int ret;
 
-	/* XXX: set MIPI_MAX_RETURN_PKT_SIZE? */
+	/*
+	 * XXX: should issue multiple read requests and reads if request is
+	 * longer than MIPI_MAX_RETURN_PKT_SIZE
+	 */
+
+	I915_WRITE(MIPI_INTR_STAT(pipe), GEN_READ_DATA_AVAIL);
 
 	ret = dsi_vc_dcs_send_read_request(intel_dsi, channel, dcs_cmd);
 	if (ret)
 		return ret;
 
-	ret = dsi_vc_sync(intel_dsi, channel);
-	if (ret)
-		return ret;
+	mask = GEN_READ_DATA_AVAIL;
+	if (wait_for((I915_READ(MIPI_INTR_STAT(pipe)) & mask) == mask, 50))
+		DRM_ERROR("Timeout waiting for read data.\n");
 
 	ret = dsi_read_data_return(intel_dsi, buf, buflen);
 	if (ret < 0)
@@ -324,21 +343,33 @@ int dsi_vc_dcs_read(struct intel_dsi *intel_dsi, int channel, u8 dcs_cmd,
 
 	return 0;
 }
-EXPORT_SYMBOL(dsi_vc_dcs_read);
 
 int dsi_vc_generic_read(struct intel_dsi *intel_dsi, int channel,
 			u8 *reqdata, int reqlen, u8 *buf, int buflen)
 {
+	struct drm_encoder *encoder = &intel_dsi->base.base;
+	struct drm_device *dev = encoder->dev;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct intel_crtc *intel_crtc = to_intel_crtc(encoder->crtc);
+	enum pipe pipe = intel_crtc->pipe;
+	u32 mask;
 	int ret;
+
+	/*
+	 * XXX: should issue multiple read requests and reads if request is
+	 * longer than MIPI_MAX_RETURN_PKT_SIZE
+	 */
+
+	I915_WRITE(MIPI_INTR_STAT(pipe), GEN_READ_DATA_AVAIL);
 
 	ret = dsi_vc_generic_send_read_request(intel_dsi, channel, reqdata,
 					       reqlen);
 	if (ret)
 		return ret;
 
-	ret = dsi_vc_sync(intel_dsi, channel);
-	if (ret)
-		return ret;
+	mask = GEN_READ_DATA_AVAIL;
+	if (wait_for((I915_READ(MIPI_INTR_STAT(pipe)) & mask) == mask, 50))
+		DRM_ERROR("Timeout waiting for read data.\n");
 
 	ret = dsi_read_data_return(intel_dsi, buf, buflen);
 	if (ret < 0)
@@ -350,10 +381,11 @@ int dsi_vc_generic_read(struct intel_dsi *intel_dsi, int channel,
 	return 0;
 }
 
-
-/* DPI */
-
-/* XXX: what is "spk" or "spl" packet? XXX: how about MIPI_DPI_DATA? */
+/*
+ * send a video mode command
+ *
+ * XXX: commands with data in MIPI_DPI_DATA?
+ */
 int dpi_send_cmd(struct intel_dsi *intel_dsi, u32 cmd)
 {
 	struct drm_encoder *encoder = &intel_dsi->base.base;
@@ -365,25 +397,28 @@ int dpi_send_cmd(struct intel_dsi *intel_dsi, u32 cmd)
 
 	/* XXX: pipe, hs */
 	if (intel_dsi->hs)
-		cmd &= ~DPI_HS_MODE;
+		cmd &= ~DPI_LP_MODE;
 	else
-		cmd |= DPI_HS_MODE;
+		cmd |= DPI_LP_MODE;
 
 	/* DPI virtual channel?! */
 
 	mask = DPI_FIFO_EMPTY;
 	if (wait_for((I915_READ(MIPI_GEN_FIFO_STAT(pipe)) & mask) == mask, 50))
-		DRM_ERROR("fifo\n");
+		DRM_ERROR("Timeout waiting for DPI FIFO empty.\n");
 
 	/* clear bit */
 	I915_WRITE(MIPI_INTR_STAT(pipe), SPL_PKT_SENT_INTERRUPT);
 
 	/* XXX: old code skips write if control unchanged */
+	if (cmd == I915_READ(MIPI_DPI_CONTROL(pipe)))
+		DRM_ERROR("Same special packet %02x twice in a row.\n", cmd);
+
 	I915_WRITE(MIPI_DPI_CONTROL(pipe), cmd);
 
 	mask = SPL_PKT_SENT_INTERRUPT;
-	if (wait_for((I915_READ(MIPI_INTR_STAT(pipe)) & mask) == 0, 50))
-		DRM_ERROR("fail\n");
+	if (wait_for((I915_READ(MIPI_INTR_STAT(pipe)) & mask) == mask, 100))
+		DRM_ERROR("Video mode command 0x%08x send failed.\n", cmd);
 
 	return 0;
 }

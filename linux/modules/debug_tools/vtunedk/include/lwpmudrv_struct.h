@@ -78,10 +78,16 @@ struct DRV_CONFIG_NODE_S {
     DRV_BOOL     collect_ro;
 #endif
     S32          seed_name_len;
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    U32          padding1;
+#endif
     U64          target_pid;
     DRV_BOOL     use_pcl;
     DRV_BOOL     enable_ebc;
     DRV_BOOL     enable_tbc;
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    U32          padding2;
+#endif
     union {
         S8      *seed_name;
         U64      dummy1;
@@ -91,6 +97,10 @@ struct DRV_CONFIG_NODE_S {
         U64      dummy2;
     } u2;
     DRV_BOOL     ds_area_available;
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    U32          padding3;
+#endif
+
 };
 
 #define DRV_CONFIG_size(cfg)                      (cfg)->size
@@ -263,7 +273,7 @@ typedef struct ModuleRecord_s {
                               // ..looking at 1st sample record that matches the module selector
    U16    loadEvent   :  1;   // 0 for load, 1 for unload
    U16    processed   :  1;   // 0 for load, 1 for unload
-   U16    rsvd0       : 12;   // reserved
+   U16    reserved0   : 12;
 
    U16    selector;           // code selector or V86 segment
    U16    segmentNameLength;  // length of the segment name if the segmentNameSet bit is set
@@ -293,7 +303,7 @@ typedef struct ModuleRecord_s {
                                             //  is set, the associated module indicates
                                             //  the beginning of a new process
          U32  source                 : 1;   // 0 for path in target system, 1 for path in host system (offloaded)
-         U32  rsvd1                  : 21;  // reserved
+         U32  reserved1              : 21;
       } s1;
    } u2;
    U64   length64;         // module length
@@ -303,6 +313,7 @@ typedef struct ModuleRecord_s {
                            // ..then this is a kernel or global module.  Can validly
                            // ..be 0 if not raw (array index).  Use ReturnPid() to access this
                            // ..field
+   U32   reserved2;
    U64   unloadTsc;        // TSC collected on an unload event
    U32   path;             // module path name (section offset on disk)
                            // ..when initally written by sampler name is at end of this
@@ -316,9 +327,10 @@ typedef struct ModuleRecord_s {
                            //  (s/b 0 in a raw module record)
                            // in a raw module record, the segment name will follow the
                            //  module name and the module name's terminating NULL char
+   U32   reserved3;
    U64   tsc;              // time stamp counter module event occurred
    U32   parent_pid;       // Parent PID of the process
-   U32   rsvd2;
+   U32   reserved4;
 } ModuleRecord;
 
 #define MR_unloadTscSet(x,y)        (x)->unloadTsc = (y)
@@ -505,6 +517,9 @@ typedef struct __generic_per_cpu {
     U16 cpu_hw_thread_num;          // hw thread number inside the core (if known)
 
     U16 cpu_threads_per_core;       // total number of h/w threads per core (if known)
+    U16 cpu_module_id;               // Processor module number
+    U16 cpu_num_modules;             // Number of processor modules
+    U32 reserved;
 
 } VTSA_GEN_PER_CPU;
 
@@ -521,6 +536,8 @@ typedef struct __generic_per_cpu {
 #define VTSA_GEN_PER_CPU_cpu_core_num(p_cpu)                (p_cpu)->cpu_core_num
 #define VTSA_GEN_PER_CPU_cpu_hw_thread_num(p_cpu)           (p_cpu)->cpu_hw_thread_num
 #define VTSA_GEN_PER_CPU_cpu_threads_per_core(p_cpu)        (p_cpu)->cpu_threads_per_core
+#define VTSA_GEN_PER_CPU_cpu_module_num(p_cpu)              (p_cpu)->cpu_module_id
+#define VTSA_GEN_PER_CPU_cpu_num_modules(p_cpu)             (p_cpu)->cpu_num_modules
 
 
 typedef struct __node_info {
@@ -584,6 +601,9 @@ struct DRV_TOPOLOGY_INFO_NODE_S {
     S32 socket_master;
     S32 core_master;
     S32 thr_master;
+    U32 cpu_module_num;
+    U32 cpu_module_master;
+    U32 cpu_num_modules;
 } ;
 
 #define DRV_TOPOLOGY_INFO_cpu_number(dti)          (dti)->cpu_number
@@ -593,7 +613,34 @@ struct DRV_TOPOLOGY_INFO_NODE_S {
 #define DRV_TOPOLOGY_INFO_core_master(dti)         (dti)->core_master
 #define DRV_TOPOLOGY_INFO_thr_master(dti)          (dti)->thr_master
 #define DRV_TOPOLOGY_INFO_cpu_hw_thread_num(dti)   (dti)->cpu_hw_thread_num
+#define DRV_TOPOLOGY_INFO_cpu_module_num(dti)      (dti)->cpu_module_num
+#define DRV_TOPOLOGY_INFO_cpu_module_master(dti)   (dti)->cpu_module_master
+#define DRV_TOPOLOGY_INFO_cpu_num_modules(dti)     (dti)->cpu_num_modules
 
+//platform information. need to get from driver
+typedef struct DRV_PLATFORM_INFO_NODE_S DRV_PLATFORM_INFO_NODE;
+typedef        DRV_PLATFORM_INFO_NODE  *DRV_PLATFORM_INFO;
+ 
+struct DRV_PLATFORM_INFO_NODE_S {
+    U64 info;                     // platform info
+    U64 ddr_freq_index;           // freq table index
+};
+#define DRV_PLATFORM_INFO_info(data)           (data)->info
+#define DRV_PLATFORM_INFO_ddr_freq_index(data) (data)->ddr_freq_index
+ 
+//platform information. need to get from Platform picker
+typedef struct PLATFORM_FREQ_INFO_NODE_S PLATFORM_FREQ_INFO_NODE;
+typedef        PLATFORM_FREQ_INFO_NODE  *PLATFORM_FREQ_INFO;
+ 
+struct PLATFORM_FREQ_INFO_NODE_S {
+    float   multiplier;          // freq multiplier
+    double *table;               // freq table
+    U32     table_size;          // freq table size
+};
+#define PLATFORM_FREQ_INFO_multiplier(data)       (data)->multiplier
+#define PLATFORM_FREQ_INFO_table(data)            (data)->table
+#define PLATFORM_FREQ_INFO_table_size(data)       (data)->table_size
+              
 // Definitions for user markers data
 // The instances of these structures will be written to the user markers temp file.
 #define MARKER_DEFAULT_TYPE   "Default_Marker"
@@ -805,7 +852,7 @@ struct DEVICE_INFO_NODE_S {
     //PLATFORM_IDENTITY plat_identity;  // this is undefined right now. Please take this as structure containing U64
     U32                 plat_type;      // device type (e.g., DEVICE_INFO_CORE, etc. ... see enum below)
     U32                 plat_sub_type;  // cti_type (e.g., CTI_Sandybridge, etc., ... see env_info_types.h)
-    U32                 dispatch_id;    // this will be set in user mode dlls and will be unique across all IPF, IA32 (including MIDS).
+    S32                 dispatch_id;    // this will be set in user mode dlls and will be unique across all IPF, IA32 (including MIDS).
     ECB                *ecb;
     EVENT_CONFIG        ec;
     DRV_CONFIG          pcfg;
@@ -829,6 +876,7 @@ struct DEVICE_INFO_NODE_S {
 #define DEVICE_INFO_event_db_file_name(pdev)        (pdev)->event_db_file_name
 #define DEVICE_INFO_plat_type(pdev)                 (pdev)->plat_type
 #define DEVICE_INFO_plat_sub_type(pdev)             (pdev)->plat_sub_type
+#define DEVICE_INFO_dispatch_id(pdev)               (pdev)->dispatch_id
 #define DEVICE_INFO_ecb(pdev)                       (pdev)->ecb
 #define DEVICE_INFO_ec(pdev)                        (pdev)->ec
 #define DEVICE_INFO_pcfg(pdev)                      (pdev)->pcfg
@@ -890,7 +938,7 @@ struct DRV_EVENT_MASK_NODE_S {
             U8 ipear_capture  : 1;  // Indicates which events need to have additional registers read
                                     // because they are IPEAR events.
             U8 uncore_capture : 1;
-            U8 rsvd0          : 2;  
+            U8 reserved0      : 2;
         } s1;
     } u1;
 };

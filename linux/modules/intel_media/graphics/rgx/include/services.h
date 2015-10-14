@@ -50,6 +50,7 @@ extern "C" {
 
 #include "img_defs.h"
 #include "servicesext.h"
+#include "sync_external.h"
 #include "pdumpdefs.h"
 #include "lock_types.h"
 #include "pvr_debug.h"
@@ -187,31 +188,6 @@ typedef struct _PVRSRV_DEV_DATA_
 	IMG_HANDLE			hDevCookie;				/*!< Dev cookie */
 
 } PVRSRV_DEV_DATA;
-
-/*
-	FIXME:
-	Remove ASAP as we don't use these in services, but clients still
-	use the structures
-*/
-/*!
- ******************************************************************************
- * address:value register structure
- *****************************************************************************/
-typedef struct _PVRSRV_HWREG_
-{
-	IMG_UINT32			ui32RegAddr;	/*!< Address */
-	IMG_UINT32			ui32RegVal;		/*!< value */
-} PVRSRV_HWREG;
-
-/*!
- ******************************************************************************
- * address:value register structure
- *****************************************************************************/
-typedef struct _PVRSRV_HWREG64_
-{
-	IMG_UINT32			ui32RegAddr;	/*!< Address */
-	IMG_UINT64			ui64RegVal;		/*!< value */
-} PVRSRV_HWREG64;
 
 /*************************************************************************/ /*! 
     PVR Client Event handling in Services
@@ -351,6 +327,78 @@ PVRSRV_ERROR PVRSRVPollForValue(const PVRSRV_CONNECTION	*psConnection,
 								IMG_UINT32				ui32Mask,
 								IMG_UINT32				ui32Waitus,
 								IMG_UINT32				ui32Tries);
+
+
+/**************************************************************************/ /*!
+ @Function      PVRSRVConditionCheckCallback
+ @Description   Function prototype for use with the PVRSRVWaitForCondition()
+                API. Clients implement this callback to test if the condition
+                waited for has been met and become true.
+
+ @Input         pvUserData      Pointer to client user data needed for
+                                 the check
+ @Output        pbCondMet       Updated on exit with condition state
+
+ @Return        PVRSRV_OK  when condition tested without error
+                PVRSRV_*   other system error that will lead to the
+                           abnormal termination of the wait API.
+ */
+/******************************************************************************/
+typedef
+PVRSRV_ERROR (*PVRSRVConditionCheckCallback)(
+        IMG_PVOID  pvUserData,
+        IMG_BOOL*  pbCondMet);
+
+
+/**************************************************************************/ /*!
+@Function       PVRSRVWaitForCondition
+@Description    Wait using PVRSRVEventObjectWait() for a
+                condition (pfnCallback) to become true. It periodically
+                checks the condition state by employing a loop and
+                waiting on either the event supplied or sleeping for a brief
+                time (if hEvent is null) each time the condition is
+                checked and found not to be met. When the condition is true
+                the function returns. It will also return when the time
+                period has been exceeded or an error has occurred.
+
+@Input          psConnection    Services connection
+@Input          hEvent          Event to wait on or NULL not to use event
+                                 objects but OS wait for a short time.
+@Input          pfnCallback     Client condition check callback
+@Input          pvUserData      Client user data supplied to callback
+
+@Return         PVRSRV_OK	          When condition met
+                PVRSRV_ERROR_TIMEOUT  When condition not met and time is up
+                PVRSRV_*              Otherwise, some other error code
+ */ /**************************************************************************/
+IMG_IMPORT
+PVRSRV_ERROR IMG_CALLCONV PVRSRVWaitForCondition(
+        const PVRSRV_CONNECTION*     psConnection,
+        IMG_HANDLE                   hEvent,
+        PVRSRVConditionCheckCallback pfnCallback,
+        IMG_PVOID                    pvUserData);
+
+
+/**************************************************************************/ /*!
+@Function       PVRSRVWaitUntilSyncPrimOpReady
+@Description    Wait using PVRSRVWaitForCondition for a sync operation to
+                become ready.
+
+@Input          psConnection    Services connection
+@Input          hEvent          Event to wait on or NULL not to use event
+                                 objects but OS wait for a short time.
+@Input          psOpCookie      Sync operation cookie to test
+
+@Return         PVRSRV_OK	          When condition met
+                PVRSRV_ERROR_TIMEOUT  When condition not met and time is up
+                PVRSRV_*              Otherwise, some other error code
+ */ /**************************************************************************/
+IMG_IMPORT
+PVRSRV_ERROR IMG_CALLCONV PVRSRVWaitUntilSyncPrimOpReady(
+        const PVRSRV_CONNECTION* psConnection,
+        IMG_HANDLE               hEvent,
+        PSYNC_OP_COOKIE          psOpCookie);
+
 
 /******************************************************************************
  * PDUMP Function prototypes...
@@ -959,7 +1007,7 @@ static INLINE IMG_VOID PVRSRVPostSemaphore(PVRSRV_SEMAPHORE_HANDLE hSemaphore, I
 }
 
 /* Non-exported APIs */
-#if defined(DEBUG) && (defined(__linux__) || defined(_WIN32))
+#if defined(DEBUG) && (defined(__linux__) || defined(_WIN32) || defined(__QNXNTO__))
 /**************************************************************************/ /*!
 @Function       PVRSRVAllocUserModeMemTracking
 @Description    Wrapper function for malloc, used for memory-leak detection
@@ -1021,6 +1069,28 @@ IMG_IMPORT IMG_PVOID IMG_CALLCONV PVRSRVReallocUserModeMemTracking(IMG_VOID *pvM
 IMG_IMPORT IMG_VOID
 PVRSRVDumpDebugInfo(const PVRSRV_CONNECTION *psConnection, IMG_UINT32 ui32VerbLevel);
 
+/**************************************************************************/ /*!
+@Function       PVRSRVGetDevClockSpeed
+@Description    Gets the RGX clock speed
+@Input          psConnection		Services connection
+@Input          psDevData			Pointer to the PVRSRV_DEV_DATA context
+@Output         pui32RGXClockSpeed  Variable for storing clock speed
+@Return         IMG_BOOL			True if the operation was successful
+ */ /**************************************************************************/
+IMG_IMPORT IMG_BOOL IMG_CALLCONV PVRSRVGetDevClockSpeed(const PVRSRV_CONNECTION *psConnection,
+														PVRSRV_DEV_DATA  *psDevData,
+														IMG_PUINT32 pui32RGXClockSpeed);
+
+/**************************************************************************/ /*!
+@Function       PVRSRVResetHWRLogs
+@Description    Resets the HWR Logs buffer (the hardware recovery count is not reset)
+@Input          psConnection		Services connection
+@Input          psDevData			Pointer to the PVRSRV_DEV_DATA context
+@Return         PVRSRV_ERROR		PVRSRV_OK on success. Otherwise, a PVRSRV_
+                                	error code
+ */ /**************************************************************************/
+IMG_IMPORT PVRSRV_ERROR
+PVRSRVResetHWRLogs(const PVRSRV_CONNECTION *psConnection, PVRSRV_DEV_DATA  *psDevData);
 
 /******************************************************************************
  * PVR Event Object API(s)

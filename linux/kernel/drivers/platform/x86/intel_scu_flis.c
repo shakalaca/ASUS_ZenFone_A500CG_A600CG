@@ -27,6 +27,7 @@
 #include <asm/intel_scu_flis.h>
 #include <asm/intel_mid_rpmsg.h>
 #include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 
 static struct rpmsg_instance *flis_instance;
 
@@ -36,23 +37,80 @@ static u32 shim_data;
 static char shim_ops[OPS_STR_LEN];
 
 static u32 param_type;	/* flis param type: PULL/PIN DIRECTION/OPEN_DRAIN */
-static u8 param_value;	/* value of certain flis param */
-static enum pinname_t pin_name;
+static u32 param_value;	/* value of certain flis param */
+static unsigned int pin_name;
 static char ops[OPS_STR_LEN];
 
 struct intel_scu_flis_info {
 	struct pinstruct_t *pin_t;
+	struct pin_mmio_flis_t *mmio_flis_t;
 	int pin_num;
 	int initialized;
+	void *flis_base;
+	u32 flis_paddr;
+	bool shim_access;
 };
 
 static struct intel_scu_flis_info flis_info;
 
+static DEFINE_SPINLOCK(mmio_flis_lock);
+
+u32 get_flis_value(u32 offset)
+{
+	struct intel_scu_flis_info *isfi = &flis_info;
+	u32 __iomem *mem;
+
+	if (!isfi->initialized || !isfi->flis_base)
+		return -ENODEV;
+
+	mem = (void __iomem *)(isfi->flis_base + offset);
+
+	return readl(mem);
+}
+EXPORT_SYMBOL(get_flis_value);
+
+void set_flis_value(u32 value, u32 offset)
+{
+	struct intel_scu_flis_info *isfi = &flis_info;
+	u32 __iomem *mem;
+	unsigned long flags;
+
+	if (!isfi->initialized || !isfi->flis_base)
+		return;
+
+	/*
+	 * There is one security region for Merrifield FLIS, which
+	 * are read only to OS side. Use IPC when write access is needed.
+	 */
+	if ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER ||
+		intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)
+			&& offset >= 0x1d00
+			&& offset <= 0x1d34) {
+		/* IPC call should not be called in atomic context */
+		might_sleep();
+		rpmsg_send_generic_raw_command(RP_INDIRECT_WRITE, 0,
+					(u8 *)&value, 4,
+					NULL, 0,
+					isfi->flis_paddr + offset, 0);
+
+	} else {
+		mem = (void __iomem *)(isfi->flis_base + offset);
+		spin_lock_irqsave(&mmio_flis_lock, flags);
+		writel(value, mem);
+		spin_unlock_irqrestore(&mmio_flis_lock, flags);
+	}
+}
+EXPORT_SYMBOL(set_flis_value);
+
 /* directly write to flis address */
 int intel_scu_ipc_write_shim(u32 data, u32 flis_addr, u32 offset)
 {
+	struct intel_scu_flis_info *isfi = &flis_info;
 	int ret;
 	u32 ipc_wbuf[3];
+
+	if (!isfi->shim_access)
+		return -EINVAL;
 
 	/* offset 0xff means the flis is reserved, just return 0*/
 	if (offset == 0xFF)
@@ -75,8 +133,12 @@ EXPORT_SYMBOL(intel_scu_ipc_write_shim);
 /* directly read from flis address */
 int intel_scu_ipc_read_shim(u32 *data, u32 flis_addr, u32 offset)
 {
+	struct intel_scu_flis_info *isfi = &flis_info;
 	int ret;
 	u32 ipc_wbuf[2];
+
+	if (!isfi->shim_access)
+		return -EINVAL;
 
 	/* offset 0xff means the flis is reserved, just return 0 */
 	if (offset == 0xFF)
@@ -97,8 +159,12 @@ EXPORT_SYMBOL(intel_scu_ipc_read_shim);
 
 int intel_scu_ipc_update_shim(u32 data, u32 mask, u32 flis_addr, u32 offset)
 {
+	struct intel_scu_flis_info *isfi = &flis_info;
 	u32 tmp = 0;
 	int ret;
+
+	if (!isfi->shim_access)
+		return -EINVAL;
 
 	ret = intel_scu_ipc_read_shim(&tmp, flis_addr, offset);
 	if (ret) {
@@ -122,7 +188,7 @@ int intel_scu_ipc_update_shim(u32 data, u32 mask, u32 flis_addr, u32 offset)
 EXPORT_SYMBOL(intel_scu_ipc_update_shim);
 
 /**
- * config_pin_flis -- configure pin direction,
+ * config_pin_flis -- configure pin mux,
  *		      pull direction and strength and open-drain enable.
  *
  * @name: pin name
@@ -134,23 +200,25 @@ EXPORT_SYMBOL(intel_scu_ipc_update_shim);
  *	config_pin_flis(i2s_2_clk, PULL, UP_20K);
  *	config_pin_flis(i2s_2_clk, PULL, DOWN_20K);
  *
- * config pin direction:
- *	config_pin_flis(i2s_2_clk, PIN_DIRECTION, MUX_EN_INPUT_EN);
- *	config_pin_flis(i2s_2_clk, PIN_DIRECTION, INPUT_EN);
- *	config_pin_flis(i2s_2_clk, PIN_DIRECTION, MUX_EN_OUTPUT_EN);
- *	config_pin_flis(i2s_2_clk, PIN_DIRECTION, OUTPUT_EN);
+ * config pin mux:
+ *	config_pin_flis(i2s_2_clk, MUX, MUX_EN_INPUT_EN);
+ *	config_pin_flis(i2s_2_clk, MUX, INPUT_EN);
+ *	config_pin_flis(i2s_2_clk, MUX, MUX_EN_OUTPUT_EN);
+ *	config_pin_flis(i2s_2_clk, MUX, OUTPUT_EN);
  *
  * config pin open-drain:
  *	config_pin_flis(i2s_2_clk, OPEN_DRAIN, OD_ENABLE);
  *	config_pin_flis(i2s_2_clk, OPEN_DRAIN, OD_DISABLE);
  *
  */
-int config_pin_flis(enum pinname_t name, enum flis_param_t param, u8 val)
+int config_pin_flis(unsigned int name, enum flis_param_t param, u32 val)
 {
 	u32 flis_addr, off, data, mask;
 	int ret;
 	int pos;
 	struct intel_scu_flis_info *isfi = &flis_info;
+	struct pin_mmio_flis_t *mmft;
+	u32 old_val;
 
 	if (!isfi->initialized)
 		return -ENODEV;
@@ -158,55 +226,89 @@ int config_pin_flis(enum pinname_t name, enum flis_param_t param, u8 val)
 	if (name < 0 || name >= isfi->pin_num)
 		return -EINVAL;
 
-	/* Check if the pin is configurable */
-	if (isfi->pin_t[name].valid == false)
+	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CLOVERVIEW) {
+		/* Check if the pin is configurable */
+		if (isfi->pin_t[name].valid == false)
+			return -EINVAL;
+
+		flis_addr = isfi->pin_t[name].bus_address;
+
+		switch (param) {
+		case PULL:
+			off = isfi->pin_t[name].pullup_offset;
+			pos = isfi->pin_t[name].pullup_lsb_pos;
+			mask = (PULL_MASK << pos);
+			break;
+		case MUX:
+			off = isfi->pin_t[name].direction_offset;
+			pos = isfi->pin_t[name].direction_lsb_pos;
+			mask = (MUX_MASK << pos);
+			break;
+		case OPEN_DRAIN:
+			off = isfi->pin_t[name].open_drain_offset;
+			pos = isfi->pin_t[name].open_drain_bit;
+			mask = (OPEN_DRAIN_MASK << pos);
+			break;
+		default:
+			pr_err("Please specify valid flis param\n");
+			return -EINVAL;
+		}
+
+		data = (val << pos);
+		pr_debug("addr = 0x%x, off = 0x%x, pos = %d, mask = 0x%x, data = 0x%x\n",
+				flis_addr, off, pos, mask, data);
+
+		ret = intel_scu_ipc_update_shim(data, mask, flis_addr, off);
+		if (ret) {
+			pr_err("update shim failed\n");
+			return ret;
+		}
+	} else if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER ||
+		intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE) {
+		mmft = isfi->mmio_flis_t;
+		off = mmft[name].offset;
+
+		/* Check if the FLIS is writable by mmio access */
+		if (!(mmft[name].access_ctrl & writable))
+			return -EINVAL;
+
+		old_val = get_flis_value(off);
+
+		switch (param) {
+		case PULL:
+			mask = PULL_MASK;
+			break;
+		case MUX:
+			mask = MUX_MASK;
+			break;
+		case OPEN_DRAIN:
+			mask = OPEN_DRAIN_MASK;
+			break;
+		default:
+			pr_err("Please specify valid flis param\n");
+			return -EINVAL;
+		}
+
+		set_flis_value((old_val & ~mask) | val, off);
+
+	} else
 		return -EINVAL;
 
-	flis_addr = isfi->pin_t[name].bus_address;
-
-	switch (param) {
-	case PULL:
-		off = isfi->pin_t[name].pullup_offset;
-		pos = isfi->pin_t[name].pullup_lsb_pos;
-		mask = (PULL_MASK << pos);
-		break;
-	case MUX:
-		off = isfi->pin_t[name].direction_offset;
-		pos = isfi->pin_t[name].direction_lsb_pos;
-		mask = (MUX_MASK << pos);
-		break;
-	case OPEN_DRAIN:
-		off = isfi->pin_t[name].open_drain_offset;
-		pos = isfi->pin_t[name].open_drain_bit;
-		mask = (OPEN_DRAIN_MASK << pos);
-		break;
-	default:
-		pr_err("Please specify valid flis param\n");
-		return -EINVAL;
-	}
-
-	data = (val << pos);
-	pr_debug("addr = 0x%x, off = 0x%x, pos = %d, mask = 0x%x, data = 0x%x\n",
-			flis_addr, off, pos, mask, data);
-
-	ret = intel_scu_ipc_update_shim(data, mask, flis_addr, off);
-	if (ret) {
-		pr_err("update shim failed\n");
-		return ret;
-	}
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(config_pin_flis);
 
-int get_pin_flis(enum pinname_t name, enum flis_param_t param, u8 *val)
+int get_pin_flis(unsigned int name, enum flis_param_t param, u32 *val)
 {
 	u32 flis_addr, off;
 	u32 data = 0;
 	int ret;
 	int pos;
-	u8 mask;
+	u32 mask;
 	struct intel_scu_flis_info *isfi = &flis_info;
+	struct pin_mmio_flis_t *mmft;
+	u32 old_val;
 
 	if (!isfi->initialized)
 		return -ENODEV;
@@ -214,42 +316,72 @@ int get_pin_flis(enum pinname_t name, enum flis_param_t param, u8 *val)
 	if (name < 0 || name >= isfi->pin_num)
 		return -EINVAL;
 
-	if (isfi->pin_t[name].valid == false)
+	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CLOVERVIEW) {
+		if (isfi->pin_t[name].valid == false)
+			return -EINVAL;
+
+		flis_addr = isfi->pin_t[name].bus_address;
+
+		switch (param) {
+		case PULL:
+			off = isfi->pin_t[name].pullup_offset;
+			pos = isfi->pin_t[name].pullup_lsb_pos;
+			mask = PULL_MASK;
+			break;
+		case MUX:
+			off = isfi->pin_t[name].direction_offset;
+			pos = isfi->pin_t[name].direction_lsb_pos;
+			mask = MUX_MASK;
+			break;
+		case OPEN_DRAIN:
+			off = isfi->pin_t[name].open_drain_offset;
+			pos = isfi->pin_t[name].open_drain_bit;
+			mask = OPEN_DRAIN_MASK;
+			break;
+		default:
+			pr_err("Please specify valid flis param\n");
+			return -EINVAL;
+		}
+
+		ret = intel_scu_ipc_read_shim(&data, flis_addr, off);
+		if (ret) {
+			pr_err("read shim failed, addr = 0x%x, off = 0x%x\n",
+				flis_addr, off);
+			return ret;
+		}
+
+		*val = (data >> pos) & mask;
+
+		pr_debug("read: data = 0x%x, val = 0x%x\n", data, *val);
+	} else if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER ||
+		intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE) {
+		mmft = isfi->mmio_flis_t;
+		off = mmft[name].offset;
+
+		old_val = get_flis_value(off);
+
+		switch (param) {
+		case PULL:
+			pos = 4;
+			mask = PULL_MASK;
+			break;
+		case MUX:
+			pos = 12;
+			mask = MUX_MASK;
+			break;
+		case OPEN_DRAIN:
+			pos = 21;
+			mask = OPEN_DRAIN_MASK;
+			break;
+		default:
+			pr_err("Please specify valid flis param\n");
+			return -EINVAL;
+		}
+
+		*val = (old_val & mask) >> pos;
+
+	} else
 		return -EINVAL;
-
-	flis_addr = isfi->pin_t[name].bus_address;
-
-	switch (param) {
-	case PULL:
-		off = isfi->pin_t[name].pullup_offset;
-		pos = isfi->pin_t[name].pullup_lsb_pos;
-		mask = PULL_MASK;
-		break;
-	case MUX:
-		off = isfi->pin_t[name].direction_offset;
-		pos = isfi->pin_t[name].direction_lsb_pos;
-		mask = MUX_MASK;
-		break;
-	case OPEN_DRAIN:
-		off = isfi->pin_t[name].open_drain_offset;
-		pos = isfi->pin_t[name].open_drain_bit;
-		mask = OPEN_DRAIN_MASK;
-		break;
-	default:
-		pr_err("Please specify valid flis param\n");
-		return -EINVAL;
-	}
-
-	ret = intel_scu_ipc_read_shim(&data, flis_addr, off);
-	if (ret) {
-		pr_err("read shim failed, addr = 0x%x, off = 0x%x\n",
-			flis_addr, off);
-		return ret;
-	}
-
-	*val = (data >> pos) & mask;
-
-	pr_debug("read: data = 0x%x, val = 0x%x\n", data, *val);
 
 	return 0;
 }
@@ -280,13 +412,13 @@ static void flis_generic_store(const char *buf, int type)
 		shim_data = tmp;
 		break;
 	case DBG_PARAM_VAL:
-		param_value = (u8)tmp;
+		param_value = tmp;
 		break;
 	case DBG_PARAM_TYPE:
 		param_type = tmp;
 		break;
 	case DBG_PIN_NAME:
-		pin_name = (enum pinname_t)tmp;
+		pin_name = tmp;
 		break;
 	default:
 		break;
@@ -484,21 +616,33 @@ static int scu_flis_probe(struct platform_device *pdev)
 
 	isfi->pin_t = pdata->pin_t;
 	isfi->pin_num = pdata->pin_num;
+	isfi->shim_access = pdata->shim_access;
+	isfi->mmio_flis_t = pdata->mmio_flis_t;
+	if (pdata->mmio_flis_t && pdata->flis_base) {
+		isfi->flis_paddr = pdata->flis_base;
+		isfi->flis_base = ioremap_nocache(pdata->flis_base,
+					pdata->flis_len);
+		if (!isfi->flis_base) {
+			dev_err(&pdev->dev, "error mapping flis base\n");
+			ret = -EFAULT;
+			goto out;
+		}
+	}
 
-	if (isfi->pin_t && isfi->pin_num)
+	if ((isfi->pin_t || isfi->mmio_flis_t)&&isfi->pin_num)
 		isfi->initialized = 1;
 
 	ret = sysfs_create_group(&pdev->dev.kobj, &flis_attr_group);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to create flis sysfs interface\n");
-		goto out;
+		goto err1;
 	}
 
 	ret = sysfs_create_group(&pdev->dev.kobj, &pin_config_attr_group);
 	if (ret) {
 		dev_err(&pdev->dev,
 				"Failed to create pin config sysfs interface\n");
-		goto err1;
+		goto err2;
 	}
 
 	config_pin_flis(camerasb6, PULL, DOWN_20K);	// PCB_ID1: GP_CORE_078
@@ -510,8 +654,11 @@ static int scu_flis_probe(struct platform_device *pdev)
 	dev_info(&pdev->dev, "scu flis probed\n");
 	return 0;
 
-err1:
+err2:
 	sysfs_remove_group(&pdev->dev.kobj, &flis_attr_group);
+err1:
+	if (pdata->flis_base)
+		iounmap(isfi->flis_base);
 out:
 	isfi->initialized = 0;
 	return ret;
@@ -615,11 +762,7 @@ static void __exit flis_rpmsg_exit(void)
 	return unregister_rpmsg_driver(&flis_rpmsg);
 }
 
-#ifdef MODULE
-module_init(flis_rpmsg_init);
-#else
-rootfs_initcall(flis_rpmsg_init);
-#endif
+fs_initcall(flis_rpmsg_init);
 module_exit(flis_rpmsg_exit);
 
 MODULE_AUTHOR("Ning Li <ning.li@intel.com>");

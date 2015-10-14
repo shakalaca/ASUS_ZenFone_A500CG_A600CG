@@ -52,9 +52,9 @@ struct sst_block *sst_create_block(struct intel_sst_drv *ctx,
 	msg->on = true;
 	msg->msg_id = msg_id;
 	msg->drv_id = drv_id;
-	spin_lock(&ctx->block_lock);
+	spin_lock_bh(&ctx->block_lock);
 	list_add_tail(&msg->node, &ctx->block_list);
-	spin_unlock(&ctx->block_lock);
+	spin_unlock_bh(&ctx->block_lock);
 
 	return msg;
 }
@@ -65,21 +65,22 @@ int sst_wake_up_block(struct intel_sst_drv *ctx, int result,
 	struct sst_block *block = NULL;
 
 	pr_debug("in %s\n", __func__);
-	spin_lock(&ctx->block_lock);
+	spin_lock_bh(&ctx->block_lock);
 	list_for_each_entry(block, &ctx->block_list, node) {
-		pr_debug("Block ipc %d, drv_id %d\n", block->msg_id, block->drv_id);
+		pr_debug("Block ipc %d, drv_id %d\n", block->msg_id,
+							block->drv_id);
 		if (block->msg_id == ipc && block->drv_id == drv_id) {
 			pr_debug("free up the block\n");
 			block->ret_code = result;
 			block->data = data;
 			block->size = size;
 			block->condition = true;
-			spin_unlock(&ctx->block_lock);
+			spin_unlock_bh(&ctx->block_lock);
 			wake_up(&ctx->wait_queue);
 			return 0;
 		}
 	}
-	spin_unlock(&ctx->block_lock);
+	spin_unlock_bh(&ctx->block_lock);
 	pr_debug("Block not found or a response is received for a short message for ipc %d, drv_id %d\n",
 			ipc, drv_id);
 	return -EINVAL;
@@ -90,37 +91,19 @@ int sst_free_block(struct intel_sst_drv *ctx, struct sst_block *freed)
 	struct sst_block *block = NULL, *__block;
 
 	pr_debug("in %s\n", __func__);
-	spin_lock(&ctx->block_lock);
+	spin_lock_bh(&ctx->block_lock);
 	list_for_each_entry_safe(block, __block, &ctx->block_list, node) {
 		if (block == freed) {
 			list_del(&freed->node);
 			kfree(freed->data);
 			freed->data = NULL;
 			kfree(freed);
-			spin_unlock(&ctx->block_lock);
+			spin_unlock_bh(&ctx->block_lock);
 			return 0;
 		}
 	}
-	spin_unlock(&ctx->block_lock);
+	spin_unlock_bh(&ctx->block_lock);
 	return -EINVAL;
-}
-
-/**
- * sst_send_ipc_msg_nowait - send ipc msg for algorithm parameters
- *		and returns immediately without waiting for reply
- *
- * @msg: post msg pointer
- *
- * This function is called to send ipc msg
- */
-int sst_send_ipc_msg_nowait(struct ipc_post **msg)
-{
-	unsigned long irq_flags;
-	spin_lock_irqsave(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-	list_add_tail(&(*msg)->node, &sst_drv_ctx->ipc_dispatch_list);
-	spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-	sst_drv_ctx->ops->post_message(&sst_drv_ctx->ipc_post_msg_wq);
-	return  0;
 }
 
 /*
@@ -139,14 +122,17 @@ static int sst_send_runtime_param(struct snd_sst_runtime_params *params)
 		return ret_val;
 	sst_fill_header(&msg->header, IPC_IA_SET_RUNTIME_PARAMS, 1,
 							params->str_id);
-	msg->header.part.data = sizeof(u32) + sizeof(*params) + params->size;
+	msg->header.part.data = sizeof(u32) + sizeof(*params) - sizeof(params->addr)
+				+ params->size;
 	memcpy(msg->mailbox_data, &msg->header.full, sizeof(u32));
-	memcpy(msg->mailbox_data + sizeof(u32), params, sizeof(*params));
+	memcpy(msg->mailbox_data + sizeof(u32), params, sizeof(*params)
+				- sizeof(params->addr));
 	/* driver doesn't need to send address, so overwrite addr with data */
 	memcpy(msg->mailbox_data + sizeof(u32) + sizeof(*params)
 			- sizeof(params->addr),
 			params->addr, params->size);
-	return sst_send_ipc_msg_nowait(&msg);
+	sst_add_to_dispatch_list_and_post(sst_drv_ctx, msg);
+	return 0;
 }
 
 void sst_post_message_mrfld(struct work_struct *work)
@@ -184,6 +170,9 @@ void sst_post_message_mrfld(struct work_struct *work)
 	spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
 	pr_debug("sst: Post message: header = %x\n",
 					msg->mrfld_header.p.header_high.full);
+	pr_info("sst: Post message: header = %#x payload %#x\n",
+					msg->mrfld_header.p.header_high.full,
+					msg->mrfld_header.p.header_low_payload);
 	kfree(msg->mailbox_data);
 	kfree(msg);
 	return;
@@ -240,57 +229,6 @@ void sst_post_message_mfld(struct work_struct *work)
 	return;
 }
 
-void sst_post_message_mrfld32(struct work_struct *work)
-{
-	struct ipc_post *msg;
-	union ipc_header header;
-	unsigned long irq_flags;
-	u32 *size;
-
-	pr_debug("Enter:%s\n", __func__);
-
-	spin_lock_irqsave(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-	/* check list */
-	if (list_empty(&sst_drv_ctx->ipc_dispatch_list)) {
-		/* queue is empty, nothing to send */
-		spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-		pr_debug("Empty msg queue... NO Action\n");
-		return;
-	}
-
-	/* check busy bit */
-	header.full = sst_shim_read(sst_drv_ctx->shim, SST_IPCX);
-	if (header.part.busy) {
-		spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-		pr_debug("Busy not free... Post later\n");
-		return;
-	}
-	/* copy msg from list */
-	msg = list_entry(sst_drv_ctx->ipc_dispatch_list.next,
-			struct ipc_post, node);
-	list_del(&msg->node);
-
-	pr_debug("Post message: header = %x\n", msg->header.full);
-	size = (u32 *)msg->mailbox_data;
-	pr_debug("size: = %x\n", *size);
-
-#ifdef SST_BYTE_DUMP
-	pr_debug("printing %lu bytes", *size+sizeof(u32));
-	print_hex_dump_bytes(__func__, DUMP_PREFIX_OFFSET,
-			(unsigned char *)msg->mailbox_data, *size + sizeof(u32));
-#endif
-	memcpy_toio(sst_drv_ctx->mailbox + SST_MAILBOX_SEND,
-		msg->mailbox_data, *size + 4);
-
-	sst_shim_write(sst_drv_ctx->shim, SST_IPCX, msg->header.full);
-	spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-	pr_debug("Posted message: header = %x\n", msg->header.full);
-
-	kfree(msg->mailbox_data);
-	kfree(msg);
-	return;
-}
-
 int sst_sync_post_message_mrfld(struct ipc_post *msg)
 {
 	union ipc_header_mrfld header;
@@ -316,48 +254,13 @@ int sst_sync_post_message_mrfld(struct ipc_post *msg)
 	pr_debug("sst: Post message: header = %x\n",
 					msg->mrfld_header.p.header_high.full);
 	pr_debug("sst: size = 0x%x\n", msg->mrfld_header.p.header_low_payload);
+	pr_info("sst: Post message: sync: header = %#x payload %#x\n",
+					msg->mrfld_header.p.header_high.full,
+					msg->mrfld_header.p.header_low_payload);
 	if (msg->mrfld_header.p.header_high.part.large)
 		memcpy_toio(sst_drv_ctx->mailbox + SST_MAILBOX_SEND,
 			msg->mailbox_data, msg->mrfld_header.p.header_low_payload);
 	sst_shim_write64(sst_drv_ctx->shim, SST_IPCX, msg->mrfld_header.full);
-
-out:
-	spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-	kfree(msg->mailbox_data);
-	kfree(msg);
-	return retval;
-}
-
-int sst_sync_post_message_mrfld32(struct ipc_post *msg)
-{
-	union ipc_header header;
-	unsigned int loop_count = 0;
-	int retval = 0;
-	unsigned long irq_flags;
-	u32 size;
-
-	pr_debug("Enter:%s\n", __func__);
-	spin_lock_irqsave(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-
-	/* check busy bit */
-	header.full = sst_shim_read(sst_drv_ctx->shim, SST_IPCX);
-	while (header.part.busy) {
-		if (loop_count > 10) {
-			pr_err("sst: Busy wait failed, cant send this msg\n");
-			retval = -EBUSY;
-			goto out;
-		}
-		udelay(500);
-		loop_count++;
-		header.full = sst_shim_read(sst_drv_ctx->shim, SST_IPCX);
-	}
-	pr_debug("sst: Post message: header = %x\n", msg->header.full);
-	size = (u32) *msg->mailbox_data;
-	pr_debug("sst: size = 0x%x\n", size);
-	if (size)
-		memcpy_toio(sst_drv_ctx->mailbox + SST_MAILBOX_SEND,
-			msg->mailbox_data, size + 4);
-	sst_shim_write(sst_drv_ctx->shim, SST_IPCX, msg->header.full);
 
 out:
 	spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
@@ -400,6 +303,7 @@ out:
 	spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
 	kfree(msg->mailbox_data);
 	kfree(msg);
+
 	return retval;
 }
 
@@ -465,44 +369,40 @@ void intel_sst_clear_intr_mrfld(void)
 }
 
 
-
 /*
  * process_fw_init - process the FW init msg
  *
- * @msg: IPC message from FW
+ * @msg: IPC message mailbox data from FW
  *
  * This function processes the FW init msg from FW
  * marks FW state and prints debug info of loaded FW
  */
-static int process_fw_init(struct sst_ipc_msg_wq *msg)
+static void process_fw_init(void *msg)
 {
 	struct ipc_header_fw_init *init =
-		(struct ipc_header_fw_init *)msg->mailbox;
+		(struct ipc_header_fw_init *)msg;
 	int retval = 0;
 
 	pr_debug("*** FW Init msg came***\n");
-	if (sst_drv_ctx->pci_id == SST_MFLD_PCI_ID ||
-	    sst_drv_ctx->pci_id == SST_CLV_PCI_ID) {
-		if (init->result) {
-			sst_drv_ctx->sst_state =  SST_ERROR;
-			pr_debug("FW Init failed, Error %x\n", init->result);
-			pr_err("FW Init failed, Error %x\n", init->result);
-			retval = -init->result;
-			goto ret;
-		}
-		pr_debug("FW Version %02x.%02x.%02x\n", init->fw_version.major,
-				init->fw_version.minor, init->fw_version.build);
-		pr_debug("Build Type %x\n", init->fw_version.type);
-		pr_debug("Build date %s Time %s\n",
-				init->build_info.date, init->build_info.time);
+	if (init->result) {
+		sst_drv_ctx->sst_state =  SST_ERROR;
+		pr_debug("FW Init failed, Error %x\n", init->result);
+		pr_err("FW Init failed, Error %x\n", init->result);
+		retval = init->result;
+		goto ret;
 	}
+	pr_debug("FW Version %02x.%02x.%02x.%02x\n",
+		init->fw_version.type, init->fw_version.major,
+		init->fw_version.minor, init->fw_version.build);
+	pr_debug("Build date %s Time %s\n",
+			init->build_info.date, init->build_info.time);
+
 	/* If there any runtime parameter to set, send it */
 	if (sst_drv_ctx->runtime_param.param.addr)
 		sst_send_runtime_param(&(sst_drv_ctx->runtime_param.param));
 
 ret:
 	sst_wake_up_block(sst_drv_ctx, retval, FW_DWNL_ID, 0 , NULL, 0);
-	return retval;
 }
 /**
 * sst_process_message_mfld - Processes message from SST
@@ -512,24 +412,24 @@ ret:
 * This function is scheduled by ISR
 * It take a msg from process_queue and does action based on msg
 */
-void sst_process_message_mfld(struct work_struct *work)
+void sst_process_message_mfld(struct ipc_post *msg)
 {
-	struct sst_ipc_msg_wq *msg, *tmp;
 	int str_id;
+	struct stream_info *stream;
 
-	/* copy the message before enabling interrupts */
-	tmp = container_of(work, struct sst_ipc_msg_wq, wq);
-	msg = kzalloc(sizeof(*msg), GFP_KERNEL);
-	if (NULL == msg) {
-		pr_err("%s:memory alloc failed. msg didn't processed\n", __func__);
-		return;
-	}
-	memcpy(msg, tmp, sizeof(*msg));
 	str_id = msg->header.part.str_id;
-	intel_sst_clear_intr_mfld();
 	pr_debug("IPC process for %x\n", msg->header.full);
 	/* based on msg in list call respective handler */
 	switch (msg->header.part.msg_id) {
+	case IPC_SST_PERIOD_ELAPSED:
+		if (sst_validate_strid(str_id)) {
+			pr_err("stream id %d invalid\n", str_id);
+			break;
+		}
+		stream = &sst_drv_ctx->streams[str_id];
+		if (stream->period_elapsed)
+			stream->period_elapsed(stream->pcm_substream);
+		break;
 	case IPC_SST_BUF_UNDER_RUN:
 	case IPC_SST_BUF_OVER_RUN:
 		if (sst_validate_strid(str_id)) {
@@ -554,7 +454,7 @@ void sst_process_message_mfld(struct work_struct *work)
 
 	case IPC_IA_FW_INIT_CMPLT: {
 		/* send next data to FW */
-		process_fw_init(msg);
+		process_fw_init(msg->mailbox_data);
 		break;
 	}
 
@@ -573,7 +473,6 @@ void sst_process_message_mfld(struct work_struct *work)
 		pr_err("Unhandled msg %x header %x\n",
 		msg->header.part.msg_id, msg->header.full);
 	}
-	kfree(msg);
 	return;
 }
 
@@ -586,103 +485,171 @@ void sst_process_message_mfld(struct work_struct *work)
 * It take a msg from process_queue and does action based on msg
 */
 
-void sst_process_message_mrfld(struct work_struct *work)
+void sst_process_message_mrfld(struct ipc_post *msg)
 {
-	struct sst_ipc_msg_wq *msg, *tmp;
 	int str_id;
 
-	/* copy the message before enabling interrupts */
-	tmp = container_of(work, struct sst_ipc_msg_wq, wq);
-	msg = kzalloc(sizeof(*msg), GFP_KERNEL);
-	if (NULL == msg) {
-		pr_err("%s:memory alloc failed. msg didn't processed\n", __func__);
-		return;
-	}
-	memcpy(msg, tmp, sizeof(*msg));
 	str_id = msg->mrfld_header.p.header_high.part.drv_id;
-	sst_drv_ctx->ops->clear_interrupt();
 
-	pr_debug("ProcesMsg:%d\n", msg->mrfld_header.p.header_high.part.msg_id);
+	pr_info("sst: process message header %#x payload %#x\n",
+			msg->mrfld_header.p.header_high.full,
+			msg->mrfld_header.p.header_low_payload);
 
-	kfree(msg);
 	return;
 }
 
-/* Max 6 results each of size 14 bytes + numresults(2bytes) */
-#define MAX_VTSV_RESULT_SIZE 86
+#define VTSV_MAX_NUM_RESULTS 6
+#define VTSV_SIZE_PER_RESULT 7 /* 7 16 bit words */
+/* Max 6 results each of size 7 words + 1 num results word */
+#define VTSV_MAX_TOTAL_RESULT_SIZE \
+	(VTSV_MAX_NUM_RESULTS*VTSV_SIZE_PER_RESULT + 1)
+/* Each data word in the result is sent as a string in the format:
+DATAn=d, where n is the data word index varying from 0 to
+				VTSV_MAX_TOTAL_RESULT_SIZE-1
+d = string representation of data in decimal format;
+				unsigned 16bit data needs max 5 chars
+So total data string size = 4("DATA")+2("n")+1("=")
+				+5("d")+1(null)+5(reserved) = 18  */
+#define VTSV_DATA_STRING_SIZE 18
+
 static int send_vtsv_result_event(void *data, int size)
 {
-	char *envp[MAX_VTSV_RESULT_SIZE+2];
-	char res_size[30], result[MAX_VTSV_RESULT_SIZE][10];
+	char *envp[VTSV_MAX_TOTAL_RESULT_SIZE+3];
+	char res_size[30];
+	char ev_type[30];
+	char result[VTSV_MAX_TOTAL_RESULT_SIZE][VTSV_DATA_STRING_SIZE];
 	int offset = 0;
-	u8 *tmp;
-	int i = 0;
+	u16 *tmp;
+	int i;
+	int ret;
 
-	if (size > MAX_VTSV_RESULT_SIZE) {
+	if (!data) {
+		pr_err("Data pointer Null into %s\n", __func__);
+		return -EINVAL;
+	}
+	size = size / (sizeof(u16)); /* Number of 16 bit data words*/
+	if (size > VTSV_MAX_TOTAL_RESULT_SIZE) {
 		pr_err("VTSV result size exceeds expected value, no uevent sent\n");
-		return -1;
+		return -EINVAL;
 	}
 
-	sprintf(res_size, "VTSV_RESULT_SIZE=%d", size);
+	snprintf(ev_type, sizeof(res_size), "EVENT_TYPE=SST_VTSV");
+	envp[offset++] = ev_type;
+	snprintf(res_size, sizeof(ev_type), "VTSV_RESULT_SIZE=%u", size);
 	envp[offset++] = res_size;
-	tmp = (u8 *)(data);
-	while (size) {
-		sprintf(result[i], "%d", *tmp++);
-		envp[offset++] = result[i++];
-		size--;
+	tmp = (u16 *)(data);
+	for (i = 0; i < size; i++) {
+		/* Driver assumes all data to be u16; The VTSV service
+		layer will type cast to u16 or s16 as appropriate for
+		a given data word*/
+		snprintf(result[i], VTSV_DATA_STRING_SIZE,
+				"DATA%u=%u", i, *tmp++);
+		envp[offset++] = result[i];
 	}
 	envp[offset] = NULL;
-	return sst_create_and_send_uevent("SST_VOICE_TRIGGER", envp);
+	ret = kobject_uevent_env(&sst_drv_ctx->dev->kobj, KOBJ_CHANGE, envp);
+	if (ret)
+		pr_err("VTSV event send failed: ret = %d\n", ret);
+	return ret;
 }
 
-static void process_fw_async_large_msg(void *data, u32 msg_size)
+static void process_fw_async_msg(struct ipc_post *msg)
 {
 	u32 msg_id;
+	int str_id;
 	int res_size, ret;
-	struct snd_sst_async_err_msg err_msg = {0};
+	u32 data_size, i;
+	void *data_offset;
+	struct stream_info *stream;
+	union ipc_header_high msg_high;
+	u32 msg_low, pipe_id;
 
-	msg_id = ((struct snd_sst_async_msg *)data)->msg_id;
-	if (msg_id == IPC_IA_FW_ASYNC_ERR_MRFLD) {
-		memcpy(&err_msg, (data + sizeof(msg_id)),
-						sizeof(err_msg));
+	msg_high = msg->mrfld_header.p.header_high;
+	msg_low = msg->mrfld_header.p.header_low_payload;
+	msg_id = ((struct ipc_dsp_hdr *)msg->mailbox_data)->cmd_id;
+	data_offset = (msg->mailbox_data + sizeof(struct ipc_dsp_hdr));
+	data_size =  msg_low - (sizeof(struct ipc_dsp_hdr));
+
+	switch (msg_id) {
+	case IPC_SST_PERIOD_ELAPSED_MRFLD:
+		pipe_id = ((struct ipc_dsp_hdr *)msg->mailbox_data)->pipe_id;
+		str_id = get_stream_id_mrfld(pipe_id);
+		if (str_id > 0) {
+			pr_debug("Period elapsed rcvd for pipe id 0x%x\n", pipe_id);
+			stream = &sst_drv_ctx->streams[str_id];
+			if (stream->period_elapsed)
+				stream->period_elapsed(stream->pcm_substream);
+			if (stream->compr_cb)
+				stream->compr_cb(stream->compr_cb_param);
+		}
+		break;
+
+	case IPC_IA_DRAIN_STREAM_MRFLD:
+		pipe_id = ((struct ipc_dsp_hdr *)msg->mailbox_data)->pipe_id;
+		str_id = get_stream_id_mrfld(pipe_id);
+		if (str_id > 0) {
+			stream = &sst_drv_ctx->streams[str_id];
+			if (stream->drain_notify)
+				stream->drain_notify(stream->drain_cb_param);
+		}
+		break;
+
+	case IPC_IA_FW_ASYNC_ERR_MRFLD:
 		pr_err("FW sent async error msg:\n");
-		pr_err("FW error: 0x%x, Lib error: 0x%x\n",
-			err_msg.fw_resp, err_msg.lib_resp);
-	} else if (msg_id == IPC_IA_VTSV_DETECTED) {
-		res_size = msg_size - (sizeof(msg_id));
-		ret = send_vtsv_result_event(
-				(data + sizeof(msg_id)), res_size);
+		for (i = 0; i < (data_size/4); i++)
+			pr_err("0x%x\n", (*((unsigned int *)data_offset + i)));
+		break;
+
+	case IPC_IA_VTSV_DETECTED:
+		res_size = data_size;
+		ret = send_vtsv_result_event(data_offset, res_size);
 		if (ret)
 			pr_err("VTSV uevent send failed: %d\n", ret);
 		else
 			pr_debug("VTSV uevent sent\n");
-	} else
-		pr_err("Invalid async msg from FW\n");
+		break;
+
+	case IPC_IA_FW_INIT_CMPLT_MRFLD:
+		process_fw_init(data_offset);
+		break;
+
+	case IPC_IA_BUF_UNDER_RUN_MRFLD:
+		pipe_id = ((struct ipc_dsp_hdr *)msg->mailbox_data)->pipe_id;
+		str_id = get_stream_id_mrfld(pipe_id);
+		if (str_id > 0)
+			pr_err("Buffer under-run for pipe:%#x str_id:%d\n",
+					pipe_id, str_id);
+		break;
+
+	default:
+		pr_err("Unrecognized async msg from FW msg_id %#x\n", msg_id);
+	}
 }
 
-void sst_process_reply_mrfld(struct work_struct *work)
+void sst_process_reply_mrfld(struct ipc_post *msg)
 {
-	struct sst_ipc_msg_wq *msg, *tmp;
 	unsigned int drv_id;
-	void *data = NULL;
+	void *data;
 	union ipc_header_high msg_high;
-	u32 msg_low, msg_id;
-
-	/* copy the message before enabling interrupts */
-	tmp = container_of(work, struct sst_ipc_msg_wq, wq);
-	msg = kzalloc(sizeof(*msg), GFP_KERNEL);
-	if (NULL == msg) {
-		pr_err("%s:memory alloc failed. msg not processed\n", __func__);
-		return;
-	}
-	memcpy(msg, tmp, sizeof(*msg));
-	sst_drv_ctx->ops->clear_interrupt();
+	u32 msg_low;
 
 	msg_high = msg->mrfld_header.p.header_high;
 	msg_low = msg->mrfld_header.p.header_low_payload;
 
+	pr_debug("IPC process message header %x payload %x\n",
+			msg->mrfld_header.p.header_high.full,
+			msg->mrfld_header.p.header_low_payload);
+
 	drv_id = msg_high.part.drv_id;
-	/* First process error responses */
+
+	/* Check for async messages */
+	if (drv_id == SST_ASYNC_DRV_ID) {
+		/* FW sent async large message */
+		process_fw_async_msg(msg);
+		goto end;
+	}
+
+	/* FW sent short error response for an IPC */
 	if (msg_high.part.result && drv_id && !msg_high.part.large) {
 		/* 32-bit FW error code in msg_low */
 		pr_err("FW sent error response 0x%x", msg_low);
@@ -692,23 +659,6 @@ void sst_process_reply_mrfld(struct work_struct *work)
 		goto end;
 	}
 
-	/* Check for async messages */
-	if (drv_id == SST_ASYNC_DRV_ID) {
-		if (!msg_high.part.large) {
-			msg_id = msg_low & SST_ASYNC_MSG_MASK;
-			if (msg_id == IPC_IA_FW_INIT_CMPLT_MRFLD)
-				process_fw_init(msg);
-		} else {
-			/* FW sent async large message */
-			data = kzalloc(msg_low, GFP_KERNEL);
-			if (!data)
-				goto end;
-			memcpy(data, (void *) msg->mailbox, msg_low);
-			process_fw_async_large_msg(data, msg_low);
-			kfree(data);
-		}
-		goto end;
-	}
 	/* Process all valid responses */
 	/* if it is a large message, the payload contains the size to
 	 * copy from mailbox */
@@ -716,7 +666,7 @@ void sst_process_reply_mrfld(struct work_struct *work)
 		data = kzalloc(msg_low, GFP_KERNEL);
 		if (!data)
 			goto end;
-		memcpy(data, (void *) msg->mailbox, msg_low);
+		memcpy(data, (void *) msg->mailbox_data, msg_low);
 		if (sst_wake_up_block(sst_drv_ctx, msg_high.part.result,
 				msg_high.part.drv_id,
 				msg_high.part.msg_id, data, msg_low))
@@ -726,8 +676,8 @@ void sst_process_reply_mrfld(struct work_struct *work)
 				msg_high.part.drv_id,
 				msg_high.part.msg_id, NULL, 0);
 	}
+
 end:
-	kfree(msg);
 	return;
 }
 
@@ -740,24 +690,28 @@ end:
 * It take a reply msg from response_queue and
 * does action based on msg
 */
-void sst_process_reply_mfld(struct work_struct *work)
+void sst_process_reply_mfld(struct ipc_post *msg)
 {
-	struct sst_ipc_msg_wq *msg, *tmp;
 	void *data;
 	int str_id;
+	struct stream_info *stream;
 
-	/* copy the message before enabling interrupts */
-	tmp = container_of(work, struct sst_ipc_msg_wq, wq);
-	msg = kzalloc(sizeof(*msg), GFP_KERNEL);
-	if (NULL == msg) {
-		pr_err("%s:memory alloc failed\n", __func__);
-		return;
-	}
-	memcpy(msg, tmp, sizeof(*msg));
+
 	str_id = msg->header.part.str_id;
 
-	intel_sst_clear_intr_mfld();
 	pr_debug("sst: IPC process reply for %x\n", msg->header.full);
+
+	/* handle drain notify first */
+	if (msg->header.part.msg_id == IPC_IA_DRAIN_STREAM) {
+		pr_debug("drain message notify\n");
+		if (str_id > 0) {
+			stream = &sst_drv_ctx->streams[str_id];
+			if (stream->drain_notify)
+				stream->drain_notify(stream->drain_cb_param);
+		}
+		return;
+	}
+
 
 	if (!msg->header.part.large) {
 		if (!msg->header.part.data)
@@ -771,16 +725,14 @@ void sst_process_reply_mfld(struct work_struct *work)
 		data = kzalloc(msg->header.part.data, GFP_KERNEL);
 		if (!data) {
 			pr_err("sst: mem alloc failed\n");
-			kfree(msg);
 			return;
 		}
 
-		memcpy(data, (void *)msg->mailbox, msg->header.part.data);
+		memcpy(data, (void *)msg->mailbox_data, msg->header.part.data);
 		if (sst_wake_up_block(sst_drv_ctx, 0, str_id,
 				msg->header.part.msg_id, data,
 				msg->header.part.data))
 			kfree(data);
 	}
-	kfree(msg);
 	return;
 }

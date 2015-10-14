@@ -20,7 +20,7 @@
 #include <linux/backlight.h>
 #include <drm/drmP.h>
 #include <drm/drm.h>
-#include "gma_drm.h"
+#include <drm/gma_drm.h>
 #include "psb_drv.h"
 #include "psb_reg.h"
 #include "psb_intel_reg.h"
@@ -194,7 +194,7 @@ static int psb_save_display_registers(struct drm_device *dev)
 	regs->saveCHICKENBIT = PSB_RVDC32(DSPCHICKENBIT);
 
 	/* Save crtc and output state */
-	mutex_lock(&dev->mode_config.mutex);
+	drm_modeset_lock_all(dev);
 	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
 		if (drm_helper_crtc_in_use(crtc))
 			crtc->funcs->save(crtc);
@@ -204,7 +204,7 @@ static int psb_save_display_registers(struct drm_device *dev)
 		if (connector->funcs->save)
 			connector->funcs->save(connector);
 
-	mutex_unlock(&dev->mode_config.mutex);
+	drm_modeset_unlock_all(dev);
 	return 0;
 }
 
@@ -234,7 +234,7 @@ static int psb_restore_display_registers(struct drm_device *dev)
 	/*make sure VGA plane is off. it initializes to on after reset!*/
 	PSB_WVDC32(0x80000000, VGACNTRL);
 
-	mutex_lock(&dev->mode_config.mutex);
+	drm_modeset_lock_all(dev);
 	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head)
 		if (drm_helper_crtc_in_use(crtc))
 			crtc->funcs->restore(crtc);
@@ -243,7 +243,7 @@ static int psb_restore_display_registers(struct drm_device *dev)
 		if (connector->funcs->restore)
 			connector->funcs->restore(connector);
 
-	mutex_unlock(&dev->mode_config.mutex);
+	drm_modeset_unlock_all(dev);
 	return 0;
 }
 
@@ -290,6 +290,7 @@ static void psb_get_core_freq(struct drm_device *dev)
 	case 6:
 	case 7:
 		dev_priv->core_freq = 266;
+		break;
 	default:
 		dev_priv->core_freq = 0;
 	}

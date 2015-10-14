@@ -208,8 +208,6 @@ static void mid_vblank_handler(struct drm_device *dev, uint32_t pipe)
 	struct drm_psb_private *dev_priv =
 	    (struct drm_psb_private *)dev->dev_private;
 
-	drm_handle_vblank(dev, pipe);
-
 	if (dev_priv->psb_vsync_handler)
 		(*dev_priv->psb_vsync_handler)(dev, pipe);
 }
@@ -280,8 +278,6 @@ void mdfld_te_handler_work(struct work_struct *work)
 	struct drm_device *dev = dev_priv->dev;
 	struct mdfld_dsi_config *dsi_config = NULL;
 
-	drm_handle_vblank(dev, pipe);
-
 	if (dev_priv->b_async_flip_enable) {
 		if (dev_priv->psb_vsync_handler != NULL)
 			(*dev_priv->psb_vsync_handler)(dev, pipe);
@@ -344,7 +340,8 @@ static void mid_pipe_event_handler(struct drm_device *dev, uint32_t pipe)
 		hist_reg = PSB_RVDC32(HISTOGRAM_INT_CONTROL);
 
 		/* Determine if this is histogram or pwm interrupt */
-		if (hist_reg & HISTOGRAM_INT_CTRL_CLEAR) {
+		if ((hist_reg & HISTOGRAM_INT_CTRL_CLEAR) &&
+				(hist_reg & HISTOGRAM_INTERRUPT_ENABLE)) {
 			/* Notify UM of histogram interrupt */
 			psb_dpst_notify_change_um(DPST_EVENT_HIST_INTERRUPT,
 						  dev_priv->psb_dpst_state);
@@ -355,15 +352,9 @@ static void mid_pipe_event_handler(struct drm_device *dev, uint32_t pipe)
 			guardband_reg.interrupt_status = 1;
 			PSB_WVDC32(guardband_reg.data, HISTOGRAM_INT_CONTROL);
 
-			ie_hist_cont_reg.data =
-			    PSB_RVDC32(HISTOGRAM_LOGIC_CONTROL);
+			ie_hist_cont_reg.data = PSB_RVDC32(HISTOGRAM_LOGIC_CONTROL);
 			ie_hist_cont_reg.ie_histogram_enable = 0;
-			PSB_WVDC32(ie_hist_cont_reg.data,
-				   HISTOGRAM_LOGIC_CONTROL);
-
-			irqCtrl = PSB_RVDC32(PIPEASTAT);
-			irqCtrl &= ~PIPE_DPST_EVENT_ENABLE;
-			PSB_WVDC32(irqCtrl, PIPEASTAT);
+			PSB_WVDC32(ie_hist_cont_reg.data, HISTOGRAM_LOGIC_CONTROL);
 		}
 		pwm_reg = PSB_RVDC32(PWM_CONTROL_LOGIC);
 		if ((pwm_reg & PWM_PHASEIN_INT_ENABLE) &&
@@ -382,21 +373,28 @@ static void mid_pipe_event_handler(struct drm_device *dev, uint32_t pipe)
 
 	if (pipe_stat_val & PIPE_VBLANK_STATUS) {
 		dev_priv->vsync_pipe = pipe;
-		schedule_work(&dev_priv->vsync_event_work);
+		drm_handle_vblank(dev, pipe);
+		queue_work(dev_priv->vsync_wq, &dev_priv->vsync_event_work);
 	}
 
 	if (pipe_stat_val & PIPE_TE_STATUS) {
 		dev_priv->te_pipe = pipe;
-		schedule_work(&dev_priv->te_work);
+		drm_handle_vblank(dev, pipe);
+		queue_work(dev_priv->vsync_wq, &dev_priv->te_work);
+	}
+
+	if (pipe == 0) { /* only for pipe A */
+		if (pipe_stat_val & PIPE_FRAME_DONE_STATUS)
+			wake_up_interruptible(&dev_priv->eof_wait);
 	}
 
 #ifdef CONFIG_SUPPORT_HDMI
-	if (pipe_stat_val & PIPE_HDMI_AUDIO_UNDERRUN_STATUS) {
-		schedule_work(&dev_priv->hdmi_audio_underrun_wq);
-	}
+	if (pipe == 1) { /* HDMI is only on PIPE B */
+		if (pipe_stat_val & PIPE_HDMI_AUDIO_UNDERRUN_STATUS)
+			schedule_work(&dev_priv->hdmi_audio_underrun_wq);
 
-	if (pipe_stat_val & PIPE_HDMI_AUDIO_BUFFER_DONE_STATUS) {
-		schedule_work(&dev_priv->hdmi_audio_bufferdone_wq);
+		if (pipe_stat_val & PIPE_HDMI_AUDIO_BUFFER_DONE_STATUS)
+			schedule_work(&dev_priv->hdmi_audio_bufferdone_wq);
 	}
 #endif
 }
@@ -661,15 +659,32 @@ void psb_irq_turn_on_dpst(struct drm_device *dev)
 {
 	struct drm_psb_private *dev_priv =
 	    (struct drm_psb_private *)dev->dev_private;
+	struct mdfld_dsi_config *dsi_config = NULL;
+	struct mdfld_dsi_hw_context *ctx = NULL;
+	unsigned long irqflags;
+
 	u32 hist_reg;
 	u32 pwm_reg;
 
+	if(!dev_priv)
+		return;
+
+	dsi_config = dev_priv->dsi_configs[0];
+	if(!dsi_config)
+		return;
+
+	ctx = &dsi_config->dsi_hw_context;
+
+	/* TODO: use DPST spinlock */
 	/* FIXME: revisit the power island when touching the DPST feature. */
 	if (power_island_get(OSPM_DISPLAY_A)) {
+
 		PSB_WVDC32(BIT31, HISTOGRAM_LOGIC_CONTROL);
 		hist_reg = PSB_RVDC32(HISTOGRAM_LOGIC_CONTROL);
+		ctx->histogram_logic_ctrl = hist_reg;
 		PSB_WVDC32(BIT31, HISTOGRAM_INT_CONTROL);
 		hist_reg = PSB_RVDC32(HISTOGRAM_INT_CONTROL);
+		ctx->histogram_intr_ctrl = hist_reg;
 
 		PSB_WVDC32(0x80010100, PWM_CONTROL_LOGIC);
 		pwm_reg = PSB_RVDC32(PWM_CONTROL_LOGIC);
@@ -677,7 +692,9 @@ void psb_irq_turn_on_dpst(struct drm_device *dev)
 			   PWM_PHASEIN_INT_ENABLE, PWM_CONTROL_LOGIC);
 		pwm_reg = PSB_RVDC32(PWM_CONTROL_LOGIC);
 
+		spin_lock_irqsave(&dev_priv->irqmask_lock, irqflags);
 		psb_enable_pipestat(dev_priv, 0, PIPE_DPST_EVENT_ENABLE);
+		spin_unlock_irqrestore(&dev_priv->irqmask_lock, irqflags);
 
 		hist_reg = PSB_RVDC32(HISTOGRAM_INT_CONTROL);
 		PSB_WVDC32(hist_reg | HISTOGRAM_INT_CTRL_CLEAR,
@@ -688,23 +705,15 @@ void psb_irq_turn_on_dpst(struct drm_device *dev)
 
 		power_island_put(OSPM_DISPLAY_A);
 	}
+
 }
 
 int psb_irq_enable_dpst(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv =
-	    (struct drm_psb_private *)dev->dev_private;
-	unsigned long irqflags;
-
-	PSB_DEBUG_ENTRY("\n");
-
-	spin_lock_irqsave(&dev_priv->irqmask_lock, irqflags);
-
 	/* enable DPST */
-	mid_enable_pipe_event(dev_priv, 0);
+	//mid_enable_pipe_event(dev_priv, 0);
 	psb_irq_turn_on_dpst(dev);
 
-	spin_unlock_irqrestore(&dev_priv->irqmask_lock, irqflags);
 	return 0;
 }
 
@@ -712,15 +721,27 @@ void psb_irq_turn_off_dpst(struct drm_device *dev)
 {
 	struct drm_psb_private *dev_priv =
 	    (struct drm_psb_private *)dev->dev_private;
+	struct mdfld_dsi_config *dsi_config = NULL;
+	unsigned long irqflags;
 	u32 hist_reg;
 	u32 pwm_reg;
 
+	if (!dev_priv)
+		return;
+	dsi_config = dev_priv->dsi_configs[0];
+	if(!dsi_config)
+		return;
+
+	/* TODO: use DPST spinlock */
 	/* FIXME: revisit the power island when touching the DPST feature. */
 	if (power_island_get(OSPM_DISPLAY_A)) {
+
 		PSB_WVDC32(0x00000000, HISTOGRAM_INT_CONTROL);
 		hist_reg = PSB_RVDC32(HISTOGRAM_INT_CONTROL);
 
+		spin_lock_irqsave(&dev_priv->irqmask_lock, irqflags);
 		psb_disable_pipestat(dev_priv, 0, PIPE_DPST_EVENT_ENABLE);
+		spin_unlock_irqrestore(&dev_priv->irqmask_lock, irqflags);
 
 		pwm_reg = PSB_RVDC32(PWM_CONTROL_LOGIC);
 		PSB_WVDC32(pwm_reg & !(PWM_PHASEIN_INT_ENABLE),
@@ -729,22 +750,13 @@ void psb_irq_turn_off_dpst(struct drm_device *dev)
 
 		power_island_put(OSPM_DISPLAY_A);
 	}
+
 }
 
 int psb_irq_disable_dpst(struct drm_device *dev)
 {
-	struct drm_psb_private *dev_priv =
-	    (struct drm_psb_private *)dev->dev_private;
-	unsigned long irqflags;
-
-	PSB_DEBUG_ENTRY("\n");
-
-	spin_lock_irqsave(&dev_priv->irqmask_lock, irqflags);
-
-	mid_disable_pipe_event(dev_priv, 0);
+	//mid_disable_pipe_event(dev_priv, 0);
 	psb_irq_turn_off_dpst(dev);
-
-	spin_unlock_irqrestore(&dev_priv->irqmask_lock, irqflags);
 
 	return 0;
 }
@@ -785,8 +797,10 @@ int psb_enable_vblank(struct drm_device *dev, int pipe)
 
 	reg_val = REG_READ(pipeconf_reg);
 
-	if (!(reg_val & PIPEACONF_ENABLE))
+	if (!(reg_val & PIPEACONF_ENABLE)) {
+		DRM_ERROR("%s: pipe %d is disabled\n", __func__, pipe);
 		return -EINVAL;
+	}
 
 	spin_lock_irqsave(&dev_priv->irqmask_lock, irqflags);
 
@@ -1001,16 +1015,24 @@ int mdfld_enable_te(struct drm_device *dev, int pipe)
 	unsigned long irqflags;
 	uint32_t reg_val = 0;
 	uint32_t pipeconf_reg = mid_pipeconf(pipe);
+	uint32_t retry = 0;
 
-	reg_val = REG_READ(pipeconf_reg);
-
-	if (!(reg_val & PIPEACONF_ENABLE))
-		return -EINVAL;
+	while ((REG_READ(pipeconf_reg) & PIPEACONF_ENABLE) == 0) {
+		retry++;
+		if (retry > 10) {
+			DRM_ERROR("%s: pipe %d is disabled\n", __func__, pipe);
+			return -EINVAL;
+		}
+		udelay(3);
+	}
+	if (retry != 0)
+		DRM_INFO("Take %d retries to get pipe %d config register\n", retry, pipe);
 
 	spin_lock_irqsave(&dev_priv->irqmask_lock, irqflags);
 
 	mid_enable_pipe_event(dev_priv, pipe);
 	psb_enable_pipestat(dev_priv, pipe, PIPE_TE_ENABLE);
+	psb_enable_pipestat(dev_priv, pipe, PIPE_FRAME_DONE_ENABLE);
 
 	spin_unlock_irqrestore(&dev_priv->irqmask_lock, irqflags);
 	PSB_DEBUG_ENTRY("%s: Enabled TE for pipe %d\n", __func__, pipe);
@@ -1055,7 +1077,9 @@ void mdfld_disable_te(struct drm_device *dev, int pipe)
 	spin_lock_irqsave(&dev_priv->irqmask_lock, irqflags);
 
 	mid_disable_pipe_event(dev_priv, pipe);
-	psb_disable_pipestat(dev_priv, pipe, PIPE_TE_ENABLE);
+	psb_disable_pipestat(dev_priv, pipe, PIPE_FRAME_DONE_ENABLE);
+	psb_disable_pipestat(dev_priv, pipe, 
+		(PIPE_TE_ENABLE | PIPE_DPST_EVENT_ENABLE));
 
 	spin_unlock_irqrestore(&dev_priv->irqmask_lock, irqflags);
 	PSB_DEBUG_ENTRY("%s: Disabled TE for pipe %d\n", __func__, pipe);
@@ -1068,11 +1092,7 @@ int mid_irq_enable_hdmi_audio(struct drm_device *dev)
 	unsigned long irqflags;
 	u32 reg_val = 0, mask = 0;
 
-	if (power_island_get(OSPM_DISPLAY_B)) {
-		reg_val = REG_READ(PIPEBCONF);
-		power_island_put(OSPM_DISPLAY_B);
-	}
-
+	reg_val = REG_READ(PIPEBCONF);
 	if (!(reg_val & PIPEACONF_ENABLE))
 		return -EINVAL;
 

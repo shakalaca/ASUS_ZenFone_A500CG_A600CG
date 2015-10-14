@@ -35,7 +35,7 @@
 #include <asm/intel_scu_pmic.h>
 #include <asm/intel_scu_ipc.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 
 #define IPC_WWBUF_SIZE    20
 #define IPC_RWBUF_SIZE    20
@@ -48,64 +48,44 @@ static struct rpmsg_instance *pmic_instance;
 
 static int pwr_reg_rdwr(u16 *addr, u8 *data, u32 count, u32 cmd, u32 sub)
 {
-	int i, j, err, inlen = 0, outlen = 0;
+	int i, err, inlen = 0, outlen = 0;
 
 	u8 wbuf[IPC_WWBUF_SIZE] = {};
 	u8 rbuf[IPC_RWBUF_SIZE] = {};
 
 	memset(wbuf, 0, sizeof(wbuf));
 
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_LINCROFT) {
-		for (i = 0, j = 0; i < count; i++) {
-			wbuf[inlen++] = addr[i] & 0xff;
-			wbuf[inlen++] = (addr[i] >> 8) & 0xff;
-
-			if (sub != IPC_CMD_PCNTRL_R) {
-				wbuf[inlen++] = data[j++];
-				outlen = 0;
-			}
-
-			if (sub == IPC_CMD_PCNTRL_M)
-				wbuf[inlen++] = data[j++];
-		}
-	} else {
-		for (i = 0; i < count; i++) {
-			wbuf[inlen++] = addr[i] & 0xff;
-			wbuf[inlen++] = (addr[i] >> 8) & 0xff;
-		}
-
-		if (sub == IPC_CMD_PCNTRL_R) {
-			outlen = count > 0 ? ((count - 1) / 4) + 1 : 0;
-		} else if (sub == IPC_CMD_PCNTRL_W) {
-			if (count == 3)
-				inlen += 2;
-
-			for (i = 0; i < count; i++)
-				wbuf[inlen++] = data[i] & 0xff;
-
-			if (count == 3)
-				inlen -= 2;
-
-			outlen = 0;
-		} else if (sub == IPC_CMD_PCNTRL_M) {
-			wbuf[inlen++] = data[0] & 0xff;
-			wbuf[inlen++] = data[1] & 0xff;
-			outlen = 0;
-		} else
-			pr_err("IPC command not supported\n");
+	for (i = 0; i < count; i++) {
+		wbuf[inlen++] = addr[i] & 0xff;
+		wbuf[inlen++] = (addr[i] >> 8) & 0xff;
 	}
+
+	if (sub == IPC_CMD_PCNTRL_R) {
+		outlen = count > 0 ? ((count - 1) / 4) + 1 : 0;
+	} else if (sub == IPC_CMD_PCNTRL_W) {
+		if (count == 3)
+			inlen += 2;
+
+		for (i = 0; i < count; i++)
+			wbuf[inlen++] = data[i] & 0xff;
+
+		if (count == 3)
+			inlen -= 2;
+
+		outlen = 0;
+	} else if (sub == IPC_CMD_PCNTRL_M) {
+		wbuf[inlen++] = data[0] & 0xff;
+		wbuf[inlen++] = data[1] & 0xff;
+		outlen = 0;
+	} else
+		pr_err("IPC command not supported\n");
 
 	err = rpmsg_send_command(pmic_instance, cmd, sub, wbuf,
 			(u32 *)rbuf, inlen, outlen);
 
 	if (sub == IPC_CMD_PCNTRL_R) {
-		if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_LINCROFT) {
-			for (i = 0, j = 2; i < count; i++, j += 3)
-				data[i] = rbuf[j];
-		} else {
-			for (i = 0; i < count; i++)
-				data[i] = rbuf[i];
-		}
+		for (i = 0; i < count; i++)
+			data[i] = rbuf[i];
 	}
 
 	return err;

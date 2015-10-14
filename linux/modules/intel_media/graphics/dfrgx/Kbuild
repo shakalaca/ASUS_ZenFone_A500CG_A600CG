@@ -33,6 +33,15 @@ endif
 # MY_DEBUG - 1 to force compilation to include "-g".
 MY_DEBUG := 1
 
+# THERMAL_DEBUG for force_states and get_available_states sysfs entries
+THERMAL_DEBUG := 1
+
+ifeq ($(THERMAL_DEBUG),1)
+ccflags-y += -DTHERMAL_DEBUG
+endif
+
+ccflags-y += -Werror
+
 # This makefile written for dir: drivers/staging/intel_media/graphics/dfrgx
 
 ifneq ($(MY_DEBUG),)
@@ -50,13 +59,16 @@ obj-$(CONFIG_GFX_RGX_DEVFREQ)	+= dfrgx.o
 dfrgx-y :=
 dfrgx-y += df_rgx.o
 dfrgx-y += dev_freq_graphics_pm.o
+dfrgx-y += df_rgx_utils.o
+dfrgx-y += df_rgx_burst.o
+dfrgx-y += dev_freq_attrib.o
 
-include ../modules/intel_media/graphics/dfrgx/dependencies/Makefile
+include drivers/external_drivers/intel_media/graphics/dfrgx/dependencies/Makefile
 
 my_warning_flags :=
 my_warning_flags += -Wall -fmessage-length=0 -Wunused-parameter
 
-my_warning_flags += -Wextra -Wno-sign-compare -Wformat-nonliteral -Wformat-security -fdiagnostics-show-option -Wdeclaration-after-statement -Wmissing-format-attribute -Wpointer-arith -Wshadow -Wlogical-op -Wbad-function-cast -Wmissing-prototypes -Wwrite-strings
+my_warning_flags += -Wextra -Wno-sign-compare -Wformat-nonliteral -Wformat-security -fdiagnostics-show-option -Wdeclaration-after-statement -Wmissing-format-attribute -Wpointer-arith -Wlogical-op -Wbad-function-cast -Wmissing-prototypes
 
 # Turn off things that too many kernel headers cause.
 my_warning_flags += -Wno-unused-parameter -Wno-pointer-arith -Wno-bad-function-cast
@@ -78,9 +90,13 @@ CFLAGS_df_rgx.o += -Idrivers/devfreq
 
 # Fixme: Replace the hardcoded path with something more intelligent approach
 CFLAGS_df_rgx.o += \
-	-I../modules/intel_media/display/tng/drv \
-	-I../modules/intel_media/graphics/dfrgx \
+	-Idrivers/external_drivers/intel_media/display/tng/drv \
+	-Idrivers/external_drivers/intel_media/graphics/dfrgx \
 	-I$(INCLUDES_RGX)
 
 CFLAGS_dev_freq_graphics_pm.o += -I$(INCLUDES_RGX)
+
+CFLAGS_df_rgx_burst.o += \
+	-Idrivers/external_drivers/intel_media/display/tng/drv \
+	-I$(INCLUDES_RGX)
 

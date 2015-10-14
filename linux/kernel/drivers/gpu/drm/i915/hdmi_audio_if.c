@@ -22,9 +22,11 @@
 #include <drm/drmP.h>
 #include "hdmi_audio_if.h"
 #include "i915_drv.h"
+#include "i915_reg.h"
 
 #define CONFIG_SUPPORT_HDMI_AUDIO
 #ifdef CONFIG_SUPPORT_HDMI_AUDIO
+
 int i915_hdmi_state;
 int i915_notify_had;
 
@@ -163,7 +165,7 @@ static int hdmi_audio_write(uint32_t reg, uint32_t val)
 		return 0;
 
 	if (IS_HDMI_AUDIO_I915(reg))
-		I915_WRITE(reg, val);
+		I915_WRITE((VLV_DISPLAY_BASE + reg), val);
 	else
 		ret = -EINVAL;
 
@@ -186,7 +188,7 @@ static int hdmi_audio_read(uint32_t reg, uint32_t *val)
 		return 0;
 
 	if (IS_HDMI_AUDIO_I915(reg))
-		*val = I915_READ(reg);
+		*val = I915_READ((VLV_DISPLAY_BASE + reg));
 	else
 		ret = -EINVAL;
 
@@ -207,8 +209,9 @@ static int hdmi_audio_rmw(uint32_t reg, uint32_t val, uint32_t mask)
 	uint32_t val_tmp = 0;
 
 	if (IS_HDMI_AUDIO_I915(reg)) {
-		val_tmp = (val & mask) | (I915_READ(reg) & ~mask);
-		I915_WRITE(reg, val_tmp);
+		val_tmp = (val & mask) |
+			(I915_READ((VLV_DISPLAY_BASE + reg)) & ~mask);
+		I915_WRITE((VLV_DISPLAY_BASE + reg), val_tmp);
 	} else {
 		ret = -EINVAL;
 	}

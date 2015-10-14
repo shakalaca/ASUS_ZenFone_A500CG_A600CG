@@ -37,16 +37,13 @@
 #include "pmu_tng.h"
 #include "tng_wa.h"
 
+
+
+
 #define	USE_GFX_PM_FUNC			0
 
 /* WRAPPER Offset 0x160024 */
 #define GFX_STATUS_OFFSET		0x24
-
-/* define which island to power down */
-#define GFX_ALL		(GFX_SLC_LDO_SSC | \
-					GFX_SLC_SSC | \
-					GFX_SDKCK_SSC | \
-					GFX_RSCD_SSC)
 
 #define GFX_POWER_UP(x) \
 	pmu_nc_set_power_state(x, OSPM_ISLAND_UP, GFX_SS_PM0)
@@ -54,8 +51,8 @@
 #define GFX_POWER_DOWN(x) \
 	pmu_nc_set_power_state(x, OSPM_ISLAND_DOWN, GFX_SS_PM0)
 
-static u32 gfx_island_selected = GFX_SLC_LDO_SSC | GFX_SLC_SSC |
-	GFX_SDKCK_SSC | GFX_RSCD_SSC;
+extern IMG_BOOL gbSystemActivePMEnabled;
+extern IMG_BOOL gbSystemActivePMInit;
 
 enum GFX_ISLAND_STATUS {
 	POWER_ON = 0,		/* No gating (clk or power) */
@@ -66,6 +63,9 @@ enum GFX_ISLAND_STATUS {
 
 static int (*pSuspend_func)(void) = NULL;
 static int (*pResume_func)(void) = NULL;
+
+int is_tng_a0 = 0;
+EXPORT_SYMBOL(is_tng_a0);
 
 /**
   * gpu_freq_code_to_mhz() - Given frequency as a code (as defined for *_PM1
@@ -110,6 +110,9 @@ static int gpu_freq_code_to_mhz(int freq_code_in)
 		break;
 	case IP_FREQ_400_00:
 		freq_mhz_out = 400;
+		break;
+	case IP_FREQ_457_14:
+		freq_mhz_out = 457;
 		break;
 	case IP_FREQ_533_33:
 		freq_mhz_out = 533;
@@ -185,16 +188,22 @@ static int mrfl_pwr_cmd_gfx(u32 gfx_mask, int new_state)
 			return ret;
 		}
 
-#if A0_WORKAROUNDS
 		/**
 		 * If turning some power on, and the power to be on includes SLC,
 		 * and SLC was not previously on, then setup some registers.
-	 */
+		 */
 		if ((new_state == OSPM_ISLAND_UP)
 			&& (pwrtab[j] == GFX_SLC_SHIFT)
 			&& ((pwr_state_prev >> GFX_SLC_SHIFT) != TNG_SSC_I0))
-			apply_A0_workarounds(OSPM_GRAPHICS_ISLAND, 1);
-#endif
+		{
+			/* TNG A0 workarounds */
+			if (IS_TNG_A0(dev))
+				apply_TNG_A0_workarounds(OSPM_GRAPHICS_ISLAND, 1);
+
+			/* ANN A0 workarounds */
+			if (IS_ANN_A0(dev))
+				apply_ANN_A0_workarounds(OSPM_GRAPHICS_ISLAND, 1);
+		}
 
 		if ((gfx_mask & ~done_mask) == 0)
 			break;
@@ -316,6 +325,9 @@ int gpu_freq_mhz_to_code(int freq_mhz_in, int *p_freq_out)
 	} else if (freq_mhz_in >= 533) {
 		freq_code = IP_FREQ_533_33;	/* 533.33 */
 		freq_out = 533;
+	} else if (freq_mhz_in >= 457) {
+		freq_code = IP_FREQ_457_14;	/* 457.14 */
+		freq_out = 457;
 	} else if (freq_mhz_in >= 400) {
 		freq_code = IP_FREQ_400_00;	/* 400.00 */
 		freq_out = 400;
@@ -360,21 +372,21 @@ EXPORT_SYMBOL(gpu_freq_mhz_to_code);
 void gpu_freq_set_suspend_func(int (*suspend_func)(void))
 {
 	pSuspend_func = suspend_func;
-	OSPM_DPF("OSPM: suspend \n");
+	PSB_DEBUG_PM("OSPM: suspend \n");
 }
 EXPORT_SYMBOL(gpu_freq_set_suspend_func);
 
 void gpu_freq_set_resume_func(int (*resume_func)(void))
 {
 	pResume_func = resume_func;
-	OSPM_DPF("OSPM: Resume \n");
+	PSB_DEBUG_PM("OSPM: Resume \n");
 }
 EXPORT_SYMBOL(gpu_freq_set_resume_func);
 
 /***********************************************************
  * All Graphics Island
  ***********************************************************/
-static bool first_boot = true;
+
 /**
  * ospm_gfx_power_up
  *
@@ -384,58 +396,35 @@ static bool first_boot = true;
 static bool ospm_gfx_power_up(struct drm_device *dev,
 			struct ospm_power_island *p_island)
 {
-	bool ret = true;
-	u32 gfx_all = gfx_island_selected;
+	bool ret;
 	int error = 0;
 
 	if(pResume_func){
 		error = (*pResume_func)();
 		if(error){
-			OSPM_DPF("OSPM: Could not resume DFRGX");
+			PSB_DEBUG_PM("OSPM: Could not resume DFRGX");
 			return false;
 		}
 	}
 
-	OSPM_DPF("Pre-power-up status = 0x%08lX\n",
+	PSB_DEBUG_PM("Pre-power-up status = 0x%08x\n",
 		intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS));
 
-	if (first_boot) {
-		gfx_all = GFX_ALL;
-		first_boot = false;
-	}
+	ret = GFX_POWER_UP(PMU_RSCD);
 
-#ifdef USE_GFX_INTERNAL_PM_FUNC
-	ret = mrfl_pwr_cmd_gfx(GFX_ALL, OSPM_ISLAND_UP);
-#else
-	if (gfx_all & GFX_SLC_LDO_SSC)
-		ret = GFX_POWER_UP(PMU_LDO);
+	PSB_DEBUG_PM("Post-power-up status = 0x%08x\n",
+		intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS));
 
-	if (gfx_all & GFX_SLC_SSC)
-		ret = GFX_POWER_UP(PMU_SLC);
-
-	/*
-	 * This workarounds are only needed for TNG A0/A1 silicon.
-	 * Any TNG SoC which is newer than A0/A1 won't need this.
+	/* If APM is enabled, then we need to make sure that the IRQs
+	 * are installed. It is possible the the GUnit has been turned
+	 * off and the IER and IMR registers have lost their state.
+	 * So we need to enable interrupts after powering on.
+	 * If the IRQs are not turned on, the interrupt sent from RGX
+	 * to indicate that it is done with processing is lost. RGX
+	 * island would then remain ON.
 	 */
-	if (!IS_TNG_B0(dev))
-	{
-		/**
-		* If turning some power on, and the power to be on includes SLC,
-		* and SLC was not previously on, then setup some registers.
-		*/
-		if (gfx_all & GFX_SLC_SSC)
-			apply_A0_workarounds(OSPM_GRAPHICS_ISLAND, 1);
-	}
-
-	if (gfx_all & GFX_SDKCK_SSC)
-		ret = GFX_POWER_UP(PMU_SDKCK);
-
-	if (gfx_all & GFX_RSCD_SSC)
-		ret = GFX_POWER_UP(PMU_RSCD);
-#endif /*USE_GFX_INTERNAL_PM_FUNC*/
-
-	OSPM_DPF("Post-power-up status = 0x%08lX\n",
-		intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS));
+	psb_irq_preinstall_islands(dev,OSPM_GRAPHICS_ISLAND);
+	psb_irq_postinstall_islands(dev,OSPM_GRAPHICS_ISLAND);
 
 	return !ret;
 }
@@ -449,36 +438,162 @@ static bool ospm_gfx_power_up(struct drm_device *dev,
 static bool ospm_gfx_power_down(struct drm_device *dev,
 			struct ospm_power_island *p_island)
 {
-	bool ret = true;
+	bool ret;
 	int error = 0;
 
-	OSPM_DPF("OSPM: ospm_gfx_power_down \n");
+	PSB_DEBUG_PM("OSPM: ospm_gfx_power_down \n");
 
 	if(pSuspend_func){
 	error = (*pSuspend_func)();
 		if(error){
-			OSPM_DPF("OSPM :Could not suspend DFRGX");
+			PSB_DEBUG_PM("OSPM :Could not suspend DFRGX");
 			return false;
 		}
 	}
 
-	OSPM_DPF("Pre-power-off Status = 0x%08lX\n",
+	PSB_DEBUG_PM("Pre-power-off Status = 0x%08x\n",
 		intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS));
 
+	/* If APM is enabled, we can turn off the RGX interrupts. This is
+	 * kind of a no-op but still better coding to turn of IRQs for
+	 * devices/ components that are turned off
+	 */
+	psb_irq_uninstall_islands(dev,OSPM_GRAPHICS_ISLAND);
+	synchronize_irq(dev->pdev->irq);
+
 	/* power down every thing */
-	if (gfx_island_selected & GFX_RSCD_SSC)
-		ret = GFX_POWER_DOWN(PMU_RSCD);
+	ret = GFX_POWER_DOWN(PMU_RSCD);
 
-	if (gfx_island_selected & GFX_SDKCK_SSC)
-		ret = GFX_POWER_DOWN(PMU_SDKCK);
+	PSB_DEBUG_PM("Post-power-off Status = 0x%08x\n",
+		intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS));
 
-	if (gfx_island_selected & GFX_SLC_SSC)
+	return !ret;
+}
+/**
+ * ospm_slc_power_up
+ *
+ * Power up slc islands
+ * Sequence & flow from SAS
+ */
+static bool ospm_slc_power_up(struct drm_device *dev,
+			struct ospm_power_island *p_island)
+{
+	bool ret;
+
+	PSB_DEBUG_PM("%s: Pre-power-off Status = 0x%08x\n",
+		__func__,
+		intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS));
+
+	ret = GFX_POWER_UP(PMU_LDO);
+
+	if (!ret)
+		ret = GFX_POWER_UP(PMU_SLC);
+
+	/*
+	 * This workarounds are only needed for TNG A0/A1 silicon.
+	 * Any TNG SoC which is newer than A0/A1 won't need this.
+	 */
+	if (!ret && IS_TNG_A0(dev))
+	{
+		/**
+		* If turning some power on, and the power to be on includes SLC,
+		* and SLC was not previously on, then setup some registers.
+		*/
+		apply_TNG_A0_workarounds(OSPM_GRAPHICS_ISLAND, 1);
+	}
+	if (!ret && IS_ANN_A0(dev))
+		apply_ANN_A0_workarounds(OSPM_GRAPHICS_ISLAND, 1);
+
+	if (!ret)
+		ret = GFX_POWER_UP(PMU_SDKCK);
+
+	PSB_DEBUG_PM("Post-power-up status = 0x%08x\n",
+		intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS));
+
+	/* SLC flush and invalidate */
+	if (!ret)
+	{
+		uint32_t reg, data, count;
+
+		reg = 0x100100 - RGX_OFFSET;
+		data = RGX_REG_READ(reg);
+		RGX_REG_WRITE(reg, data | (1 << 27));
+		RGX_REG_WRITE(reg, data);
+
+		/* write 1 to RGX_CR_SLC_CTRL_FLUSH_INVAL */
+		reg = 0x103818 - RGX_OFFSET;
+		data = 1;
+		RGX_REG_WRITE(reg, data);
+
+		count = 0;
+		/* Poll RGX_CR_SLC_STATUS0 */
+		reg = 0x103820 - RGX_OFFSET;
+		do {
+			udelay(500);
+			data = RGX_REG_READ(reg);
+		} while ((data & 0x2) && (count++ < 10000));
+
+		if (unlikely(count >= 10000))
+			PSB_DEBUG_PM("SLC: flush and invalide timeout\n" );
+	}
+
+	if (!ret) {
+		uint32_t reg, data;
+
+		/* soc.gfx_wrapper.gbypassenable_sw = 1 */
+		reg = 0x160854 - GFX_WRAPPER_OFFSET;
+		data = WRAPPER_REG_READ(reg);
+		data |= 0x100; /*Bypass SLC for VEC*/
+		WRAPPER_REG_WRITE(reg, data);
+	}
+
+	if (!ret && IS_TNG_B0(dev)) {
+		uint32_t reg, data;
+		/* soc.gfx_wrapper.gclip_control.aes_bypass_disable = 1*/
+		reg = 0x160020 - GFX_WRAPPER_OFFSET;
+		data = WRAPPER_REG_READ(reg);
+
+		data |= 0x80;
+		WRAPPER_REG_WRITE(reg, data);
+	}
+
+	/* SLC hash set */
+	if (!ret)
+	{
+		uint32_t reg, data;
+		reg = 0x103800 - RGX_OFFSET;
+		data = 0x200001;
+		RGX_REG_WRITE(reg, data);
+	}
+
+	return !ret;
+}
+
+/**
+ * ospm_slc_power_down
+ *
+ * Power down SLC islands
+ * Sequence & flow from SAS
+ */
+static bool ospm_slc_power_down(struct drm_device *dev,
+			struct ospm_power_island *p_island)
+{
+	bool ret;
+
+	PSB_DEBUG_PM("%s: Pre-power-off Status = 0x%08x\n",
+		__func__,
+		intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS));
+
+	/* power down SLC islands */
+	ret = GFX_POWER_DOWN(PMU_SDKCK);
+
+	if (!ret)
 		ret = GFX_POWER_DOWN(PMU_SLC);
 
-	if (gfx_island_selected & GFX_SLC_LDO_SSC)
+	if (!ret)
 		ret = GFX_POWER_DOWN(PMU_LDO);
 
-	OSPM_DPF("Post-power-off Status = 0x%08lX\n",
+	PSB_DEBUG_PM("Post-power-off Status = 0x%08x\n",
 		intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS));
 
 	return !ret;
@@ -492,8 +607,28 @@ static bool ospm_gfx_power_down(struct drm_device *dev,
 void ospm_gfx_init(struct drm_device *dev,
 			struct ospm_power_island *p_island)
 {
-	OSPM_DPF("%s\n", __func__);
+	if (IS_TNG_A0(dev))
+		is_tng_a0 = 1;
+
+	PSB_DEBUG_PM("%s\n", __func__);
 	p_island->p_funcs->power_up = ospm_gfx_power_up;
 	p_island->p_funcs->power_down = ospm_gfx_power_down;
+	p_island->p_dependency = get_island_ptr(NC_PM_SSS_GFX_SLC);
+}
+
+/**
+ * ospm_slc_init
+ *
+ * SLC power island init
+ */
+void ospm_slc_init(struct drm_device *dev,
+			struct ospm_power_island *p_island)
+{
+	if (IS_TNG_A0(dev))
+		is_tng_a0 = 1;
+
+	PSB_DEBUG_PM("%s\n", __func__);
+	p_island->p_funcs->power_up = ospm_slc_power_up;
+	p_island->p_funcs->power_down = ospm_slc_power_down;
 	p_island->p_dependency = NULL;
 }

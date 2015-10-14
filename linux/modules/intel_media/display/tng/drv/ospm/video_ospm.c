@@ -33,12 +33,11 @@
 #include "tng_wa.h"
 #include <asm/intel-mid.h>
 #include "pmu_tng.h"
-#ifdef CONFIG_GFX_RTPM
-#include <linux/pm_runtime.h>
-#endif
 
+static int pm_cmd_freq_get(u32 reg_freq);
 static int pm_cmd_freq_set(u32 reg_freq, u32 freq_code, u32 *p_freq_code_rlzd);
 static int pm_cmd_freq_wait(u32 reg_freq, u32 *freq_code_rlzd);
+static pm_cmd_power_set(int pm_reg, int pm_mask);
 
 static void vsp_set_max_frequency(struct drm_device *dev);
 static void vsp_set_default_frequency(struct drm_device *dev);
@@ -66,9 +65,9 @@ static bool vsp_power_up(struct drm_device *dev,
 	 * This workarounds are only needed for TNG A0/A1 silicon.
 	 * Any TNG SoC which is newer than A0/A1 won't need this.
 	 */
-	if (!IS_TNG_B0(dev))
+	if (IS_TNG_A0(dev))
 	{
-		apply_A0_workarounds(OSPM_VIDEO_VPP_ISLAND, 1);
+		apply_TNG_A0_workarounds(OSPM_VIDEO_VPP_ISLAND, 1);
 	}
 
 #ifndef USE_GFX_INTERNAL_PM_FUNC
@@ -76,13 +75,17 @@ static bool vsp_power_up(struct drm_device *dev,
 #else
 	pm_ret = pmu_set_power_state_tng(VSP_SS_PM0, VSP_SSC, TNG_COMPOSITE_I0);
 #endif
+
 	if (pm_ret) {
 		PSB_DEBUG_PM("VSP: pmu_nc_set_power_state ON failed!\n");
 		return false;
 	}
 
-	if (vsp_priv->fw_loaded_by_punit && drm_vsp_burst)
+	if (drm_vsp_burst)
 		vsp_set_max_frequency(dev);
+
+	psb_irq_preinstall_islands(dev, OSPM_VIDEO_VPP_ISLAND);
+	psb_irq_postinstall_islands(dev, OSPM_VIDEO_VPP_ISLAND);
 
 	PSB_DEBUG_PM("Power ON VSP!\n");
 	return ret;
@@ -107,10 +110,12 @@ static bool vsp_power_down(struct drm_device *dev,
 		return false;
 	}
 
+	psb_irq_uninstall_islands(dev, OSPM_VIDEO_VPP_ISLAND);
+
 	/* save VSP registers */
 	psb_vsp_save_context(dev);
 
-	if (vsp_priv->fw_loaded_by_punit && drm_vsp_burst)
+	if (drm_vsp_burst)
 		vsp_set_default_frequency(dev);
 
 #ifndef USE_GFX_INTERNAL_PM_FUNC
@@ -118,6 +123,7 @@ static bool vsp_power_down(struct drm_device *dev,
 #else
 	pm_ret = pmu_set_power_state_tng(VSP_SS_PM0, VSP_SSC, TNG_COMPOSITE_D3);
 #endif
+
 	if (pm_ret) {
 		PSB_DEBUG_PM("VSP: pmu_nc_set_power_state OFF failed!\n");
 		return false;
@@ -163,6 +169,7 @@ static bool ved_power_up(struct drm_device *dev,
 #else
 	pm_ret = pmu_set_power_state_tng(VED_SS_PM0, VED_SSC, TNG_COMPOSITE_I0);
 #endif
+
 	if (pm_ret) {
 		PSB_DEBUG_PM("power up ved failed\n");
 		return false;
@@ -170,6 +177,11 @@ static bool ved_power_up(struct drm_device *dev,
 
 	iowrite32(0xffffffff, dev_priv->ved_wrapper_reg + 0);
 
+	if (need_set_ved_freq) {
+		if (!psb_msvdx_set_ved_freq(IP_FREQ_320_00))
+			PSB_DEBUG_PM("MSVDX: Set VED frequency to " \
+				"320MHZ after power up\n");
+	}
 	return ret;
 }
 
@@ -194,11 +206,18 @@ static bool ved_power_down(struct drm_device *dev,
 
 	psb_msvdx_save_context(dev);
 
+	if (need_set_ved_freq) {
+		if (!psb_msvdx_set_ved_freq(IP_FREQ_200_00))
+			PSB_DEBUG_PM("MSVDX: Set VED frequency to " \
+				"200MHZ after power up\n");
+	}
+
 #ifndef USE_GFX_INTERNAL_PM_FUNC
 	pm_ret = pmu_nc_set_power_state(PMU_DEC, OSPM_ISLAND_DOWN, VED_SS_PM0);
 #else
 	pm_ret = pmu_set_power_state_tng(VED_SS_PM0, VED_SSC, TNG_COMPOSITE_D3);
 #endif
+
 	if (pm_ret) {
 		PSB_DEBUG_PM("power down ved failed\n");
 		return false;
@@ -233,8 +252,8 @@ void ospm_ved_init(struct drm_device *dev,
 static bool vec_power_up(struct drm_device *dev,
 			struct ospm_power_island *p_island)
 {
-	bool ret = true;
 	int pm_ret = 0;
+	int freq_code = 0;
 
 	PSB_DEBUG_PM("powering up vec\n");
 #ifndef USE_GFX_INTERNAL_PM_FUNC
@@ -242,20 +261,26 @@ static bool vec_power_up(struct drm_device *dev,
 #else
 	pm_ret = pmu_set_power_state_tng(VEC_SS_PM0, VEC_SSC, TNG_COMPOSITE_I0);
 #endif
+
 	if (pm_ret) {
 		PSB_DEBUG_PM("power up vec failed\n");
 		return false;
 	}
 
-	if (IS_TNG_B0(dev)) {
-		if (!tng_topaz_set_vec_freq(IP_FREQ_400_00)) {
-			PSB_DEBUG_PM("TOPAZ: Set VEC frequency to\n");
-			PSB_DEBUG_PM("400MHZ after power up\n");
-		}
-	} else {
-		if (!tng_topaz_set_vec_freq(IP_FREQ_320_00))
-			PSB_DEBUG_PM("TOPAZ: Set VEC frequency to " \
-				"320MHZ after power up\n");
+	if (drm_vec_force_up_freq < 0)
+		drm_vec_force_up_freq = 0;
+
+	if (!drm_vec_force_up_freq)
+		freq_code = IS_TNG_B0(dev)? IP_FREQ_400_00:IP_FREQ_320_00;
+	else
+		freq_code = drm_vec_force_up_freq;
+
+	if(!tng_topaz_set_vec_freq(freq_code))
+		PSB_DEBUG_PM("TOPAZ: Set VEC freq by code %d\n", freq_code);
+	else {
+		PSB_DEBUG_PM("TOPAZ: Fail to set VEC freq by code %d!\n",
+			freq_code);
+		return false;
 	}
 
 	if (drm_topaz_cgpolicy != PSB_CGPOLICY_ON)
@@ -263,7 +288,7 @@ static bool vec_power_up(struct drm_device *dev,
 
 	PSB_DEBUG_PM("powering up vec done\n");
 
-	return ret;
+	return true;
 }
 
 /**
@@ -274,8 +299,8 @@ static bool vec_power_up(struct drm_device *dev,
 static bool vec_power_down(struct drm_device *dev,
 			struct ospm_power_island *p_island)
 {
-	bool ret = true;
 	int pm_ret = 0;
+	int freq_code = 0;
 	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct tng_topaz_private *topaz_priv = dev_priv->topaz_private;
 
@@ -289,9 +314,21 @@ static bool vec_power_down(struct drm_device *dev,
 
 	tng_topaz_save_mtx_state(dev);
 
-	if (!tng_topaz_set_vec_freq(IP_FREQ_200_00))
-		PSB_DEBUG_PM("TOPAZ: Set VEC frequency to 200MHZ " \
-			"before power down\n");
+	if (drm_vec_force_down_freq < 0)
+		drm_vec_force_down_freq = 0;
+
+	if (!drm_vec_force_down_freq)
+		freq_code = IP_FREQ_200_00;
+	else
+		freq_code = drm_vec_force_down_freq;
+
+	if(!tng_topaz_set_vec_freq(freq_code))
+		PSB_DEBUG_PM("TOPAZ: Set VEC freq by code %d\n", freq_code);
+	else {
+		PSB_DEBUG_PM("TOPAZ: Fail to set VEC freq by code %d!\n",
+			freq_code);
+		return false;
+	}
 
 #ifndef USE_GFX_INTERNAL_PM_FUNC
 	pm_ret = pmu_nc_set_power_state(PMU_ENC, \
@@ -299,6 +336,7 @@ static bool vec_power_down(struct drm_device *dev,
 #else
 	pm_ret = pmu_set_power_state_tng(VEC_SS_PM0, VEC_SSC, TNG_COMPOSITE_D3);
 #endif
+
 	if (pm_ret) {
 		DRM_ERROR("Power down ved failed\n");
 		return false;
@@ -306,7 +344,7 @@ static bool vec_power_down(struct drm_device *dev,
 
 	PSB_DEBUG_PM("TOPAZ: powering down vec done\n");
 
-	return ret;
+	return true;
 }
 
 /**
@@ -323,28 +361,6 @@ void ospm_vec_init(struct drm_device *dev,
 	p_island->p_funcs->power_down = vec_power_down;
 	p_island->p_dependency = get_island_ptr(NC_PM_SSS_GFX_SLC);
 }
-
-#ifdef CONFIG_GFX_RTPM
-void psb_ospm_post_power_down()
-{
-	int ret;
-
-	if (likely(!gpDrmDevice->pdev->dev.power.runtime_auto))
-		return;
-
-	PSB_DEBUG_PM("request runtime idle\n");
-	ret = pm_request_idle(&gpDrmDevice->pdev->dev);
-
-	if (ret) {
-		PSB_DEBUG_PM("pm_request_idle fail, ret %d\n", ret);
-		ret = pm_runtime_barrier(&gpDrmDevice->pdev->dev);
-		if (!ret) {
-			ret = pm_request_idle(&gpDrmDevice->pdev->dev);
-			 PSB_DEBUG_PM("pm_request_idle again, ret %d\n", ret);
-		}
-	}
-}
-#endif
 
 static int pm_cmd_freq_wait(u32 reg_freq, u32 *freq_code_rlzd)
 {
@@ -369,6 +385,18 @@ static int pm_cmd_freq_wait(u32 reg_freq, u32 *freq_code_rlzd)
 	}
 
 	return 0;
+}
+
+static int pm_cmd_freq_get(u32 reg_freq)
+{
+	u32 freq_val;
+	int freq_code=0;
+
+	pm_cmd_freq_wait(reg_freq, NULL);
+
+	freq_val = intel_mid_msgbus_read32(PUNIT_PORT, reg_freq);
+	freq_code =(int)((freq_val>>IP_FREQ_STAT_POS) & ~IP_FREQ_VALID);
+	return freq_code;
 }
 
 static int pm_cmd_freq_set(u32 reg_freq, u32 freq_code, u32 *p_freq_code_rlzd)
@@ -402,22 +430,37 @@ static void vsp_set_max_frequency(struct drm_device *dev)
 {
 	unsigned int pci_device = dev->pci_device & 0xffff;
 	u32 freq_code_rlzd;
-	u32 freq_code;
+	u32 freq_code, max_freq_code;
+	u32 freq, max_freq;
 	int ret;
 
+	freq_code = 0;
+	max_freq_code = 0;
 	if (pci_device == 0x1180) {
-		freq_code = IP_FREQ_457_14;
+		max_freq_code = IP_FREQ_457_14;
 		PSB_DEBUG_PM("vsp maximum freq is 457\n");
 	} else if (pci_device == 0x1181) {
-		freq_code = IP_FREQ_400_00;
+		max_freq_code = IP_FREQ_400_00;
 		PSB_DEBUG_PM("vsp maximum freq is 400\n");
+	} else if (pci_device == 0x1480) {
+		PSB_DEBUG_PM("DFS is not enabled for ANN yet, just run on default clk rate\n");
+		return;
 	} else {
 		DRM_ERROR("invalid pci device id %x\n", pci_device);
 		return;
 	}
 
+	// according to the latest scheme, set VSP max frequency to 400MHZ
+	freq_code = IP_FREQ_400_00;
+
 	if (drm_vsp_force_up_freq)
 		freq_code = drm_vsp_force_up_freq;
+
+	freq = 1600 * 2 / (freq_code + 1);
+	max_freq = 1600 * 2 / (max_freq_code + 1);
+	VSP_DEBUG("try to set %dMHZ, max freq is %dMHZ\n", freq, max_freq);
+	if (freq > max_freq)
+		freq_code = max_freq_code;
 
 	ret = pm_cmd_freq_set(VSP_SS_PM1, freq_code, &freq_code_rlzd);
 	if (ret < 0) {
@@ -448,4 +491,42 @@ static void vsp_set_default_frequency(struct drm_device *dev)
 
 	PSB_DEBUG_PM("set default frequency\n");
 	return;
+}
+
+int psb_msvdx_set_ved_freq(u32 freq_code)
+{
+       u32 freq_code_rlzd;
+       int ret;
+
+       ret = pm_cmd_freq_set(VED_SS_PM1, freq_code, &freq_code_rlzd);
+       if (ret < 0) {
+               DRM_ERROR("failed to set freqency, current is %x\n",
+                               freq_code_rlzd);
+       }
+
+       return ret;
+}
+
+int psb_msvdx_get_ved_freq(u32 reg_freq)
+{
+	return  pm_cmd_freq_get(reg_freq);
+}
+
+void psb_set_freq_control_switch(bool config_value)
+{
+	need_set_ved_freq = config_value;
+}
+
+static pm_cmd_power_set(int pm_reg, int pm_mask)
+{
+	intel_mid_msgbus_write32(0x04, pm_reg, pm_mask);
+	udelay(500);
+
+	if (pm_reg == VEC_SS_PM0 && !(pm_mask & 0x3)) {
+		PSB_DEBUG_PM("Power up VEC, delay another 1500 us\n");
+		udelay(1500);
+	}
+
+	pm_mask = intel_mid_msgbus_read32(0x04, pm_reg);
+	PSB_DEBUG_PM("pwr_mask read: reg=0x%x pwr_mask=0x%x \n", pm_reg, pm_mask);
 }

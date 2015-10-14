@@ -21,9 +21,10 @@
 #include <trace/events/asoc.h>
 
 struct snd_soc_jack * jack_global;
+
 /**
  * snd_soc_jack_new - Create a new jack
- * @card:  ASoC card
+ * @codec: ASoC codec
  * @id:    an identifying string for this jack
  * @type:  a bitmask of enum snd_jack_type values that can be detected by
  *         this jack
@@ -37,11 +38,12 @@ struct snd_soc_jack * jack_global;
 int snd_soc_jack_new(struct snd_soc_codec *codec, const char *id, int type,
 		     struct snd_soc_jack *jack)
 {
+	mutex_init(&jack->mutex);
 	jack->codec = codec;
 	INIT_LIST_HEAD(&jack->pins);
 	INIT_LIST_HEAD(&jack->jack_zones);
 	BLOCKING_INIT_NOTIFIER_HEAD(&jack->notifier);
-	jack_global = jack;
+        jack_global = jack;
 	return snd_jack_new(codec->card->snd_card, id, type, &jack->jack);
 }
 EXPORT_SYMBOL_GPL(snd_soc_jack_new);
@@ -65,8 +67,8 @@ void snd_soc_jack_report(struct snd_soc_jack *jack, int status, int mask)
 	struct snd_soc_codec *codec;
 	struct snd_soc_dapm_context *dapm;
 	struct snd_soc_jack_pin *pin;
+	unsigned int sync = 0;
 	int enable;
-	int oldstatus;
 
 	trace_snd_soc_jack_report(jack, mask, status);
 
@@ -76,17 +78,10 @@ void snd_soc_jack_report(struct snd_soc_jack *jack, int status, int mask)
 	codec = jack->codec;
 	dapm =  &codec->dapm;
 
-	mutex_lock(&codec->mutex);
-
-	oldstatus = jack->status;
+	mutex_lock(&jack->mutex);
 
 	jack->status &= ~mask;
 	jack->status |= status & mask;
-
-	/* The DAPM sync is expensive enough to be worth skipping.
-	 * However, empty mask means pin synchronization is desired. */
-	if (mask && (jack->status == oldstatus))
-		goto out;
 
 	trace_snd_soc_jack_notify(jack, status);
 
@@ -100,20 +95,22 @@ void snd_soc_jack_report(struct snd_soc_jack *jack, int status, int mask)
 			snd_soc_dapm_enable_pin(dapm, pin->pin);
 		else
 			snd_soc_dapm_disable_pin(dapm, pin->pin);
+
+		/* we need to sync for this case only */
+		sync = 1;
 	}
 
 	/* Report before the DAPM sync to help users updating micbias status */
-	blocking_notifier_call_chain(&jack->notifier, status, jack);
+	blocking_notifier_call_chain(&jack->notifier, jack->status, jack);
 
-	snd_soc_dapm_sync(dapm);
+	if (sync)
+		snd_soc_dapm_sync(dapm);
 
 	snd_jack_report(jack->jack, jack->status);
 
-out:
-	mutex_unlock(&codec->mutex);
+	mutex_unlock(&jack->mutex);
 }
 EXPORT_SYMBOL_GPL(snd_soc_jack_report);
-
 
 struct snd_soc_jack *get_jack(struct snd_soc_jack *jack)
 {
@@ -121,6 +118,8 @@ struct snd_soc_jack *get_jack(struct snd_soc_jack *jack)
 }
 
 EXPORT_SYMBOL_GPL(get_jack);
+
+
 /**
  * snd_soc_jack_add_zones - Associate voltage zones with jack
  *
@@ -146,12 +145,13 @@ EXPORT_SYMBOL_GPL(snd_soc_jack_add_zones);
 
 /**
  * snd_soc_jack_get_type - Based on the mic bias value, this function returns
- * the type of jack from the zones delcared in the jack type
+ * the type of jack from the zones declared in the jack type
  *
+ * @jack:  ASoC jack
  * @micbias_voltage:  mic bias voltage at adc channel when jack is plugged in
  *
  * Based on the mic bias value passed, this function helps identify
- * the type of jack from the already delcared jack zones
+ * the type of jack from the already declared jack zones
  */
 int snd_soc_jack_get_type(struct snd_soc_jack *jack, int micbias_voltage)
 {
@@ -184,12 +184,13 @@ int snd_soc_jack_add_pins(struct snd_soc_jack *jack, int count,
 
 	for (i = 0; i < count; i++) {
 		if (!pins[i].pin) {
-			printk(KERN_ERR "No name for pin %d\n", i);
+			dev_err(jack->codec->dev, "ASoC: No name for pin %d\n",
+				i);
 			return -EINVAL;
 		}
 		if (!pins[i].mask) {
-			printk(KERN_ERR "No mask for pin %d (%s)\n", i,
-			       pins[i].pin);
+			dev_err(jack->codec->dev, "ASoC: No mask for pin %d"
+				" (%s)\n", i, pins[i].pin);
 			return -EINVAL;
 		}
 
@@ -309,13 +310,13 @@ int snd_soc_jack_add_gpios(struct snd_soc_jack *jack, int count,
 
 	for (i = 0; i < count; i++) {
 		if (!gpio_is_valid(gpios[i].gpio)) {
-			printk(KERN_ERR "Invalid gpio %d\n",
+			dev_err(jack->codec->dev, "ASoC: Invalid gpio %d\n",
 				gpios[i].gpio);
 			ret = -EINVAL;
 			goto undo;
 		}
 		if (!gpios[i].name) {
-			printk(KERN_ERR "No name for gpio %d\n",
+			dev_err(jack->codec->dev, "ASoC: No name for gpio %d\n",
 				gpios[i].gpio);
 			ret = -EINVAL;
 			goto undo;
@@ -347,7 +348,7 @@ int snd_soc_jack_add_gpios(struct snd_soc_jack *jack, int count,
 		if (gpios[i].wake) {
 			ret = irq_set_irq_wake(gpio_to_irq(gpios[i].gpio), 1);
 			if (ret != 0)
-				printk(KERN_ERR
+				dev_err(jack->codec->dev, "ASoC: "
 				  "Failed to mark GPIO %d as wake source: %d\n",
 					gpios[i].gpio, ret);
 		}

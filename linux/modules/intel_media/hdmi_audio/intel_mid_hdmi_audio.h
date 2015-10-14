@@ -85,7 +85,6 @@
 #define AUD_CONFIG_MASK_FUNCRST		0x00000001
 
 #define MAX_CNT			0xFF
-#define MAX_SZ_ZERO_BUF		(1024*8)
 #define HAD_SUSPEND_DELAY	1000
 
 /**
@@ -533,7 +532,13 @@ struct had_callback_ops {
  * @valid_buf_cnt: ring buffer count for stream
  * @had_spinlock: driver lock
  * @aes_bits: IEC958 status bits
+ * @buff_done: id of current buffer done intr
  * @dev: platoform device handle
+ * @kctl: holds kctl ptrs used for channel map
+ * @chmap: holds channel map info
+ * @audio_reg_base: hdmi audio register base offset
+ * @hw_silence: flag indicates SoC support for HW silence/Keep alive
+ * @ops: holds ops functions based on platform
  */
 struct snd_intelhad {
 	struct snd_card	*card;
@@ -550,9 +555,6 @@ struct snd_intelhad {
 	unsigned int	aes_bits;
 	int flag_underrun;
 	struct had_pvt_data *private_data;
-	unsigned long timer;
-	/*  Related to sending silence data */
-	char *flat_data;
 	spinlock_t had_spinlock;
 	enum		intel_had_aud_buf_type buff_done;
 	struct device *dev;

@@ -68,7 +68,7 @@ struct lss_definition {
 	char *subsystem;
 };
 
-#ifdef CONFIG_INTEL_ATOM_MRFLD_POWER
+#ifdef CONFIG_REMOVEME_INTEL_ATOM_MRFLD_POWER
 #define PUNIT_CR_CORE_C1_RES_MSR	0x660
 #define PUNIT_CR_CORE_C4_RES_MSR	0x3fc
 #define PUNIT_CR_CORE_C6_RES_MSR	0x3fd
@@ -84,7 +84,7 @@ extern u32 __iomem *s0ix_counter[];
 #endif
 
 /* platform dependency starts */
-#ifdef CONFIG_INTEL_ATOM_MDFLD_POWER
+#ifdef CONFIG_REMOVEME_INTEL_ATOM_MDFLD_POWER
 
 #define DEV_GFX		2
 #define FUNC_GFX	0
@@ -157,7 +157,7 @@ static struct lss_definition lsses[] = {
 #endif
 
 
-#ifdef CONFIG_INTEL_ATOM_CLV_POWER
+#ifdef CONFIG_REMOVEME_INTEL_ATOM_CLV_POWER
 
 #define DEV_GFX		2
 #define FUNC_GFX	0

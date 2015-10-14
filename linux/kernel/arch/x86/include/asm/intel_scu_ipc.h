@@ -23,6 +23,7 @@
 #define IPCMSG_OSC_CLK		0xE6 /* Turn on/off osc clock */
 #define IPCMSG_S0IX_COUNTER	0xEB /* Get S0ix residency */
 #define IPCMSG_CLEAR_FABERROR	0xE3 /* Clear fabric error log */
+#define IPCMSG_SCULOG_CTRL	0xE1 /* SCU logging control message */
 #define IPCMSG_STORE_NV_DATA	0xCD /* Store the Non Volatile data to RAM */
 
 #define IPC_CMD_UMIP_RD     0
@@ -41,13 +42,16 @@
 #define IPC_ERR_CMD_INVALID		4
 #define IPC_ERR_CMD_FAILED		5
 #define IPC_ERR_EMSECURITY		6
+#define IPC_ERR_UNSIGNEDKERNEL		7
 
 #define MSIC_DEBUG_FILE "msic"
 #define MSIC_ALL_DEBUG_FILE "msic_all"
 #define MAX_MSIC_REG   0x3FF
 #define MIN_MSIC_REG   0x0
 
-
+/* Command id associated with SCULOG_CTRL */
+#define IPC_CMD_SCU_LOG_SUSPEND	1
+#define IPC_CMD_SCU_LOG_RESUME	2
 
 /* Command id associated with message IPCMSG_VRTC */
 #define IPC_CMD_VRTC_SETTIME      1 /* Set time */
@@ -69,12 +73,24 @@ int intel_scu_ipc_fw_update(void);
 int intel_scu_ipc_mrstfw_update(u8 *buffer, u32 length);
 int intel_scu_ipc_medfw_prepare(void __user *arg);
 
+#ifdef CONFIG_INTEL_SCU_IPC
 int intel_scu_ipc_read_mip(u8 *data, int len, int offset, int issigned);
 int intel_scu_ipc_write_umip(u8 *data, int len, int offset);
+#else
+/* Dummy function to prevent compilation error in BYT */
+static int intel_scu_ipc_read_mip(u8 *data, int len, int offset, int issigned)
+{
+	return 0;
+}
+static int intel_scu_ipc_write_umip(u8 *data, int len, int offset)
+{
+	return 0;
+}
+#endif
 
 /* NVRAM access */
 u32 intel_scu_ipc_get_nvram_size(void);
-u32 intel_scu_ipc_get_nvram_addr(void);
+phys_addr_t intel_scu_ipc_get_nvram_addr(void);
 
 /* Penwell has 4 osc clocks */
 #define OSC_CLK_AUDIO	0	/* Audio */

@@ -278,6 +278,7 @@ static struct ahash_alg digest_algs_base = {
 
 /* Algorithm specific attributes */
 static struct dx_digest_alg dx_digest_algs[] = {
+#ifdef USE_SEP54_AHASH
 	{			/* sha1 */
 	 .hash_type = DXDI_HASH_SHA1,
 	 .mac_type = DXDI_MAC_NONE,
@@ -383,6 +384,7 @@ static struct dx_digest_alg dx_digest_algs[] = {
 		   .halg.statesize = SEP_AES_BLOCK_SIZE}
 	 }
 #endif /* USE_SEP54_AES */
+#endif /* USE_SEP54_AHASH */
 };				/*dx_ahash_algs[] */
 
 #define DX_DIGEST_NUM \
@@ -396,14 +398,14 @@ static void crypto_ctx_cleanup(struct crypto_tfm *tfm)
 	struct client_crypto_ctx_info *ctx_info = &_ctx_info;
 	int rc;
 
-	SEP_LOG_DEBUG("Cleaning context @%p for %s\n",
+	pr_debug("Cleaning context @%p for %s\n",
 		      host_ctx_p, crypto_tfm_alg_name(tfm));
 
 	rc = ctxmgr_map_kernel_ctx(ctx_info, mydev, host_ctx_p->alg_class,
 				   (struct host_crypto_ctx *)host_ctx_p, NULL,
 				   0);
 	if (rc != 0) {
-		SEP_LOG_ERR("Failed mapping context @%p (rc=%d)\n",
+		pr_err("Failed mapping context @%p (rc=%d)\n",
 			    host_ctx_p, rc);
 		return;
 	}
@@ -433,7 +435,7 @@ static int dispatch_crypto_op(struct sep_op_ctx *op_ctx, bool may_backlog,
 	struct queue_drvdata *drvdata = op_ctx->client_ctx->drv_data;
 	struct client_crypto_ctx_info *ctx_info = &op_ctx->ctx_info;
 	int sep_ctx_load_req;
-	u64 ctx_id = ctxmgr_get_ctx_id(ctx_info);
+	struct crypto_ctx_uid ctx_id = ctxmgr_get_ctx_id(ctx_info);
 	int rc;
 	struct sep_sw_desc desc;
 
@@ -484,7 +486,7 @@ static void process_digest_fin(struct async_digest_req_ctx *digest_req)
 		    ctxmgr_get_digest_or_mac_ptr(&op_ctx->ctx_info,
 						 &digest_ptr);
 		if (unlikely(digest_ptr == NULL)) {
-			SEP_LOG_ERR("Failed fetching digest/MAC\n");
+			pr_err("Failed fetching digest/MAC\n");
 			return;
 		}
 		if (digest_req->result != NULL)
@@ -498,7 +500,7 @@ static void process_digest_fin(struct async_digest_req_ctx *digest_req)
 					(digest_req->async_req.initiating_req,
 					 struct ahash_request, base));
 		if (digest_size != crypto_ahash_digestsize(ahash_tfm))
-			SEP_LOG_ERR("Read digest of %u B. Expected %u B.\n",
+			pr_err("Read digest of %u B. Expected %u B.\n",
 				    digest_size,
 				    crypto_ahash_digestsize(ahash_tfm));
 #endif
@@ -517,16 +519,16 @@ static void dx_crypto_api_handle_op_completion(struct work_struct *work)
 	int err = 0;
 	u8 *req_info_p;/* For state persistency in caller's context (IV) */
 
-	SEP_LOG_DEBUG("req=%p op_ctx=%p\n", initiating_req, op_ctx);
+	pr_debug("req=%p op_ctx=%p\n", initiating_req, op_ctx);
 	if (op_ctx == NULL) {
-		SEP_LOG_ERR("Invalid work context (%p)\n", work);
+		pr_err("Invalid work context (%p)\n", work);
 		return;
 	}
 
 	if (op_ctx->op_state == USER_OP_COMPLETED) {
 
 		if (unlikely(op_ctx->error_info != 0)) {
-			SEP_LOG_ERR("SeP crypto-op failed (sep_rc=0x%08X)\n",
+			pr_err("SeP crypto-op failed (sep_rc=0x%08X)\n",
 				    op_ctx->error_info);
 		}
 		switch (crypto_tfm_alg_type(initiating_req->tfm)) {
@@ -545,15 +547,14 @@ static void dx_crypto_api_handle_op_completion(struct work_struct *work)
 					async_req));
 			break;
 		default:
-			SEP_LOG_ERR("Unsupported alg_type (%d)\n",
+			pr_err("Unsupported alg_type (%d)\n",
 				    crypto_tfm_alg_type(initiating_req->tfm));
-			req_info_p = NULL;
 		}
 		/* Save ret_code info before cleaning op_ctx */
 		err = -(op_ctx->error_info);
 		if (unlikely(err == -EINPROGRESS)) {
 			/* SeP error code collides with EINPROGRESS */
-			SEP_LOG_ERR("Invalid SeP error code 0x%08X\n",
+			pr_err("Invalid SeP error code 0x%08X\n",
 				    op_ctx->error_info);
 			err = -EINVAL;	/* fallback */
 		}
@@ -564,14 +565,14 @@ static void dx_crypto_api_handle_op_completion(struct work_struct *work)
 		   (Returned -EBUSY when the request was dispatched) */
 		err = -EINPROGRESS;
 	} else {
-		SEP_LOG_ERR("Invalid state (%d) for op_ctx %p\n",
+		pr_err("Invalid state (%d) for op_ctx %p\n",
 			    op_ctx->op_state, op_ctx);
 		BUG();
 	}
 	if (likely(initiating_req->complete != NULL))
 		initiating_req->complete(initiating_req, err);
 	else
-		SEP_LOG_ERR("Async. operation has no completion callback.\n");
+		pr_err("Async. operation has no completion callback.\n");
 }
 
 /****************************************************/
@@ -591,7 +592,7 @@ static enum dxdi_sym_cipher_type get_symcipher_tfm_cipher_type(struct crypto_tfm
 	const int alg_index = tfm->__crt_alg - dx_ablkcipher_algs;
 
 	if ((alg_index < 0) || (alg_index >= DX_ABLKCIPHER_NUM)) {
-		SEP_LOG_ERR("Unknown alg: %s\n", crypto_tfm_alg_name(tfm));
+		pr_err("Unknown alg: %s\n", crypto_tfm_alg_name(tfm));
 		return DXDI_SYMCIPHER_NONE;
 	}
 
@@ -609,7 +610,7 @@ static int symcipher_ctx_init(struct crypto_tfm *tfm)
 	    get_symcipher_tfm_cipher_type(tfm);
 	int rc;
 
-	SEP_LOG_DEBUG("Initializing context @%p for %s (%d)\n",
+	pr_debug("Initializing context @%p for %s (%d)\n",
 		      host_ctx_p, crypto_tfm_alg_name(tfm), cipher_type);
 #ifdef SEP_RUNTIME_PM
 	dx_sep_pm_runtime_get();
@@ -619,7 +620,7 @@ static int symcipher_ctx_init(struct crypto_tfm *tfm)
 				   (struct host_crypto_ctx *)host_ctx_p, NULL,
 				   0);
 	if (rc != 0) {
-		SEP_LOG_ERR("Failed mapping context (rc=%d)\n", rc);
+		pr_err("Failed mapping context (rc=%d)\n", rc);
 #ifdef SEP_RUNTIME_PM
 		dx_sep_pm_runtime_put();
 #endif
@@ -629,7 +630,7 @@ static int symcipher_ctx_init(struct crypto_tfm *tfm)
 	ctxmgr_set_ctx_id(ctx_info, alloc_crypto_ctx_id(&crypto_api_ctx));
 	rc = ctxmgr_init_symcipher_ctx_no_props(ctx_info, cipher_type);
 	if (unlikely(rc != 0)) {
-		SEP_LOG_ERR("Failed initializing context\n");
+		pr_err("Failed initializing context\n");
 		ctxmgr_set_ctx_state(ctx_info, CTX_STATE_UNINITIALIZED);
 	} else {
 		ctxmgr_set_ctx_state(ctx_info, CTX_STATE_PARTIAL_INIT);
@@ -668,13 +669,13 @@ static int symcipher_set_key(struct crypto_ablkcipher *tfm,
 		return -EINVAL;
 
 	if (keylen > DXDI_SYM_KEY_SIZE_MAX) {
-		SEP_LOG_ERR("keylen=%u > %u\n", keylen, DXDI_SYM_KEY_SIZE_MAX);
+		pr_err("keylen=%u > %u\n", keylen, DXDI_SYM_KEY_SIZE_MAX);
 		tfm_flags |= CRYPTO_TFM_RES_BAD_KEY_LEN;
 		crypto_ablkcipher_set_flags(tfm, tfm_flags);
 		return -EINVAL;
 	}
 
-	SEP_LOG_DEBUG("alg=%s (%d) , keylen=%u\n",
+	pr_debug("alg=%s (%d) , keylen=%u\n",
 		      crypto_tfm_alg_name(crypto_ablkcipher_tfm(tfm)),
 		      cipher_type, keylen);
 
@@ -682,25 +683,25 @@ static int symcipher_set_key(struct crypto_ablkcipher *tfm,
 				   (struct host_crypto_ctx *)host_ctx_p, NULL,
 				   0);
 	if (unlikely(rc != 0)) {
-		SEP_LOG_ERR("Failed mapping context (rc=%d)\n", rc);
+		pr_err("Failed mapping context (rc=%d)\n", rc);
 		return rc;
 	}
 
 	if (ctxmgr_get_ctx_state(ctx_info) == CTX_STATE_UNINITIALIZED) {
-		SEP_LOG_ERR("Invoked for uninitialized context @%p\n",
+		pr_err("Invoked for uninitialized context @%p\n",
 			    host_ctx_p);
 		rc = -EINVAL;
 	} else {		/* Modify algorithm key */
 		rc = ctxmgr_set_symcipher_key(ctx_info, keylen, key);
 		if (rc != 0) {
 			if (rc == -EINVAL) {
-				SEP_LOG_INFO("Invalid keylen=%u\n", keylen);
+				pr_info("Invalid keylen=%u\n", keylen);
 				tfm_flags |= CRYPTO_TFM_RES_BAD_KEY_LEN;
 			} else if (rc == -EPERM) {
-				SEP_LOG_INFO("Invalid/weak key\n");
+				pr_info("Invalid/weak key\n");
 				tfm_flags |= CRYPTO_TFM_RES_WEAK_KEY;
 			} else {
-				SEP_LOG_ERR("Unknown key setting error (%d)\n",
+				pr_err("Unknown key setting error (%d)\n",
 					    rc);
 			}
 		}
@@ -736,7 +737,7 @@ static int prepare_symcipher_ctx_for_processing(struct sep_op_ctx *op_ctx,
 
 	sep_ctx_p = dma_pool_alloc(sep_ctx_pool, GFP_KERNEL, &sep_ctx_dma_addr);
 	if (sep_ctx_p == NULL) {
-		SEP_LOG_ERR("Failed allocating SeP context buffer\n");
+		pr_err("Failed allocating SeP context buffer\n");
 		return -ENOMEM;
 	}
 	rc = ctxmgr_map_kernel_ctx(ctx_info, mydev,
@@ -744,12 +745,12 @@ static int prepare_symcipher_ctx_for_processing(struct sep_op_ctx *op_ctx,
 				   (struct host_crypto_ctx *)host_ctx_p,
 				   sep_ctx_p, sep_ctx_dma_addr);
 	if (unlikely(rc != 0)) {
-		SEP_LOG_ERR("Failed mapping context (rc=%d)\n", rc);
+		pr_err("Failed mapping context (rc=%d)\n", rc);
 	} else {
 		ctxmgr_set_symcipher_iv(ctx_info, iv_crypto);
 		rc = ctxmgr_set_symcipher_direction(ctx_info, direction);
 		if (unlikely(rc != 0)) {
-			SEP_LOG_ERR("Failed setting direction %d (rc=%d)\n",
+			pr_err("Failed setting direction %d (rc=%d)\n",
 				    direction, rc);
 		}
 	}
@@ -794,7 +795,7 @@ static void release_symcipher_ctx(struct sep_op_ctx *op_ctx,
 		if (likely(rc == 0)) {
 			if (iv_size > 0) {
 				if (unlikely(iv_crypto == NULL)) {
-					SEP_LOG_ERR(
+					pr_err(
 						    "iv_crypto==NULL when iv_size==%u\n",
 						    iv_size);
 				} else {
@@ -802,7 +803,7 @@ static void release_symcipher_ctx(struct sep_op_ctx *op_ctx,
 				}
 			}
 		} else {
-			SEP_LOG_ERR("Fail: getting IV information for ctx@%p\n",
+			pr_err("Fail: getting IV information for ctx@%p\n",
 				    ctx_info->ctx_kptr);
 		}
 	}
@@ -828,7 +829,7 @@ static int symcipher_process(struct ablkcipher_request *req,
 	    crypto_ablkcipher_ctx(tfm);
 	int rc;
 
-	SEP_LOG_DEBUG("alg=%s %scrypt (req=%p, op_ctx=%p, host_ctx=%p)\n",
+	pr_debug("alg=%s %scrypt (req=%p, op_ctx=%p, host_ctx=%p)\n",
 		      crypto_tfm_alg_name(crypto_ablkcipher_tfm(tfm)),
 		      direction == DXDI_CDIR_ENC ? "en" : "de",
 		      req, op_ctx, host_ctx_p);
@@ -849,11 +850,11 @@ static int symcipher_process(struct ablkcipher_request *req,
 	rc = prepare_data_for_sep(op_ctx, NULL, req->src, NULL, req->dst,
 				  req->nbytes, CRYPTO_DATA_TEXT);
 	if (unlikely(rc != 0)) {
-		SEP_LOG_ERR(
+		pr_err(
 			    "Failed preparing DMA buffers (rc=%d, err_info=0x%08X\n)\n",
 			    rc, op_ctx->error_info);
 		if (op_ctx->error_info == DXDI_ERROR_INVAL_DATA_SIZE) {
-			SEP_LOG_ERR("Invalid data unit size %u\n", req->nbytes);
+			pr_err("Invalid data unit size %u\n", req->nbytes);
 			req->base.flags |= CRYPTO_TFM_RES_BAD_BLOCK_LEN;
 		}
 	} else {		/* Initiate processing */
@@ -894,14 +895,14 @@ static int symcipher_decrypt(struct ablkcipher_request *req)
 	return symcipher_process(req, DXDI_CDIR_DEC);
 }
 
-static int __devinit ablkcipher_algs_init(void)
+static int ablkcipher_algs_init(void)
 {
 	int i, rc;
 	/* scratchpad to build crypto_alg from template + alg.specific data */
 	struct crypto_alg alg_spad;
 
 	/* Create block cipher algorithms from base + specs via scratchpad */
-	for (i = 0, rc = 0; i < DX_ABLKCIPHER_NUM; i++) {
+	for (i = 0; i < DX_ABLKCIPHER_NUM; i++) {
 		/* Get base template */
 		memcpy(&alg_spad, &blkcipher_algs_base,
 		       sizeof(struct crypto_alg));
@@ -924,9 +925,9 @@ static int __devinit ablkcipher_algs_init(void)
 	}
 
 	/* Register algs */
-	SEP_LOG_DEBUG("Registering CryptoAPI blkciphers:\n");
+	pr_debug("Registering CryptoAPI blkciphers:\n");
 	for (i = 0, rc = 0; (i < DX_ABLKCIPHER_NUM) && (rc == 0); i++) {
-		SEP_LOG_DEBUG("%d. %s (__crt_alg=%p)\n", i,
+		pr_debug("%d. %s (__crt_alg=%p)\n", i,
 			      dx_ablkcipher_algs[i].cra_name,
 			      &dx_ablkcipher_algs[i]);
 		rc = crypto_register_alg(&dx_ablkcipher_algs[i]);
@@ -935,7 +936,7 @@ static int __devinit ablkcipher_algs_init(void)
 	}
 	/* Failure: cleanup algorithms that already registered */
 	if (rc != 0) {
-		SEP_LOG_ERR("Failed registering %s\n",
+		pr_err("Failed registering %s\n",
 			    dx_ablkcipher_algs[i].cra_name);
 		if (i > 0)
 			for (; i >= 0; i--)
@@ -969,7 +970,7 @@ static struct dx_digest_alg *get_digest_alg(struct crypto_tfm *tfm)
 
 	/* Verify that the tfm is valid (inside our dx_digest_algs array) */
 	if ((alg_index < 0) || (alg_index >= DX_DIGEST_NUM)) {
-		SEP_LOG_ERR("Invalid digest tfm @%p\n", tfm);
+		pr_err("Invalid digest tfm @%p\n", tfm);
 		return NULL;
 	}
 	return this_digest_alg;
@@ -1004,20 +1005,20 @@ static int prepare_digest_context_for_processing(struct ahash_request *req,
 	if (unlikely(digest_alg == NULL))
 		return -EINVAL;
 
-	SEP_LOG_DEBUG("op_ctx=%p op_state=%d\n", op_ctx, op_ctx->op_state);
+	pr_debug("op_ctx=%p op_state=%d\n", op_ctx, op_ctx->op_state);
 	ctx_info = &op_ctx->ctx_info;
 	mac_type = digest_alg->mac_type;
 
 	if (!do_init) {
 		/* Verify given request context was initialized */
 		if (req_ctx->async_req.initiating_req == NULL) {
-			SEP_LOG_ERR(
+			pr_err(
 				    "Invoked for uninitialized async. req. context\n");
 			return -EINVAL;
 		}
 		/* Verify this request context that is not in use */
 		if (op_ctx->op_state != USER_OP_NOP) {
-			SEP_LOG_ERR("Invoked for context in use!\n");
+			pr_err("Invoked for context in use!\n");
 			return -EINVAL;
 			/*
 			 * We do not return -EBUSY because this is a valid
@@ -1034,7 +1035,7 @@ static int prepare_digest_context_for_processing(struct ahash_request *req,
 				   (struct host_crypto_ctx *)&req_ctx->host_ctx,
 				   NULL, 0);
 	if (rc != 0) {
-		SEP_LOG_ERR("Failed mapping context (rc=%d)\n", rc);
+		pr_err("Failed mapping context (rc=%d)\n", rc);
 		return rc;
 	}
 	if (do_init) {
@@ -1057,7 +1058,7 @@ static int prepare_digest_context_for_processing(struct ahash_request *req,
 						 &error_info);
 		}
 		if (unlikely(rc != 0)) {
-			SEP_LOG_ERR("Failed initializing context\n");
+			pr_err("Failed initializing context\n");
 			ctxmgr_set_ctx_state(ctx_info, CTX_STATE_UNINITIALIZED);
 		} else {
 			ctxmgr_set_ctx_state(ctx_info, CTX_STATE_PARTIAL_INIT);
@@ -1071,7 +1072,7 @@ static int prepare_digest_context_for_processing(struct ahash_request *req,
 	} else {		/* Should have been initialized before */
 		ctx_state = ctxmgr_get_ctx_state(ctx_info);
 		if (ctx_state != CTX_STATE_INITIALIZED) {
-			SEP_LOG_ERR("Invoked for context in state %d!\n",
+			pr_err("Invoked for context in state %d!\n",
 				    ctx_state);
 			rc = -EINVAL;
 		}
@@ -1104,7 +1105,7 @@ static int digest_req_dispatch(struct ahash_request *req,
 	if ((!do_init) && (req_ctx->result != NULL)) {
 		/* already finalized (AES based MACs) */
 		if (unlikely(nbytes > 0)) {
-			SEP_LOG_ERR("Invoked with %u B after finalized\n",
+			pr_err("Invoked with %u B after finalized\n",
 				    nbytes);
 			return -EINVAL;
 		}
@@ -1145,7 +1146,7 @@ static int digest_req_dispatch(struct ahash_request *req,
 			goto digest_proc_exit;
 		}
 		if (unlikely(rc != 0)) {
-			SEP_LOG_ERR("Failed mapping client DMA buffer.\n");
+			pr_err("Failed mapping client DMA buffer.\n");
 			goto digest_proc_exit;
 		}
 	}
@@ -1156,7 +1157,7 @@ static int digest_req_dispatch(struct ahash_request *req,
 				SEP_PROC_MODE_NOP : SEP_PROC_MODE_PROC_T,
 				true /*cache */);
 	if (unlikely(IS_DESCQ_ENQUEUE_ERR(rc))) {
-		SEP_LOG_ERR("Failed dispatching CRYPTO_OP (rc=%d)\n", rc);
+		pr_err("Failed dispatching CRYPTO_OP (rc=%d)\n", rc);
 		crypto_op_completion_cleanup(op_ctx);
 		ctxmgr_unmap_kernel_ctx(ctx_info);
 		op_ctx_fini(op_ctx);
@@ -1171,13 +1172,13 @@ static int digest_req_dispatch(struct ahash_request *req,
 
 static int digest_init(struct ahash_request *req)
 {
-	SEP_LOG_DEBUG("");
+	pr_debug("\n");
 	return digest_req_dispatch(req, true, false, NULL, 0);
 }
 
 static int digest_update(struct ahash_request *req)
 {
-	SEP_LOG_DEBUG("nbytes=%u\n", req->nbytes);
+	pr_debug("nbytes=%u\n", req->nbytes);
 	if (req->nbytes == 0)
 		return 0;	/* Nothing to do (but valid for 0 data MACs */
 
@@ -1186,19 +1187,19 @@ static int digest_update(struct ahash_request *req)
 
 static int digest_final(struct ahash_request *req)
 {
-	SEP_LOG_DEBUG("");
+	pr_debug("\n");
 	return digest_req_dispatch(req, false, true, NULL, 0);
 }
 
 static int digest_finup(struct ahash_request *req)
 {
-	SEP_LOG_DEBUG("nbytes=%u\n", req->nbytes);
+	pr_debug("nbytes=%u\n", req->nbytes);
 	return digest_req_dispatch(req, false, true, req->src, req->nbytes);
 }
 
 static int digest_integrated(struct ahash_request *req)
 {
-	SEP_LOG_DEBUG("nbytes=%u\n", req->nbytes);
+	pr_debug("nbytes=%u\n", req->nbytes);
 	return digest_req_dispatch(req, true, true, req->src, req->nbytes);
 }
 
@@ -1230,7 +1231,7 @@ static int do_hash_sync(enum dxdi_hash_type hash_type,
 				   (struct host_crypto_ctx *)&host_ctx, NULL,
 				   0);
 	if (rc != 0) {
-		SEP_LOG_ERR("Failed mapping crypto context (rc=%d)\n", rc);
+		pr_err("Failed mapping crypto context (rc=%d)\n", rc);
 		op_ctx_fini(&op_ctx);
 		return rc;
 	}
@@ -1280,7 +1281,7 @@ static int mac_setkey(struct crypto_ahash *tfm,
 	if (unlikely(digest_alg == NULL))
 		return -EINVAL;
 	if (unlikely(digest_alg->mac_type == DXDI_MAC_NONE)) {
-		SEP_LOG_ERR("Given algorithm which is not MAC\n");
+		pr_err("Given algorithm which is not MAC\n");
 		return -EINVAL;
 	}
 	/* Pre-process HMAC key if larger than hash block size */
@@ -1289,21 +1290,20 @@ static int mac_setkey(struct crypto_ahash *tfm,
 		rc = do_hash_sync(digest_alg->hash_type, key, keylen,
 				  key_data->key, &key_data->key_size);
 		if (unlikely(rc != 0))
-			SEP_LOG_ERR("Failed digesting key of %u bytes\n",
-				    keylen);
+			pr_err("Failed digesting key of %u bytes\n",
+			       keylen);
 		if (key_data->key_size != digest_alg->ahash.halg.digestsize)
-			SEP_LOG_ERR(
-				    "Returned digest size is %u != %u (expected)\n",
-				    key_data->key_size,
-				    digest_alg->ahash.halg.digestsize);
+			pr_err("Returned digest size is %u != %u (expected)\n",
+			       key_data->key_size,
+			       digest_alg->ahash.halg.digestsize);
 	} else {		/* No need to digest the key */
 		/* Verify that the key size for AES based MACs is not too
 		   large. */
 		if ((digest_alg->hash_type == DXDI_HASH_NONE) &&
 		    (keylen > SEP_AES_KEY_SIZE_MAX)) {
-			SEP_LOG_ERR("Invalid key size %u for %s\n",
-				    keylen,
-				    digest_alg->ahash.halg.base.cra_name);
+			pr_err("Invalid key size %u for %s\n",
+			       keylen,
+			       digest_alg->ahash.halg.base.cra_name);
 			tfm_flags |= CRYPTO_TFM_RES_BAD_KEY_LEN;
 			crypto_ahash_set_flags(tfm, tfm_flags);
 			rc = -EINVAL;
@@ -1356,9 +1356,9 @@ static int digest_algs_init(void)
 	}
 
 	/* Register algs */
-	SEP_LOG_DEBUG("Registering CryptoAPI digest algorithms:\n");
+	pr_debug("Registering CryptoAPI digest algorithms:\n");
 	for (i = 0, rc = 0; (i < DX_DIGEST_NUM) && (rc == 0); i++) {
-		SEP_LOG_DEBUG("%d. %s (__crt_alg=%p)\n", i,
+		pr_debug("%d. %s (__crt_alg=%p)\n", i,
 			      dx_digest_algs[i].ahash.halg.base.cra_name,
 			      &dx_digest_algs[i].ahash);
 		rc = crypto_register_ahash(&dx_digest_algs[i].ahash);
@@ -1367,7 +1367,7 @@ static int digest_algs_init(void)
 	}
 	if (unlikely(rc != 0)) {
 		/* Failure: cleanup algorithms that already registered */
-		SEP_LOG_ERR("Failed registering %s\n",
+		pr_err("Failed registering %s\n",
 			    dx_digest_algs[i].ahash.halg.base.cra_name);
 		if (i > 0)
 			for (; i >= 0; i--)
@@ -1386,7 +1386,7 @@ static void digest_algs_exit(void)
 }
 
 /****************************************************/
-int __devinit dx_crypto_api_init(struct sep_drvdata *drvdata)
+int dx_crypto_api_init(struct sep_drvdata *drvdata)
 {
 	/* Init. return code of each init. function to know which one to
 	   cleanup (only those with rc==0) */
@@ -1401,7 +1401,7 @@ int __devinit dx_crypto_api_init(struct sep_drvdata *drvdata)
 				       sizeof(struct sep_ctx_cache_entry),
 				       L1_CACHE_BYTES, 0);
 	if (sep_ctx_pool == NULL) {
-		SEP_LOG_ERR("Failed allocating pool for SeP contexts\n");
+		pr_err("Failed allocating pool for SeP contexts\n");
 		rc = -ENOMEM;
 		goto init_error;
 	}
@@ -1427,7 +1427,7 @@ int __devinit dx_crypto_api_init(struct sep_drvdata *drvdata)
 	return rc;
 }
 
-void __devexit dx_crypto_api_fini(void)
+void dx_crypto_api_fini(void)
 {
 	digest_algs_exit();
 	ablkcipher_algs_exit();

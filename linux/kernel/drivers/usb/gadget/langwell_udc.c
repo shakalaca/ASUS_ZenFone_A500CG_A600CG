@@ -3596,7 +3596,7 @@ static void langwell_udc_remove(struct pci_dev *pdev)
 		pci_disable_device(pdev);
 #else
 	if (dev->transceiver) {
-		usb_put_transceiver(dev->transceiver);
+		usb_put_phy(dev->transceiver);
 		dev->transceiver = NULL;
 		dev->iotg = NULL;
 	}
@@ -3638,7 +3638,7 @@ static int langwell_udc_probe(struct pci_dev *pdev,
 	int			retval;
 
 	/* alloc, and start init */
-	dev = kzalloc(sizeof *dev, GFP_KERNEL);
+	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (dev == NULL) {
 		retval = -ENOMEM;
 		goto error;
@@ -3660,7 +3660,7 @@ static int langwell_udc_probe(struct pci_dev *pdev,
 
 	/* mem region and register base */
 	dev->region = 1;
-	dev->transceiver = usb_get_transceiver();
+	dev->transceiver = usb_get_phy(USB_PHY_TYPE_USB2);
 
 	dev->iotg = otg_to_mid_xceiv(dev->transceiver);
 
@@ -3775,7 +3775,7 @@ static int langwell_udc_probe(struct pci_dev *pdev,
 	/* allocate device dQH memory */
 	size = dev->ep_max * sizeof(struct langwell_dqh);
 	dev_vdbg(&dev->pdev->dev, "orig size = %zd\n", size);
-	size = roundup(size, DQH_ALIGHMENT);
+	size = roundup(size, DQH_ALIGNMENT);
 	dev->ep_dqh = dma_alloc_coherent(&pdev->dev, size,
 					&dev->ep_dqh_dma, GFP_KERNEL);
 	if (!dev->ep_dqh) {
@@ -3868,10 +3868,6 @@ static int langwell_udc_probe(struct pci_dev *pdev,
 	dev_vdbg(&dev->pdev->dev,
 			"After langwell_udc_probe(), print all registers:\n");
 	print_all_registers(dev);
-
-	retval = device_register(&dev->gadget.dev);
-	if (retval)
-		goto error;
 
 	retval = usb_add_gadget_udc(&pdev->dev, &dev->gadget);
 	if (retval)
@@ -4245,7 +4241,7 @@ static int intel_mid_register_peripheral(struct pci_driver *peripheral_driver)
 	struct pci_dev			*pdev;
 	int				retval;
 
-	otg = usb_get_transceiver();
+	otg = usb_get_phy(USB_PHY_TYPE_USB2);
 	if (otg == NULL)
 		return -ENODEV;
 
@@ -4266,7 +4262,7 @@ static int intel_mid_register_peripheral(struct pci_driver *peripheral_driver)
 
 	langwell_udc_notify_otg(MID_OTG_NOTIFY_CLIENTADD);
 
-	usb_put_transceiver(otg);
+	usb_put_phy(otg);
 
 	return 0;
 }
@@ -4279,12 +4275,12 @@ static void intel_mid_unregister_peripheral(struct pci_driver
 	struct intel_mid_otg_xceiv	*iotg;
 	struct pci_dev			*pdev;
 
-	otg = usb_get_transceiver();
+	otg = usb_get_phy(USB_PHY_TYPE_USB2);
 	if (otg == NULL)
-		return ;
+		return;
 
 	if (peripheral_driver ==  NULL || peripheral_driver->remove == NULL)
-		return ;
+		return;
 
 	pdev = to_pci_dev(otg->dev);
 	peripheral_driver->remove(pdev);
@@ -4297,7 +4293,7 @@ static void intel_mid_unregister_peripheral(struct pci_driver
 	atomic_notifier_call_chain(&iotg->iotg_notifier,
 				MID_OTG_NOTIFY_CLIENTREMOVE, iotg);
 
-	usb_put_transceiver(otg);
+	usb_put_phy(otg);
 }
 #endif
 

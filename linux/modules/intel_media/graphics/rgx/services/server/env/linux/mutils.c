@@ -91,7 +91,7 @@ PVRLinuxX86PATProbe(IMG_VOID)
 	 * cpu_has_pat indicates whether PAT support is available on the CPU,
 	 * but doesn't indicate if it has been enabled.
 	 */
-	if (cpu_has_pat)	/* PRQA S 3335 */ /* ignore 'no function declared' */
+	if (cpu_has_pat)
 	{
 		u64 pat;
 		IMG_UINT pat_index;
@@ -145,7 +145,6 @@ pvr_pgprot_writecombine(pgprot_t prot)
      * pgprot_noncached, dpending on the value for of
      * SUPPORT_LINUX_X86_WRITECOMBINE.
      */
-    /* PRQA S 0481,0482 2 */ /* scalar expressions */
     return (g_write_combining_available) ?
 		__pgprot((pgprot_val(prot) & ~_PAGE_CACHE_MASK) | _PAGE_CACHE_WC) : pgprot_noncached(prot);
 }

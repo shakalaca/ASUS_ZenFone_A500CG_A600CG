@@ -37,6 +37,7 @@
 
 #include "mmc_ops.h"
 
+
 static struct mmc_panic_host *panic_host;
 
 static int mmc_emergency_prepare(void)
@@ -47,6 +48,7 @@ static int mmc_emergency_prepare(void)
 		pr_err("%s: panic host was not setup\n", __func__);
 		return -ENODEV;
 	}
+
 	/*
 	 * once panic happened, we monopolize the host controller.
 	 * so claim host without relase any more.
@@ -95,7 +97,7 @@ static void mmc_emergency_send_req(struct mmc_request *mrq)
 		BUG_ON(mrq->data->blksz > host->max_blk_size);
 		BUG_ON(mrq->data->blocks > host->max_blk_count);
 		BUG_ON(mrq->data->blocks * mrq->data->blksz >
-			host->max_req_size);
+				host->max_req_size);
 
 		mrq->cmd->data = mrq->data;
 		mrq->data->error = 0;
@@ -121,7 +123,7 @@ static void mmc_emergency_send_req(struct mmc_request *mrq)
 	host->panic_ops->request(host, mrq);
 
 	while ((mrq->cmd->error || (mrq->data && (mrq->data->error ||
-		  (mrq->data->stop && mrq->data->stop->error)))) &&
+			(mrq->data->stop && mrq->data->stop->error)))) &&
 			mrq->cmd->retries > 0) {
 		/* clear errors */
 		mrq->cmd->error = 0;
@@ -181,6 +183,7 @@ static int __mmc_emergency_write(unsigned int blk_id)
 	return cmd.error;
 }
 
+
 static int mmc_emergency_go_idle(struct mmc_panic_host *host)
 {
 	int err;
@@ -219,7 +222,6 @@ static int mmc_emergency_go_idle(struct mmc_panic_host *host)
 
 	return err;
 }
-
 static int mmc_emergency_send_op_cond(struct mmc_panic_host *host,
 		u32 ocr, u32 *rocr)
 {
@@ -353,7 +355,6 @@ static int mmc_emergency_send_status(struct mmc_panic_host *host, u32 *status)
 
 	return 0;
 }
-
 static int mmc_emergency_switch(struct mmc_panic_host *host,
 		u8 set, u8 index, u8 value, u8 check_busy)
 {
@@ -366,9 +367,9 @@ static int mmc_emergency_switch(struct mmc_panic_host *host,
 
 	cmd.opcode = MMC_SWITCH;
 	cmd.arg = (MMC_SWITCH_MODE_WRITE_BYTE << 24) |
-		  (index << 16) |
-		  (value << 8) |
-		  set;
+		(index << 16) |
+		(value << 8) |
+		set;
 	if (check_busy)
 		cmd.flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
 	else
@@ -394,8 +395,8 @@ static int mmc_emergency_switch(struct mmc_panic_host *host,
 			return -EBADMSG;
 	} else {
 		if (status & 0xFDFFA000)
-			pr_warn("%s: unexpected status %#x after switch\n",
-					mmc_hostname(card->host), status);
+			pr_warn("%s: unexpected status %#x after switch",
+				mmc_hostname(card->host), status);
 		if (status & R1_SWITCH_ERROR)
 			return -EBADMSG;
 	}
@@ -419,9 +420,9 @@ static int mmc_emergency_cache_disable(struct mmc_panic_host *host)
 		 * check busy state here by polling card status
 		 */
 		err = mmc_emergency_switch(host,
-			EXT_CSD_CMD_SET_NORMAL,
-			EXT_CSD_CACHE_CTRL, 0,
-			0);
+				EXT_CSD_CMD_SET_NORMAL,
+				EXT_CSD_CACHE_CTRL, 0,
+				0);
 
 		if (err)
 			pr_err("%s: disable cache error %d in panic mode\n",
@@ -546,15 +547,15 @@ static int mmc_emergency_reinit_card(void)
 	 * Activate high speed (if supported)
 	 */
 	if ((card->ext_csd.hs_max_dtr != 0) &&
-		(host->caps & MMC_CAP_MMC_HIGHSPEED)) {
+			(host->caps & MMC_CAP_MMC_HIGHSPEED)) {
 		err = mmc_emergency_switch(host, EXT_CSD_CMD_SET_NORMAL,
-			EXT_CSD_HS_TIMING, 1, true);
+				EXT_CSD_HS_TIMING, 1, true);
 		if (err && err != -EBADMSG)
 			goto err;
 
 		if (err) {
-			printk(KERN_WARNING "%s: switch to highspeed failed\n",
-			       __func__);
+			pr_warn("%s: switch to highspeed failed\n",
+					__func__);
 			err = 0;
 		} else {
 			mmc_card_set_highspeed(card);
@@ -585,7 +586,7 @@ static int mmc_emergency_reinit_card(void)
 	 * By default use SDR mode for panic write
 	 */
 	if ((card->csd.mmca_vsn >= CSD_SPEC_VER_4) &&
-	    (host->caps & (MMC_CAP_4_BIT_DATA | MMC_CAP_8_BIT_DATA))) {
+		(host->caps & (MMC_CAP_4_BIT_DATA | MMC_CAP_8_BIT_DATA))) {
 		unsigned ext_csd_bit, bus_width;
 
 		if (host->caps & MMC_CAP_8_BIT_DATA) {
@@ -597,14 +598,14 @@ static int mmc_emergency_reinit_card(void)
 		}
 
 		err = mmc_emergency_switch(host, EXT_CSD_CMD_SET_NORMAL,
-				 EXT_CSD_BUS_WIDTH, ext_csd_bit, true);
+				EXT_CSD_BUS_WIDTH, ext_csd_bit, true);
 
 		if (err && err != -EBADMSG)
 			goto err;
 
 		if (err) {
-			printk(KERN_WARNING "%s: switch to bus %dbit failed\n",
-					__func__, 1 << bus_width);
+			pr_warn("%s: switch to bus %dbit failed\n",
+				__func__, 1 << bus_width);
 			err = 0;
 		} else {
 			ddr = MMC_SDR_MODE;
@@ -697,7 +698,7 @@ int mmc_emergency_init(void)
 
 	ret = mmc_emergency_prepare();
 	if (ret) {
-		pr_err("%s: prepare panic host failed\n", __func__);
+		pr_err("%s: prepare host controller failed\n", __func__);
 		return ret;
 	}
 
@@ -761,6 +762,8 @@ EXPORT_SYMBOL(mmc_emergency_init);
 void mmc_emergency_setup(struct mmc_host *mmc)
 {
 	struct mmc_panic_host *host = panic_host;
+
+        pr_debug("enter %s %d\n", __func__, __LINE__);
 
 	/*
 	 * mmc host has no panic host
@@ -827,7 +830,6 @@ void mmc_emergency_setup(struct mmc_host *mmc)
 	return;
 }
 EXPORT_SYMBOL(mmc_emergency_setup);
-
 /*
  * mmc_alloc_panic_host - used for host layer driver to alloc mmc_panic_host.
  * @host: mmc host

@@ -35,17 +35,21 @@ static void mei_hbm_me_cl_allocate(struct mei_device *dev)
 	struct mei_me_client *clients;
 	int b;
 
+	dev->me_clients_num = 0;
+	dev->me_client_presentation_num = 0;
+	dev->me_client_index = 0;
+
 	/* count how many ME clients we have */
 	for_each_set_bit(b, dev->me_clients_map, MEI_CLIENTS_MAX)
 		dev->me_clients_num++;
 
-	if (dev->me_clients_num <= 0)
+	if (dev->me_clients_num == 0)
 		return;
 
 	kfree(dev->me_clients);
 	dev->me_clients = NULL;
 
-	dev_dbg(&dev->pdev->dev, "memory allocation for ME clients size=%zd.\n",
+	dev_dbg(&dev->pdev->dev, "memory allocation for ME clients size=%u.\n",
 		dev->me_clients_num * sizeof(struct mei_me_client));
 	/* allocate storage for ME clients representation */
 	clients = kcalloc(dev->me_clients_num,
@@ -81,12 +85,12 @@ void mei_hbm_cl_hdr(struct mei_cl *cl, u8 hbm_cmd, void *buf, size_t len)
 }
 
 /**
- * same_disconn_addr - tells if they have the same address
+ * mei_hbm_cl_addr_equal - tells if they have the same address
  *
- * @file: private data of the file object.
- * @disconn: disconnection request.
+ * @cl: - client
+ * @buf: buffer with cl header
  *
- * returns true if addres are same
+ * returns true if addresses are the same
  */
 static inline
 bool mei_hbm_cl_addr_equal(struct mei_cl *cl, void *buf)
@@ -139,7 +143,7 @@ int mei_hbm_start_wait(struct mei_device *dev)
 
 	if (ret <= 0 && (dev->hbm_state <= MEI_HBM_START)) {
 		dev->hbm_state = MEI_HBM_IDLE;
-		dev_err(&dev->pdev->dev, "wating for mei start failed\n");
+		dev_err(&dev->pdev->dev, "waiting for mei start failed\n");
 		return -ETIMEDOUT;
 	}
 	return 0;
@@ -155,6 +159,7 @@ int mei_hbm_start_req(struct mei_device *dev)
 	struct mei_msg_hdr *mei_hdr = &dev->wr_msg.hdr;
 	struct hbm_host_version_request *start_req;
 	const size_t len = sizeof(struct hbm_host_version_request);
+	int ret;
 
 	mei_hbm_hdr(mei_hdr, len);
 
@@ -166,12 +171,13 @@ int mei_hbm_start_req(struct mei_device *dev)
 	start_req->host_version.minor_version = HBM_MINOR_VERSION;
 
 	dev->hbm_state = MEI_HBM_IDLE;
-	if (mei_write_message(dev, mei_hdr, dev->wr_msg.data)) {
-		dev_err(&dev->pdev->dev, "version message writet failed\n");
-		dev->dev_state = MEI_DEV_RESETTING;
-		mei_reset(dev, 1);
-		return -ENODEV;
+	ret = mei_write_message(dev, mei_hdr, dev->wr_msg.data);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "version message write failed ret = %d\n",
+			ret);
+		return ret;
 	}
+
 	dev->hbm_state = MEI_HBM_START;
 	dev->init_clients_timer = MEI_CLIENTS_INIT_TIMEOUT;
 	return 0;
@@ -221,20 +227,21 @@ static int mei_hbm_prop_req(struct mei_device *dev)
 	struct hbm_props_request *prop_req;
 	const size_t len = sizeof(struct hbm_props_request);
 	unsigned long next_client_index;
-	u8 client_num;
-
-
-	client_num = dev->me_client_presentation_num;
+	unsigned long client_num;
 
 	next_client_index = find_next_bit(dev->me_clients_map, MEI_CLIENTS_MAX,
 					  dev->me_client_index);
 
 	/* We got all client properties */
 	if (next_client_index == MEI_CLIENTS_MAX) {
-		queue_work(dev->wq, &dev->init_work);
+		schedule_work(&dev->init_work);
 
 		return 0;
 	}
+
+	client_num = dev->me_client_presentation_num;
+	if (WARN_ON(dev->me_clients_num <= client_num))
+		return -EIO;
 
 	dev->me_clients[client_num].client_id = next_client_index;
 	dev->me_clients[client_num].mei_flow_ctrl_creds = 0;
@@ -263,7 +270,7 @@ static int mei_hbm_prop_req(struct mei_device *dev)
 }
 
 /**
- * mei_hbm_stop_req_prepare - perpare stop request message
+ * mei_hbm_stop_req_prepare - prepare stop request message
  *
  * @dev - mei device
  * @mei_hdr - mei message header
@@ -284,7 +291,7 @@ static void mei_hbm_stop_req_prepare(struct mei_device *dev,
 }
 
 /**
- * mei_hbm_cl_flow_control_req - sends flow control requst.
+ * mei_hbm_cl_flow_control_req - sends flow control request.
  *
  * @dev: the device structure
  * @cl: client info
@@ -446,7 +453,7 @@ int mei_hbm_cl_connect_req(struct mei_device *dev, struct mei_cl *cl)
 }
 
 /**
- * mei_hbm_cl_connect_res - connect resposne from the ME
+ * mei_hbm_cl_connect_res - connect response from the ME
  *
  * @dev: the device structure
  * @rs: connect response bus message
@@ -500,8 +507,8 @@ static void mei_hbm_cl_connect_res(struct mei_device *dev,
 
 
 /**
- * mei_hbm_fw_disconnect_req - disconnect request initiated by me
- *  host sends disoconnect response
+ * mei_hbm_fw_disconnect_req - disconnect request initiated by ME firmware
+ *  host sends disconnect response
  *
  * @dev: the device structure.
  * @disconnect_req: disconnect request bus message from the me
@@ -672,16 +679,17 @@ void mei_hbm_dispatch(struct mei_device *dev, struct mei_msg_hdr *hdr)
 
 	case HOST_ENUM_RES_CMD:
 		enum_res = (struct hbm_host_enum_response *) mei_msg;
-		memcpy(dev->me_clients_map, enum_res->valid_addresses, 32);
+		BUILD_BUG_ON(sizeof(dev->me_clients_map)
+				< sizeof(enum_res->valid_addresses));
+		memcpy(dev->me_clients_map, enum_res->valid_addresses,
+			sizeof(enum_res->valid_addresses));
 		if (dev->dev_state == MEI_DEV_INIT_CLIENTS &&
 		    dev->hbm_state == MEI_HBM_ENUM_CLIENTS) {
 				dev->init_clients_timer = 0;
-				dev->me_client_presentation_num = 0;
-				dev->me_client_index = 0;
 				mei_hbm_me_cl_allocate(dev);
 				dev->hbm_state = MEI_HBM_CLIENT_PROPERTIES;
 
-				/* first property reqeust */
+				/* first property request */
 				mei_hbm_prop_req(dev);
 		} else {
 			dev_err(&dev->pdev->dev, "reset: unexpected enumeration response hbm.\n");

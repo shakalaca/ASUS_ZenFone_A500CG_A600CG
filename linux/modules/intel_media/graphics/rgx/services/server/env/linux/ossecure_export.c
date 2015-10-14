@@ -130,7 +130,7 @@ PVRSRV_ERROR OSSecureExport(CONNECTION_DATA *psConnection,
 
 	/* Return the new services connection our secure data created */
 #if defined(SUPPORT_DRM)
-	psSecureConnection = LinuxConnectionFromFile(secure_file->private_data);
+	psSecureConnection = LinuxConnectionFromFile(PVR_DRM_FILE_FROM_FILE(secure_file));
 #else
 	psSecureConnection = LinuxConnectionFromFile(secure_file);
 #endif
@@ -163,7 +163,7 @@ PVRSRV_ERROR OSSecureImport(IMG_SECURE_TYPE hSecure, IMG_PVOID *ppvData)
 	}
 
 #if defined(SUPPORT_DRM)
-	psSecureConnection = LinuxConnectionFromFile(secure_file->private_data);
+	psSecureConnection = LinuxConnectionFromFile(PVR_DRM_FILE_FROM_FILE(secure_file));
 #else
 	psSecureConnection = LinuxConnectionFromFile(secure_file);
 #endif

@@ -144,8 +144,8 @@ void mrfld_disable_crtc(struct drm_device *dev, int pipe, bool plane_d)
 
 	PSB_DEBUG_ENTRY("pipe = %d\n", pipe);
 
-	if (pipe != 1 && ((get_panel_type(dev, pipe) == JDI_VID) ||
-			(get_panel_type(dev, pipe) == CMI_VID)))
+	if (pipe != 1 && ((get_panel_type(dev, pipe) == JDI_7x12_VID) ||
+			(get_panel_type(dev, pipe) == CMI_7x12_VID)))
 		return;
 
 	switch (pipe) {
@@ -231,6 +231,7 @@ static void mrfld_crtc_dpms(struct drm_crtc *crtc, int mode)
 	u32 temp;
 	bool enabled;
 	u32 power_island = 0;
+	struct android_hdmi_priv *hdmi_priv = dev_priv->hdmi_priv;
 
 	PSB_DEBUG_ENTRY("mode = %d, pipe = %d\n", mode, pipe);
 
@@ -242,10 +243,11 @@ static void mrfld_crtc_dpms(struct drm_crtc *crtc, int mode)
 	 */
 	if (pipe != 1 && ((get_panel_type(dev, pipe) == TMD_VID) ||
 				(get_panel_type(dev, pipe) == TMD_6X10_VID) ||
-				(get_panel_type(dev, pipe) == CMI_VID) ||
-				(get_panel_type(dev, pipe) == CMI_CMD) ||
-				(get_panel_type(dev, pipe) == JDI_CMD) ||
-				(get_panel_type(dev, pipe) == JDI_VID))) {
+				(get_panel_type(dev, pipe) == CMI_7x12_VID) ||
+				(get_panel_type(dev, pipe) == CMI_7x12_CMD) ||
+				(get_panel_type(dev, pipe) == SHARP_10x19_CMD) ||
+				(get_panel_type(dev, pipe) == JDI_7x12_CMD) ||
+				(get_panel_type(dev, pipe) == JDI_7x12_VID))) {
 		return;
 	}
 #endif
@@ -254,20 +256,6 @@ static void mrfld_crtc_dpms(struct drm_crtc *crtc, int mode)
 
 	if (!power_island_get(power_island))
 		return;
-#if 0
-	/* Ignore if system is already in DSR and in suspended state. */
-	if (gbgfxsuspended && gbdispstatus == false && mode == 3) {
-		if (dev_priv->rpm_enabled && pipe == 1) {
-			//          dev_priv->is_mipi_on = false;
-			pm_request_idle(&gpDrmDevice->pdev->dev);
-		}
-		return;
-	} else if (mode == 0) {
-		//do not need to set gbdispstatus=true in crtc.
-		//this will be set in encoder such as mdfld_dsi_dbi_dpms
-		//gbdispstatus = true;
-	}
-#endif
 
 	switch (pipe) {
 	case 0:
@@ -305,6 +293,8 @@ static void mrfld_crtc_dpms(struct drm_crtc *crtc, int mode)
 	case DRM_MODE_DPMS_ON:
 	case DRM_MODE_DPMS_STANDBY:
 	case DRM_MODE_DPMS_SUSPEND:
+		DCLockMutex();
+
 		/* Enable the DPLL */
 		temp = REG_READ(dpll_reg);
 
@@ -405,7 +395,14 @@ static void mrfld_crtc_dpms(struct drm_crtc *crtc, int mode)
 
 		psb_intel_crtc_load_lut(crtc);
 
+		if ((pipe == 1) && hdmi_priv)
+			hdmi_priv->hdmi_suspended = false;
+
+		psb_enable_vblank(dev, pipe);
+
 		DCAttachPipe(pipe);
+		DC_MRFLD_onPowerOn(pipe);
+		DCUnLockMutex();
 
 		/* Give the overlay scaler a chance to enable
 		   if it's on this pipe */
@@ -413,6 +410,8 @@ static void mrfld_crtc_dpms(struct drm_crtc *crtc, int mode)
 
 		break;
 	case DRM_MODE_DPMS_OFF:
+		DCLockMutex();
+
 		/* Give the overlay scaler a chance to disable
 		 * if it's on this pipe */
 		/* psb_intel_crtc_dpms_video(crtc, FALSE); TODO */
@@ -469,11 +468,18 @@ static void mrfld_crtc_dpms(struct drm_crtc *crtc, int mode)
 			}
 		}
 
+		drm_handle_vblank(dev, pipe);
+
 		/* Turn off vsync interrupt. */
 		drm_vblank_off(dev, pipe);
 
+		if ((pipe == 1) && hdmi_priv)
+			hdmi_priv->hdmi_suspended = true;
+
 		/* Make the pending flip request as completed. */
 		DCUnAttachPipe(pipe);
+		DC_MRFLD_onPowerOff(pipe);
+		DCUnLockMutex();
 		break;
 	}
 

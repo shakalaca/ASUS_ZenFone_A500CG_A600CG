@@ -21,14 +21,19 @@
  * DEALINGS IN THE SOFTWARE.
  *
  * Authors:
- * Faxing Lu
+ * Faxing Lu <faxing.lu@intel.com>
  */
 
 #include "mdfld_dsi_dbi.h"
 #include "mdfld_dsi_esd.h"
 #include <asm/intel_scu_pmic.h>
+#include <asm/intel_mid_rpmsg.h>
+#include <asm/intel_mid_remoteproc.h>
 
 #include "displays/jdi_cmd.h"
+
+/* The register to control secure I2C FLIS pin */
+#define SECURE_I2C_FLIS_REG	0xFF0C1D30
 
 static int mipi_reset_gpio;
 static int bias_en_gpio;
@@ -37,7 +42,13 @@ static u8 jdi_mcs_clumn_addr[] = {
 			0x2a, 0x00, 0x00, 0x02, 0xcf};
 static u8 jdi_mcs_page_addr[] = {
 			0x2b, 0x00, 0x00, 0x04, 0xff};
-
+static u8 jdi_timing_control[] = {
+			0xc6, 0x6d, 0x05, 0x60, 0x05,
+			0x60, 0x01, 0x01, 0x01, 0x02,
+			0x01, 0x02, 0x01, 0x01, 0x01,
+			0x01, 0x01, 0x01, 0x05, 0x15,
+			0x09
+			};
 static
 int jdi_cmd_drv_ic_init(struct mdfld_dsi_config *dsi_config)
 {
@@ -60,7 +71,7 @@ int jdi_cmd_drv_ic_init(struct mdfld_dsi_config *dsi_config)
 		goto ic_init_err;
 	}
 
-	msleep(130);
+	msleep(120);
 	err = mdfld_dsi_send_mcs_short_hs(sender,
 			write_display_brightness, 0x4, 1,
 			MDFLD_DSI_SEND_PACKAGE);
@@ -88,13 +99,33 @@ int jdi_cmd_drv_ic_init(struct mdfld_dsi_config *dsi_config)
 		goto ic_init_err;
 	}
 
-	err = mdfld_dsi_send_mcs_short_hs(sender,
-			write_cabc_min_bright, 51, 1,
-			MDFLD_DSI_SEND_PACKAGE);
-	if (err) {
-		DRM_ERROR("%s: %d: Write CABC minimum brightness\n",
-		__func__, __LINE__);
-		goto ic_init_err;
+	if (!IS_ANN_A0(dev)) {
+		err = mdfld_dsi_send_mcs_short_hs(sender,
+				write_cabc_min_bright, 51, 1,
+				MDFLD_DSI_SEND_PACKAGE);
+		if (err) {
+			DRM_ERROR("%s: %d: Write CABC minimum brightness\n",
+					__func__, __LINE__);
+			goto ic_init_err;
+		}
+		err = mdfld_dsi_send_gen_short_hs(sender,
+				access_protect, 4, 2,
+				MDFLD_DSI_SEND_PACKAGE);
+		if (err) {
+			DRM_ERROR("%s: %d: Manufacture command protect on\n",
+					__func__, __LINE__);
+			goto ic_init_err;
+		}
+
+		err = mdfld_dsi_send_gen_long_lp(sender,
+				jdi_timing_control,
+				21, MDFLD_DSI_SEND_PACKAGE);
+		if (err) {
+			DRM_ERROR("%s: %d: Set panel timing\n",
+					__func__, __LINE__);
+			goto ic_init_err;
+		}
+		msleep(20);
 	}
 
 	err = mdfld_dsi_send_mcs_short_hs(sender,
@@ -202,25 +233,46 @@ void jdi_cmd_controller_init(
 	hw_ctx->cck_div = 1;
 	hw_ctx->pll_bypass_mode = 0;
 
-	hw_ctx->mipi_control = 0x0;
-	hw_ctx->intr_en = 0xFFFFFFFF;
-	hw_ctx->hs_tx_timeout = 0xFFFFFF;
-	hw_ctx->lp_rx_timeout = 0xFFFFFF;
-	hw_ctx->device_reset_timer = 0xffff;
-	hw_ctx->turn_around_timeout = 0x1a;
-	hw_ctx->high_low_switch_count = 0x21;
-	hw_ctx->clk_lane_switch_time_cnt = 0x21000f;
-	hw_ctx->lp_byteclk = 0x5;
-	hw_ctx->dphy_param = 0x25155b1e;
-	hw_ctx->eot_disable = 0x3;
-	hw_ctx->init_count = 0xf0;
-	hw_ctx->dbi_bw_ctrl = 1390;
-	hw_ctx->hs_ls_dbi_enable = 0x0;
-	hw_ctx->dsi_func_prg = ((DBI_DATA_WIDTH_OPT2 << 13) |
+	if (IS_ANN_A0(dev)) {
+		hw_ctx->mipi_control = 0x18;
+		hw_ctx->intr_en = 0xFFFFFFFF;
+		hw_ctx->hs_tx_timeout = 0xFFFFFF;
+		hw_ctx->lp_rx_timeout = 0xFFFFFF;
+		hw_ctx->device_reset_timer = 0xff;
+		hw_ctx->turn_around_timeout = 0xffff;
+		hw_ctx->high_low_switch_count = 0x20;
+		hw_ctx->clk_lane_switch_time_cnt = 0x21000e;
+		hw_ctx->lp_byteclk = 0x4;
+		hw_ctx->dphy_param = 0x1b104315;
+		hw_ctx->eot_disable = 0x1;
+		hw_ctx->init_count = 0x7d0;
+		hw_ctx->dbi_bw_ctrl = 1390;
+		hw_ctx->hs_ls_dbi_enable = 0x0;
+		hw_ctx->dsi_func_prg = ((DBI_DATA_WIDTH_OPT2 << 13) |
 				dsi_config->lane_count);
-	hw_ctx->mipi = PASS_FROM_SPHY_TO_AFE |
+		hw_ctx->mipi = SEL_FLOPPED_HSTX	| PASS_FROM_SPHY_TO_AFE |
+			BANDGAP_CHICKEN_BIT | TE_TRIGGER_GPIO_PIN;
+	} else {
+		hw_ctx->mipi_control = 0x0;
+		hw_ctx->intr_en = 0xFFFFFFFF;
+		hw_ctx->hs_tx_timeout = 0xFFFFFF;
+		hw_ctx->lp_rx_timeout = 0xFFFFFF;
+		hw_ctx->device_reset_timer = 0xffff;
+		hw_ctx->turn_around_timeout = 0x1a;
+		hw_ctx->high_low_switch_count = 0x21;
+		hw_ctx->clk_lane_switch_time_cnt = 0x21000f;
+		hw_ctx->lp_byteclk = 0x5;
+		hw_ctx->dphy_param = 0x25155b1e;
+		hw_ctx->eot_disable = 0x3;
+		hw_ctx->init_count = 0xf0;
+		hw_ctx->dbi_bw_ctrl = 1390;
+		hw_ctx->hs_ls_dbi_enable = 0x0;
+		hw_ctx->dsi_func_prg = ((DBI_DATA_WIDTH_OPT2 << 13) |
+				dsi_config->lane_count);
+		hw_ctx->mipi = PASS_FROM_SPHY_TO_AFE |
 			BANDGAP_CHICKEN_BIT |
 			TE_TRIGGER_GPIO_PIN;
+	}
 	hw_ctx->video_mode_format = 0xf;
 
 #ifdef ENABLE_CSC_GAMMA /*FIXME*/
@@ -455,10 +507,13 @@ int jdi_cmd_panel_reset(
 	/* Because when reset touchscreen panel, touchscreen will pull i2c bus
 	 * to low, sometime this operation will cause i2c bus enter into wrong
 	 * status, so before reset, switch i2c scl pin */
-	vaddr1 = ioremap(0xff0c1d30, 4);
+	vaddr1 = ioremap(SECURE_I2C_FLIS_REG, 4);
 	reg_value_scl = ioread32(vaddr1);
 	reg_value_scl &= ~0x1000;
-	iowrite32(reg_value_scl, vaddr1);
+	rpmsg_send_generic_raw_command(RP_INDIRECT_WRITE, 0,
+					(u8 *)&reg_value_scl, 4,
+					NULL, 0,
+					SECURE_I2C_FLIS_REG, 0);
 
 	__vpro2_power_ctrl(true);
 	usleep_range(2000, 2500);
@@ -491,7 +546,10 @@ int jdi_cmd_panel_reset(
 
 	/* switch i2c scl pin back */
 	reg_value_scl |= 0x1000;
-	iowrite32(reg_value_scl, vaddr1);
+	rpmsg_send_generic_raw_command(RP_INDIRECT_WRITE, 0,
+					(u8 *)&reg_value_scl, 4,
+					NULL, 0,
+					SECURE_I2C_FLIS_REG, 0);
 	iounmap(vaddr1);
 	return 0;
 }

@@ -52,6 +52,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pmr.h"
 
 typedef struct _DEVMEMINT_CTX_ DEVMEMINT_CTX;
+typedef struct _DEVMEMINT_CTX_EXPORT_ DEVMEMINT_CTX_EXPORT;
 typedef struct _DEVMEMINT_HEAP_ DEVMEMINT_HEAP;
 /* FIXME: can we unify RESERVATION and MAPPING to save data structures? */
 typedef struct _DEVMEMINT_RESERVATION_ DEVMEMINT_RESERVATION;
@@ -111,12 +112,41 @@ DevmemIntCtxCreate(
 /*
  * DevmemIntCtxDestroy()
  *
- * Undoes a prior DevmemIntCtxCreate.
+ * Undoes a prior DevmemIntCtxCreate or DevmemIntCtxImport.
  */
 extern PVRSRV_ERROR
 DevmemIntCtxDestroy(
                   DEVMEMINT_CTX *psDevmemCtx
                   );
+
+/*
+ * DevmemIntCtxExport()
+ *
+ * Export a device memory context created with DevmemIntCtxCreate to another
+ * process
+ */
+ 
+extern PVRSRV_ERROR
+DevmemIntCtxExport(DEVMEMINT_CTX *psDevmemCtx,
+                   DEVMEMINT_CTX_EXPORT **ppsExport);
+
+/*
+ * DevmemIntCtxUnexport
+ *
+ * Unexport an exported a device memory context.
+ */
+extern PVRSRV_ERROR
+DevmemIntCtxUnexport(DEVMEMINT_CTX_EXPORT *psExport);
+
+/*
+ * DevmemIntCtxImport
+ *
+ * Import an exported a device memory context.
+ */
+extern PVRSRV_ERROR
+DevmemIntCtxImport(DEVMEMINT_CTX_EXPORT *psExport,
+				   DEVMEMINT_CTX **ppsDevmemCtxPtr,
+				   IMG_HANDLE *hPrivData);
 
 /*
  * DevmemIntHeapCreate()

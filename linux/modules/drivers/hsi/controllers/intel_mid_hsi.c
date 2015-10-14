@@ -38,6 +38,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/hsi/hsi.h>
 #include <linux/hsi/intel_mid_hsi.h>
+#include <linux/hsi/hsi_info_board.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/pci.h>
@@ -317,6 +318,7 @@ struct intel_xfer_ctx {
  * @use_oob_cawake: Set to true if intended to be used
  * @hsi_wake_raised: Set to TRUE when interrupt fires on hsi_cawke gpio
  * @hsi_wake_disabled: Set to TRUE when interrupt of hsi_cawake gpio is disabled
+ * @pm_do_reset: reset ARASAN IP in rtpm_resume if needed
  */
 struct intel_controller {
 	/* Devices and resources */
@@ -332,7 +334,7 @@ struct intel_controller {
 	/* Dual-level interrupt tasklets */
 	struct tasklet_struct	 isr_tasklet;
 	struct tasklet_struct	 fwd_tasklet;
-	u16			isr_tasklet_running ;
+	u16			isr_tasklet_running;
 	/* Timers for polling TX and RX states */
 	struct timer_list	 tx_idle_poll;
 	struct timer_list	 rx_idle_poll;
@@ -393,6 +395,7 @@ struct intel_controller {
 	u16 resumed;
 	u16 hsi_wake_raised;
 	u16 hsi_wake_disabled;
+	u16 pm_do_reset;
 
 	bool use_oob_cawake;
 };
@@ -1243,7 +1246,8 @@ static int hsi_ctrl_set_cfg(struct intel_controller *intel_hsi, int do_reset)
  *
  * Returns success or an error if it is not possible to reprogram the device.
  */
-static int hsi_ctrl_resume(struct intel_controller *intel_hsi, int rtpm)
+static int hsi_ctrl_resume(struct intel_controller *intel_hsi, int rtpm,
+							int do_reset)
 	__acquires(&intel_hsi->hw_lock) __releases(&intel_hsi->hw_lock)
 {
 	unsigned long flags;
@@ -1251,8 +1255,9 @@ static int hsi_ctrl_resume(struct intel_controller *intel_hsi, int rtpm)
 
 	spin_lock_irqsave(&intel_hsi->hw_lock, flags);
 	if (intel_hsi->suspend_state != DEVICE_READY) {
-		if (hsi_ctrl_set_cfg(intel_hsi, 0))
+		if (hsi_ctrl_set_cfg(intel_hsi, do_reset))
 			err = -EAGAIN;
+
 		intel_hsi->dma_resumed = 0;
 		intel_hsi->suspend_state--;
 	}
@@ -1288,7 +1293,7 @@ static int hsi_ctrl_suspend(struct intel_controller *intel_hsi, int rtpm)
 	int version = intel_hsi->version;
 	int i, err = 0;
 	unsigned long flags;
-	u32 pending_interrupt = 0 ;
+	u32 pending_interrupt = 0;
 
 	spin_lock_irqsave(&intel_hsi->hw_lock, flags);
 
@@ -1323,7 +1328,7 @@ static int hsi_ctrl_suspend(struct intel_controller *intel_hsi, int rtpm)
 	pending_interrupt = intel_hsi->isr_tasklet_running |
 			intel_hsi->irq_status |
 			intel_hsi->err_status |
-			intel_hsi->dma_status ;
+			intel_hsi->dma_status;
 
 	if ((intel_hsi->tx_state != TX_SLEEPING) ||
 		(intel_hsi->rx_state != RX_SLEEPING) ||
@@ -1731,9 +1736,9 @@ exit_clean_reset:
 	free_xfer_ctx(intel_hsi);
 
 	spin_unlock_irqrestore(&intel_hsi->hw_lock, flags);
-	hsi_pm_runtime_get_sync(intel_hsi);
+
 	force_disable_acready(intel_hsi);
-	pm_runtime_put(intel_hsi->pdev);
+
 	/* Re-enable all tasklets */
 	tasklet_enable(&intel_hsi->fwd_tasklet);
 	tasklet_enable(&intel_hsi->isr_tasklet);
@@ -1986,17 +1991,17 @@ static int hsi_debug_show(struct seq_file *m, void *p)
 	seq_printf(m, "Break delay : %d\n", intel_hsi->brk_us_delay);
 
 	/* Dump the DMA/PIO mapping */
-	seq_printf(m, "TX DMA/PIO  : [");
+	seq_puts(m, "TX DMA/PIO  : [");
 	for (ch = 0; ch < HSI_MID_MAX_CHANNELS; ch++)
 		if (intel_hsi->tx_dma_ch[ch] == -1)
-			seq_printf(m, "PIO  ");
+			seq_puts(m, "PIO  ");
 		else
 			seq_printf(m, "DMA%d  ", intel_hsi->tx_dma_ch[ch]);
 
-	seq_printf(m, "]\nRX DMA/PIO  : [");
+	seq_puts(m, "]\nRX DMA/PIO  : [");
 	for (ch = 0; ch < HSI_MID_MAX_CHANNELS; ch++)
 		if (intel_hsi->rx_dma_ch[ch] == -1)
-			seq_printf(m, "PIO  ");
+			seq_puts(m, "PIO  ");
 		else
 			seq_printf(m, "DMA%d  ", intel_hsi->rx_dma_ch[ch]);
 
@@ -2011,7 +2016,7 @@ static int hsi_debug_show(struct seq_file *m, void *p)
 
 #ifdef CONFIG_HAS_WAKELOCK
 	/* Android PM support */
-	seq_printf(m, "\nWAKELOCK INFO:\n");
+	seq_puts(m, "\nWAKELOCK INFO:\n");
 	seq_printf(m, "   timer_expires: %ld\n",     ws->timer_expires);
 	seq_printf(m, "   total_time   : %lld us\n",
 			ktime_to_us(ws->total_time));
@@ -2033,18 +2038,18 @@ static int hsi_debug_show(struct seq_file *m, void *p)
 #endif
 
 	/* Software FIFO */
-	seq_printf(m, "\nTX Queues:\n");
+	seq_puts(m, "\nTX Queues:\n");
 	for (ch = 0; ch < HSI_MID_MAX_CHANNELS; ch++)
 		hsi_dump_queue(&intel_hsi->tx_queue[ch], ch, m);
 
-	seq_printf(m, "\nRX Queues:\n");
+	seq_puts(m, "\nRX Queues:\n");
 	for (ch = 0; ch < HSI_MID_MAX_CHANNELS; ch++)
 		hsi_dump_queue(&intel_hsi->rx_queue[ch], ch, m);
 
-	seq_printf(m, "\nBREAK Queue:\n");
+	seq_puts(m, "\nBREAK Queue:\n");
 	hsi_dump_queue(&intel_hsi->brk_queue, 0, m);
 
-	seq_printf(m, "\nFWD Queue:\n");
+	seq_puts(m, "\nFWD Queue:\n");
 	hsi_dump_queue(&intel_hsi->fwd_queue, 0, m);
 	return 0;
 }
@@ -2358,6 +2363,11 @@ static void do_hsi_start_dma(struct hsi_msg *msg,
 		goto do_start_dma_done;
 
 	if (is_arasan_v1(version)) {
+		unsigned int dma_bit;
+		/* Wait for CH_EN bit is automatically cleared by hardware before setting next DMA */
+		dma_bit = 1 << dma_ch;
+		while (hsi_ioread32(intel_hsi, HSI_DWAHB_CHEN(dma)) & dma_bit)
+			;
 		if (is_using_link_list(dma_ctx)) {
 			struct intel_dma_lli_xfer *lli_xfer;
 
@@ -3034,6 +3044,7 @@ static int hsi_mid_setup(struct hsi_client *cl)
 {
 	struct hsi_port *port = hsi_get_port(cl);
 	struct intel_controller *intel_hsi = hsi_port_drvdata(port);
+	struct hsi_platform_data *hsi_info;
 	struct hsi_mid_platform_data *pd;
 	int version = intel_hsi->version;
 	int is_v1 = is_arasan_v1(version);
@@ -3050,11 +3061,16 @@ static int hsi_mid_setup(struct hsi_client *cl)
 	u32 irq_cfg = 0;
 
 	/* Read the platform data to initialise the device */
-	pd = (struct hsi_mid_platform_data *)(cl->device.platform_data);
-	if (pd == NULL) {
+
+	hsi_info = (struct hsi_platform_data *) cl->device.platform_data;
+	if (hsi_info == NULL) {
 		pr_err(DRVNAME": Platform data not found\n");
 		return -EINVAL;
-	}
+	} else
+		pr_info("%s: hsi platform data recovered (modem: %d)", __func__,
+				hsi_info->hsi_client_info.mdm_ver);
+
+	pd = (struct hsi_mid_platform_data *) &(hsi_info->hsi_mid_info);
 
 	/* Save the ACWAKE delay */
 	intel_hsi->acwake_delay = HSI_ACWAKE_DELAY;
@@ -3179,10 +3195,12 @@ static int hsi_mid_setup(struct hsi_client *cl)
 
 	/* Prepare the necessary DMA contexts */
 	err = alloc_xfer_ctx(intel_hsi);
-
 	/* The controller will be configured on resume if necessary */
-	if (unlikely(!err && intel_hsi->suspend_state == DEVICE_READY))
+	if (unlikely(!err && intel_hsi->suspend_state == DEVICE_READY)) {
 		err = hsi_ctrl_set_cfg(intel_hsi, 1);
+		intel_hsi->pm_do_reset = 0;
+	} else
+		intel_hsi->pm_do_reset = 1;
 
 	spin_unlock_irqrestore(&intel_hsi->hw_lock, flags);
 
@@ -3235,9 +3253,9 @@ static int hsi_mid_flush(struct hsi_client *cl)
 	hsi_flush_queue(&intel_hsi->fwd_queue, cl, intel_hsi);
 
 	/* Flush all RX HW FIFO which do not have any SW message queued
-         * Don't flush if the device is not waken up yet: everything will
-         * be cleared at next TTY port open (HSI reset)
-         */
+	* Don't flush if the device is not waken up yet: everything will
+	* be cleared at next TTY port open (HSI reset)
+	*/
 	if (intel_hsi->suspend_state == DEVICE_READY) {
 		for (i = 0; i < hsi_rx_channel_count(intel_hsi); i++) {
 			if (list_empty(&intel_hsi->rx_queue[i])) {
@@ -3687,7 +3705,7 @@ static void hsi_isr_tasklet(unsigned long hsi)
 	int do_fwd = 0;
 	int hsi_wake_raised = 0;
 
-	intel_hsi->isr_tasklet_running = 1 ;
+	intel_hsi->isr_tasklet_running = 1;
 	/* Get a local copy of the current interrupt status */
 	spin_lock_irqsave(&intel_hsi->hw_lock, flags);
 	irq_status = intel_hsi->irq_status;
@@ -3774,7 +3792,7 @@ static void hsi_isr_tasklet(unsigned long hsi)
 		}
 		spin_unlock_irqrestore(&intel_hsi->hw_lock, flags);
 	}
-	intel_hsi->isr_tasklet_running = 0 ;
+	intel_hsi->isr_tasklet_running = 0;
 }
 
 /**
@@ -4116,7 +4134,7 @@ static int hsi_controller_init(struct intel_controller *intel_hsi,
 
 	tasklet_init(&intel_hsi->isr_tasklet, hsi_isr_tasklet,
 		     (unsigned long) intel_hsi);
-	intel_hsi->isr_tasklet_running = 0 ;
+	intel_hsi->isr_tasklet_running = 0;
 	tasklet_init(&intel_hsi->fwd_tasklet, hsi_fwd_tasklet,
 		     (unsigned long) intel_hsi);
 
@@ -4251,7 +4269,8 @@ static int hsi_rtpm_resume(struct device *dev)
 	int err;
 
 	dev_dbg(dev, "hsi enter runtime resume\n");
-	err = hsi_ctrl_resume(intel_hsi, 1);
+	err = hsi_ctrl_resume(intel_hsi, 1, intel_hsi->pm_do_reset);
+	intel_hsi->pm_do_reset = 0;
 	if (!err)
 		hsi_resume_dma_transfers(intel_hsi);
 
@@ -4300,7 +4319,7 @@ static int hsi_pm_resume(struct device *dev)
 	unsigned int i;
 
 	dev_dbg(dev, "hsi enter resume\n");
-	err = hsi_ctrl_resume(intel_hsi, 0);
+	err = hsi_ctrl_resume(intel_hsi, 0, 0);
 	if (!err) {
 		hsi_resume_dma_transfers(intel_hsi);
 		for (i = 0; i < hsi->num_ports; i++)
@@ -4568,7 +4587,7 @@ static const struct dev_pm_ops intel_mid_hsi_rtpm = {
 /**
  * struct pci_ids - PCI IDs handled by the driver (ID of HSI controller)
  */
-static const struct pci_device_id pci_ids[] = {
+static DEFINE_PCI_DEVICE_TABLE(pci_ids) = {
 	{ PCI_VDEVICE(INTEL, HSI_PNW_PCI_DEVICE_ID) },	/* HSI - Penwell */
 	{ PCI_VDEVICE(INTEL, HSI_CLV_PCI_DEVICE_ID) },	/* HSI - Cloverview */
 	{ PCI_VDEVICE(INTEL, HSI_TNG_PCI_DEVICE_ID) },	/* HSI - Tangier */

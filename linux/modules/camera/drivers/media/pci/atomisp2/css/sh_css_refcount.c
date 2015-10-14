@@ -96,7 +96,7 @@ assert(myrefcount.items != NULL);
 enum sh_css_err sh_css_refcount_init(void)
 {
 	enum sh_css_err err = sh_css_success;
-	int size = 1000;
+	int size = 2000;
 
 assert(myrefcount.items == NULL);
 

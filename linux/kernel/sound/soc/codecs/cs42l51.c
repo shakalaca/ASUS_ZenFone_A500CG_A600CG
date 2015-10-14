@@ -356,8 +356,7 @@ static int cs42l51_hw_params(struct snd_pcm_substream *substream,
 		struct snd_pcm_hw_params *params,
 		struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct cs42l51_private *cs42l51 = snd_soc_codec_get_drvdata(codec);
 	int ret;
 	unsigned int i;
@@ -615,24 +614,7 @@ static struct i2c_driver cs42l51_i2c_driver = {
 	.remove = cs42l51_i2c_remove,
 };
 
-static int __init cs42l51_init(void)
-{
-	int ret;
-
-	ret = i2c_add_driver(&cs42l51_i2c_driver);
-	if (ret != 0) {
-		printk(KERN_ERR "%s: can't add i2c driver\n", __func__);
-		return ret;
-	}
-	return 0;
-}
-module_init(cs42l51_init);
-
-static void __exit cs42l51_exit(void)
-{
-	i2c_del_driver(&cs42l51_i2c_driver);
-}
-module_exit(cs42l51_exit);
+module_i2c_driver(cs42l51_i2c_driver);
 
 MODULE_AUTHOR("Arnaud Patard <arnaud.patard@rtp-net.org>");
 MODULE_DESCRIPTION("Cirrus Logic CS42L51 ALSA SoC Codec Driver");

@@ -19,6 +19,9 @@
  * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
  */
 
+#include <linux/efi.h>
+
+#include "reboot_target.h"
 #include "intel_mid_osnib_ilb.h"
 
 #define VALLEYVIEW2_FAMILY	0x30670
@@ -72,38 +75,16 @@ static struct target_os oses[] = {
 	{ "bootloader", FASTBOOT },
 	{ "factory", FACTORY },
 	{ "dnx", DNX},
+	{ "ramconsole", RAMCONSOLE},
 };
 
-static int is_valleyview()
+static int is_valleyview(void)
 {
 	u32 regs[4];
 	cpuid(1, &regs[CR_EAX], &regs[CR_EBX], &regs[CR_ECX], &regs[CR_EDX]);
 
 	return ((regs[CR_EAX] & CPUID_MASK) == VALLEYVIEW2_FAMILY);
 }
-
-static int osnib_ilb_reboot_notify(struct notifier_block *notifier,
-				     unsigned long what, void *data)
-{
-	int ret = NOTIFY_DONE;
-	char *target = (char *) data;
-
-	switch (what) {
-	case SYS_RESTART:
-		intel_mid_ilb_write_osnib_rr(target);
-		break;
-	case SYS_HALT:
-	case SYS_POWER_OFF:
-	default:
-		break;
-	}
-
-	return ret;
-}
-
-static struct notifier_block osnib_ilb_reboot_notifier = {
-	.notifier_call = osnib_ilb_reboot_notify,
-};
 
 static ssize_t fw_update_show(struct kobject *kobj, struct kobj_attribute *attr,
 		char *buf)
@@ -128,6 +109,28 @@ static ssize_t fw_update_store(struct kobject *kobj,
 	return count;
 }
 
+static ssize_t fw_update_status_show(struct kobject *kobj, struct kobj_attribute *attr,
+				     char *buf)
+{
+	u8 fw_update_status;
+
+	fw_update_status = intel_mid_ilb_read_osnib_field(&osnib_buffer,
+			offsetof(struct cmos_osnib, fw_to_os.fw_update_status));
+	return sprintf(buf, "%d\n", fw_update_status);
+}
+
+static ssize_t fw_update_status_clear(struct kobject *kobj,
+				      struct kobj_attribute *attr,
+				      const char *buf, size_t count)
+{
+	intel_mid_ilb_write_osnib_field(&osnib_buffer,
+			offsetof(struct cmos_osnib, fw_to_os.fw_update_status),
+			0);
+	intel_mid_ilb_write_osnib_checksum(&osnib_buffer);
+
+	return count;
+}
+
 static ssize_t clean_osnib_store(struct kobject *kobj,
 		struct kobj_attribute *attr,
 		const char *buf, size_t count)
@@ -143,11 +146,15 @@ static ssize_t clean_osnib_store(struct kobject *kobj,
 static struct kobj_attribute fw_update_attribute =
 		__ATTR(fw_update, (S_IWUSR|S_IRUGO), fw_update_show, fw_update_store);
 
+static struct kobj_attribute fw_update_status_attribute =
+		__ATTR(fw_update_status, (S_IWUSR|S_IRUGO), fw_update_status_show, fw_update_status_clear);
+
 static struct kobj_attribute clean_osnib_attribute =
 		__ATTR(clean_osnib, S_IWUSR, NULL, clean_osnib_store);
 
 static struct attribute *attrs[] = {
 	&fw_update_attribute.attr,
+	&fw_update_status_attribute.attr,
 	&clean_osnib_attribute.attr,
 	NULL,
 };
@@ -198,7 +205,7 @@ int intel_mid_ilb_read_osnib(struct cmos_osnib *osnib)
 	int i = 0;
 	u8 *b;
 
-	memset(osnib, 0, OSNIB_INTEL_SIZE);
+	memset(osnib, 0, sizeof(struct cmos_osnib));
 	b = (u8 *) osnib;
 	for (i = 0; i < OSNIB_INTEL_SIZE ; i++, b++)
 		*b = intel_mid_ilb_read_osnib_field(osnib, i);
@@ -219,7 +226,7 @@ void intel_mid_ilb_dump_osnib(struct cmos_osnib *osnib)
 		pr_err("OSNIB: byte %d = 0x%02x\n", i, *b);
 }
 
-static bool intel_mid_ilb_check_magic()
+static bool intel_mid_ilb_check_magic(void)
 {
 	char magic[4];
 	magic[0] = CMOS_READ(osnib_cmos_base_address);
@@ -259,7 +266,7 @@ void intel_mid_ilb_reset_osnib(struct cmos_osnib *osnib)
 
 	pr_err("Reset OSNIB content as checksum failed with value 0x%02x\n",
 			osnib_buffer.checksum);
-	memset(osnib, 0, OSNIB_INTEL_SIZE);
+	memset(osnib, 0, sizeof(struct cmos_osnib));
 	osnib->checksum = 0x1;
 	osnib->header.magic[0] = 'N';
 	osnib->header.magic[1] = 'I';
@@ -287,36 +294,6 @@ int intel_mid_ilb_is_osnib_valid(struct cmos_osnib *osnib)
 	return (intel_mid_ilb_checksum_osnib(osnib) == osnib->checksum);
 }
 
-const char *intel_mid_ilb_get_os_key(u8 value)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(oses); i++)
-		if (value == oses[i].id)
-			return oses[i].name;
-
-	pr_warning("%s: target os %d not found", __func__, (int) value);
-
-	return "";
-}
-
-u8 intel_mid_ilb_get_os_value(const char *target_os)
-{
-	int i;
-
-	if (target_os) {
-		pr_info("%s: %s\n", __func__, target_os);
-		for (i = 0; i < ARRAY_SIZE(oses); i++)
-			if (!strcmp(oses[i].name, target_os))
-				return oses[i].id;
-	}
-
-	pr_warning("%s: target os %s not found, default to main", __func__,
-			target_os);
-
-	return (u8) MAIN;
-}
-
 const char *intel_mid_ilb_get_bootflow_value(u8 id)
 {
 	int i;
@@ -328,19 +305,23 @@ const char *intel_mid_ilb_get_bootflow_value(u8 id)
 	return "";
 }
 
-int intel_mid_ilb_write_osnib_rr(const char *target)
+int intel_mid_ilb_write_osnib_rr(const char *target, int id)
 {
 	intel_mid_ilb_write_osnib_field(&osnib_buffer,
 		offsetof(struct cmos_osnib, os_to_fw.target_mode),
-		intel_mid_ilb_get_os_value(target));
+		id);
 	intel_mid_ilb_write_osnib_checksum(&osnib_buffer);
 
 	return 0;
 }
 
+struct reboot_target target_mode_osnib = {
+	.set_reboot_target = intel_mid_ilb_write_osnib_rr,
+};
+
 const char *intel_mid_ilb_read_osnib_rr(void)
 {
-	return intel_mid_ilb_get_os_key(osnib_buffer.os_to_fw.target_mode);
+	return reboot_target_id2name(osnib_buffer.os_to_fw.target_mode);
 }
 
 static int intel_mid_ilb_osnib_probe(struct platform_device *pdev)
@@ -386,8 +367,10 @@ static int __init intel_mid_ilb_osnib_init(void)
 		return 0;
 	}
 
-	if (register_reboot_notifier(&osnib_ilb_reboot_notifier))
-		pr_warning("%s: can't register reboot_notifier\n", __func__);
+	if (!efi_enabled(EFI_RUNTIME_SERVICES) &&
+	    reboot_target_register(&target_mode_osnib))
+		pr_err("%s: can't register target mode accessor\n",
+		       __func__);
 
 	/*
 	 * WA : detect OSIB base address
@@ -436,18 +419,15 @@ static void __exit intel_mid_ilb_osnib_exit(void)
 	 */
 	if (is_valleyview()) {
 		pr_info("%s: unregister %s\n",
-				__func__, ilb_osnib_driver.driver.name);
+			__func__, ilb_osnib_driver.driver.name);
 	} else {
 		pr_info("%s: not unregistered %s\n",
-				__func__, ilb_osnib_driver.driver.name);
+			__func__, ilb_osnib_driver.driver.name);
 		return;
 	}
 
-	unregister_reboot_notifier(&osnib_ilb_reboot_notifier);
-	if (!intel_mid_ilb_read_osnib(&osnib_buffer)) {
-		intel_mid_ilb_reset_osnib(&osnib_buffer);
-		BUG();
-	}
+	if (!efi_enabled(EFI_RUNTIME_SERVICES))
+		reboot_target_unregister(&target_mode_osnib);
 
 	kobject_put(osnib_kobj);
 	platform_driver_unregister(&ilb_osnib_driver);

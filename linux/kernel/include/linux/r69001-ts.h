@@ -79,6 +79,7 @@
 #define R69001_TS_INTERRUPT_MODE        0
 #define R69001_TS_POLLING_MODE          1
 #define R69001_TS_POLLING_LOW_EDGE_MODE 2
+#define R69001_TS_CALIBRATION_INTERRUPT_MODE 3
 
 struct io_mode {
 	u8 scan;

@@ -72,7 +72,7 @@ static int sph_gpio_init(struct pci_dev *pdev)
 	if (gpio_is_valid(sph_pdata->gpio_cs_n)) {
 		retval = gpio_request(sph_pdata->gpio_cs_n, "sph_phy_cs_n");
 		if (retval < 0) {
-			printk(KERN_INFO "Request GPIO %d with error %d\n",
+			dev_err(&pdev->dev, "Request GPIO %d with error %d\n",
 			sph_pdata->gpio_cs_n, retval);
 			retval = -ENODEV;
 			goto ret;
@@ -86,7 +86,7 @@ static int sph_gpio_init(struct pci_dev *pdev)
 		retval = gpio_request(sph_pdata->gpio_reset_n,
 				"sph_phy_reset_n");
 		if (retval < 0) {
-			printk(KERN_INFO "Request GPIO %d with error %d\n",
+			dev_err(&pdev->dev, "Request GPIO %d with error %d\n",
 			sph_pdata->gpio_reset_n, retval);
 			retval = -ENODEV;
 			goto err;
@@ -122,6 +122,21 @@ static void sph_gpio_cleanup(struct pci_dev *pdev)
 		gpio_free(sph_pdata->gpio_reset_n);
 }
 
+static int sph_set_enabled(struct pci_dev *pdev)
+{
+	struct ehci_sph_pdata   *sph_pdata;
+	int			retval = 0;
+
+	sph_pdata = pdev->dev.platform_data;
+
+	if (!sph_pdata) {
+		retval = -ENODEV;
+		return retval;
+	}
+
+	sph_pdata->enabled = sph_enabled();
+	return retval;
+}
 static int ehci_sph_probe(struct pci_dev *pdev,
 				const struct pci_device_id *id)
 {
@@ -138,6 +153,11 @@ static int ehci_sph_probe(struct pci_dev *pdev,
 		return -EINVAL;
 
 	retval = sph_gpio_init(pdev);
+	if (retval < 0)
+		return retval;
+
+	/* set the sph_pdata->enabled firstly */
+	retval = sph_set_enabled(pdev);
 	if (retval < 0)
 		return retval;
 
@@ -179,15 +199,8 @@ static int ehci_sph_probe(struct pci_dev *pdev,
 	if (retval != 0)
 		goto unmap_registers;
 
-	if (pci_dev_run_wake(pdev))
-		pm_runtime_put_noidle(&pdev->dev);
-
-	if (hcd->rpm_control) {
-		if (!pci_dev_run_wake(pdev))
-			pm_runtime_put_noidle(&pdev->dev);
-
-		pm_runtime_allow(&pdev->dev);
-	}
+	pm_runtime_put_noidle(&pdev->dev);
+	pm_runtime_allow(&pdev->dev);
 
 	return retval;
 
@@ -212,15 +225,8 @@ static void ehci_sph_remove(struct pci_dev *pdev)
 	if (!hcd)
 		return;
 
-	if (pci_dev_run_wake(pdev))
-		pm_runtime_get_noresume(&pdev->dev);
-
-	if (hcd->rpm_control) {
-		if (!pci_dev_run_wake(pdev))
-			pm_runtime_get_noresume(&pdev->dev);
-
-		pm_runtime_forbid(&pdev->dev);
-	}
+	pm_runtime_get_noresume(&pdev->dev);
+	pm_runtime_forbid(&pdev->dev);
 
 	/* Fake an interrupt request in order to give the driver a chance
 	 * to test whether the controller hardware has been removed (e.g.,
@@ -342,19 +348,11 @@ static int sph_pci_runtime_suspend(struct device *dev)
 
 static int sph_pci_runtime_resume(struct device *dev)
 {
-	struct pci_dev		*pci_dev = to_pci_dev(dev);
-	struct usb_hcd		*hcd = pci_get_drvdata(pci_dev);
 	int			retval;
 
 	dev_dbg(dev, "%s --->\n", __func__);
 	retval = usb_hcd_pci_pm_ops.runtime_resume(dev);
-	if (hcd->rpm_control) {
-		if (hcd->rpm_resume) {
-			struct device		*rpm_dev = hcd->self.controller;
-			hcd->rpm_resume = 0;
-			pm_runtime_put(rpm_dev);
-		}
-	}
+
 	dev_dbg(dev, "%s <--- retval = %d\n", __func__, retval);
 	return retval;
 }

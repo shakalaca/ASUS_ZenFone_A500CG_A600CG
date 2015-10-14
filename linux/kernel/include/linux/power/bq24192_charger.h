@@ -19,6 +19,10 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <linux/types.h>
+#include <linux/power_supply.h>
+#include <linux/power/battery_id.h>
+
 #ifndef __BQ24192_CHARGER_H_
 #define __BQ24192_CHARGER_H_
 
@@ -116,11 +120,19 @@ struct bq24192_platform_data {
 	struct platform_batt_profile batt_profile;
 	struct platform_batt_safety_param safety_param;
 	struct power_supply_throttle *throttle_states;
+	struct ps_batt_chg_prof *chg_profile;
 
 	char **supplied_to;
 	size_t	num_supplicants;
 	size_t num_throttle_states;
 	unsigned long supported_cables;
+
+	/* safety charegr setting */
+	int max_cc;
+	int max_cv;
+	int max_temp;
+	int min_temp;
+
 	/* Function pointers for platform specific initialization */
 	int (*init_platform_data)(void);
 	int (*get_irq_number)(void);

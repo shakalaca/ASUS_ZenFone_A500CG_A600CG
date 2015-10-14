@@ -49,11 +49,6 @@
 #define ARIZONA_32KZ_MCLK2 2
 #define ARIZONA_32KZ_NONE  3
 
-#define ARIZONA_MIC_CLAMP_SPKLN 1
-#define ARIZONA_MIC_CLAMP_SPKLP 2
-#define ARIZONA_MIC_CLAMP_SPKRN 3
-#define ARIZONA_MIC_CLAMP_SPKRP 4
-
 #define ARIZONA_MAX_INPUT 4
 
 #define ARIZONA_DMIC_MICVDD   0
@@ -69,14 +64,12 @@
 
 #define ARIZONA_MAX_OUTPUT 6
 
+#define ARIZONA_MAX_AIF 3
+
 #define ARIZONA_HAP_ACT_ERM 0
 #define ARIZONA_HAP_ACT_LRA 2
 
 #define ARIZONA_MAX_PDM_SPK 2
-
-#define ARIZONA_NUM_MICD_LEVEL 4
-
-#define ARIZONA_MAX_AIF 3
 
 struct regulator_init_data;
 
@@ -109,9 +102,6 @@ struct arizona_pdata {
 	/** Regulator configuration for LDO1 */
 	struct regulator_init_data *ldo1;
 
-	/** Time for control bus to stabalise (ms) */
-	int control_init_time;
-
 	/** If a direct 32kHz clock is provided on an MCLK specify it here */
 	int clk32k_src;
 
@@ -123,6 +113,13 @@ struct arizona_pdata {
 
 	/** Pin state for GPIO pins */
 	int gpio_defaults[ARIZONA_MAX_GPIO];
+
+	/**
+	 * Maximum number of channels clocks will be generated for,
+	 * useful for systems where and I2S bus with multiple data
+	 * lines is mastered.
+	 */
+	int max_channels_clocked[ARIZONA_MAX_AIF];
 
 	/** GPIO5 is used for jack detection */
 	bool jd_gpio5;
@@ -138,9 +135,6 @@ struct arizona_pdata {
 
 	/** GPIO used for mic isolation with HPDET */
 	int hpdet_id_gpio;
-
-	/** Callback notifying HPDET result */
-	void (*hpdet_cb)(unsigned int measurement);
 
 	/** Extra debounce timeout used during initial mic detection (ms) */
 	int micd_detect_debounce;
@@ -189,24 +183,8 @@ struct arizona_pdata {
 	/** PDM speaker format */
 	unsigned int spk_fmt[ARIZONA_MAX_PDM_SPK];
 
-	/** IRQ base */
-	int irq_base;
-
 	/** Haptic actuator type */
 	unsigned int hap_act;
-
-	/** Extra microphone clamping enabled by speaker driver? */
-	unsigned int mic_spk_clamp;
-
-	/**
-	 * Maximum number of channels clocks will be generated for,
-	 * useful for systems where and I2S bus with multiple data
-	 * lines is mastered.
-	 */
-	int max_channels_clocked[ARIZONA_MAX_AIF];
-
-	/** Callback run at the end of mfd probe() */
-	void (*init_done)(void);
 
 	/** GPIO for primary IRQ (used for edge triggered emulation) */
 	int irq_gpio;

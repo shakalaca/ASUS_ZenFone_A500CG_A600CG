@@ -28,6 +28,7 @@
 
 #include "mdfld_dsi_output.h"
 #include "mdfld_dsi_pkg_sender.h"
+#include "mdfld_dsi_dbi_dsr.h"
 #include "mdfld_dsi_dbi.h"
 #include "mdfld_dsi_dpi.h"
 
@@ -70,6 +71,49 @@ const char *dsi_errors[] = {
 	"[31:Tearing Effect]",
 };
 
+static void debug_dbi_hang(struct mdfld_dsi_pkg_sender *sender) {
+  struct mdfld_dsi_connector *dsi_connector = sender->dsi_connector;
+  struct mdfld_dsi_config *dsi_config = (struct mdfld_dsi_config *)dsi_connector->private;
+  struct drm_device *dev = sender->dev;
+  struct drm_psb_private *dev_priv = (struct drm_psb_private *)dev->dev_private;
+  bool pmon = ospm_power_is_hw_on(OSPM_DISPLAY_ISLAND);
+
+  DRM_ERROR("sender->pipe: 0x%08x\n", sender->pipe);
+  DRM_ERROR("dev_priv->um_start: 0x%08x\n", dev_priv->um_start);
+  DRM_ERROR("ospm_power_is_hw_on(OSPM_DISPLAY_ISLAND): 0x%08x\n", pmon);
+  DRM_ERROR("dsi_config->dsi_hw_context.panel_on: 0x%08x\n", dsi_config->dsi_hw_context.panel_on);
+	if (dsi_config->dsr) {
+	  DRM_ERROR("dsi_config->dsr->dsr_enabled: 0x%08x\n", ((struct mdfld_dsi_dsr *)dsi_config->dsr)->dsr_enabled);
+	  DRM_ERROR("dsi_config->dsr->dsr_state: 0x%08x\n", ((struct mdfld_dsi_dsr *)dsi_config->dsr)->dsr_state);
+	}
+	if (!pmon) {
+	  /* Not safe to dump registers when the power is off */
+	  return;
+	}
+  DRM_ERROR("dsi_config->regs.dspcntr_reg: 0x%08x\n", REG_READ(dsi_config->regs.dspcntr_reg));
+
+  DRM_ERROR("MIPIA_DEVICE_READY_REG: 0x%08x\n", REG_READ(MIPIA_DEVICE_READY_REG));
+  DRM_ERROR("MIPIA_DEVICE_READY_REG + MIPIC_REG_OFFSET: 0x%08x\n", REG_READ(MIPIA_DEVICE_READY_REG + MIPIC_REG_OFFSET));
+  DRM_ERROR("sender->dpll_reg: 0x%08x\n", REG_READ(sender->dpll_reg));
+  DRM_ERROR("sender->dspcntr_reg: 0x%08x\n", REG_READ(sender->dspcntr_reg));
+  DRM_ERROR("sender->pipeconf_reg: 0x%08x\n", REG_READ(sender->pipeconf_reg));
+  DRM_ERROR("sender->pipestat_reg: 0x%08x\n", REG_READ(sender->pipestat_reg));
+  DRM_ERROR("sender->dsplinoff_reg: 0x%08x\n", REG_READ(sender->dsplinoff_reg));
+  DRM_ERROR("sender->dspsurf_reg: 0x%08x\n", REG_READ(sender->dspsurf_reg));
+
+  DRM_ERROR("sender->mipi_intr_stat_reg: 0x%08x\n", REG_READ(sender->mipi_intr_stat_reg));
+  DRM_ERROR("sender->mipi_lp_gen_data_reg: 0x%08x\n", REG_READ(sender->mipi_lp_gen_data_reg));
+  DRM_ERROR("sender->mipi_hs_gen_data_reg: 0x%08x\n", REG_READ(sender->mipi_hs_gen_data_reg));
+  DRM_ERROR("sender->mipi_lp_gen_ctrl_reg: 0x%08x\n", REG_READ(sender->mipi_lp_gen_ctrl_reg));
+  DRM_ERROR("sender->mipi_hs_gen_ctrl_reg: 0x%08x\n", REG_READ(sender->mipi_hs_gen_ctrl_reg));
+  DRM_ERROR("sender->mipi_gen_fifo_stat_reg: 0x%08x\n", REG_READ(sender->mipi_gen_fifo_stat_reg));
+  DRM_ERROR("sender->mipi_data_addr_reg: 0x%08x\n", REG_READ(sender->mipi_data_addr_reg));
+  DRM_ERROR("sender->mipi_data_len_reg: 0x%08x\n", REG_READ(sender->mipi_data_len_reg));
+  DRM_ERROR("sender->mipi_cmd_addr_reg: 0x%08x\n", REG_READ(sender->mipi_cmd_addr_reg));
+  DRM_ERROR("sender->mipi_cmd_len_reg: 0x%08x\n", REG_READ(sender->mipi_cmd_len_reg));
+  DRM_ERROR("sender->mipi_dpi_control_reg: 0x%08x\n", REG_READ(sender->mipi_dpi_control_reg));
+}
+
 static inline int wait_for_gen_fifo_empty(struct mdfld_dsi_pkg_sender *sender,
 						u32 mask)
 {
@@ -77,6 +121,8 @@ static inline int wait_for_gen_fifo_empty(struct mdfld_dsi_pkg_sender *sender,
 	u32 gen_fifo_stat_reg = sender->mipi_gen_fifo_stat_reg;
 	int retry = 10000;
 
+	if (sender->work_for_slave_panel)
+		gen_fifo_stat_reg += MIPIC_REG_OFFSET;
 	while (retry--) {
 		if ((mask & REG_READ(gen_fifo_stat_reg)) == mask)
 			return 0;
@@ -84,6 +130,9 @@ static inline int wait_for_gen_fifo_empty(struct mdfld_dsi_pkg_sender *sender,
 	}
 
 	DRM_ERROR("fifo is NOT empty 0x%08x\n", REG_READ(gen_fifo_stat_reg));
+	if (!IS_ANN_A0(dev))
+		debug_dbi_hang(sender);
+
 	sender->status = MDFLD_DSI_CONTROL_ABNORMAL;
 	return -EIO;
 }
@@ -338,6 +387,10 @@ static int __send_short_pkg(struct mdfld_dsi_pkg_sender *sender,
 	u32 gen_ctrl_val = 0;
 	struct mdfld_dsi_gen_short_pkg *short_pkg = &pkg->pkg.short_pkg;
 
+	if (sender->work_for_slave_panel) {
+		hs_gen_ctrl_reg += MIPIC_REG_OFFSET;
+		lp_gen_ctrl_reg += MIPIC_REG_OFFSET;
+	}
 	gen_ctrl_val |= short_pkg->cmd << MCS_COMMANDS_POS;
 	gen_ctrl_val |= 0 << DCS_CHANNEL_NUMBER_POS;
 	gen_ctrl_val |= pkg->pkg_type;
@@ -381,6 +434,12 @@ static int __send_long_pkg(struct mdfld_dsi_pkg_sender *sender,
 	struct mdfld_dsi_gen_long_pkg *long_pkg = &pkg->pkg.long_pkg;
 
 	dp = long_pkg->data;
+	if (sender->work_for_slave_panel) {
+		hs_gen_ctrl_reg += MIPIC_REG_OFFSET;
+		hs_gen_data_reg += MIPIC_REG_OFFSET;
+		lp_gen_ctrl_reg += MIPIC_REG_OFFSET;
+		lp_gen_data_reg += MIPIC_REG_OFFSET;
+	}
 
 	/**
 	 * Set up word count for long pkg
@@ -742,6 +801,9 @@ static int mdfld_dbi_cb_init(struct mdfld_dsi_pkg_sender *sender,
 		return -ENOMEM;
 	}
 
+	if (IS_ANN_A0(dev))
+		memset(virt_addr, 0x0, 0x800);
+
 	sender->dbi_cb_phy = phy;
 	sender->dbi_cb_addr = virt_addr;
 
@@ -763,14 +825,7 @@ static inline void pkg_sender_queue_pkg(struct mdfld_dsi_pkg_sender *sender,
 					struct mdfld_dsi_pkg *pkg,
 					int delay)
 {
-	unsigned long flags;
-
-	if (pkg->transmission_type == MDFLD_DSI_HS_TRANSMISSION)
-		wait_for_hs_fifos_empty(sender);
-	else if (pkg->transmission_type == MDFLD_DSI_LP_TRANSMISSION)
-		wait_for_lp_fifos_empty(sender);
-
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	if (!delay) {
 		send_pkg(sender, pkg);
@@ -781,16 +836,15 @@ static inline void pkg_sender_queue_pkg(struct mdfld_dsi_pkg_sender *sender,
 		list_add_tail(&pkg->entry, &sender->pkg_list);
 	}
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 }
 
 static inline int process_pkg_list(struct mdfld_dsi_pkg_sender *sender)
 {
 	struct mdfld_dsi_pkg *pkg;
-	unsigned long flags;
 	int ret = 0;
 
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	while (!list_empty(&sender->pkg_list)) {
 		pkg = list_first_entry(&sender->pkg_list,
@@ -808,11 +862,11 @@ static inline int process_pkg_list(struct mdfld_dsi_pkg_sender *sender)
 		pkg_sender_put_pkg_locked(sender, pkg);
 	}
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 	return 0;
 
 errorunlock:
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 	return ret;
 }
 
@@ -823,14 +877,13 @@ static int mdfld_dsi_send_mcs_long(struct mdfld_dsi_pkg_sender *sender,
 				   int delay)
 {
 	struct mdfld_dsi_pkg *pkg;
-	unsigned long flags;
 	u8 *pdata = NULL;
 
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	pkg = pkg_sender_get_pkg_locked(sender);
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 
 	if (!pkg) {
 		DRM_ERROR("No memory\n");
@@ -866,13 +919,12 @@ static int mdfld_dsi_send_mcs_short(struct mdfld_dsi_pkg_sender *sender,
 					int delay)
 {
 	struct mdfld_dsi_pkg *pkg;
-	unsigned long flags;
 
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	pkg = pkg_sender_get_pkg_locked(sender);
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 
 	if (!pkg) {
 		DRM_ERROR("No memory\n");
@@ -902,13 +954,12 @@ static int mdfld_dsi_send_gen_short(struct mdfld_dsi_pkg_sender *sender,
 					int delay)
 {
 	struct mdfld_dsi_pkg *pkg;
-	unsigned long flags;
 
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	pkg = pkg_sender_get_pkg_locked(sender);
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 
 	if (!pkg) {
 		DRM_ERROR("No memory\n");
@@ -949,14 +1000,13 @@ static int mdfld_dsi_send_gen_long(struct mdfld_dsi_pkg_sender *sender,
 				   int delay)
 {
 	struct mdfld_dsi_pkg *pkg;
-	unsigned long flags;
 	u8 *pdata = NULL;
 
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	pkg = pkg_sender_get_pkg_locked(sender);
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 
 	if (!pkg) {
 		DRM_ERROR("No memory\n");
@@ -991,7 +1041,6 @@ static int __read_panel_data(struct mdfld_dsi_pkg_sender *sender,
 				u8 *data,
 				u32 len)
 {
-	unsigned long flags;
 	struct drm_device *dev = sender->dev;
 	int i;
 	u32 gen_data_reg;
@@ -1014,7 +1063,7 @@ static int __read_panel_data(struct mdfld_dsi_pkg_sender *sender,
 	 * 2) polling read data avail interrupt
 	 * 3) read data
 	 */
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	/*Set the Max return pack size*/
 	wait_for_all_fifos_empty(sender);
@@ -1036,7 +1085,7 @@ static int __read_panel_data(struct mdfld_dsi_pkg_sender *sender,
 		udelay(3);
 
 	if (!retry) {
-		spin_unlock_irqrestore(&sender->lock, flags);
+		mutex_unlock(&sender->lock);
 		return -ETIMEDOUT;
 	}
 
@@ -1049,7 +1098,7 @@ static int __read_panel_data(struct mdfld_dsi_pkg_sender *sender,
 		gen_data_reg = sender->mipi_lp_gen_data_reg;
 	else {
 		DRM_ERROR("Unknown transmission");
-		spin_unlock_irqrestore(&sender->lock, flags);
+		mutex_unlock(&sender->lock);
 		return -EINVAL;
 	}
 
@@ -1070,7 +1119,7 @@ static int __read_panel_data(struct mdfld_dsi_pkg_sender *sender,
 		}
 	}
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 
 	return len;
 }
@@ -1084,13 +1133,12 @@ static int mdfld_dsi_read_gen(struct mdfld_dsi_pkg_sender *sender,
 				u8 transmission)
 {
 	struct mdfld_dsi_pkg *pkg;
-	unsigned long flags;
 
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	pkg = pkg_sender_get_pkg_locked(sender);
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 
 	if (!pkg) {
 		DRM_ERROR("No memory\n");
@@ -1129,13 +1177,12 @@ static int mdfld_dsi_read_mcs(struct mdfld_dsi_pkg_sender *sender,
 				u8 transmission)
 {
 	struct mdfld_dsi_pkg *pkg;
-	unsigned long flags;
 
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	pkg = pkg_sender_get_pkg_locked(sender);
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 
 	if (!pkg) {
 		DRM_ERROR("No memory\n");
@@ -1158,13 +1205,12 @@ static int mdfld_dsi_send_dpi_spk_pkg(struct mdfld_dsi_pkg_sender *sender,
 				u8 transmission)
 {
 	struct mdfld_dsi_pkg *pkg;
-	unsigned long flags;
 
-	spin_lock_irqsave(&sender->lock, flags);
+	mutex_lock(&sender->lock);
 
 	pkg = pkg_sender_get_pkg_locked(sender);
 
-	spin_unlock_irqrestore(&sender->lock, flags);
+	mutex_unlock(&sender->lock);
 
 	if (!pkg) {
 		DRM_ERROR("No memory\n");
@@ -1268,12 +1314,14 @@ int mdfld_dsi_send_dcs(struct mdfld_dsi_pkg_sender *sender,
 {
 	u32 cb_phy;
 	struct drm_device *dev;
+	struct drm_psb_private *dev_priv;
 	u32 index = 0;
 	u8 *cb;
-	int retry;
+	int retry = 1;
 	u8 *dst = NULL;
 	u8 *pSendparam = NULL;
 	int err = 0;
+	u32 fifo_sr;
 
 	if (!sender) {
 		DRM_ERROR("Invalid parameter\n");
@@ -1283,6 +1331,7 @@ int mdfld_dsi_send_dcs(struct mdfld_dsi_pkg_sender *sender,
 	cb_phy = sender->dbi_cb_phy;
 	dev = sender->dev;
 	cb = (u8 *)sender->dbi_cb_addr;
+	dev_priv = dev->dev_private;
 
 	if (!sender->dbi_pkg_support) {
 		DRM_ERROR("No DBI pkg sending on this sender\n");
@@ -1294,23 +1343,34 @@ int mdfld_dsi_send_dcs(struct mdfld_dsi_pkg_sender *sender,
 	 * DSI adapter interface
 	 */
 	if (dcs == write_mem_start) {
-		spin_lock(&sender->lock);
 
 		/**
 		 * query whether DBI FIFO is empty,
-		 * if not wait it becoming empty
+		 * if not sleep the drv and wait for it to become empty.
+		 * The MIPI frame done interrupt will wake up the drv.
 		 */
-		retry = MDFLD_DSI_DBI_FIFO_TIMEOUT;
-		while (retry && !(REG_READ(sender->mipi_gen_fifo_stat_reg) &
-					BIT27)) {
-			udelay(500);
-			retry--;
+		if (IS_TNG_B0(dev)) {
+			retry = wait_event_interruptible_timeout(dev_priv->eof_wait,
+			  (REG_READ(sender->mipi_gen_fifo_stat_reg) & BIT27),
+			    msecs_to_jiffies(MDFLD_DSI_DBI_FIFO_TIMEOUT));
+			mutex_lock(&sender->lock);
+		} else {
+			mutex_lock(&sender->lock);
+			retry = MDFLD_DSI_DBI_FIFO_TIMEOUT;
+			while (retry && !(REG_READ(sender->mipi_gen_fifo_stat_reg) & BIT27)) {
+				udelay(500);
+				retry--;
+			}
 		}
 
 		/*if DBI FIFO timeout, drop this frame*/
 		if (!retry) {
 			DRM_ERROR("DBI FIFO timeout, drop frame\n");
-			spin_unlock(&sender->lock);
+			mutex_unlock(&sender->lock);
+			if (!IS_ANN_A0(dev)) {
+				debug_dbi_hang(sender);
+				panic("DBI FIFO timeout, drop frame\n");
+			}
 			return 0;
 		}
 
@@ -1335,7 +1395,7 @@ int mdfld_dsi_send_dcs(struct mdfld_dsi_pkg_sender *sender,
 			retry--;
 		}
 
-		spin_unlock(&sender->lock);
+		mutex_unlock(&sender->lock);
 		return 0;
 	}
 
@@ -1681,7 +1741,7 @@ int mdfld_dsi_pkg_sender_init(struct mdfld_dsi_connector *dsi_connector,
 	INIT_LIST_HEAD(&pkg_sender->free_list);
 
 	/*init lock*/
-	spin_lock_init(&pkg_sender->lock);
+	mutex_init(&pkg_sender->lock);
 
 	/*allocate free pkg pool*/
 	for (i = 0; i < MDFLD_MAX_PKG_NUM; i++) {

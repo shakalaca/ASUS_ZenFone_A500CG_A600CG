@@ -24,7 +24,7 @@
  */
 
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ":%s: " fmt, __func__
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -60,6 +60,8 @@ static const struct snd_soc_dapm_widget ctp_vb_dapm_widgets[] = {
 	SND_SOC_DAPM_HP("Headphone", NULL),
 	SND_SOC_DAPM_MIC("Headset Mic", NULL),
 	SND_SOC_DAPM_SPK("Ext Spk", ctp_amp_event),
+	SND_SOC_DAPM_SPK("Virtual Spk", NULL),
+	SND_SOC_DAPM_SWITCH("IHFAMP_SD_N", SND_SOC_NOPM, 0, 0, &ext_amp_sw),
 };
 
 /* CS42L73 Audio Map */
@@ -68,8 +70,12 @@ static const struct snd_soc_dapm_route ctp_vb_audio_map[] = {
 	/* Headphone (L+R)->  HPOUTA, HPOUTB */
 	{"Headphone", NULL, "HPOUTA"},
 	{"Headphone", NULL, "HPOUTB"},
-	{"Ext Spk", NULL, "SPKLINEOUT"},
+	{"Ext Spk", NULL, "IHFAMP_SD_N"},
+	{"IHFAMP_SD_N", "Switch", "SPKLINEOUT"},
 	{"Ext Spk", NULL, "SPKOUT"},
+
+	/* For Virtual Device */
+	{"Virtual Spk", NULL, "SPKLINEOUT"},
 };
 
 static int ctp_vb_comms_dai_link_startup(struct snd_pcm_substream *substream)

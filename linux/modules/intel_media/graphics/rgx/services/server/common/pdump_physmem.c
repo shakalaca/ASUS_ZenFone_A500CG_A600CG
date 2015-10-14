@@ -45,14 +45,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pdump_physmem.h"
 
 #include "img_types.h"
-#include "pdumpdefs.h"
 #include "pvr_debug.h"
 #include "pvrsrv_error.h"
 
-#include "pdump.h"
-
-#include "pdump_km.h"
 #include "pdump_osfunc.h"
+#include "pdump_int.h"
 
 #include "allocmem.h"
 #include "osfunc.h"
@@ -129,9 +126,9 @@ PVRSRV_ERROR PDumpPMRMalloc(const IMG_CHAR *pszDevSpace,
 		return eError;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, ui32Flags);
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 
     psPDumpAllocationInfo->ui64Size = ui64Size;
     psPDumpAllocationInfo->ui32Align = TRUNCATE_64BITS_TO_32BITS(uiAlign);
@@ -171,9 +168,9 @@ PVRSRV_ERROR PDumpPMRFree(IMG_HANDLE hPDumpAllocationInfoHandle)
 	{
 		return eError;
 	}
-    PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, ui32Flags);
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 
     OSFreeMem(psPDumpAllocationInfo);
 
@@ -206,9 +203,9 @@ PDumpPMRWRW32(const IMG_CHAR *pszDevSpace,
 		return eError;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, uiPDumpFlags);
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 
 	return PVRSRV_OK;
 }
@@ -239,9 +236,9 @@ PDumpPMRWRW64(const IMG_CHAR *pszDevSpace,
 		return eError;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, uiPDumpFlags);
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 
 	return PVRSRV_OK;
 }
@@ -277,9 +274,9 @@ PDumpPMRLDB(const IMG_CHAR *pszDevSpace,
 		return eError;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, uiPDumpFlags);
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 
 	return PVRSRV_OK;
 }
@@ -315,9 +312,9 @@ PVRSRV_ERROR PDumpPMRSAB(const IMG_CHAR *pszDevSpace,
 		return eError;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, uiPDumpFlags);
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 
 	return PVRSRV_OK;
 }
@@ -357,9 +354,9 @@ PDumpPMRPOL(const IMG_CHAR *pszMemspaceName,
 		return eError;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, uiPDumpFlags);
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 
 	return PVRSRV_OK;
 }
@@ -395,9 +392,9 @@ PDumpPMRCBP(const IMG_CHAR *pszMemspaceName,
 		return eError;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, uiPDumpFlags);
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 
 	return PVRSRV_OK;
 }
@@ -428,7 +425,7 @@ PDumpWriteBuffer(IMG_UINT8 *pcBuffer,
 		return PVRSRV_OK;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 
 	PDumpOSCheckForSplitting(PDumpOSGetStream(PDUMP_STREAM_PARAM2),
                              uiNumBytes,
@@ -441,7 +438,7 @@ PDumpWriteBuffer(IMG_UINT8 *pcBuffer,
                                  uiNumBytes,
                                  uiPDumpFlags);
 
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 
     if (!bStatus)
     {

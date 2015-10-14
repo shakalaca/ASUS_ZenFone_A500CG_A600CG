@@ -1,8 +1,9 @@
-#ifndef EHCI_TANGIER_HSIC_PCI_h
-#define EHCI_TANGIER_HSIC_PCI_h
+#ifndef EHCI_TANGIER_HSIC_PCI_H
+#define EHCI_TANGIER_HSIC_PCI_H
 
 #include <linux/notifier.h>
 #include <linux/usb.h>
+#include <linux/wakelock.h>
 
 #define HSIC_AUX_GPIO_NAME       "usb_hsic_aux1"
 #define HSIC_WAKEUP_GPIO_NAME    "usb_hsic_aux2"
@@ -32,10 +33,51 @@
 #define HSIC_BUS_INACTIVITYDURATION               500
 #define HSIC_REMOTEWAKEUP                         1
 
+enum wlock_state {
+	UNLOCKED,
+	LOCKED
+};
+
+enum s3_state {
+	RESUMED,
+	RESUMING,
+	SUSPENDED,
+	SUSPENDING
+};
+
+/* Failure counter we used for IPC */
+#define PM_FAILURE_COUNT	4
+#define STATS_DISABLE		0
+#define STATS_ENABLE		1
+
+enum ipc_stats_type {
+	REMOTE_WAKEUP,
+	REMOTE_WAKEUP_OOB,
+	BUS_SUSPEND,
+	BUS_RESUME,
+	D0I3_ENTRY,
+	D0I3_EXIT,
+	D3_ENTRY,
+	D3_EXIT
+};
+
+struct ipc_failure {
+	const char	*name;
+	unsigned long	fail_cnt;
+};
+
+struct ipc_stats {
+	const char		*name;
+	unsigned long		success_cnt;
+	struct ipc_failure	ipc_failure[PM_FAILURE_COUNT];
+};
+void count_ipc_stats(int retval, enum ipc_stats_type type);
+
 struct hsic_tangier_priv {
 	struct delayed_work  hsic_aux;
 	wait_queue_head_t    aux_wq;
 	struct mutex         hsic_mutex;
+	struct mutex         wlock_mutex;
 	unsigned             hsic_mutex_init:1;
 	unsigned             aux_wq_init:1;
 	unsigned             hsic_aux_irq_enable:1;
@@ -52,12 +94,17 @@ struct hsic_tangier_priv {
 	unsigned             port_inactivityDuration;
 	unsigned             bus_inactivityDuration;
 	spinlock_t           hsic_lock;
-	struct	wake_lock    wake_lock;
 	/* Root hub device */
 	struct usb_device           *rh_dev;
 	struct usb_device           *modem_dev;
 	struct workqueue_struct     *work_queue;
-	struct work_struct          wakeup_work;
+	struct delayed_work         wakeup_work;
+	struct notifier_block       hsic_pm_nb;
+	struct notifier_block       hsic_s3_entry_nb;
+	struct wake_lock            resume_wake_lock;
+	struct wake_lock            s3_wake_lock;
+	enum wlock_state            s3_wlock_state;
+	enum wlock_state            s3_rt_state;
 };
 
 enum {

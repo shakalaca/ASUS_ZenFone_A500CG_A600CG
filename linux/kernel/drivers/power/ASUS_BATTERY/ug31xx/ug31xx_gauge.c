@@ -27,6 +27,8 @@
 #include "ug31xx_ggb_data_A500-3.h"
 #include "ug31xx_ggb_data_A600.h"
 #include "ug31xx_ggb_data_A600-2.h"
+#include "ug31xx_ggb_data_A502_1.h"
+#include "ug31xx_ggb_data_A502_2.h"
 
 #include "uG31xx_Platform.h"
 #include "ug31xx_gauge.h"
@@ -45,7 +47,13 @@
 #include <linux/switch.h>
 
 #include <linux/timer.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0)
+#ifdef CONFIG_ANDROID
+#include "../../..//staging/android/android_alarm.h"
+#endif
+#else
 #include <linux/android_alarm.h>
+#endif
 #include <linux/hrtimer.h>
 
 extern int Read_HW_ID(void);
@@ -156,9 +164,9 @@ static void batt_info_update_work_func(struct work_struct *work);
 
 #define CABLE_STATUS_CHANGE_RELEASE_COUNT (1)
 
-#define GAUGE_err(...)        printk(KERN_ERR "<BATT> " __VA_ARGS__);
-#define GAUGE_notice(...)     printk(KERN_NOTICE "<BATT> " __VA_ARGS__);
-#define GAUGE_info(...)       printk(KERN_INFO "<BATT> " __VA_ARGS__);
+#define GAUGE_err(...)        printk(KERN_ERR "[GAUGE_ERR] " __VA_ARGS__);
+#define GAUGE_notice(...)     printk(KERN_NOTICE "[GAUGE] " __VA_ARGS__);
+#define GAUGE_info(...)       printk(KERN_INFO "[GAUGE] " __VA_ARGS__);
 
 #ifdef UG31XX_MISC_DEV
 
@@ -361,6 +369,17 @@ static void get_ggb_array(void)
                         force_fc_current_thrd = 200;
                 }
 	}
+	else if(PROJ_ID_A502CG == Read_PROJ_ID())
+	{
+		if(vol_temp > 915) { //1.343V
+			GAUGE_info("%s: use 502 ggb data 1, battery = COSLIGHT\n", __func__);
+			FactoryGGBXFile = FactoryGGBXFile_A502_1;
+			force_fc_current_thrd = 150;
+		}else if(vol_temp > 778) //1.141V
+			GAUGE_info("%s: use 502 ggb data 2, battery = ATL \n", __func__);
+			FactoryGGBXFile = FactoryGGBXFile_A502_2;
+			force_fc_current_thrd = 150;
+	}
 	else
 	{
 		if(vol_temp > 915) { //1.343V
@@ -377,6 +396,9 @@ static void get_ggb_array(void)
       force_fc_current_thrd = 150;
 		}
 	}
+	/* Free the allocated ADC channels */
+	if (bat_adc_handle)
+		intel_mid_gpadc_free(bat_adc_handle);
 }
 
 static void set_project_config(void)
@@ -1899,6 +1921,12 @@ static void batt_power_update_work_func(struct work_struct *work)
 
 	ug31_dev = container_of(work, struct ug31xx_gauge, batt_power_update_work.work);
 
+	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
+	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
+		return;
+	}
+
 	#ifdef  UG31XX_REGISTER_POWERSUPPLY
 
 	if(wake_lock_active(&ug31_dev->batt_wake_lock) != 0)
@@ -1977,6 +2005,7 @@ static void batt_info_update_work_func(struct work_struct *work)
 
 	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
 	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
 		return;
 	}
     
@@ -2225,61 +2254,105 @@ EXPORT_SYMBOL(ug31xx_set_charge_termination_current);
 
 #ifdef UG31XX_PROC_DEV
 struct proc_dir_entry *battery; 
-int ug31xx_get_proc_rsoc(char *buf, char **start, off_t off, int count, 
-                         int *eof, void *data )
+int ug31xx_get_proc_rsoc(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
   int len = 0;
-  len += sprintf(buf+len, "%d\n", ug31_module.get_predict_rsoc());  
-  return len;
+  ssize_t ret = 0;
+  char *buff;
+
+  buff = kmalloc(100,GFP_KERNEL);
+  if(!buff)
+	return -ENOMEM;
+  len += sprintf(buff+len, "%d\n", ug31_module.get_predict_rsoc());  
+  ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+  kfree(buff);
+  return ret;
 }
 
-int ug31xx_get_proc_psoc(char *buf, char **start, off_t off, int count, 
-                         int *eof, void *data )
+int ug31xx_get_proc_psoc(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
   int len = 0;
-  len += sprintf(buf+len, "%d\n", ug31_module.get_relative_state_of_charge());  
-  return len;
+  ssize_t ret = 0;
+  char *buff;
+
+  buff = kmalloc(100,GFP_KERNEL);
+  if(!buff)
+	return -ENOMEM;
+  len += sprintf(buff+len, "%d\n", ug31_module.get_relative_state_of_charge());  
+  ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+  kfree(buff);
+  return ret;
 }
 
-int ug31xx_get_proc_rm(char *buf, char **start, off_t off, int count, 
-		       int *eof, void *data )
+int ug31xx_get_proc_rm(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
   int len = 0;
-  len += sprintf(buf+len, "%d\n", ug31_module.get_remaining_capacity());  
-  return len;
+  ssize_t ret = 0;
+  char *buff;
+
+  buff = kmalloc(100,GFP_KERNEL);
+  if(!buff)
+	return -ENOMEM;
+  len += sprintf(buff+len, "%d\n", ug31_module.get_remaining_capacity());  
+  ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+  kfree(buff);
+  return ret;
 }
 
-int ug31xx_get_proc_fcc(char *buf, char **start, off_t off, int count, 
-			int *eof, void *data )
+int ug31xx_get_proc_fcc(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
   int len = 0;
-  len += sprintf(buf+len, "%d\n", ug31_module.get_full_charge_capacity());  
-  return len;
+  ssize_t ret = 0;
+  char *buff;
+
+  buff = kmalloc(100,GFP_KERNEL);
+  if(!buff)
+	return -ENOMEM;
+  len += sprintf(buff+len, "%d\n", ug31_module.get_full_charge_capacity());  
+  ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+  kfree(buff);
+  return ret;
 }
 
-int ug31xx_get_proc_curr(char *buf, char **start, off_t off, int count, 
-                         int *eof, void *data )
+int ug31xx_get_proc_curr(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
   int len = 0;
-  len += sprintf(buf+len, "%d\n", ug31_module.get_current_now());  
-  return len;
+  ssize_t ret = 0;
+  char *buff;
+
+  buff = kmalloc(100,GFP_KERNEL);
+  if(!buff)
+	return -ENOMEM;
+  len += sprintf(buff+len, "%d\n", ug31_module.get_current_now());  
+  ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+  kfree(buff);
+  return ret;
 }
 
-int ug31xx_get_proc_temp(char *buf, char **start, off_t off, int count, int *eof, void *data)
+int ug31xx_get_proc_temp(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
   int len = 0;
   int value;
+  ssize_t ret = 0;
+  char *buff;
 
+  buff = kmalloc(100,GFP_KERNEL);
+  if(!buff)
+	return -ENOMEM;
   value = ug31_module.get_avg_external_temperature();
-  len += sprintf(buf+len, "%d.%d\n", value/10, value%10);
-  return len;
+  len += sprintf(buff+len, "%d.%d\n", value/10, value%10);
+  ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+  kfree(buff);
+  return ret;
 }
 
 #ifdef FEATRUE_K_BOARD_OFFSET
-int ug31xx_get_proc_kbo_start(char *buf, char **start, off_t off, int count, int *eof, void *data)
+int ug31xx_get_proc_kbo_start(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
-  int len;
-
+  int len = 0;
+  ssize_t ret = 0;
+  char *buff;
+  
   cancel_delayed_work(&ug31->kbo_work);
   hrtimer_cancel(&ug31->kbo_timer);
   if(wake_lock_active(&ug31->batt_wake_lock) != 0)
@@ -2288,6 +2361,9 @@ int ug31xx_get_proc_kbo_start(char *buf, char **start, off_t off, int count, int
   }
   wake_lock_timeout(&ug31->batt_wake_lock, UG31XX_KBO_WAKE_LOCK_TIMEOUT*HZ);
 
+  buff = kmalloc(100,GFP_KERNEL);
+  if(!buff)
+	return -ENOMEM;
   kbo_start_flag = true;
   kbo_cnt = 0;
   memset(kbo_queue, 0, sizeof(kbo_queue));
@@ -2306,27 +2382,43 @@ int ug31xx_get_proc_kbo_start(char *buf, char **start, off_t off, int count, int
     HRTIMER_MODE_REL);
   GAUGE_info("[%s] wait %d ms to kbo.\n", __func__,
      UG31XX_KBO_CHARGER_OFF_DELAY);
-  len = 0;
-  len += sprintf(buf + len, "Start board offset calibration.\n");
-  return (len);
+	len = 0;
+	len += sprintf(buff + len, "Start board offset calibration.\n");
+	ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+	kfree(buff);
+	return (ret);
 }
 
-int ug31xx_get_proc_kbo_result(char *buf, char **start, off_t off, int count, int *eof, void *data)
+int ug31xx_get_proc_kbo_result(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
-	int len;
+  int len = 0;
+  ssize_t ret = 0;
+  char *buff;
+
+  buff = kmalloc(100,GFP_KERNEL);
+  if(!buff)
+	return -ENOMEM;
 
 	kobj_event_env = UG31XX_KOBJ_ENV_BACKUP_BO_WRITE; 
 	change_ug31xx_kobj();
 
 	kbo_start_flag = false;
 	len = 0;
-	len += sprintf(buf + len, "Board offset = %d.\n", kbo_result);
-	return (len);
+	len += sprintf(buff + len, "Board offset = %d.\n", kbo_result);
+	ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+	kfree(buff);
+	return (ret);
 }
 
-int ug31xx_get_proc_kbo_stop(char *buf, char **start, off_t off, int count, int *eof, void *data)
+int ug31xx_get_proc_kbo_stop(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
-	int len;
+  int len = 0;
+  ssize_t ret = 0;
+  char *buff;
+
+  buff = kmalloc(100,GFP_KERNEL);
+  if(!buff)
+	return -ENOMEM;
 
 	start_charging();
   
@@ -2334,8 +2426,10 @@ int ug31xx_get_proc_kbo_stop(char *buf, char **start, off_t off, int count, int 
 
 	kbo_start_flag = false;
 	len = 0;
-	len += sprintf(buf + len, "Stop board offset calibration.\n");
-	return (len);
+	len += sprintf(buff + len, "Stop board offset calibration.\n");
+	ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+	kfree(buff);
+	return (ret);
 }
 #endif ///< for FEATRUE_K_BOARD_OFFSET
 #endif  ///< end of UG31XX_PROC_DEV
@@ -2453,6 +2547,12 @@ static void ug31xx_config_earlysuspend(struct ug31xx_gauge *chip) { return; }
  */
 static void board_offset_cali_work_func(struct work_struct *work)
 {
+	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
+	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
+		return;
+	}
+
   mutex_lock(&ug31->info_update_lock);
   ug31_module.calibrate_offset(UG31XX_BOARD_OFFSET_CALI_AVG);
   mutex_unlock(&ug31->info_update_lock);
@@ -2463,6 +2563,12 @@ static void board_offset_cali_work_func(struct work_struct *work)
 
 static void shell_timeout_work_func(struct work_struct *work)
 {
+	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
+	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
+		return;
+	}
+
   if(user_space_in_progress == true)
   {
     UG31_LOGI("[%s]: Daemon timeout\n", __func__);
@@ -2477,6 +2583,12 @@ static void shell_timeout_work_func(struct work_struct *work)
 
 static void shell_backup_work_func(struct work_struct *work)
 {
+	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
+	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
+		return;
+	}
+
   ug31xx_backup_file_status = ug31_module.shell_backup();
   
   if((ug31xx_backup_file_status > 0) && (!(op_options & LKM_OPTIONS_FORCE_RESET)))
@@ -2498,6 +2610,12 @@ static void shell_backup_work_func(struct work_struct *work)
 
 static void shell_algorithm_work_func(struct work_struct *work)
 {
+	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
+	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
+		return;
+	}
+
 	mutex_lock(&ug31->info_update_lock);
 
 	ug31_module.shell_update();
@@ -2563,6 +2681,12 @@ static void kbo_work_func(struct work_struct *work)
 	int idx;
 	int tmp32 = 0;
 	
+	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
+	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
+		return;
+	}
+
 	mutex_lock(&ug31->info_update_lock);
 	ug31_module.set_cable_out(UG31XX_CABLE_IN);
 	board_offset = ug31_module.get_current_now();
@@ -2600,6 +2724,12 @@ static void kbo_work_func(struct work_struct *work)
  */
 static void kbo_check_work_func(struct work_struct *work)
 {
+	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
+	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
+		return;
+	}
+
   if(kbo_file_exist == true)
   {
     kobj_event_env = UG31XX_KOBJ_ENV_BACKUP_BO_CHECK;
@@ -2641,6 +2771,12 @@ static void auto_kbo_work_func(struct work_struct *work)
   struct ug31xx_gauge *ug31_dev;
 
   ug31_dev = container_of(work, struct ug31xx_gauge, auto_kbo_work.work);
+	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
+	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
+		return;
+	}
+
   ug31_module.set_cable_out(UG31XX_CABLE_IN);
 
   if(wake_lock_active(&ug31_dev->batt_wake_lock) != 0)
@@ -2701,6 +2837,12 @@ static void auto_kbo_work_func(struct work_struct *work)
  */
 static void auto_kbo_check_work_func(struct work_struct *work)
 {
+	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
+	{
+		GAUGE_err("[%s] Gauge driver not ready\n", __func__);
+		return;
+	}
+
   if(kbo_file_exist == true)
   {
     return;
@@ -2914,48 +3056,76 @@ static void batt_probe_work_func(struct work_struct *work)
 #endif	///< end of UG31XX_MISC_DEV
 
 #ifdef UG31XX_PROC_DEV
-	ent = create_proc_read_entry("BMSSOC", 0744, NULL, ug31xx_get_proc_rsoc, NULL ); 
+	static struct file_operations Aug31xx_get_proc_rsoc = {
+	    .read = ug31xx_get_proc_rsoc,
+	};
+	static struct file_operations Aug31xx_get_proc_psoc = {
+	    .read = ug31xx_get_proc_psoc,
+	};
+	static struct file_operations Aug31xx_get_proc_rm = {
+	    .read = ug31xx_get_proc_rm,
+	};
+	static struct file_operations Aug31xx_get_proc_fcc = {
+	    .read = ug31xx_get_proc_fcc,
+	};
+	static struct file_operations Aug31xx_get_proc_curr = {
+	    .read = ug31xx_get_proc_curr,
+	};
+	static struct file_operations Aug31xx_get_proc_temp = {
+	    .read = ug31xx_get_proc_temp,
+	};
+	static struct file_operations Aug31xx_get_proc_kbo_start = {
+	    .read = ug31xx_get_proc_kbo_start,
+	};
+	static struct file_operations Aug31xx_get_proc_kbo_result = {
+	    .read = ug31xx_get_proc_kbo_result,
+	};
+	static struct file_operations Aug31xx_get_proc_kbo_stop = {
+	    .read = ug31xx_get_proc_kbo_stop,
+	};
+
+	ent = proc_create("BMSSOC", 0744,NULL, &Aug31xx_get_proc_rsoc); 
 	if(!ent)
 	{
 		GAUGE_err("create /proc/BMSSOC fail\n");
 	}
-	ent = create_proc_read_entry("RSOC", 0744, NULL, ug31xx_get_proc_psoc, NULL );
+	ent = proc_create("RSOC", 0744, NULL, &Aug31xx_get_proc_rsoc);
 	if(!ent)
 	{
 		GAUGE_err("create /proc/RSOC fail\n");
 	}
-	ent = create_proc_read_entry("RM", 0744, NULL, ug31xx_get_proc_rm, NULL );
+	ent = proc_create("RM", 0744, NULL, &Aug31xx_get_proc_rm);
 	if(!ent)
 	{
 		GAUGE_err("create /proc/RM fail\n");
 	}
-	ent = create_proc_read_entry("FCC", 0744, NULL, ug31xx_get_proc_fcc, NULL );
+	ent = proc_create("FCC", 0744, NULL, &Aug31xx_get_proc_fcc);
 	if(!ent)
 	{
 		GAUGE_err("create /proc/FCC fail\n");
 	}
-	ent = create_proc_read_entry("bat_current", 0744, NULL, ug31xx_get_proc_curr, NULL );
+	ent = proc_create("bat_current", 0744, NULL, &Aug31xx_get_proc_curr);
 	if(!ent)
 	{
 		GAUGE_err("create /proc/bat_current fail\n");
 	}
-	ent = create_proc_read_entry("driver/BatTemp", 0744, NULL, ug31xx_get_proc_temp, NULL);
+	ent = proc_create("driver/BatTemp", 0744, NULL, &Aug31xx_get_proc_temp);
 	if(!ent)
 	{
 		GAUGE_err("create /proc/driver/BatTemp fail\n");
 	}
 #ifdef FEATRUE_K_BOARD_OFFSET
-	ent = create_proc_read_entry("kbo_start", 0744, NULL, ug31xx_get_proc_kbo_start, NULL);
+	ent = proc_create("kbo_start", 0744, NULL, &Aug31xx_get_proc_kbo_start);
 	if(!ent)
 	{
 		GAUGE_err("create /proc/kbo_start fail\n");
 	}
-	ent = create_proc_read_entry("kbo_result", 0744, NULL, ug31xx_get_proc_kbo_result, NULL);
+	ent = proc_create("kbo_result", 0744, NULL, &Aug31xx_get_proc_kbo_result);
 	if(!ent)
 	{
 		GAUGE_err("create /proc/kbo_result fail\n");
 	}
-	ent = create_proc_read_entry("kbo_stop", 0744, NULL, ug31xx_get_proc_kbo_stop, NULL);
+	ent = proc_create("kbo_stop", 0744, NULL, &Aug31xx_get_proc_kbo_stop);
 	if(!ent)
 	{
 		GAUGE_err("create /proc/kbo_stop fail\n");
@@ -2994,8 +3164,29 @@ static int ug31xx_i2c_probe(struct i2c_client *client,
 				      const struct i2c_device_id *id)
 {
 	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
+	int ret = 0;
+	u32 test_major_flag=0;
+	struct asus_bat_config bat_cfg;
+
+	//turn to jiffeys
+	bat_cfg.polling_time = 0;
+	bat_cfg.critical_polling_time = 0;
+	bat_cfg.polling_time *= HZ;
+	bat_cfg.critical_polling_time *= HZ;
 
 	GAUGE_info("++++++++++++++++ %s ++++++++++++++++\n", __func__);
+
+	ret = i2c_smbus_read_word_data(client, 0x04);
+	GAUGE_info("%s and ret = %d\n", __func__, ret);
+	if(ret<0)
+		return ret;
+	else {
+		//init battery info & work queue
+		ret = asus_battery_init(bat_cfg.polling_time, bat_cfg.critical_polling_time, test_major_flag);
+		if (ret)
+			goto err1;
+	}
+
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE))
 	{
 		return -EIO;
@@ -3061,6 +3252,8 @@ static int ug31xx_i2c_probe(struct i2c_client *client,
 #endif  ///< end of UG31XX_PROBE_CHARGER_OFF
 
 	return 0;
+err1:
+	return ret;
 }
 
 static int ug31xx_i2c_remove(struct i2c_client *client)
@@ -3403,6 +3596,7 @@ static void ug31xx_i2c_shutdown(struct i2c_client *client)
 	if(ug31xx_drv_status == UG31XX_DRV_NOT_READY)
 	{
 		GAUGE_err("[%s] Gauge driver not init finish\n", __func__);
+		return (0);
 	}
 	ug31xx_drv_status = UG31XX_DRV_NOT_READY;
 
@@ -3476,14 +3670,6 @@ static struct i2c_adapter *i2c_adap;
 static int __init ug31xx_i2c_init(void)
 {
 	int ret = 0;
-	u32 test_major_flag=0;
-	struct asus_bat_config bat_cfg;
-
-	//turn to jiffeys/s 
-	bat_cfg.polling_time = 0;
-	bat_cfg.critical_polling_time = 0;
-	bat_cfg.polling_time *= HZ;
-	bat_cfg.critical_polling_time *= HZ;
 
 	#ifdef	UG31XX_REGISTER_I2C
 		i2c_adap = i2c_get_adapter(UG31XX_I2C_ADAPTER);
@@ -3503,11 +3689,6 @@ static int __init ug31xx_i2c_init(void)
 			goto err2;
 		}
 	#endif	///< end of UG31XX_REGISTER_I2C
-
-	//init battery info & work queue
-	ret = asus_battery_init(bat_cfg.polling_time, bat_cfg.critical_polling_time, test_major_flag);
-	if (ret)
-		goto err4;
 
 	ret =  i2c_add_driver(&ug31xx_i2c_driver);
 	if (ret)
@@ -3530,8 +3711,6 @@ err2:
 	i2c_put_adapter(i2c_adap);
 #endif	///< end of UG31XX_REGISTER_I2C
 err1:
-	asus_battery_exit();
-err4:
 	return ret;
 }
 late_initcall(ug31xx_i2c_init);

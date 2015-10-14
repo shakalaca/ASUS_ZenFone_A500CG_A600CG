@@ -81,8 +81,14 @@ static int ssp_dma_req(struct snd_pcm_substream *substream)
 	struct intel_alsa_ssp_stream_info *str_info;
 	struct intel_ssp_config *ssp_config;
 	struct snd_pcm_runtime *pl_runtime;
-	u32 *dma_addr;
 	int ret;
+#ifdef _LLI_ENABLED_
+	struct intel_mid_i2s_lli *sg_table = NULL;
+	int i;
+#else
+	u32 *dma_addr;
+#endif /* _LLI_ENABLED_ */
+
 	WARN(!substream, "SSP DAI: "
 			"ERROR NULL substream\n");
 	if (!substream)
@@ -113,32 +119,95 @@ static int ssp_dma_req(struct snd_pcm_substream *substream)
 	if (!ssp_config->i2s_handle)
 		return -EINVAL;
 
+#ifdef _LLI_ENABLED_
+	if (!test_bit(INTEL_ALSA_SSP_STREAM_STARTED,
+				&str_info->stream_status)) {
+		pr_err("%s: Stream has been stopped before SSP DMA request has been taken into account",
+			__func__);
+		return 0;
+	}
+
+	/* Will be executed once until next DAI shutdown */
+	if (!test_bit(INTEL_ALSA_SSP_STREAM_INIT,
+				  &str_info->stream_status)) {
+
+		str_info->length = frames_to_bytes(pl_runtime,
+						pl_runtime->period_size);
+
+		str_info->addr = substream->runtime->dma_area;
+
+		sg_table = kzalloc(sizeof(struct intel_mid_i2s_lli) *
+						   pl_runtime->periods,
+						   GFP_KERNEL);
+		if (sg_table == NULL) {
+			pr_err("sg_table allocation failed!");
+			return -EINVAL;
+		}
+
+		for (i = 0; i < pl_runtime->periods; i++) {
+			sg_table[i].addr = (u32 *) (str_info->addr +
+							str_info->length * i);
+			sg_table[i].leng = (u32) str_info->length;
+		}
+
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+			ret = intel_mid_i2s_lli_wr_req(ssp_config->i2s_handle,
+							sg_table,
+							pl_runtime->periods,
+							I2S_CIRCULAR_MODE,
+							substream);
+		else
+			ret = intel_mid_i2s_lli_rd_req(ssp_config->i2s_handle,
+							sg_table,
+							pl_runtime->periods,
+							I2S_CIRCULAR_MODE,
+							substream);
+		kfree(sg_table);
+
+		if (ret != 0) {
+			pr_err("SSP DAI: %s request error",
+				(substream->stream ==
+				SNDRV_PCM_STREAM_PLAYBACK) ?
+					   "write" : "read");
+		}
+
+		set_bit(INTEL_ALSA_SSP_STREAM_INIT, &str_info->stream_status);
+
+		intel_mid_i2s_command(ssp_config->i2s_handle,
+					SSP_CMD_ENABLE_SSP, NULL);
+	}
+
+	/* Executed at each TRIGGER_START */
+	intel_mid_i2s_command(ssp_config->i2s_handle,
+			(substream->stream == SNDRV_PCM_STREAM_PLAYBACK) ?
+			SSP_CMD_ENABLE_DMA_TX_INTR :
+			SSP_CMD_ENABLE_DMA_RX_INTR, NULL);
+
+	return 0;
+#else
 	str_info->length = frames_to_bytes(pl_runtime, pl_runtime->period_size);
 
 	str_info->addr = substream->runtime->dma_area;
 	pr_debug("SSP DAI: FCT %s substream->runtime->dma_area = %p",
-				__func__, substream->runtime->dma_area);
+		 __func__, substream->runtime->dma_area);
 
-	dma_addr = (u32 *)(str_info->addr +
-				str_info->length * str_info->period_req_index);
+	dma_addr = (u32 *)(str_info->addr + str_info->length
+			   * str_info->period_req_index);
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		ret = intel_mid_i2s_wr_req(ssp_config->i2s_handle, dma_addr,
-			str_info->length, substream);
+					   str_info->length, substream);
 	else
 		ret = intel_mid_i2s_rd_req(ssp_config->i2s_handle, dma_addr,
-			str_info->length, substream);
+					   str_info->length, substream);
 
 	if (ret == 0) {
-
 		intel_mid_i2s_command(ssp_config->i2s_handle,
-				SSP_CMD_ENABLE_SSP, NULL);
+				      SSP_CMD_ENABLE_SSP, NULL);
 
 		if (test_and_set_bit(INTEL_ALSA_SSP_STREAM_RUNNING,
-				&str_info->stream_status)) {
-
-			pr_err("SSP DAI: "
-				"ERROR previous requested not handled\n");
+				     &str_info->stream_status)) {
+			pr_err("SSP DAI: ERROR previous request not handled\n");
 			return -EBUSY;
 		}
 
@@ -146,10 +215,10 @@ static int ssp_dma_req(struct snd_pcm_substream *substream)
 			str_info->period_req_index = 0;
 		return 0;
 	} else {
-		pr_err("SSP DAI: FCT %s read/write req ERROR\n",
-				__func__);
+		pr_err("SSP DAI: FCT %s read/write req ERROR\n", __func__);
 		return -EINVAL;
 	}
+#endif /* _LLI_ENABLED_ */
 } /* ssp_dma_req */
 
 /**
@@ -161,7 +230,7 @@ static int ssp_dma_req(struct snd_pcm_substream *substream)
  * PAUSED or SUSPENDED to inform ALSA Kernel that the Ring Buffer
  * period has been sent or received properly
  *
- * @param param Pointer to a structure
+ * @param param Pointer to a user data
  * return status
  */
 static int ssp_dma_complete(void *param)
@@ -169,21 +238,38 @@ static int ssp_dma_complete(void *param)
 	struct snd_pcm_substream *substream;
 	struct intel_alsa_ssp_stream_info *str_info;
 	struct snd_pcm_runtime *pl_runtime;
+#ifndef _LLI_ENABLED_
 	bool call_back = false;
 	bool reset_index = false;
+#endif /* _LLI_ENABLED_ */
 
 	substream = (struct snd_pcm_substream *)param;
 	pl_runtime = substream->runtime;
 	str_info = substream->runtime->private_data;
 
 	WARN(!str_info, "SSP DAI: ERROR NULL str_info\n");
-	if (!str_info)
+	if (str_info == NULL)
 		return -EINVAL;
 
+#ifdef _LLI_ENABLED_
+	if (!test_bit(INTEL_ALSA_SSP_STREAM_INIT,
+		      &str_info->stream_status)) {
+		pr_err("Stream already not initialized");
+		return 0;
+	}
+
+	if (++(str_info->period_cb_index) >= pl_runtime->periods)
+		str_info->period_cb_index = 0;
+
+	if (test_bit(INTEL_ALSA_SSP_STREAM_STARTED, &str_info->stream_status))
+		snd_pcm_period_elapsed(substream);
+	else
+		pr_debug("No call to snd_period_elapsed, stream is not started");
+#else
 	if (test_and_clear_bit(INTEL_ALSA_SSP_STREAM_RUNNING,
-					&str_info->stream_status)) {
+			       &str_info->stream_status)) {
 		bool dropped = test_and_clear_bit(INTEL_ALSA_SSP_STREAM_DROPPED,
-					&str_info->stream_status);
+						  &str_info->stream_status);
 		bool started = test_bit(INTEL_ALSA_SSP_STREAM_STARTED,
 					&str_info->stream_status);
 
@@ -204,30 +290,24 @@ static int ssp_dma_complete(void *param)
 			 */
 			reset_index = true;
 		}
-
 		if (!started && !dropped) {
 			pr_err("SSP DAI: FCT %s neither started nor dropped",
-						__func__);
+			       __func__);
 			return -EBUSY;
 		}
-
 	} else {
-		pr_err("SSP DAI: FCT %s called while not running ",
-						__func__);
+		pr_err("SSP DAI: FCT %s called while not running ", __func__);
 		return -EBUSY;
 	}
 
 	if (call_back == true) {
-		pr_debug("SSP DAI: playback/capture (REQ=%d,CB=%d): "
-				"DMA_REQ_COMPLETE\n",
-				str_info->period_req_index,
-				str_info->period_cb_index);
+		pr_debug("SSP DAI: playback/capture (REQ=%d,CB=%d): DMA_REQ_COMPLETE\n",
+			 str_info->period_req_index,
+			 str_info->period_cb_index);
 
 		if (reset_index) {
-
 			str_info->period_cb_index = 0;
 			str_info->period_req_index = 0;
-
 		} else if (++(str_info->period_cb_index) >= pl_runtime->periods)
 			str_info->period_cb_index = 0;
 
@@ -238,12 +318,13 @@ static int ssp_dma_complete(void *param)
 		ssp_dma_req(substream);
 
 		/*
-		* Call the snd_pcm_period_elapsed to inform ALSA kernel
-		* that a ringbuffer period has been played
-		*/
+		 * Call the snd_pcm_period_elapsed to inform ALSA kernel
+		 * that a ringbuffer period has been played
+		 */
 		snd_pcm_period_elapsed(substream);
-
 	}
+#endif /* _LLI_ENABLED_ */
+
 	return 0;
 } /* ssp_dma_complete */
 
@@ -386,12 +467,11 @@ snd_pcm_uframes_t ssp_platform_pointer(struct snd_pcm_substream *substream)
 		pcm_pointer = (unsigned long) (str_info->period_cb_index
 				* substream->runtime->period_size);
 
-	pr_debug("SSP DAI: FCT %s Frame bits:: %d "
-			"period_size :: %d periods :: %d\n",
-			__func__,
-			(int) substream->runtime->frame_bits,
-			(int) substream->runtime->period_size,
-			(int) substream->runtime->periods);
+	pr_debug("SSP DAI: FCT %s Frame bits = %d, period_size = %d,  periods = %d\n",
+		 __func__,
+		 (int) substream->runtime->frame_bits,
+		 (int) substream->runtime->period_size,
+		 (int) substream->runtime->periods);
 
 	pr_debug("SSP DAI: FCT %s returns %ld\n",
 			__func__, pcm_pointer);
@@ -435,7 +515,9 @@ static int ssp_probe(struct snd_soc_dai *cpu_dai)
 		return -ENOMEM;
 	}
 
+#ifndef _LLI_ENABLED_
 	ssp_config->intel_mid_dma_alloc = false;
+#endif /* _LLI_ENABLED_ */
 	ssp_config->ssp_dai_tx_allocated = false;
 	ssp_config->ssp_dai_rx_allocated = false;
 
@@ -634,6 +716,10 @@ static void ssp_dai_shutdown(struct snd_pcm_substream *substream,
 		break;
 	}
 
+#ifdef _LLI_ENABLED_
+	clear_bit(INTEL_ALSA_SSP_STREAM_INIT, &str_info->stream_status);
+#endif /* _LLI_ENABLED_ */
+
 	kfree(str_info);
 
 	if (!cpu_dai->active) {
@@ -645,7 +731,9 @@ static void ssp_dai_shutdown(struct snd_pcm_substream *substream,
 		intel_mid_i2s_close(ssp_config->i2s_handle);
 
 		ssp_config->i2s_handle = NULL;
+#ifndef _LLI_ENABLED_
 		ssp_config->intel_mid_dma_alloc = false;
+#endif /* _LLI_ENABLED_ */
 	}
 
 } /* ssp_dai_shutdown */
@@ -952,6 +1040,10 @@ static int ssp_dai_trigger(struct snd_pcm_substream *substream,
 	struct intel_alsa_ssp_stream_info *str_info;
 	struct snd_pcm_runtime *pl_runtime;
 	struct intel_ssp_info *ssp_info;
+#ifdef _LLI_ENABLED_
+	struct intel_ssp_config *ssp_config;
+#endif /* _LLI_ENABLED_ */
+
 	bool trigger_start = true;
 	int stream = 0;
 
@@ -985,6 +1077,14 @@ static int ssp_dai_trigger(struct snd_pcm_substream *substream,
 
 	str_info = pl_runtime->private_data;
 
+#ifdef _LLI_ENABLED_
+	ssp_config = str_info->ssp_config;
+
+	WARN(!ssp_config, "SSP DAI: ERROR NULL ssp_config\n");
+	if (!ssp_config)
+		return -EINVAL;
+#endif /* _LLI_ENABLED_ */
+
 	pr_debug("SSP DAI: FCT %s CMD = 0x%04X\n",
 			__func__, cmd);
 
@@ -992,14 +1092,15 @@ static int ssp_dai_trigger(struct snd_pcm_substream *substream,
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		if (!test_and_set_bit(INTEL_ALSA_SSP_STREAM_STARTED,
-				&str_info->stream_status)) {
+				      &str_info->stream_status)) {
+#ifndef _LLI_ENABLED_
 			if (test_bit(INTEL_ALSA_SSP_STREAM_DROPPED,
-					&str_info->stream_status)) {
-				pr_debug("SSP DAI: FCT %s do not restart "
-						"the trigger stream running "
-						"already\n", __func__);
+				     &str_info->stream_status)) {
+				pr_debug("SSP DAI: FCT %s do not restart the trigger stream running already\n",
+					 __func__);
 				trigger_start = false;
 			} else
+#endif /* _LLI_ENABLED_ */
 				trigger_start = true;
 		} else {
 			pr_err("SSP DAI: ERROR 2 consecutive TRIGGER_START\n");
@@ -1030,11 +1131,18 @@ static int ssp_dai_trigger(struct snd_pcm_substream *substream,
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 		if (test_and_clear_bit(INTEL_ALSA_SSP_STREAM_STARTED,
-				&str_info->stream_status))
-
+				       &str_info->stream_status)) {
+#ifdef _LLI_ENABLED_
+			intel_mid_i2s_command(ssp_config->i2s_handle,
+					      (stream == SNDRV_PCM_STREAM_PLAYBACK) ?
+					      SSP_CMD_DISABLE_DMA_TX_INTR :
+					      SSP_CMD_DISABLE_DMA_RX_INTR,
+					      NULL);
+#else
 			set_bit(INTEL_ALSA_SSP_STREAM_DROPPED,
-					&str_info->stream_status);
-		else {
+				&str_info->stream_status);
+#endif /* _LLI_ENABLED_ */
+		} else {
 			pr_err("SSP DAI: trigger START/STOP mismatch\n");
 			return -EBUSY;
 		}
@@ -1131,7 +1239,9 @@ static int ssp_dai_prepare(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
+#ifndef _LLI_ENABLED_
 	ssp_config->intel_mid_dma_alloc = true;
+#endif /* _LLI_ENABLED_ */
 
 	pr_debug("SSP DAI: FCT %s leaves\n",
 			__func__);
@@ -1205,6 +1315,10 @@ struct snd_soc_dai_driver intel_ssp_platform_dai[] = {
 },
 };
 
+static const struct snd_soc_component_driver ssp_component = {
+	.name           = "ssp",
+};
+
 static int ssp_dai_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -1225,18 +1339,18 @@ static int ssp_dai_probe(struct platform_device *pdev)
 				&soc_ssp_platform_drv);
 	if (ret) {
 		pr_err("registering SSP PLATFORM failed\n");
-		snd_soc_unregister_dai(&pdev->dev);
+		snd_soc_unregister_component(&pdev->dev);
 		kfree(ssp_info);
 		return -EBUSY;
 	}
 
-	ret = snd_soc_register_dais(&pdev->dev,
+	ret = snd_soc_register_component(&pdev->dev, &ssp_component,
 			intel_ssp_platform_dai,
 			ARRAY_SIZE(intel_ssp_platform_dai));
 
 	if (ret) {
 		pr_err("registering cpu DAIs failed\n");
-		snd_soc_unregister_dai(&pdev->dev);
+		snd_soc_unregister_component(&pdev->dev);
 		kfree(ssp_info);
 		return -EBUSY;
 	}
@@ -1245,7 +1359,7 @@ static int ssp_dai_probe(struct platform_device *pdev)
 
 	if (!ssp_info->ssp_dai_wq) {
 		pr_err("work queue failed\n");
-		snd_soc_unregister_dai(&pdev->dev);
+		snd_soc_unregister_component(&pdev->dev);
 		kfree(ssp_info);
 		return -ENOMEM;
 	}
@@ -1277,7 +1391,7 @@ static int ssp_dai_remove(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, NULL);
 
-	snd_soc_unregister_dais(&pdev->dev, ARRAY_SIZE(intel_ssp_platform_dai));
+	snd_soc_unregister_component(&pdev->dev);
 
 	snd_soc_unregister_platform(&pdev->dev);
 

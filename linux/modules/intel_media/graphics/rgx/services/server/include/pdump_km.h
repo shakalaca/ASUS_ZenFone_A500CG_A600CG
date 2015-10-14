@@ -44,11 +44,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #ifndef _PDUMP_KM_H_
 #define _PDUMP_KM_H_
 
-/*
- * Include the OS abstraction APIs
- */
-#include "pdump_osfunc.h"
-
 /* services/srvkm/include/ */
 #include "device.h"
 
@@ -71,14 +66,6 @@ extern "C" {
 #define PDUMP_PD_UNIQUETAG			(IMG_HANDLE)0
 #define PDUMP_PT_UNIQUETAG			(IMG_HANDLE)0
 
-/*
- * PDump streams (common to all OSes)
- */
-#define PDUMP_STREAM_PARAM2			0
-#define PDUMP_STREAM_SCRIPT2		1
-#define PDUMP_STREAM_DRIVERINFO		2
-#define PDUMP_NUM_STREAMS			3
-
 #if defined(PDUMP_DEBUG_OUTFILES)
 /* counter increments each time debug write is called */
 extern IMG_UINT32 g_ui32EveryLineCounter;
@@ -97,9 +84,6 @@ typedef PVRSRV_ERROR (*PFN_PDUMP_TRANSITION)(IMG_PVOID *pvData, IMG_BOOL bInto, 
 
 #ifdef PDUMP
 	/* Shared across pdump_x files */
-	IMG_BOOL PDumpIsPersistent(IMG_VOID);
-	PVRSRV_ERROR PDumpAddPersistantProcess(IMG_VOID);
-
 	PVRSRV_ERROR PDumpInitCommon(IMG_VOID);
 	IMG_VOID PDumpDeInitCommon(IMG_VOID);
 	IMG_VOID PDumpInit(IMG_VOID);
@@ -200,12 +184,6 @@ typedef PVRSRV_ERROR (*PFN_PDUMP_TRANSITION)(IMG_PVOID *pvData, IMG_BOOL bInto, 
 									IMG_CHAR *pszMemSpace,
 									IMG_UINT32 ui32MMUContextID,
 									IMG_UINT32 ui32MMUType);
-
-	PVRSRV_ERROR PDumpCounterRegisters(PVRSRV_DEVICE_IDENTIFIER *psDevId,
-					IMG_UINT32 ui32DumpFrameNum,
-					IMG_BOOL		bLastFrame,
-					IMG_UINT32 *pui32Registers,
-					IMG_UINT32 ui32NumRegisters);
 
 	PVRSRV_ERROR PDumpRegRead32(IMG_CHAR *pszPDumpRegName,
 								const IMG_UINT32 dwRegOffset,
@@ -607,7 +585,7 @@ PVRSRV_ERROR PDumpTransition(PDUMP_CONNECTION_DATA *psPDumpConnectionData, IMG_B
 		#define PDUMP_LOCK			/ ## * PDUMP_LOCK(__VA_ARGS__) * ## /
 		#define PDUMP_UNLOCK			/ ## * PDUMP_UNLOCK(__VA_ARGS__) * ## /
 	#else
-		#if defined LINUX || defined GCC_IA32 || defined GCC_ARM
+		#if defined LINUX || defined GCC_IA32 || defined GCC_ARM || defined __QNXNTO__
 			#define PDUMPINIT	PDumpInitCommon
 			#define PDUMPDEINIT(args...)
 			#define PDUMPISLASTFRAME(args...)

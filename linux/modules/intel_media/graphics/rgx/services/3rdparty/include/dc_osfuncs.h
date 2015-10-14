@@ -93,6 +93,7 @@ typedef PVRSRV_ERROR (*PFN_SYS_UNINSTALL_DEVICE_LISR)(IMG_HANDLE hLISRData);
 
 /* Other service related functions */
 typedef IMG_VOID (*PFN_CHECK_STATUS)(IMG_PVOID hCmdCompCallerHandle);
+typedef const IMG_CHAR *(*PFN_GET_ERROR_STRING)(PVRSRV_ERROR eError);
 
 #define DC_OS_BYTES_TO_PAGES(range)	(((range) + (DC_OSGetPageSize() - 1)) >> DC_OSGetPageShift())
 
@@ -120,6 +121,7 @@ typedef struct DC_SERVICES_FUNCS_TAG
 #endif
 	/* Other service related functions */
 	PFN_CHECK_STATUS		        pfnCheckStatus;
+	PFN_GET_ERROR_STRING			pfnGetErrorString;
 } DC_SERVICES_FUNCS;
 
 typedef enum

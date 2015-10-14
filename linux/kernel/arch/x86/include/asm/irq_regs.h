@@ -15,20 +15,15 @@ DECLARE_PER_CPU(struct pt_regs *, irq_regs);
 
 static inline struct pt_regs *get_irq_regs(void)
 {
-	return percpu_read(irq_regs);
+	return this_cpu_read(irq_regs);
 }
 
 static inline struct pt_regs *set_irq_regs(struct pt_regs *new_regs)
 {
 	struct pt_regs *old_regs;
 
-	if ((unsigned long)new_regs & 0x3) {
-		pr_emerg("Invalid irq_regs address: %p\n", new_regs);
-		BUG();
-	}
-
 	old_regs = get_irq_regs();
-	percpu_write(irq_regs, new_regs);
+	this_cpu_write(irq_regs, new_regs);
 
 	return old_regs;
 }

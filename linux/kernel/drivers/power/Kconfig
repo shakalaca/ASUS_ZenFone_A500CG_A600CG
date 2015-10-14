@@ -1,5 +1,5 @@
 menuconfig POWER_SUPPLY
-	tristate "Power supply class support"
+	bool "Power supply class support"
 	help
 	  Say Y here to enable power supply class support. This allows
 	  power supply (batteries, AC, USB) monitoring by userspace
@@ -9,34 +9,34 @@ menuconfig POWER_SUPPLY
 if POWER_SUPPLY
 
 config POWER_SUPPLY_CHARGER
-	bool "Power Supply Charger"
-	select EXTCON
-	select POWER_SUPPLY_BATTID
-	help
-	  Say Y here to enable the power supply charger framework. Charger
-	  framework supports charging in a generic way. This allows the charger
-	  drivers to keep the charging logic outside and the charger driver
-	  just need to abstract the charger hardware
+        bool "Power Supply Charger"
+        select EXTCON
+        select POWER_SUPPLY_BATTID
+        help
+          Say Y here to enable the power supply charger framework. Charger
+          framework supports charging in a generic way. This allows the charger
+          drivers to keep the charging logic outside and the charger driver
+          just need to abstract the charger hardware
 
 config POWER_SUPPLY_CHARGING_ALGO_PSE
-	bool "PSE compliant charging algorithm"
-	help
-	  Say Y here to select PSE compliant charging algorithm. As per PSE
-	  standard the battery characteristics and thereby the charging rates
-	  can vary on different temperature zones. This config will enable PSE
-	  compliant charging algorithm with maintenance charging support. The
-	  algorithm can be selected by the charging framework based on the type
-	  of the battery charging profile.
+        bool "PSE compliant charging algorithm"
+        help
+          Say Y here to select PSE compliant charging algorithm. As per PSE
+          standard the battery characteristics and thereby the charging rates
+          can vary on different temperature zones. This config will enable PSE
+          compliant charging algorithm with maintenance charging support. The
+          algorithm can be selected by the charging framework based on the type
+          of the battery charging profile.
 
-	depends on POWER_SUPPLY_CHARGER
+        depends on POWER_SUPPLY_CHARGER
 
 config POWER_SUPPLY_BATTID
-	bool "Power Supply Battery Identification Framework"
-	help
-	 Say Y here to enable the power supply battery idnetification
-	 framework. The framework would allow different battery identification
-	 drivers to interface with power supply subsystem. Also it allows consumer
-	 drivers to register for notification from the power_supply subsystem.
+        bool "Power Supply Battery Identification Framework"
+        help
+         Say Y here to enable the power supply battery idnetification
+         framework. The framework would allow different battery identification
+         drivers to interface with power supply subsystem. Also it allows consumer
+         drivers to register for notification from the power_supply subsystem.
 
 config POWER_SUPPLY_DEBUG
 	bool "Power supply debug"
@@ -58,6 +58,13 @@ config APM_POWER
 	help
 	  Say Y here to enable support APM status emulation using
 	  battery class devices.
+
+config GENERIC_ADC_BATTERY
+	tristate "Generic battery support using IIO"
+	depends on IIO
+	help
+	  Say Y here to enable support for the generic battery driver
+	  which uses IIO framework to read adc.
 
 config MAX8925_POWER
 	tristate "MAX8925 battery charger support"
@@ -92,6 +99,12 @@ config TEST_POWER
 	help
 	  This driver is used for testing. It's safe to say M here.
 
+config BATTERY_88PM860X
+	tristate "Marvell 88PM860x battery driver"
+	depends on MFD_88PM860X
+	help
+	  Say Y here to enable battery monitor for Marvell 88PM860x chip.
+
 config BATTERY_DS2760
 	tristate "DS2760 battery driver (HP iPAQ & others)"
 	depends on W1 && W1_SLAVE_DS2760
@@ -107,7 +120,7 @@ config BATTERY_DS2780
 	  Say Y here to enable support for batteries with ds2780 chip.
 
 config BATTERY_DS2781
-	tristate "2781 battery driver"
+	tristate "DS2781 battery driver"
 	depends on HAS_IOMEM
 	select W1
 	select W1_SLAVE_DS2781
@@ -169,6 +182,7 @@ config BATTERY_SBS
 
 config BATTERY_BQ27x00
 	tristate "BQ27x00 battery driver"
+	depends on I2C || I2C=n
 	help
 	  Say Y here to enable support for batteries with BQ27x00 (I2C/HDQ) chips.
 
@@ -197,7 +211,6 @@ config BATTERY_DA9030
 config BATTERY_DA9052
 	tristate "Dialog DA9052 Battery"
 	depends on PMIC_DA9052
-	depends on BROKEN
 	help
 	  Say Y here to enable support for batteries charger integrated into
 	  DA9052 PMIC.
@@ -211,24 +224,15 @@ config BATTERY_MAX17040
 	  to operate with a single lithium cell
 
 config BATTERY_MAX17042
-	tristate "Maxim MAX17042/8997/8966 Fuel Gauge"
+	tristate "Maxim MAX17042/17047/17050/8997/8966 Fuel Gauge"
 	depends on I2C
 	help
 	  MAX17042 is fuel-gauge systems for lithium-ion (Li+) batteries
 	  in handheld and portable equipment. The MAX17042 is configured
 	  to operate with a single lithium cell. MAX8997 and MAX8966 are
 	  multi-function devices that include fuel gauages that are compatible
-	  with MAX17042.
-
-config BATTERY_ANDROID
-	tristate "Battery driver for Android"
-	help
-	  Say Y to enable generic support for battery charging according
-	  to common Android policies.
-	  This driver adds periodic battery level and health monitoring,
-	  kernel log reporting and other debugging features, common board
-	  battery file glue logic for battery/case temperature sensors,
-	  etc.
+	  with MAX17042. This driver also supports max17047/50 chips which are
+	  improved version of max17042.
 
 config BATTERY_Z2
 	tristate "Z2 battery driver"
@@ -241,6 +245,12 @@ config BATTERY_S3C_ADC
 	depends on S3C_ADC
 	help
 	  Say Y here to enable support for iPAQ h1930/h1940/rx1950 battery
+
+config CHARGER_88PM860X
+	tristate "Marvell 88PM860x Charger driver"
+	depends on MFD_88PM860X && BATTERY_88PM860X
+	help
+	  Say Y here to enable charger for Marvell 88PM860x chip.
 
 config CHARGER_PCF50633
 	tristate "NXP PCF50633 MBC"
@@ -266,16 +276,16 @@ config BATTERY_INTEL_MID
 	  Say Y here to enable the battery driver on Intel MID
 	  platforms.
 
-config BATTERY_INTEL_MDF
-        tristate "Battery driver for Intel Medfield MID platforms"
-        depends on INTEL_SCU_IPC && USB_PENWELL_OTG && MSIC_GPADC
-        help
-          Say Y here to enable the battery driver on Intel Medfield based MID
-          platforms.
+config BATTERY_RX51
+	tristate "Nokia RX-51 (N900) battery driver"
+	depends on TWL4030_MADC
+	help
+	  Say Y here to enable support for battery information on Nokia
+	  RX-51, also known as N900 tablet.
 
 config CHARGER_ISP1704
 	tristate "ISP1704 USB Charger Detection"
-	depends on USB_OTG_UTILS
+	depends on USB_PHY
 	help
 	  Say Y to enable support for USB Charger Detection with
 	  ISP1707/ISP1704 USB transceivers.
@@ -301,6 +311,14 @@ config CHARGER_LP8727
 	help
 	  Say Y here to enable support for LP8727 Charger Driver.
 
+config CHARGER_LP8788
+	tristate "TI LP8788 charger driver"
+	depends on MFD_LP8788
+	depends on LP8788_ADC
+	depends on IIO
+	help
+	  Say Y to enable support for the LP8788 linear charger.
+
 config CHARGER_GPIO
 	tristate "GPIO charger"
 	depends on GPIOLIB
@@ -314,6 +332,7 @@ config CHARGER_GPIO
 config CHARGER_MANAGER
 	bool "Battery charger manager for multiple chargers"
 	depends on REGULATOR && RTC_CLASS
+	select EXTCON
 	help
           Say Y to enable charger-manager support, which allows multiple
           chargers attached to a battery and multiple batteries attached to a
@@ -335,54 +354,56 @@ config CHARGER_MAX8998
 	  Say Y to enable support for the battery charger control sysfs and
 	  platform data of MAX8998/LP3974 PMICs.
 
+config CHARGER_BQ2415X
+	tristate "TI BQ2415x battery charger driver"
+	depends on I2C
+	help
+	  Say Y to enable support for the TI BQ2415x battery charger
+	  PMICs.
+
+	  You'll need this driver to charge batteries on e.g. Nokia
+	  RX-51/N900.
+
 config CHARGER_SMB347
 	tristate "Summit Microelectronics SMB347 Battery Charger"
 	depends on I2C
+	select REGMAP_I2C
 	help
 	  Say Y to include support for Summit Microelectronics SMB347
 	  Battery Charger.
 
-config BYT_FFRD8_CHARGER
-	tristate "BYT charger initialization module"
-	depends on I2C
+config CHARGER_TPS65090
+	tristate "TPS65090 battery charger driver"
+	depends on MFD_TPS65090
 	help
-	  This module initializes the BYT FFRD8 platform data. This
-	  module will initialize the I2C addresses for charger and FG.
-
-	  Say Y here if you have baytrail ffrd8 platform and to support
-	  BYT FFRD8 Battery Charger.
+	 Say Y here to enable support for battery charging with TPS65090
+	 PMIC chips.
 
 config AB8500_BM
 	bool "AB8500 Battery Management Driver"
 	depends on AB8500_CORE && AB8500_GPADC
 	help
-	  Say Y to include support for AB5500 battery management.
+	  Say Y to include support for AB8500 battery management.
 
-config AB8500_BATTERY_THERM_ON_BATCTRL
-	bool "Thermistor connected on BATCTRL ADC"
-	depends on AB8500_BM
+config BATTERY_GOLDFISH
+	tristate "Goldfish battery driver"
+	depends on GENERIC_HARDIRQS
 	help
-	  Say Y to enable battery temperature measurements using
-	  thermistor connected on BATCTRL ADC.
-
-config BYT_ULPMC_BATTERY
-	bool "Baytrail ULPMC battery driver"
-	depends on I2C
-	help
-	  Say Y here to enable support for Baytrail ULPMC battery driver.
-
-config BYT_ULPMC_FWUPDATE
-	bool "Baytrail ULPMC firmware update driver"
-	depends on BYT_ULPMC_BATTERY
-	help
-	  Say Y here to enable support for Baytrail ULPMC firmware update driver
+	  Say Y to enable support for the battery and AC power in the
+	  Goldfish emulator.
 
 config BYT_EC_BATTERY
 	bool "Baytrail EC battery driver"
 	help
 	  Say Y here to enable support for Baytrail EC battery driver.
 
+
+source "drivers/power/reset/Kconfig"
+
 # chih-hsuan ((( battery driver
 source "drivers/power/ASUS_BATTERY/Kconfig"
 # )))
+
 endif # POWER_SUPPLY
+
+source "drivers/power/avs/Kconfig"

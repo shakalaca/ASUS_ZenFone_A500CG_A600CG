@@ -40,7 +40,7 @@
 #define CRYSTALCOVE_PMIC_PWM_EN_GPIO_VALUE	0x22
 #define CRYSTALCOVE_PMIC_PWM1_CLKDIV_REG	0x4C
 #define CRYSTALCOVE_PMIC_PWM1_DUTYCYC_REG	0x4F
-#define CRYSTALCOVE_PMIC_PWM_ENABLE		0x01
+#define CRYSTALCOVE_PMIC_PWM_ENABLE		0x80
 
 #define CRYSTALCOVE_PMIC_VIBRA_MAX_BASEUNIT	0x7F
 
@@ -73,7 +73,7 @@ static int vibra_pmic_pwm_configure(struct vibra_info *info, bool enable)
 		clk_div = *info->base_unit;
 		duty_cyc = *info->duty_cycle;
 
-		clk_div = (clk_div << 1) | CRYSTALCOVE_PMIC_PWM_ENABLE;
+		clk_div = clk_div | CRYSTALCOVE_PMIC_PWM_ENABLE;
 		intel_mid_pmic_writeb(CRYSTALCOVE_PMIC_PWM1_DUTYCYC_REG, duty_cyc);
 		intel_mid_pmic_writeb(CRYSTALCOVE_PMIC_PWM1_CLKDIV_REG, clk_div);
 	} else {
@@ -108,8 +108,16 @@ int intel_mid_plat_vibra_probe(struct platform_device *pdev)
 	pr_debug("%s for %s", __func__, hid);
 
 	data = mid_vibra_acpi_get_drvdata(hid);
+	if (!data) {
+		pr_err("Invalid driver data\n");
+		return -ENODEV;
+	}
 
 	data->gpio_en = acpi_get_gpio_by_index(&pdev->dev, 0, NULL);
+	if (data->gpio_en < 0) {
+		pr_err("Invalid gpio number from acpi\n");
+		return -ENODEV;
+	}
 
 	info = mid_vibra_setup(dev, data);
 	if (!info)

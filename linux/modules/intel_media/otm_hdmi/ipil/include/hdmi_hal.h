@@ -152,7 +152,7 @@ struct hdmi_infoframe_info_t {
  */
 typedef struct {
 	/* Base address of mapped registers */
-	unsigned int io_address;
+	void __iomem *io_address;
 
 	/* Base address of mapped interrupt registers */
 	void __iomem *irq_io_address;

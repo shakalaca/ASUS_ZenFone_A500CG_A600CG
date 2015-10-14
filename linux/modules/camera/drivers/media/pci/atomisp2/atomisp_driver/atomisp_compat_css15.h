@@ -43,6 +43,7 @@
 #define atomisp_css_wb_config	sh_css_wb_config
 #define atomisp_css_cc_config	sh_css_cc_config
 #define atomisp_css_nr_config	sh_css_nr_config
+#define atomisp_css_ext_nr_config      sh_css_ext_nr_config
 #define atomisp_css_ee_config	sh_css_ee_config
 #define atomisp_css_ob_config	sh_css_ob_config
 #define atomisp_css_de_config	sh_css_de_config
@@ -50,6 +51,7 @@
 #define atomisp_css_gc_config	sh_css_gc_config
 #define atomisp_css_tnr_config	sh_css_tnr_config
 #define atomisp_css_3a_config	sh_css_3a_config
+#define atomisp_css_anr_config  sh_css_anr_config
 #define atomisp_css_gamma_table	sh_css_gamma_table
 #define atomisp_css_ctc_table	sh_css_ctc_table
 #define atomisp_css_macc_table	sh_css_macc_table

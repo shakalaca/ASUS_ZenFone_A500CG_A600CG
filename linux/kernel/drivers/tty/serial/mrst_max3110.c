@@ -344,7 +344,7 @@ static int
 receive_chars(struct uart_max3110 *max, unsigned short *str, int len)
 {
 	struct uart_port *port = &max->port;
-	struct tty_struct *tty;
+	struct tty_port *tport;
 	char buf[M3110_RX_FIFO_DEPTH];
 	int r, w, usable;
 
@@ -352,9 +352,7 @@ receive_chars(struct uart_max3110 *max, unsigned short *str, int len)
 	if (!port->state)
 		return 0;
 
-	tty = tty_port_tty_get(&port->state->port);
-	if (!tty)
-		return 0;
+	tport = &port->state->port;
 
 	for (r = 0, w = 0; r < len; r++) {
 		if (str[r] & MAX3110_BREAK &&
@@ -369,20 +367,17 @@ receive_chars(struct uart_max3110 *max, unsigned short *str, int len)
 		}
 	}
 
-	if (!w) {
-		tty_kref_put(tty);
+	if (!w)
 		return 0;
-	}
 
 	for (r = 0; w; r += usable, w -= usable) {
-		usable = tty_buffer_request_room(tty, w);
+		usable = tty_buffer_request_room(tport, w);
 		if (usable) {
-			tty_insert_flip_string(tty, buf + r, usable);
+			tty_insert_flip_string(tport, buf + r, usable);
 			port->icount.rx += usable;
 		}
 	}
-	tty_flip_buffer_push(tty);
-	tty_kref_put(tty);
+	tty_flip_buffer_push(tport);
 
 	return r;
 }
@@ -502,7 +497,7 @@ static int serial_m3110_startup(struct uart_port *port)
 			| WC_BAUD_DR2;
 
 	/* as we use thread to handle tx/rx, need set low latency */
-	port->state->port.tty->low_latency = 1;
+	port->state->port.low_latency = 1;
 
 	if (max->irq > 0) {
 		/* Enable RX IRQ only */
@@ -766,19 +761,28 @@ static int serial_m3110_resume(struct device *dev)
 		enable_irq(max->irq);
 	return 0;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(serial_m3110_pm_ops, serial_m3110_suspend,
-			 serial_m3110_resume);
+			serial_m3110_resume);
+#define SERIAL_M3110_PM_OPS (&serial_m3110_pm_ops)
 
-static int __devinit serial_m3110_probe(struct spi_device *spi)
+#else
+#define SERIAL_M3110_PM_OPS NULL
+#endif
+
+#ifdef CONFIG_XEN
+static int serial_m3110_probe(struct spi_device *spi)
+{
+	return -ENODEV;
+}
+#else
+static int serial_m3110_probe(struct spi_device *spi)
 {
 	struct uart_max3110 *max;
 	void *buffer;
 	u16 res;
 	int ret = 0;
 	struct plat_max3110 *pdata = spi->dev.platform_data;
-
 	if (!pdata)
 		return -EINVAL;
 
@@ -876,8 +880,9 @@ err_get_page:
 	kfree(max);
 	return ret;
 }
+#endif /* CONFIG_XEN */
 
-static int __devexit serial_m3110_remove(struct spi_device *dev)
+static int serial_m3110_remove(struct spi_device *dev)
 {
 	struct uart_max3110 *max = spi_get_drvdata(dev);
 
@@ -902,10 +907,10 @@ static struct spi_driver uart_max3110_driver = {
 	.driver = {
 			.name	= "spi_max3111",
 			.owner	= THIS_MODULE,
-			.pm	= &serial_m3110_pm_ops,
+			.pm	= SERIAL_M3110_PM_OPS,
 	},
 	.probe		= serial_m3110_probe,
-	.remove		= __devexit_p(serial_m3110_remove),
+	.remove		= serial_m3110_remove,
 };
 
 static int __init serial_m3110_init(void)
@@ -934,4 +939,3 @@ module_exit(serial_m3110_exit);
 
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("spi:max3110-uart");
-

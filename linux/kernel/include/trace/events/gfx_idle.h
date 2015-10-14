@@ -37,4 +37,3 @@ DEFINE_EVENT(gfx_idle, gfx_idle_poweroff,
 
 /* This part must be outside protection */
 #include <trace/define_trace.h>
-

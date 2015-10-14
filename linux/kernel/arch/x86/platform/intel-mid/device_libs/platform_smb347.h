@@ -14,4 +14,5 @@
 
 #define SMB347_IRQ_GPIO		52
 extern void *smb347_platform_data(void *info) __attribute__((weak));
+extern bool smb347_is_valid_batid(void);
 #endif

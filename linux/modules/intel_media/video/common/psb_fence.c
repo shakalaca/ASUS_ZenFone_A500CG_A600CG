@@ -85,7 +85,10 @@ int psb_fence_emit_sequence(struct ttm_fence_device *fdev,
 	}
 
 	*sequence = seq;
-	*timeout_jiffies = jiffies + DRM_HZ * 5;
+	if (fence_class == PSB_ENGINE_DECODE)
+		*timeout_jiffies = jiffies + DRM_HZ;
+	else
+		*timeout_jiffies = jiffies + DRM_HZ * 3;
 
 	return 0;
 }
@@ -191,8 +194,16 @@ static void psb_fence_lockup(struct ttm_fence_object *fence,
 #ifdef SUPPORT_VSP
 		struct vsp_private *vsp_priv = dev_priv->vsp_private;
 
+		if (vsp_fence_poll(dev) &&
+		    fence->sequence <= vsp_priv->current_sequence) {
+			DRM_ERROR("pass poll when timeout vsp sequence %x, current sequence %x\n", fence->sequence, vsp_priv->current_sequence);
+			return;
+		}
+
+		DRM_ERROR("fence sequence is %x\n", fence->sequence);
 		DRM_ERROR("VSP timeout (probable lockup) detected,"
 			  " reset vsp\n");
+
 		write_lock(&fc->lock);
 		ttm_fence_handler(fence->fdev, fence->fence_class,
 				  fence->sequence, fence_types,

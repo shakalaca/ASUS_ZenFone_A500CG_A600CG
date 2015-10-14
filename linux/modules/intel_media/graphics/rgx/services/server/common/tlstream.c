@@ -55,8 +55,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "tlstream.h"
 
 /* To debug buffer utilisation enable this macro here and
- * define PVRSRV_NEED_PVR_TRACE in the server pvr_debug.c and in tlutils.c
- * before the inclusion of pvr_debug.h. Issue tlioctl_cmd 6 on target to see
+ * define PVRSRV_NEED_PVR_TRACE in the server pvr_debug.c and in tutils.c
+ * before the inclusion of pvr_debug.h. Issue pvrtutils 6 on target to see
  * stream buffer utilisation. */
 //#define TL_BUFFER_UTILIZATION 1
 
@@ -131,14 +131,14 @@ TLStreamCreate(IMG_HANDLE *phStream,
 	PVRSRV_ERROR   eError;
 	IMG_HANDLE     hEventList;
 	PTL_SNODE      psn = 0;
+	IMG_CHAR       pszBufferLabel[PRVSRVTL_MAX_STREAM_NAME_SIZE+20];
 
 	DEVMEM_FLAGS_T uiMemFlags =  PVRSRV_MEMALLOCFLAG_CPU_READABLE |
 								 PVRSRV_MEMALLOCFLAG_CPU_WRITEABLE | 
 								 PVRSRV_MEMALLOCFLAG_GPU_READABLE |
 								 PVRSRV_MEMALLOCFLAG_GPU_WRITEABLE |
-								 PVRSRV_MEMALLOCFLAG_UNCACHED |
+								 PVRSRV_MEMALLOCFLAG_UNCACHED | /* GPU & CPU */
 								 PVRSRV_MEMALLOCFLAG_ZERO_ON_ALLOC |
-								 PVRSRV_MEMALLOCFLAG_CPU_UNCACHED |
 								 PVRSRV_MEMALLOCFLAG_CPU_WRITE_COMBINE;
 
 	PVR_DPF_ENTERED;
@@ -212,13 +212,15 @@ TLStreamCreate(IMG_HANDLE *phStream,
 	psTmp->ui32Write = 0;
 	psTmp->ui32Pending = NOTHING_PENDING;
 
+	OSSNPrintf(pszBufferLabel, sizeof(pszBufferLabel), "TLStreamBuf-%s", szStreamName);
+
 	/* Allocate memory for the circular buffer and export it to user space. */
 	eError = DevmemAllocateExportable( IMG_NULL,
 									   (IMG_HANDLE) TLGetGlobalRgxDevice(),
 									   (IMG_DEVMEM_SIZE_T)psTmp->ui32Size,
 									   4096,
 									   uiMemFlags | PVRSRV_MEMALLOCFLAG_KERNEL_CPU_MAPPABLE,
-									   "TLStreamCircularBuff",
+									   pszBufferLabel,
 									   &psTmp->psStreamMemDesc);
 	PVR_LOGG_IF_ERROR(eError, "DevmemAllocateExportable", e2);
 

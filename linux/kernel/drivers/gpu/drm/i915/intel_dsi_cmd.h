@@ -20,7 +20,8 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  *
- * Author: Jani Nikula <jani.nikula@intel.com>  */
+ * Author: Jani Nikula <jani.nikula@intel.com>
+ */
 
 #ifndef _INTEL_DSI_DSI_H
 #define _INTEL_DSI_DSI_H
@@ -31,6 +32,8 @@
 #include "i915_drv.h"
 #include "intel_drv.h"
 #include "intel_dsi.h"
+
+void dsi_hs_mode_enable(struct intel_dsi *intel_dsi, bool enable);
 
 int dsi_vc_dcs_write(struct intel_dsi *intel_dsi, int channel,
 		     const u8 *data, int len);
@@ -44,7 +47,6 @@ int dsi_vc_dcs_read(struct intel_dsi *intel_dsi, int channel, u8 dcs_cmd,
 int dsi_vc_generic_read(struct intel_dsi *intel_dsi, int channel,
 			u8 *reqdata, int reqlen, u8 *buf, int buflen);
 
-/* XXX: what is "spk" or "spl" packet? how about MIPI_DPI_DATA? */
 int dpi_send_cmd(struct intel_dsi *intel_dsi, u32 cmd);
 
 /* XXX: questionable write helpers */
@@ -99,7 +101,9 @@ static inline int dsi_vc_generic_read_2(struct intel_dsi *intel_dsi,
 					u8 *buf, int buflen)
 {
 	u8 req[2] = { param1, param2 };
+
 	return dsi_vc_generic_read(intel_dsi, channel, req, 2, buf, buflen);
 }
+
 
 #endif /* _INTEL_DSI_DSI_H */

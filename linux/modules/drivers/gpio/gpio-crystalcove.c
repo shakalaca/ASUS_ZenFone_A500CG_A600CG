@@ -57,7 +57,8 @@
 #define CTLI_INTCNT_BE	(3 << 1)
 
 #define CTLO_DIR_OUT	(1 << 5)
-#define CTLO_DRV_CMOS	(1 << 4)
+#define CTLO_DRV_CMOS	(0 << 4)
+#define CTLO_DRV_OD	(1 << 4)
 #define CTLO_DRV_REN	(1 << 3)
 #define CTLO_RVAL_2KDW	(0)
 #define CTLO_RVAL_2KUP	(1 << 1)
@@ -238,9 +239,9 @@ static void crystalcove_gpio_dbg_show(struct seq_file *s,
 		ctli = intel_mid_pmic_readb(
 			(gpio < 8 ? GPIO0P0CTLI : GPIO1P0CTLI) + offset);
 		mirqs0 = intel_mid_pmic_readb(
-			gpio < 8 ? MGPIO0IRQS0 : MGPIO0IRQS0);
+			gpio < 8 ? MGPIO0IRQS0 : MGPIO1IRQS0);
 		mirqsx = intel_mid_pmic_readb(
-			gpio < 8 ? MGPIO0IRQSX : MGPIO0IRQSX);
+			gpio < 8 ? MGPIO0IRQSX : MGPIO1IRQSX);
 		irq = intel_mid_pmic_readb(
 			gpio < 8 ? GPIO0IRQ : GPIO1IRQ);
 		seq_printf(s,
@@ -286,13 +287,6 @@ static int crystalcove_gpio_probe(struct platform_device *pdev)
 		return retval;
 	}
 
-	retval = request_threaded_irq(irq, NULL, crystalcove_gpio_irq_handler,
-			IRQF_ONESHOT, "crystalcove_gpio", cg);
-	if (retval) {
-		pr_warn("Interrupt request failed\n");
-		return retval;
-	}
-
 	irq_base = irq_alloc_descs(cg->irq_base, 0, NUM_GPIO, 0);
 	if (cg->irq_base != irq_base)
 		panic("gpio base irq fail, needs %d, return %d\n",
@@ -305,6 +299,14 @@ static int crystalcove_gpio_probe(struct platform_device *pdev)
 					      handle_simple_irq,
 					      "demux");
 	}
+
+        retval = request_threaded_irq(irq, NULL, crystalcove_gpio_irq_handler,
+                        IRQF_ONESHOT, "crystalcove_gpio", cg);
+
+        if (retval) {
+                pr_warn("Interrupt request failed\n");
+                return retval;
+        }
 
 	return 0;
 }

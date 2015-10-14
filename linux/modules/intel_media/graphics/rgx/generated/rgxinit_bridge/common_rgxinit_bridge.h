@@ -52,7 +52,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rgx_fwif.h"
 
 
-/* FIXME: need to create pvrbridge_common.h" */
 #include "pvr_bridge.h"
 
 #define PVRSRV_BRIDGE_RGXINIT_CMD_FIRST			(PVRSRV_BRIDGE_RGXINIT_START)
@@ -108,6 +107,8 @@ typedef struct PVRSRV_BRIDGE_IN_RGXINITFIRMWARE_TAG
 	IMG_UINT32 ui32LogType;
 	IMG_UINT32 ui32FilterFlags;
 	RGXFWIF_COMPCHECKS_BVNC sClientBVNC;
+	IMG_UINT32 ui32APMLatency;
+	IMG_UINT32 ui32CoreClockSpeed;
 } PVRSRV_BRIDGE_IN_RGXINITFIRMWARE;
 
 
@@ -153,13 +154,16 @@ typedef struct PVRSRV_BRIDGE_IN_RGXINITDEVPART2_TAG
 	RGX_INIT_COMMAND * psDeinitScript;
 	IMG_UINT32 ui32ui32KernelCatBaseIdReg;
 	IMG_UINT32 ui32KernelCatBaseId;
-	IMG_UINT32 ui32ui32KernelCatBaseReg;
-	IMG_UINT32 ui32ui32KernelCatBaseWordSize;
-	IMG_UINT32 ui32ui32KernelCatBaseAlignShift;
-	IMG_UINT32 ui32ui32KernelCatBaseShift;
-	IMG_UINT64 ui64ui64KernelCatBaseMask;
+	IMG_UINT32 ui32KernelCatBaseReg;
+	IMG_UINT32 ui32KernelCatBaseWordSize;
+	IMG_UINT32 ui32KernelCatBaseAlignShift;
+	IMG_UINT32 ui32KernelCatBaseShift;
+	IMG_UINT64 ui64KernelCatBaseMask;
 	IMG_UINT32 ui32DeviceFlags;
 	IMG_UINT32 ui32RGXActivePMConf;
+	DEVMEM_SERVER_EXPORTCOOKIE hFWCodeAllocServerExportCookie;
+	DEVMEM_SERVER_EXPORTCOOKIE hFWDataAllocServerExportCookie;
+	DEVMEM_SERVER_EXPORTCOOKIE hFWCorememAllocServerExportCookie;
 } PVRSRV_BRIDGE_IN_RGXINITDEVPART2;
 
 

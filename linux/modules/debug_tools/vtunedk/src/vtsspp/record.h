@@ -42,7 +42,7 @@ int vtss_record_switch_from(struct vtss_transport_data* trnd, int cpu, int is_pr
 int vtss_record_switch_to(struct vtss_transport_data* trnd, pid_t tid, int cpu, void* ip, int is_safe);
 int vtss_record_sample(struct vtss_transport_data* trnd, pid_t tid, int cpu, cpuevent_t* cpuevent_chain, void* ip, int is_safe);
 int vtss_record_bts(struct vtss_transport_data* trnd, pid_t tid, int cpu, void* bts_buff, size_t bts_size, int is_safe);
-int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long addr, unsigned long len, const char *pname, unsigned long pgoff, int is_safe);
+int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long addr, unsigned long len, const char *pname, unsigned long pgoff, long long cputsc, long long realtsc, int is_safe);
 int vtss_record_configs(struct vtss_transport_data* trnd, int m32, int is_safe);
 int vtss_record_softcfg(struct vtss_transport_data* trnd, pid_t tid, int is_safe);
 int vtss_record_probe(struct vtss_transport_data* trnd, int cpu, int fid, int is_safe);

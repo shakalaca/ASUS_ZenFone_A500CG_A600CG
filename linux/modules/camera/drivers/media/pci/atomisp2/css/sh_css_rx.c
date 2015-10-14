@@ -108,8 +108,7 @@ sh_css_rx_get_interrupt_info(unsigned int *irq_infos)
 	if (bits & (1U << _HRT_CSS_RECEIVER_IRQ_ERR_LINE_SYNC_BIT))
 		infos |= SH_CSS_RX_IRQ_INFO_ERR_LINE_SYNC;
 	if (bits & (1U << _HRT_CSS_RECEIVER_IRQ_ERR_ECC_NO_CORRECTION_BIT))
-		infos |= SH_CSS_RX_IRQ_INFO_ERR_ECC_NO_ERR;
-
+	        infos |= SH_CSS_RX_IRQ_INFO_ERR_ECC_NO_ERR;
 
 	*irq_infos = infos;
 }
@@ -156,7 +155,7 @@ sh_css_rx_clear_interrupt_info(unsigned int irq_infos)
 	if (irq_infos & SH_CSS_RX_IRQ_INFO_ERR_LINE_SYNC)
 		bits |= 1U << _HRT_CSS_RECEIVER_IRQ_ERR_LINE_SYNC_BIT;
 	if (irq_infos & SH_CSS_RX_IRQ_INFO_ERR_ECC_NO_ERR)
-		bits |= 1U << _HRT_CSS_RECEIVER_IRQ_ERR_ECC_NO_CORRECTION_BIT;
+	        bits |= 1U << _HRT_CSS_RECEIVER_IRQ_ERR_ECC_NO_CORRECTION_BIT;
 
 	receiver_port_reg_store(RX0_ID,
 		MIPI_PORT1_ID, _HRT_CSS_RECEIVER_IRQ_ENABLE_REG_IDX, bits);
@@ -211,7 +210,6 @@ sh_css_rx_clear_interrupt_status(unsigned int irq_infos)
 		MIPI_PORT1_ID, _HRT_CSS_RECEIVER_IRQ_STATUS_REG_IDX, bits);
 return;
 }
-
 
 enum sh_css_err sh_css_input_format_type(
 	enum sh_css_input_format input_format,

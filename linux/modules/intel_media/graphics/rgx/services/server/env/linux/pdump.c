@@ -54,6 +54,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "allocmem.h"
 #include "pdump_km.h"
 #include "pdump_int.h"
+#include "pdump_osfunc.h"
 #include "mutex.h"
 
 #include <linux/kernel.h> // sprintf
@@ -70,7 +71,7 @@ static IMG_VOID DbgSetMarker			(PDBG_STREAM psStream, IMG_UINT32 ui32Marker);
 /*
 	Maximum file size to split output files
 */
-#define MAX_FILE_SIZE	0x40000000
+#define MAX_FILE_SIZE	0xC0000000
 
 static atomic_t gsPDumpSuspended = ATOMIC_INIT(0);
 
@@ -80,9 +81,8 @@ static PDBGKM_SERVICE_TABLE gpfnDbgDrv = IMG_NULL;
 
 
 
-IMG_CHAR *pszStreamName[PDUMP_NUM_STREAMS] = {	"ParamStream2",
-												"ScriptStream2",
-												"DriverInfoStream"};
+IMG_CHAR *pszStreamName[PDUMP_NUM_STREAMS] = {	PDUMP_PARAM_STREAM_NAME,
+												PDUMP_SCRIPT_STREAM_NAME};
 typedef struct PDBG_PDUMP_STATE_TAG
 {
 	PDBG_STREAM psStream[PDUMP_NUM_STREAMS];
@@ -583,7 +583,7 @@ PVRSRV_ERROR PDumpStopInitPhaseKM(IMG_MODULE_ID eModuleID)
 
 			for(i=0; i < PDUMP_NUM_STREAMS; i++)
 			{
-				gpfnDbgDrv->pfnStopInitPhase(gsDBGPdumpState.psStream[i]);
+				gpfnDbgDrv->pfnStopInitPhase(gsDBGPdumpState.psStream[i], IMG_TRUE);
 			}
 		}
 
@@ -699,7 +699,7 @@ static IMG_BOOL PDumpWriteILock(PDBG_STREAM psStream, IMG_UINT8 *pui8Data, IMG_U
 		return IMG_TRUE;
 	}
 
-	if(psStream->psCtrl->ui32Current > psStream->psCtrl->ui32End)
+	if (gpfnDbgDrv->pfnGetCtrlState(psStream, DBG_GET_STATE_CURRENT_PAST_END))
 	{
 		PVR_DPF((PVR_DBG_MESSAGE, "PDumpWriteILock: Current pointer is beyond end of stream 0x%p", psStream));
 		return IMG_TRUE;
@@ -806,6 +806,41 @@ IMG_VOID PDumpOSUnlock(IMG_VOID)
 {
 	LinuxUnLockMutex(&gsPDumpMutex);
 }
+
+IMG_UINT32 PDumpOSGetCtrlState(IMG_HANDLE hDbgStream,
+		IMG_UINT32 ui32StateID)
+{
+	return (gpfnDbgDrv->pfnGetCtrlState((PDBG_STREAM)hDbgStream, ui32StateID));
+}
+
+#if defined(PVR_TESTING_UTILS)
+IMG_VOID PDumpOSDumpState(IMG_VOID);
+
+IMG_VOID PDumpOSDumpState(IMG_VOID)
+{
+	PVR_LOG(("---- PDUMP LINUX: gsPDumpSuspended( %d )  gsPDumpInPowerTransition( %d )",
+			atomic_read(&gsPDumpSuspended), atomic_read(&gsPDumpInPowerTransition)));
+
+	PVR_LOG(("---- PDUMP LINUX: gpfnDbgDrv( %p )  gpfnDbgDrv.ui32Size( %d )",
+			gpfnDbgDrv, gpfnDbgDrv->ui32Size));
+
+	PVR_LOG(("---- PDUMP LINUX: gsDBGPdumpState( %p ) gsDBGPdumpState.ui32ParamFileNum( %d )",
+			&gsDBGPdumpState, gsDBGPdumpState.ui32ParamFileNum));
+
+	PVR_LOG(("---- PDUMP LINUX: gsDBGPdumpState.psStream[0]( %p ) ( %s )",
+			gsDBGPdumpState.psStream[0], pszStreamName[0]));
+
+	(void) gpfnDbgDrv->pfnGetCtrlState(gsDBGPdumpState.psStream[0], 0xFE);
+
+	PVR_LOG(("---- PDUMP LINUX: gsDBGPdumpState.psStream[1]( %p ) ( %s )",
+			gsDBGPdumpState.psStream[1], pszStreamName[1]));
+
+	(void) gpfnDbgDrv->pfnGetCtrlState(gsDBGPdumpState.psStream[1], 0xFE);
+
+	/* Now dump non-stream specific info */
+	(void) gpfnDbgDrv->pfnGetCtrlState(gsDBGPdumpState.psStream[1], 0xFF);
+}
+#endif
 
 #endif /* #if defined (PDUMP) */
 /*****************************************************************************

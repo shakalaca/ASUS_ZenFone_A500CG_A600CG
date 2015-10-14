@@ -12,10 +12,5 @@
 #ifndef _PLATFORM_RMI4_H_
 #define _PLATFORM_RMI4_H_
 
-#ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_RMI4_I2C
-#define RMI_F11_INDEX 0x11
-#define RMI_F19_INDEX 0x19
-#endif
-
 extern void *rmi4_platform_data(void *info) __attribute__((weak));
 #endif

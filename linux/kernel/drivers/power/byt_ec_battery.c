@@ -265,7 +265,7 @@ static int ec_get_battery_property(struct power_supply *psy,
 		 */
 		comp_cap = val8;
 		comp_cap = comp_cap*100 - ((100 - comp_cap)
-				*EC_BAT_SAFE_MIN_CAPACITY) + 50 ;
+				*EC_BAT_SAFE_MIN_CAPACITY) + 50;
 		comp_cap /= 100;
 		if (comp_cap < 0)
 			comp_cap = 0;
@@ -519,8 +519,6 @@ static struct platform_driver ec_battery_driver = {
 
 static int __init ec_battery_init(void)
 {
-	struct platform_device *pdev = NULL;
-	void *pdata = NULL;
 	int ret = 0;
 
 	ret = platform_driver_register(&ec_battery_driver);
@@ -529,29 +527,9 @@ static int __init ec_battery_init(void)
 					"ec_battery");
 		return ret;
 	}
-
-	pdev = platform_device_alloc("ec_battery", -1);
-	if (!pdev) {
-		pr_err("out of memory for platform dev %s\n",
-					"ec_battery");
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	pdev->dev.platform_data = pdata;
-	ret = platform_device_add(pdev);
-	if (ret) {
-		pr_err("failed to add battery platform device\n");
-		platform_device_put(pdev);
-		goto out;
-	}
-
 	return 0;
-out:
-	platform_driver_unregister(&ec_battery_driver);
-	return ret;
 }
-device_initcall(ec_battery_init);
+module_init(ec_battery_init);
 
 static void __exit ec_battery_exit(void)
 {

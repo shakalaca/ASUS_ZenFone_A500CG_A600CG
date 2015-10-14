@@ -1,5 +1,5 @@
 /*
- * spid.h: Intel MID software platform ID definitions
+ * spid.h: Intel software platform ID definitions
  *
  * (C) Copyright 2012 Intel Corporation
  *
@@ -10,6 +10,28 @@
  */
 #ifndef _ASM_X86_SPID_H
 #define _ASM_X86_SPID_H
+
+#include <linux/sfi.h>
+/* size of SPID cmdline : androidboot.spid=vend:cust:manu:plat:prod:hard */
+#define SPID_CMDLINE_SIZE 46
+#define SPID_PARAM_NAME "androidboot.spid="
+#define SPID_DEFAULT_VALUE "xxxx:xxxx:xxxx:xxxx:xxxx:xxxx"
+
+#define spid_attr(_name) \
+static struct kobj_attribute _name##_attr = { \
+	.attr = {                             \
+		.name = __stringify(_name),   \
+		.mode = 0444,                 \
+	},                                    \
+	.show   = _name##_show,               \
+}
+
+
+#define INTEL_PLATFORM_SSN_SIZE	32
+extern struct soft_platform_id spid;
+extern char intel_platform_ssn[INTEL_PLATFORM_SSN_SIZE + 1];
+
+int __init sfi_handle_spid(struct sfi_table_header *table);
 
 struct soft_platform_id {
 	u16 customer_id; /*Defines the final customer for the product */
@@ -78,10 +100,10 @@ enum {
 	INTEL_MRFL_TABLET = 0x0005,
 	INTEL_BYT_PHONE   = 0x0006,
 	INTEL_BYT_TABLET  = 0x0007,
-	INTEL_MOOR_PHONE  = 0x0008,
-	INTEL_MOOR_TABLET = 0x0009,
-	INTEL_CRC_PHONE   = 0x000A,
-	INTEL_CRC_TABLET  = 0x000B,
+	INTEL_MOFD_PHONE  = 0x0008,
+	INTEL_MOFD_TABLET = 0x0009,
+	INTEL_CHT_PHONE   = 0x000A,
+	INTEL_CHT_TABLET  = 0x000B,
 	INTEL_PLATFORM_UNKNOWN = 0xFFFF
 };
 
@@ -167,33 +189,30 @@ enum {
 	INTEL_BYT_TABLET_UNKNOWN = 0xFFFF
 };
 
-/* Product_Line_ID table for Platform_Family_ID == INTEL_MOOR_PHONE */
+/* Product_Line_ID table for Platform_Family_ID == INTEL_MOFD_PHONE */
 enum {
-	INTEL_MOOR_PHONE_FRCB_PRO = 0x0000,
-	INTEL_MOOR_PHONE_FRCB_ENG = 0x8000,
-	INTEL_MOOR_PHONE_UNKNOWN = 0xFFFF
+	INTEL_MOFD_PHONE_MP_PRO = 0x0000,
+	INTEL_MOFD_PHONE_MP_ENG = 0x8000,
+	INTEL_MOFD_PHONE_V0_PRO = 0x0001,
+	INTEL_MOFD_PHONE_V0_ENG = 0x8001,
+	INTEL_MOFD_PHONE_V1_PRO = 0x0002,
+	INTEL_MOFD_PHONE_V1_ENG = 0x8002,
+	INTEL_MOFD_PHONE_DVP_PRO = 0x0003,
+	INTEL_MOFD_PHONE_DVP_ENG = 0x8003,
+	INTEL_MOFD_PHONE_GARNET_PRO = 0x0004,
+	INTEL_MOFD_PHONE_GARNET_ENG = 0x8004,
+	INTEL_MOFD_PHONE_LNP_PRO = 0x0005,
+	INTEL_MOFD_PHONE_LNP_ENG = 0x8005,
+	INTEL_MOFD_PHONE_UNKNOWN = 0xFFFF
 };
 
-/* Product_Line_ID table for Platform_Family_ID == INTEL_MOOR_TABLET */
+/* Product_Line_ID table for Platform_Family_ID == INTEL_MOFD_TABLET */
 enum {
-	INTEL_MOOR_TABLET_TBD_PRO = 0x0000,
-	INTEL_MOOR_TABLET_TBD_ENG = 0x8000,
-	INTEL_MOOR_TABLET_UNKNOWN = 0xFFFF
+	INTEL_MOFD_TABLET_TBD_PRO = 0x0000,
+	INTEL_MOFD_TABLET_TBD_ENG = 0x8000,
+	INTEL_MOFD_TABLET_UNKNOWN = 0xFFFF
 };
 
-/* Product_Line_ID table for Platform_Family_ID == INTEL_CRC_PHONE */
-enum {
-	INTEL_CRC_PHONE_PRO = 0x0000,
-	INTEL_CRC_PHONE_ENG = 0x8000,
-	INTEL_CRC_PHONE_UNKNOWN = 0xFFFF,
-};
-
-/* Product_Line_ID table for Platform_Family_ID == INTEL_CRC_TABLET */
-enum {
-	INTEL_CRC_TABLET_TBD_PRO = 0x0000,
-	INTEL_CRC_TABLET_TBD_ENG = 0x8000,
-	INTEL_CRC_TABLET_UNKNOWN = 0xFFFF
-};
 
 /* Hardware_ID table for Product_Line_ID == INTEL_MFLD_PHONE_BB15 */
 enum {
@@ -411,6 +430,10 @@ enum {
 	MRFL_PHONE_SB_PR11M,  /* Salt Bay PR1.1-Macro (A0) */
 	MRFL_PHONE_SB_PR2_A1M,  /* Salt Bay PR2-Macro (A1) */
 	MRFL_PHONE_SB_PR2_A1,  /* Salt Bay PR2-FF (A1) */
+	MRFL_PHONE_SB_PR2_7260,  /* Salt Bay PR2-FF + 7260 (B0) */
+	MRFL_PHONE_SB_PR25, /* Salt Bay PR2-FF (B1) */
+	MRFL_PHONE_SB_PR2_B1, /* Salt Bay PR2-FF (B1) */
+	MRFL_PHONE_SB_PR27, /* Salt Bay PR2-FF + 7260 (ES2/2.01) */
 	MRFL_PHONE_SB_RSVD,
 	MRFL_PHONE_SB_UNKNOWN = 0xFFFF
 };
@@ -445,6 +468,8 @@ enum {
 	BYT_TABLET_BLK_10PR11, /* Bay Lake FFRD-10 PR1.1 */
 	BYT_TABLET_BLK_8PR0, /* Bay Lake FFRD-8 PR0*/
 	BYT_TABLET_BLK_8PR1, /* Bay Lake FFRD-8 PR1 */
+	BYT_TABLET_BLK_8RVP1, /* Bay Lake RVP-8 */
+	BYT_TABLET_BLK_CRV2, /*BYT T CR V2*/
 	BYT_TABLET_BLK_RSVD,
 	BYT_TABLET_BLK_UNKNOWN = 0xFFFF
 };
@@ -456,45 +481,88 @@ enum {
 	BYT_TABLET_BLB_UNKNOWN = 0xFFFF
 };
 
-/* Hardware_ID table for Product_Line_ID == INTEL_MOOR_PHONE_FRCB */
+/* Hardware_ID table for Product_Line_ID == INTEL_MOFD_PHONE_MP */
 enum {
-	MOOR_PHONE_FRCB_VVA, /* Mountain Prairie VV FAB A */
-	MOOR_PHONE_FRCB_VVB, /* Mountain Prairie VV FAB B */
-	MOOR_PHONE_FRCB_VVC, /* Mountain Prairie VV FAB C */
-	MOOR_PHONE_FRCB_VVD, /* Mountain Prairie VV FAB D */
-	MOOR_PHONE_FRCB_PR0, /* Francis Bay FAB A */
-	MOOR_PHONE_FRCB_PR1, /* Francis Bay FAB B */
-	MOOR_PHONE_FRCB_PR2, /* Francis Bay FAB C */
-	MOOR_PHONE_FRCB_PR3, /* Francis Bay FAB D */
-	MOOR_PHONE_FRCB_RSVD,
-	MOOR_PHONE_FRCB_UNKNOWN = 0xFFFF
+	MOFD_PHONE_MP_VVA, /* Mountain Prairie VV FAB A */
+	MOFD_PHONE_MP_VVB, /* Mountain Prairie VV FAB B */
+	MOFD_PHONE_MP_VVC, /* Mountain Prairie VV FAB C */
+	MOFD_PHONE_MP_VVD, /* Mountain Prairie VV FAB D */
+	MOFD_PHONE_MP_RSVD,
+	MOFD_PHONE_MP_UNKNOWN = 0xFFFF
 };
 
-/* Hardware_ID table for Product_Line_ID == INTEL_MOOR_TABLET_TBD */
+/* Hardware_ID table for Product_Line_ID == INTEL_MOFD_PHONE_V0 */
 enum {
-	MOOR_TABLET_TBD_TBD,
-	MOOR_TABLET_TBD_RSVD,
-	MOOR_TABLET_TBD_UNKNOWN = 0xFFFF
+	MOFD_PHONE_V0_PR0, /* FAB A */
+	MOFD_PHONE_V0_PR1, /* FAB B */
+	MOFD_PHONE_V0_PR2, /* FAB C */
+	MOFD_PHONE_V0_PR3, /* FAB D */
+	MOFD_PHONE_V0_RSVD,
+	MOFD_PHONE_V0_UNKNOWN = 0xFFFF
+};
+/* Hardware_ID table for Product_Line_ID == INTEL_MOFD_PHONE_V1 */
+enum {
+	MOFD_PHONE_V1_PR0, /* FAB A */
+	MOFD_PHONE_V1_PR1, /* FAB B */
+	MOFD_PHONE_V1_PR2, /* FAB C */
+	MOFD_PHONE_V1_PR3, /* FAB D */
+	MOFD_PHONE_V1_RSVD,
+	MOFD_PHONE_V1_UNKNOWN = 0xFFFF
 };
 
-/* Hardware_ID table for Product_Line_ID == INTEL_CRC_PHONE */
+/* Hardware_ID table for Product_Line_ID == INTEL_MOFD_PHONE_DVP */
 enum {
-	CRC_PHONE_VVA = 0x0000, /* Slayton VV FAB A */
-	CRC_PHONE_VVB = 0x0001, /* Slayton VV FAB B */
-	CRC_PHONE_VVC = 0x0002, /* Slayton VV FAB C */
-	CRC_PHONE_VVD = 0x0003, /* Slayton VV FAB D */
-	CRC_PHONE_PRHA = 0x0004, /* CRC PRh FAB A */
-	CRC_PHONE_PRHB = 0x0005, /* CRC PRh FAB B */
-	CRC_PHONE_PRHC = 0x0006, /* CRC PRh FAB C */
-	CRC_PHONE_PRHD = 0x0007, /* CRC PRh FAB D */
+	MOFD_PHONE_DVP_PR0, /* FAB A */
+	MOFD_PHONE_DVP_PR1, /* FAB B */
+	MOFD_PHONE_DVP_PR2, /* FAB C */
+	MOFD_PHONE_DVP_PR3, /* FAB D */
+	MOFD_PHONE_DVP_RSVD,
+	MOFD_PHONE_DVP_UNKNOWN = 0xFFFF
 };
 
-/* Hardware_ID table for Product_Line_ID == INTEL_CRC_TABLET_TBD */
-
+/* Hardware_ID table for Product_Line_ID == INTEL_MOFD_PHONE_GARNET */
 enum {
-	CRC_TABLET_TBD_TBD,
-	CRC_TABLET_TBD_RSVD,
-	CRC_TABLET_TBD_UNKNOWN = 0xFFFF
+	MOFD_PHONE_GARNET_PR0, /* FAB A */
+	MOFD_PHONE_GARNET_PR1, /* FAB B */
+	MOFD_PHONE_GARNET_PR2, /* FAB C */
+	MOFD_PHONE_GARNET_PR3, /* FAB D */
+	MOFD_PHONE_GARNET_RSVD,
+	MOFD_PHONE_GARNET_UNKNOWN = 0xFFFF
+};
+
+/* Hardware_ID table for Product_Line_ID == INTEL_MOFD_PHONE_LNP */
+enum {
+	MOFD_PHONE_LNP_PR0, /* FAB A */
+	MOFD_PHONE_LNP_PR1, /* FAB B */
+	MOFD_PHONE_LNP_PR2, /* FAB C */
+	MOFD_PHONE_LNP_PR3, /* FAB D */
+	MOFD_PHONE_LNP_RSVD,
+	MOFD_PHONE_LNP_UNKNOWN = 0xFFFF
+};
+
+/* Hardware_ID table for Product_Line_ID == INTEL_MOFD_TABLET_TBD */
+enum {
+	MOFD_TABLET_TBD_TBD,
+	MOFD_TABLET_TBD_RSVD,
+	MOFD_TABLET_TBD_UNKNOWN = 0xFFFF
+};
+
+/* Hardware_ID table for Product_Line_ID == INTEL_CHT_PHONE_TBD */
+enum {
+	CHT_PHONE_TBD_TBD,
+	CHT_PHONE_TBD_RSVD,
+	CHT_PHONE_TBD_UNKNOWN = 0xFFFF
+};
+
+/* Hardware_ID table for Product_Line_ID == INTEL_CHT_TABLET */
+enum {
+	CHT_TABLET_RVP1, /* Cherry Trail RVP Fab 1 */
+	CHT_TABLET_RVP2, /* Cherry Trail RVP Fab 2 */
+	CHT_TABLET_RVP3, /* Cherry Trail RVP Fab 3 */
+	CHT_TABLET_FRD_PR0, /* Cherry Trail FFRD PR0 */
+	CHT_TABLET_FRD_PR1, /* Cherry Trail FFRD PR1 */
+	CHT_TABLET_FRD_PR2, /* Cherry Trail FFRD PR2 */
+	CHT_TABLET_UNKNOWN = 0xFFFF
 };
 
 /* Macros for SPID based checks */

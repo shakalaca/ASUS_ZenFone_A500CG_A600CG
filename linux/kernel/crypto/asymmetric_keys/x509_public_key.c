@@ -9,8 +9,6 @@
  * 2 of the Licence, or (at your option) any later version.
  */
 
-#define DEBUG
-
 #define pr_fmt(fmt) "X.509: "fmt
 #include <linux/module.h>
 #include <linux/kernel.h>

@@ -15,12 +15,12 @@
 
 #include <video/vga.h>
 
-#include "drm/drm_fb_helper.h"
-#include "ttm/ttm_bo_api.h"
-#include "ttm/ttm_bo_driver.h"
-#include "ttm/ttm_placement.h"
-#include "ttm/ttm_memory.h"
-#include "ttm/ttm_module.h"
+#include <drm/drm_fb_helper.h>
+#include <drm/ttm/ttm_bo_api.h>
+#include <drm/ttm/ttm_bo_driver.h>
+#include <drm/ttm/ttm_placement.h>
+#include <drm/ttm/ttm_memory.h>
+#include <drm/ttm/ttm_module.h>
 
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
@@ -112,10 +112,11 @@ struct mga_framebuffer {
 struct mga_fbdev {
 	struct drm_fb_helper helper;
 	struct mga_framebuffer mfb;
-	struct list_head fbdev_list;
 	void *sysram;
 	int size;
 	struct ttm_bo_kmap_obj mapping;
+	int x1, y1, x2, y2; /* dirty rect */
+	spinlock_t dirty_lock;
 };
 
 struct mga_crtc {
@@ -195,10 +196,10 @@ struct mga_device {
 		struct drm_global_reference mem_global_ref;
 		struct ttm_bo_global_ref bo_global_ref;
 		struct ttm_bo_device bdev;
-		atomic_t validate_sequence;
 	} ttm;
 
-	u32 reg_1e24; /* SE model number */
+	/* SE model number stored in reg 0x1e24 */
+	u32 unique_rev_id;
 };
 
 
@@ -217,7 +218,7 @@ mgag200_bo(struct ttm_buffer_object *bo)
 {
 	return container_of(bo, struct mgag200_bo, bo);
 }
-				/* mga_crtc.c */
+				/* mgag200_crtc.c */
 void mga_crtc_fb_gamma_set(struct drm_crtc *crtc, u16 red, u16 green,
 			     u16 blue, int regno);
 void mga_crtc_fb_gamma_get(struct drm_crtc *crtc, u16 *red, u16 *green,
@@ -227,7 +228,7 @@ void mga_crtc_fb_gamma_get(struct drm_crtc *crtc, u16 *red, u16 *green,
 int mgag200_modeset_init(struct mga_device *mdev);
 void mgag200_modeset_fini(struct mga_device *mdev);
 
-				/* mga_fbdev.c */
+				/* mgag200_fb.c */
 int mgag200_fbdev_init(struct mga_device *mdev);
 void mgag200_fbdev_fini(struct mga_device *mdev);
 
@@ -256,7 +257,7 @@ mgag200_dumb_mmap_offset(struct drm_file *file,
 			 struct drm_device *dev,
 			 uint32_t handle,
 			 uint64_t *offset);
-				/* mga_i2c.c */
+				/* mgag200_i2c.c */
 struct mga_i2c_chan *mgag200_i2c_create(struct drm_device *dev);
 void mgag200_i2c_destroy(struct mga_i2c_chan *i2c);
 

@@ -92,6 +92,7 @@ extern "C" {
 #define VTSS_CFGTRACE_TAGGRA    0x20000 // aggravate the behavior of threads
 #define VTSS_CFGTRACE_DBGSAMP   0x40000 // generate debug exception upon event samples
 #define VTSS_CFGTRACE_THRNORM   0x80000 // normalize thread-to-processor subscription
+#define VTSS_CFGTRACE_LBRCSTK   0x100000 // collect LBR call stacks
 
 #define VTSS_CFGSTATE_SYS       0x80000000  // system function ID space
 

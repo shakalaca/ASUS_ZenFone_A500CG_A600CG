@@ -252,7 +252,9 @@ PVRSRVHWOpTimeoutKM(IMG_VOID)
 #endif
 	PVR_LOG(("HW operation timeout, dump server info"));
 	PVRSRVDebugRequest(DEBUG_REQUEST_VERBOSITY_LOW);
+#ifndef CONFIG_MOOREFIELD
 	panic("HW operation timeout\n");
+#endif
 	return PVRSRV_OK;
 }
 
@@ -364,6 +366,13 @@ _SetDispatchTableEntry(IMG_UINT32 ui32Index,
 		PVR_DPF((PVR_DBG_ERROR, "NOTE: Enabling DEBUG_BRIDGE_KM_DISPATCH_TABLE may help debug this issue."));
 		OSPanic();
 #endif
+	}
+
+	if (ui32Index >= BRIDGE_DISPATCH_TABLE_ENTRY_COUNT)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: Index %u (%s) out of range",
+				 __FUNCTION__, (IMG_UINT)ui32Index, pszIOCName));
+		OSPanic();
 	}
 
 	g_BridgeDispatchTable[ui32Index].pfFunction = pfFunction;

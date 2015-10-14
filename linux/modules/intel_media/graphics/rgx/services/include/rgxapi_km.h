@@ -77,21 +77,10 @@ PVRSRV_ERROR RGXHWPerfDisconnect(
 /**************************************************************************/ /*!
 @Function       RGXHWPerfControl
 @Description    Enable or disable the generation of RGX HWPerf event packets.
-                 Enabling events will reset the ordinal and clear the event
-                 buffer used by the firmware. Events already in the host
-                 driver buffer will be unaffected. Disabling events simply
-                 stops event generation; events may continue to be be drained
-                 from the buffers by the client. For events not masked their
-                 enabled/disabled state in the driver will be unaffected.
+                 See RGXCtrlHWPerf().
 @Input          hDevData         Handle to connection object
 @Input          bEnable          Switch to enable/disable event generation
-@Input          ui64Mask         Mask of events to control. Each bit in the mask
-                                 corresponds to one particular event type
-                                 e.g. <tt>1U<<RGX_HWPERF_HW_TAKICK</tt>.
-                                 Each bit set will lead to the event being
-                                 enabled or disabled depending on the bEnable
-                                 parameter. To control all events supply
-                                 RGX_HWPERF_EVENT_MASK_ALL.
+@Input          ui64Mask         Mask of events to control.
 @Return         PVRSRV_ERROR:    for system error codes
 */ /***************************************************************************/
 PVRSRV_ERROR IMG_CALLCONV RGXHWPerfControl(
@@ -102,9 +91,9 @@ PVRSRV_ERROR IMG_CALLCONV RGXHWPerfControl(
 
 /**************************************************************************/ /*!
 @Function       RGXHWPerfConfigureAndEnableCounters
-@Description    Configure the performance counter module for one or more
-                 device layout blocks. This call also clears and enables
-                 the counters.
+@Description    Enable and configure the performance counter block for
+                 one or more device layout modules.
+                 See RGXConfigureAndEnableHWPerfCounters().
 @Input          hDevData         Handle to connection object
 @Input          ui32NumBlocks    Number of elements in the array
 @Input          asBlockConfigs   Address of the array of configuration blocks
@@ -118,8 +107,8 @@ PVRSRV_ERROR IMG_CALLCONV RGXHWPerfConfigureAndEnableCounters(
 
 /**************************************************************************/ /*!
 @Function       RGXDisableHWPerfCounters
-@Description    Disable the performance counter module for one or more
-                 device layout blocks.
+@Description    Disable the performance counter block for one or more
+                 device layout modules. See RGXDisableHWPerfCounters().
 @Input          hDevData        Handle to connection/device object
 @Input          ui32NumBlocks   Number of elements in the array
 @Input          aeBlockIDs      An array of bytes with values taken from

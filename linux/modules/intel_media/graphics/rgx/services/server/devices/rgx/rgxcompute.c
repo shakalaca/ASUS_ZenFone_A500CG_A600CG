@@ -47,6 +47,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rgxutils.h"
 #include "rgxfwutils.h"
 #include "rgxcompute.h"
+#include "rgxmem.h"
 #include "allocmem.h"
 #include "devicemem.h"
 #include "devicemem_pdump.h"
@@ -63,6 +64,7 @@ struct _RGX_SERVER_COMPUTE_CONTEXT_ {
 	DEVMEM_MEMDESC				*psFWFrameworkMemDesc;
 	DEVMEM_MEMDESC				*psFWComputeContextStateMemDesc;
 	PVRSRV_CLIENT_SYNC_PRIM		*psSync;
+	DLLIST_NODE					sListNode;
 };
 
 IMG_EXPORT
@@ -76,7 +78,7 @@ PVRSRV_ERROR PVRSRVRGXCreateComputeContextKM(CONNECTION_DATA			*psConnection,
 											 RGX_SERVER_COMPUTE_CONTEXT	**ppsComputeContext)
 {
 	PVRSRV_RGXDEV_INFO 			*psDevInfo = psDeviceNode->pvDevice;
-	DEVMEM_MEMDESC				*psFWMemContextMemDesc = hMemCtxPrivData;
+	DEVMEM_MEMDESC				*psFWMemContextMemDesc = RGXGetFWMemDescFromMemoryContextHandle(hMemCtxPrivData);
 	RGX_SERVER_COMPUTE_CONTEXT	*psComputeContext;
 	RGX_COMMON_CONTEXT_INFO		sInfo;
 	PVRSRV_ERROR				eError = PVRSRV_OK;
@@ -112,6 +114,7 @@ PVRSRV_ERROR PVRSRVRGXCreateComputeContextKM(CONNECTION_DATA			*psConnection,
 	eError = DevmemFwAllocate(psDevInfo,
 							  sizeof(RGXFWIF_COMPUTECTX_STATE),
 							  RGX_FWCOMCTX_ALLOCFLAGS,
+							  "ComputeContextState",
 							  &psComputeContext->psFWComputeContextStateMemDesc);
 
 	if (eError != PVRSRV_OK)
@@ -164,6 +167,11 @@ PVRSRV_ERROR PVRSRVRGXCreateComputeContextKM(CONNECTION_DATA			*psConnection,
 		goto fail_contextalloc;
 	}
 
+	{
+		PVRSRV_RGXDEV_INFO			*psDevInfo = psDeviceNode->pvDevice;
+		dllist_add_to_tail(&(psDevInfo->sComputeCtxtListHead), &(psComputeContext->sListNode));
+	}
+
 	return PVRSRV_OK;
 
 fail_contextalloc:
@@ -200,7 +208,10 @@ PVRSRV_ERROR PVRSRVRGXDestroyComputeContextKM(RGX_SERVER_COMPUTE_CONTEXT *psComp
 				PVRSRVGetErrorStringKM(eError)));
 	}
 
-	/* ... it has so we can free it's resources */
+	/* ... it has so we can free its resources */
+
+	dllist_remove_node(&(psComputeContext->sListNode));
+
 	FWCommonContextFree(psComputeContext->psServerCommonContext);
 	DevmemFwFree(psComputeContext->psFWFrameworkMemDesc);
 	DevmemFwFree(psComputeContext->psFWComputeContextStateMemDesc);
@@ -294,13 +305,14 @@ PVRSRV_ERROR PVRSRVRGXKickCDMKM(RGX_SERVER_COMPUTE_CONTEXT	*psComputeContext,
 			All the required resources are ready at this point, we can't fail so
 			take the required server sync operations and commit all the resources
 		*/
-		RGXCmdHelperReleaseCmdCCB(1, &sCmdHelperData);
+		RGXCmdHelperReleaseCmdCCB(1, &sCmdHelperData, "CDM", FWCommonContextGetFWAddress(psComputeContext->psServerCommonContext).ui32Addr);
 	}
 
 	/* Construct the kernel compute CCB command. */
 	sCmpKCCBCmd.eCmdType = RGXFWIF_KCCB_CMD_KICK;
 	sCmpKCCBCmd.uCmdData.sCmdKickData.psContext = FWCommonContextGetFWAddress(psComputeContext->psServerCommonContext);
 	sCmpKCCBCmd.uCmdData.sCmdKickData.ui32CWoffUpdate = RGXGetHostWriteOffsetCCB(FWCommonContextGetClientCCB(psComputeContext->psServerCommonContext));
+	sCmpKCCBCmd.uCmdData.sCmdKickData.ui32NumCleanupCtl = 0;
 
 	/*
 	 * Submit the compute command to the firmware.
@@ -402,6 +414,19 @@ PVRSRV_ERROR PVRSRVRGXSetComputeContextPriorityKM(CONNECTION_DATA *psConnection,
 		PVR_DPF((PVR_DBG_ERROR, "%s: Failed to set the priority of the compute context", __FUNCTION__));
 	}
 	return eError;
+}
+
+static IMG_BOOL CheckForStalledComputeCtxtCommand(PDLLIST_NODE psNode, IMG_PVOID pvCallbackData)
+{
+	RGX_SERVER_COMPUTE_CONTEXT 		*psCurrentServerComputeCtx = IMG_CONTAINER_OF(psNode, RGX_SERVER_COMPUTE_CONTEXT, sListNode);
+	RGX_SERVER_COMMON_CONTEXT		*psCurrentServerComputeCommonCtx = psCurrentServerComputeCtx->psServerCommonContext;
+
+	DumpStalledFWCommonContext(psCurrentServerComputeCommonCtx);
+	return IMG_TRUE;
+}
+IMG_VOID CheckForStalledComputeCtxt(PVRSRV_RGXDEV_INFO *psDevInfo)
+{
+	dllist_foreach_node(&(psDevInfo->sComputeCtxtListHead), CheckForStalledComputeCtxtCommand, IMG_NULL);
 }
 
 /******************************************************************************

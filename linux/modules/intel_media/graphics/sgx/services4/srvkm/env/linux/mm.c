@@ -1428,7 +1428,7 @@ LinuxMemArea *NewExternalKVLinuxMemArea(IMG_SYS_PHYADDR *pBasePAddr, IMG_VOID *p
     psLinuxMemArea->uData.sExternalKV.pvExternalKV = pvCPUVAddr;
     psLinuxMemArea->uData.sExternalKV.bPhysContig =
 #if !defined(PVR_MAKE_ALL_PFNS_SPECIAL)
-	(bPhysContig || TreatExternalPagesAsContiguous(pBasePAddr, uiBytes, bPhysContig))
+	(bPhysContig || TreatExternalPagesAsContiguous(pBasePAddr, uBytes, bPhysContig))
                                                     ? IMG_TRUE : IMG_FALSE;
 #else
 	bPhysContig;

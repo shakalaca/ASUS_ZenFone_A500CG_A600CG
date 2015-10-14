@@ -54,7 +54,6 @@
 #define DMA_CH_SIZE		0x58
 #define DMA_FIFO_SIZE 0x100080
 
-
 /*CH X REG = (DMA_CH_SIZE)*CH_NO + REG*/
 #define SAR			0x00 /* Source Address Register*/
 #define DAR			0x08 /* Destination Address Register*/
@@ -93,6 +92,7 @@
 #define FIFO_PARTITION1_HI	0x40C
 #define CH_SAI_ERR		0x410
 
+#define SHIM_OFFSET 0x140000
 #define SHIM_ISRX_OFFSET	0x18
 #define CTL_LO_BIT_LLP_DST_EN	27
 #define CTL_LO_BIT_LLP_SRC_EN	28
@@ -436,7 +436,7 @@ static inline struct intel_mid_dma_slave *to_intel_mid_dma_slave
 struct middma_device *mid_dma_setup_context(struct device *dev,
 					    struct intel_mid_dma_probe_info *info);
 int dma_resume(struct device *dev);
-int __devinit dma_acpi_probe(struct platform_device *pdev);
+int dma_acpi_probe(struct platform_device *pdev);
 int dma_acpi_remove(struct platform_device *pdev);
 struct intel_mid_dma_probe_info *mid_get_acpi_driver_data(const char *hid);
 int mid_setup_dma(struct device *dev);

@@ -32,7 +32,6 @@
 #include <drm/i915_drm.h>
 #include <linux/slab.h>
 #include <video/mipi_display.h>
-#include <asm/intel-mid.h>
 #include "i915_drv.h"
 #include "intel_drv.h"
 #include "intel_dsi.h"
@@ -56,27 +55,34 @@ static void b080xat_get_panel_info(int pipe, struct drm_connector *connector)
 
 bool b080xat_init(struct intel_dsi_device *dsi)
 {
+	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
 
 	DRM_DEBUG_KMS("\n");
 
-	dsi->eotp_pkt = 1;
-	dsi->operation_mode = DSI_VIDEO_MODE;
-	dsi->video_mode_type = DSI_VIDEO_BURST;
-	dsi->pixel_format = VID_MODE_FORMAT_RGB666_LOOSE;
-	dsi->port_bits = 0;
-	dsi->turn_arnd_val = 0x3f;
-	dsi->rst_timer_val = 0xff;
-	dsi->hs_to_lp_count = 0x46;
-	dsi->lp_byte_clk = 4;
-	dsi->bw_timer = 0;
-	dsi->clk_lp_to_hs_count = 0x24;
-	dsi->clk_hs_to_lp_count = 0x0F;
-	dsi->video_frmt_cfg_bits = DISABLE_VIDEO_BTA;
-	dsi->dphy_reg = 0x3F10430D;
+	intel_dsi->hs = true;
+	intel_dsi->channel = 0;
+	intel_dsi->lane_count = 4;
+	intel_dsi->eot_disable = 1;
+	intel_dsi->port_bits = 0;
+	intel_dsi->dsi_clock_freq = 513;
+	intel_dsi->video_mode_type = DSI_VIDEO_BURST;
+	intel_dsi->pixel_format = VID_MODE_FORMAT_RGB666_LOOSE;
+	intel_dsi->escape_clk_div = ESCAPE_CLOCK_DIVIDER_1;
+	intel_dsi->lp_rx_timeout = 0xffff;
+	intel_dsi->turn_arnd_val = 0x3f;
+	intel_dsi->rst_timer_val = 0xff;
+	intel_dsi->init_count = 0x7d0;
+	intel_dsi->hs_to_lp_count = 0x46;
+	intel_dsi->lp_byte_clk = 4;
+	intel_dsi->bw_timer = 0;
+	intel_dsi->clk_lp_to_hs_count = 0x24;
+	intel_dsi->clk_hs_to_lp_count = 0x0F;
+	intel_dsi->video_frmt_cfg_bits = DISABLE_VIDEO_BTA;
+	intel_dsi->dphy_reg = 0x3F10430D;
 
-	dsi->backlight_off_delay = 20;
-	dsi->send_shutdown = false;
-	dsi->shutdown_pkt_delay = 20;
+	intel_dsi->backlight_off_delay = 20;
+	intel_dsi->send_shutdown = true;
+	intel_dsi->shutdown_pkt_delay = 20;
 
 	return true;
 }
@@ -121,10 +127,10 @@ void b080xat_panel_reset(struct intel_dsi_device *dsi)
 	struct drm_device *dev = intel_dsi->base.base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
-	intel_gpio_nc_write32(dev_priv, 0x4160, 0x2000CC00);
-	intel_gpio_nc_write32(dev_priv, 0x4168, 0x00000004);
+	vlv_gpio_nc_write(dev_priv, 0x4160, 0x2000CC00);
+	vlv_gpio_nc_write(dev_priv, 0x4168, 0x00000004);
 	udelay(500);
-	intel_gpio_nc_write32(dev_priv, 0x4168, 0x00000005);
+	vlv_gpio_nc_write(dev_priv, 0x4168, 0x00000005);
 	usleep_range(10000, 12000);
 
 }
@@ -135,31 +141,24 @@ void b080xat_disable_panel_power(struct intel_dsi_device *dsi)
 	struct drm_device *dev = intel_dsi->base.base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
-	intel_gpio_nc_write32(dev_priv, 0x4160, 0x2000CC00);
-	intel_gpio_nc_write32(dev_priv, 0x4168, 0x00000004);
+	vlv_gpio_nc_write(dev_priv, 0x4160, 0x2000CC00);
+	vlv_gpio_nc_write(dev_priv, 0x4168, 0x00000004);
 	udelay(500);
 }
 
 void b080xat_disable(struct intel_dsi_device *dsi)
 {
-	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
-	struct drm_device *dev = intel_dsi->base.base.dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
+	/*struct intel_dsi *intel_dsi =
+				container_of(dsi, struct intel_dsi, dev);*/
 
 	DRM_DEBUG_KMS("\n");
 
-	dsi_vc_dcs_write_0(intel_dsi, 0, 0x28);
-	msleep(20);
+//	dsi_vc_dcs_write_0(intel_dsi, 0, 0x28);
+//	msleep(20);
 }
 
 enum drm_connector_status b080xat_detect(struct intel_dsi_device *dsi)
 {
-	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
-	struct drm_device *dev = intel_dsi->base.base.dev;
-	struct drm_i915_private *dev_priv = dev->dev_private;
-
-	dev_priv->is_mipi = true;
-
 	return connector_status_connected;
 }
 

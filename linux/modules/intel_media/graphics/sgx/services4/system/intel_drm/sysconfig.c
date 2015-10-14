@@ -50,10 +50,6 @@
 
 extern struct drm_device *gpDrmDevice;
 
-#ifdef CONFIG_GFX_RTPM
-#include <linux/pm_runtime.h>
-#endif
-
 #ifndef IS_MDFLD
 #define IS_MDFLD(x) (0)
 #endif

@@ -35,22 +35,28 @@
 #include <linux/module.h>
 #include <asm/uaccess.h>
 #include <linux/intel_mid_pm.h>
+#include <asm/intel_mid_pcihelpers.h>
 
 extern int drm_psb_trap_pagefaults;
 
 int drm_psb_cpurelax;
 int drm_psb_udelaydivider = 1;
 int drm_psb_priv_pmu_func = 0;
+
 static struct pci_dev *pci_root;
 
 int drm_psb_trap_pagefaults;
 
 extern struct drm_device *i915_drm_dev;
+int drm_psb_msvdx_tiling;
 
 atomic_t g_videodec_access_count;
 
 static void vxd_power_init(struct drm_device *dev);
 static void vxd_power_post_init(struct drm_device *dev);
+
+extern int pmc_nc_set_power_state(int islands, int state_type, int reg);
+extern int pmc_nc_get_power_state(int islands, int reg);
 
 module_param_named(trap_pagefaults, drm_psb_trap_pagefaults, int, 0600);
 
@@ -325,14 +331,7 @@ u32 intel_mid_msgbus_read32_vxd(u8 port, u32 addr)
 		((addr & 0xff) << 8) | PCI_ROOT_MSGBUS_DWORD_ENABLE;
 	cmdext = addr & 0xffffff00;
 
-	if (cmdext) {
-		/* This resets to 0 automatically, no need to write 0 */
-		pci_write_config_dword(pci_root, PCI_ROOT_MSGBUS_CTRL_EXT_REG,
-					cmdext);
-	}
-
-	pci_write_config_dword(pci_root, PCI_ROOT_MSGBUS_CTRL_REG, cmd);
-	pci_read_config_dword(pci_root, PCI_ROOT_MSGBUS_DATA_REG, &data);
+	data = intel_mid_msgbus_read32_raw_ext(cmd, cmdext);
 
 	return data;
 }
@@ -347,15 +346,7 @@ void intel_mid_msgbus_write32_vxd(u8 port, u32 addr, u32 data)
 		((addr & 0xFF) << 8) | PCI_ROOT_MSGBUS_DWORD_ENABLE;
 	cmdext = addr & 0xffffff00;
 
-	pci_write_config_dword(pci_root, PCI_ROOT_MSGBUS_DATA_REG, data);
-
-	if (cmdext) {
-		/* This resets to 0 automatically, no need to write 0 */
-		pci_write_config_dword(pci_root, PCI_ROOT_MSGBUS_CTRL_EXT_REG,
-			cmdext);
-	}
-
-	pci_write_config_dword(pci_root, PCI_ROOT_MSGBUS_CTRL_REG, cmd);
+	intel_mid_msgbus_write32_raw_ext(cmd, cmdext, data);
 }
 
 static int __init vxd_driver_load()
@@ -370,7 +361,7 @@ static int __init vxd_driver_load()
 	if (dev_priv == NULL)
 		return -ENOMEM;
 	INIT_LIST_HEAD(&dev_priv->video_ctx);
-	mutex_init(&dev_priv->video_ctx_mutex);
+	spin_lock_init(&dev_priv->video_ctx_lock);
 	dev_priv->dev = i915_dev_priv->dev;
 	bdev = &dev_priv->bdev;
 
@@ -463,6 +454,11 @@ static int __init vxd_driver_load()
 		dev_priv->sizes.mmu_size = PSB_MEM_TT_START / (1024 * 1024);
 	}
 
+        /* Create tiling MMU region managed by TTM */
+        if (!ttm_bo_init_mm(bdev, DRM_PSB_MEM_MMU_TILING,
+			    (0x10000000) >> PAGE_SHIFT))
+                dev_priv->have_mem_mmu_tiling = 1;
+
 	PSB_DEBUG_INIT("Init MSVDX\n");
 	psb_msvdx_init(i915_dev_priv->dev);
 
@@ -471,6 +467,8 @@ static int __init vxd_driver_load()
 #if 0
 	ospm_post_init(dev);
 #endif
+	/* enable msvdx tiling on BYT */
+	drm_psb_msvdx_tiling = 1;
 	return 0;
 out_err:
 	__vxd_driver_unload();
@@ -693,7 +691,7 @@ static bool vxd_power_down(struct drm_device *dev)
 		return true;
 	}
 	else {
-		if (pmu_nc_set_power_state(VEDSSC, OSPM_ISLAND_DOWN, VEDSSPM0)) {
+		if (pmc_nc_set_power_state(VEDSSC, OSPM_ISLAND_DOWN, VEDSSPM0)) {
 			PSB_DEBUG_PM("VED: pmu_nc_set_power_state DOWN failed!\n");
 			return false;
 		}
@@ -735,7 +733,7 @@ static bool vxd_power_on(struct drm_device *dev)
 		return true;
 	}
 	else {
-		if (pmu_nc_set_power_state(VEDSSC, OSPM_ISLAND_UP, VEDSSPM0)) {
+		if (pmc_nc_set_power_state(VEDSSC, OSPM_ISLAND_UP, VEDSSPM0)) {
 			PSB_DEBUG_PM("VED: pmu_nc_set_power_state ON failed!\n");
 			return false;
 		}
@@ -779,7 +777,7 @@ bool is_vxd_on()
 	if (drm_psb_priv_pmu_func)
 		pwr_sts = intel_mid_msgbus_read32_vxd(PUNIT_PORT, VEDSSPM0);
 	else
-		pwr_sts = pmu_nc_get_power_state(VEDSSC, VEDSSPM0);
+		pwr_sts = pmc_nc_get_power_state(VEDSSC, VEDSSPM0);
 
 	if (pwr_sts == VXD_APM_STS_D0)
 		return true;
@@ -820,7 +818,6 @@ power_off:
 #ifdef CONFIG_PM_RUNTIME
 	i915_rpm_put_vxd(dev);
 #endif
-
 	/* MSVDX_NEW_PMSTATE(dev, msvdx_priv, PSB_PMSTATE_POWERDOWN); */
 
 out:

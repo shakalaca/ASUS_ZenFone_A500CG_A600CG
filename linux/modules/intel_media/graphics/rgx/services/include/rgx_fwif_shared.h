@@ -95,6 +95,7 @@ typedef struct _RGXFWIF_HWRTDATA_		*PRGXFWIF_HWRTDATA;
 typedef struct _RGXFWIF_FREELIST_		*PRGXFWIF_FREELIST;
 typedef struct _RGXFWIF_RTA_CTL_		*PRGXFWIF_RTA_CTL;
 typedef IMG_UINT32						*PRGXFWIF_UFO_ADDR;
+typedef struct _RGXFWIF_CLEANUP_CTL_		*PRGXFWIF_CLEANUP_CTL;
 #else
 /* Compiling the host driver - use a firmware device virtual pointer */
 typedef RGXFWIF_DEV_VIRTADDR	PRGXFWIF_CCCB;
@@ -104,6 +105,7 @@ typedef RGXFWIF_DEV_VIRTADDR	PRGXFWIF_HWRTDATA;
 typedef RGXFWIF_DEV_VIRTADDR	PRGXFWIF_FREELIST;
 typedef RGXFWIF_DEV_VIRTADDR	PRGXFWIF_RTA_CTL;
 typedef RGXFWIF_DEV_VIRTADDR	PRGXFWIF_UFO_ADDR;
+typedef RGXFWIF_DEV_VIRTADDR	PRGXFWIF_CLEANUP_CTL;
 #endif /* RGX_FIRMWARE */
 
 
@@ -113,6 +115,20 @@ typedef struct _RGXFWIF_UFO_
 	PRGXFWIF_UFO_ADDR	puiAddrUFO;
 	IMG_UINT32			ui32Value;
 } RGXFWIF_UFO;
+
+
+/*!
+	Last reset reason for a context.
+*/
+typedef enum _RGXFWIF_CONTEXT_RESET_REASON_
+{
+	RGXFWIF_CONTEXT_RESET_REASON_NONE					= 0,	/*!< No reset reason recorded */
+	RGXFWIF_CONTEXT_RESET_REASON_GUILTY_LOCKUP			= 1,	/*!< Caused a reset due to locking up */
+	RGXFWIF_CONTEXT_RESET_REASON_INNOCENT_LOCKUP		= 2,	/*!< Affected by another context locking up */
+	RGXFWIF_CONTEXT_RESET_REASON_GUILTY_OVERRUNING		= 3,	/*!< Overran the global deadline */
+	RGXFWIF_CONTEXT_RESET_REASON_INNOCENT_OVERRUNING	= 4,	/*!< Affected by another context overrunning */
+} RGXFWIF_CONTEXT_RESET_REASON;
+
 
 /*!
 	HWRTData state the render is in
@@ -134,6 +150,7 @@ typedef enum
 
 typedef struct _RGXFWIF_CLEANUP_CTL_
 {
+	IMG_UINT32				ui32SubmittedCommands;	/*!< Number of commands received by the FW */
 	IMG_UINT32				ui32ExecutedCommands;	/*!< Number of commands executed by the FW */
 	IMG_UINT32 				ui32SyncObjDevVAddr;	/*!< SyncPrimitive to update after cleanup completion */
 }RGXFWIF_CLEANUP_CTL;
@@ -310,6 +327,7 @@ typedef struct _RGXFWIF_COMPCHECKS_
 {
 	RGXFWIF_COMPCHECKS_BVNC		sHWBVNC;			/*!< hardware BNC (from the RGX registers) */
 	RGXFWIF_COMPCHECKS_BVNC		sFWBVNC;			/*!< firmware BNC */
+	IMG_UINT32					ui32METAVersion;
 	IMG_UINT32					ui32DDKVersion;		/*!< software DDK version */
 	IMG_UINT32					ui32DDKBuild;		/*!< software DDK build no. */
 	IMG_UINT32					ui32BuildOptions;	/*!< build options bit-field */
@@ -364,6 +382,18 @@ typedef struct _RGXFWIF_CCB_CMD_HEADER_
 	IMG_UINT32				ui32CmdSize;
 } RGXFWIF_CCB_CMD_HEADER;
 
+typedef enum _RGXFWIF_PWR_EVT_
+{
+	RGXFWIF_PWR_EVT_PWR_ON,			/* Sidekick power event */
+	RGXFWIF_PWR_EVT_DUST_CHANGE,		/* Rascal / dust power event */
+	RGXFWIF_PWR_EVT_ALL			/* Applies to all power events. Keep as last element */
+} RGXFWIF_PWR_EVT;
+
+typedef struct _RGXFWIF_REG_CFG_REC_
+{
+	IMG_UINT64		ui64Addr;
+	IMG_UINT64		ui64Value;
+} RGXFWIF_REG_CFG_REC;
 
 #endif /*  __RGX_FWIF_SHARED_H__ */
 

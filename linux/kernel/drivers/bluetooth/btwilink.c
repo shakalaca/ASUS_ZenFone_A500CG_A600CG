@@ -22,6 +22,7 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  */
+#define DEBUG
 #include <linux/platform_device.h>
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -103,6 +104,7 @@ static long st_receive(void *priv_data, struct sk_buff *skb)
 		return -EFAULT;
 
 	if (!lhst) {
+		kfree_skb(skb);
 		return -EFAULT;
 	}
 
@@ -112,10 +114,7 @@ static long st_receive(void *priv_data, struct sk_buff *skb)
 	err = hci_recv_frame(skb);
 	if (err < 0) {
 		BT_ERR("Unable to push skb to HCI core(%d)", err);
-		/* Here we can not return err to st_send_frame
-		 * otherwise, double freeing skb will happen!
-		 */
-		return 0;
+		return err;
 	}
 
 	lhst->hdev->stat.byte_rx += skb->len;
@@ -298,16 +297,14 @@ static int bt_ti_probe(struct platform_device *pdev)
 	struct hci_dev *hdev;
 	int err;
 
-	hst = kzalloc(sizeof(struct ti_st), GFP_KERNEL);
+	hst = devm_kzalloc(&pdev->dev, sizeof(struct ti_st), GFP_KERNEL);
 	if (!hst)
 		return -ENOMEM;
 
 	/* Expose "hciX" device to user space */
 	hdev = hci_alloc_dev();
-	if (!hdev) {
-		kfree(hst);
+	if (!hdev)
 		return -ENOMEM;
-	}
 
 	BT_DBG("hdev %p", hdev);
 
@@ -322,7 +319,6 @@ static int bt_ti_probe(struct platform_device *pdev)
 	err = hci_register_dev(hdev);
 	if (err < 0) {
 		BT_ERR("Can't register HCI device error %d", err);
-		kfree(hst);
 		hci_free_dev(hdev);
 		return err;
 	}
@@ -348,7 +344,6 @@ static int bt_ti_remove(struct platform_device *pdev)
 	hci_unregister_dev(hdev);
 
 	hci_free_dev(hdev);
-	kfree(hst);
 
 	dev_set_drvdata(&pdev->dev, NULL);
 	return 0;
@@ -363,21 +358,7 @@ static struct platform_driver btwilink_driver = {
 	},
 };
 
-/* ------- Module Init/Exit interfaces ------ */
-static int __init btwilink_init(void)
-{
-	BT_INFO("Bluetooth Driver for TI WiLink - Version %s", VERSION);
-
-	return platform_driver_register(&btwilink_driver);
-}
-
-static void __exit btwilink_exit(void)
-{
-	platform_driver_unregister(&btwilink_driver);
-}
-
-module_init(btwilink_init);
-module_exit(btwilink_exit);
+module_platform_driver(btwilink_driver);
 
 /* ------ Module Info ------ */
 

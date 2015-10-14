@@ -23,6 +23,7 @@
 #include <linux/clk.h>
 #include <linux/platform_device.h>
 #include <linux/kernel_stat.h>
+#include <linux/kmsg_dump.h>
 #include <linux/irq.h>
 #include <linux/delay.h>
 #include <linux/reboot.h>
@@ -88,8 +89,7 @@ struct fiq_debugger_state {
 #ifdef CONFIG_FIQ_DEBUGGER_CONSOLE
 	spinlock_t console_lock;
 	struct console console;
-	struct tty_struct *tty;
-	int tty_open_count;
+	struct tty_port tty_port;
 	struct fiq_debugger_ringbuf *tty_rbuf;
 	bool syslog_dumping;
 #endif
@@ -207,29 +207,19 @@ static void debug_prompt(struct fiq_debugger_state *state)
 	debug_puts(state, "debug> ");
 }
 
-int log_buf_copy(char *dest, int idx, int len);
 static void dump_kernel_log(struct fiq_debugger_state *state)
 {
-	char buf[1024];
-	int idx = 0;
-	int ret;
-	int saved_oip;
+	char buf[512];
+	size_t len;
+	struct kmsg_dumper dumper = { .active = true };
 
-	/* setting oops_in_progress prevents log_buf_copy()
-	 * from trying to take a spinlock which will make it
-	 * very unhappy in some cases...
-	 */
-	saved_oip = oops_in_progress;
-	oops_in_progress = 1;
-	for (;;) {
-		ret = log_buf_copy(buf, idx, 1023);
-		if (ret <= 0)
-			break;
-		buf[ret] = 0;
+
+	kmsg_dump_rewind_nolock(&dumper);
+	while (kmsg_dump_get_line_nolock(&dumper, true, buf,
+					 sizeof(buf) - 1, &len)) {
+		buf[len] = 0;
 		debug_puts(state, buf);
-		idx += ret;
 	}
-	oops_in_progress = saved_oip;
 }
 
 static char *mode_name(unsigned cpsr)
@@ -374,16 +364,17 @@ static void dump_allregs(struct fiq_debugger_state *state, unsigned *regs)
 static void dump_irqs(struct fiq_debugger_state *state)
 {
 	int n;
+	struct irq_desc *desc;
 
 	debug_printf(state, "irqnr       total  since-last   status  name\n");
-	for (n = 0; n < NR_IRQS; n++) {
-		struct irqaction *act = irq_desc[n].action;
+	for_each_irq_desc(n, desc) {
+		struct irqaction *act = desc->action;
 		if (!act && !kstat_irqs(n))
 			continue;
 		debug_printf(state, "%5d: %10u %11u %8x  %s\n", n,
 			kstat_irqs(n),
 			kstat_irqs(n) - state->last_irqs[n],
-			irq_desc[n].status_use_accessors,
+			desc->status_use_accessors,
 			(act && act->name) ? act->name : "???");
 		state->last_irqs[n] = kstat_irqs(n);
 	}
@@ -522,18 +513,7 @@ static void begin_syslog_dump(struct fiq_debugger_state *state)
 
 static void end_syslog_dump(struct fiq_debugger_state *state)
 {
-	char buf[128];
-	int ret;
-	int idx = 0;
-
-	while (1) {
-		ret = log_buf_copy(buf, idx, sizeof(buf) - 1);
-		if (ret <= 0)
-			break;
-		buf[ret] = 0;
-		debug_printf(state, "%s", buf);
-		idx += ret;
-	}
+	dump_kernel_log(state);
 }
 #endif
 
@@ -787,6 +767,22 @@ static irqreturn_t wakeup_irq_handler(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
+static void debug_handle_console_irq_context(struct fiq_debugger_state *state)
+{
+#if defined(CONFIG_FIQ_DEBUGGER_CONSOLE)
+	if (state->tty_port.ops) {
+		int i;
+		int count = fiq_debugger_ringbuf_level(state->tty_rbuf);
+		for (i = 0; i < count; i++) {
+			int c = fiq_debugger_ringbuf_peek(state->tty_rbuf, 0);
+			tty_insert_flip_char(&state->tty_port, c, TTY_NORMAL);
+			if (!fiq_debugger_ringbuf_consume(state->tty_rbuf, 1))
+				pr_warn("fiq tty failed to consume byte\n");
+		}
+		tty_flip_buffer_push(&state->tty_port);
+	}
+#endif
+}
 
 static void debug_handle_irq_context(struct fiq_debugger_state *state)
 {
@@ -798,19 +794,7 @@ static void debug_handle_irq_context(struct fiq_debugger_state *state)
 		mod_timer(&state->sleep_timer, jiffies + HZ * 5);
 		spin_unlock_irqrestore(&state->sleep_timer_lock, flags);
 	}
-#if defined(CONFIG_FIQ_DEBUGGER_CONSOLE)
-	if (state->tty) {
-		int i;
-		int count = fiq_debugger_ringbuf_level(state->tty_rbuf);
-		for (i = 0; i < count; i++) {
-			int c = fiq_debugger_ringbuf_peek(state->tty_rbuf, 0);
-			tty_insert_flip_char(state->tty, c, TTY_NORMAL);
-			if (!fiq_debugger_ringbuf_consume(state->tty_rbuf, 1))
-				pr_warn("fiq tty failed to consume byte\n");
-		}
-		tty_flip_buffer_push(state->tty);
-	}
-#endif
+	debug_handle_console_irq_context(state);
 	if (state->debug_busy) {
 		debug_irq_exec(state, state->debug_cmd);
 		if (!state->console_enable)
@@ -1014,26 +998,21 @@ int fiq_tty_open(struct tty_struct *tty, struct file *filp)
 	int line = tty->index;
 	struct fiq_debugger_state **states = tty->driver->driver_state;
 	struct fiq_debugger_state *state = states[line];
-	if (state->tty_open_count++)
-		return 0;
 
-	tty->driver_data = state;
-	state->tty = tty;
-	return 0;
+	return tty_port_open(&state->tty_port, tty, filp);
 }
 
 void fiq_tty_close(struct tty_struct *tty, struct file *filp)
 {
-	struct fiq_debugger_state *state = tty->driver_data;
-	if (--state->tty_open_count)
-		return;
-	state->tty = NULL;
+	tty_port_close(tty->port, tty, filp);
 }
 
 int  fiq_tty_write(struct tty_struct *tty, const unsigned char *buf, int count)
 {
 	int i;
-	struct fiq_debugger_state *state = tty->driver_data;
+	int line = tty->index;
+	struct fiq_debugger_state **states = tty->driver->driver_state;
+	struct fiq_debugger_state *state = states[line];
 
 	if (!state->console_enable)
 		return count;
@@ -1061,7 +1040,8 @@ static int fiq_tty_poll_init(struct tty_driver *driver, int line, char *options)
 
 static int fiq_tty_poll_get_char(struct tty_driver *driver, int line)
 {
-	struct fiq_debugger_state *state = driver->ttys[line]->driver_data;
+	struct fiq_debugger_state **states = driver->driver_state;
+	struct fiq_debugger_state *state = states[line];
 	int c = NO_POLL_CHAR;
 
 	debug_uart_enable(state);
@@ -1083,12 +1063,15 @@ static int fiq_tty_poll_get_char(struct tty_driver *driver, int line)
 
 static void fiq_tty_poll_put_char(struct tty_driver *driver, int line, char ch)
 {
-	struct fiq_debugger_state *state = driver->ttys[line]->driver_data;
+	struct fiq_debugger_state **states = driver->driver_state;
+	struct fiq_debugger_state *state = states[line];
 	debug_uart_enable(state);
 	debug_putc(state, ch);
 	debug_uart_disable(state);
 }
 #endif
+
+static const struct tty_port_operations fiq_tty_port_ops;
 
 static const struct tty_operations fiq_tty_driver_ops = {
 	.write = fiq_tty_write,
@@ -1169,8 +1152,11 @@ static int fiq_debugger_tty_init_one(struct fiq_debugger_state *state)
 		goto err;
 	}
 
-	tty_dev = tty_register_device(fiq_tty_driver, state->pdev->id,
-		&state->pdev->dev);
+	tty_port_init(&state->tty_port);
+	state->tty_port.ops = &fiq_tty_port_ops;
+
+	tty_dev = tty_port_register_device(&state->tty_port, fiq_tty_driver,
+					   state->pdev->id, &state->pdev->dev);
 	if (IS_ERR(tty_dev)) {
 		pr_err("Failed to register fiq debugger tty device\n");
 		ret = PTR_ERR(tty_dev);
@@ -1381,7 +1367,9 @@ static struct platform_driver fiq_debugger_driver = {
 
 static int __init fiq_debugger_init(void)
 {
+#if defined(CONFIG_FIQ_DEBUGGER_CONSOLE)
 	fiq_debugger_tty_init();
+#endif
 	return platform_driver_register(&fiq_debugger_driver);
 }
 

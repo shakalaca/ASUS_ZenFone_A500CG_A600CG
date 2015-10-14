@@ -10,7 +10,6 @@ tune		= $(call cc-option,-mcpu=$(1),$(2))
 endif
 
 align := $(cc-option-align)
-cflags-$(CONFIG_M386)		+= -march=i386
 cflags-$(CONFIG_M486)		+= -march=i486
 cflags-$(CONFIG_M586)		+= -march=i586
 cflags-$(CONFIG_M586TSC)	+= -march=i586
@@ -35,6 +34,8 @@ cflags-$(CONFIG_MVIAC7)		+= -march=i686
 cflags-$(CONFIG_MCORE2)		+= -march=i686 $(call tune,core2)
 cflags-$(CONFIG_MATOM)		+= $(call cc-option,-march=atom,$(call cc-option,-march=core2,-march=i686)) \
 	$(call cc-option,-mtune=atom,$(call cc-option,-mtune=generic))
+cflags-$(CONFIG_MSLM)		+= $(call cc-option,-march=slm,$(call cc-option,-march=core2,-march=i686)) \
+	$(call cc-option,-mtune=slm,$(call cc-option,-mtune=generic))
 
 # AMD Elan support
 cflags-$(CONFIG_MELAN)		+= -march=i486

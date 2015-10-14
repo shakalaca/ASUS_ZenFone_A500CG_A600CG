@@ -30,6 +30,7 @@
 #include <linux/async.h>
 #include <linux/delay.h>
 #include <linux/gpio.h>
+#include <asm/intel_scu_pmic.h>
 #include <asm/intel_mid_rpmsg.h>
 #include <asm/platform_mrfld_audio.h>
 #include <asm/intel_sst_mrfld.h>
@@ -38,14 +39,55 @@
 #include <sound/soc.h>
 #include <sound/jack.h>
 #include <linux/input.h>
+#include <asm/intel-mid.h>
 
 #include <linux/mfd/wm8994/core.h>
 #include <linux/mfd/wm8994/registers.h>
 #include <linux/mfd/wm8994/pdata.h>
 #include "../../codecs/wm8994.h"
 
-#define SYSCLK_RATE        24576000
-#define DEFAULT_MCLK       19200000
+/* Codec PLL output clk rate */
+#define CODEC_SYSCLK_RATE			24576000
+/* Input clock to codec at MCLK1 PIN */
+#define CODEC_IN_MCLK1_RATE			19200000
+/* Input clock to codec at MCLK2 PIN */
+#define CODEC_IN_MCLK2_RATE			32768
+/*  define to select between MCLK1 and MCLK2 input to codec as its clock */
+#define CODEC_IN_MCLK1				1
+#define CODEC_IN_MCLK2				2
+
+/* Register address for OSC Clock */
+#define MERR_OSC_CLKOUT_CTRL0_REG_ADDR  0xFF00BC04
+/* Size of osc clock register */
+#define MERR_OSC_CLKOUT_CTRL0_REG_SIZE  4
+
+struct mrfld_8958_mc_private {
+	struct snd_soc_jack jack;
+	int jack_retry;
+	u8 pmic_id;
+	void __iomem    *osc_clk0_reg;
+};
+
+
+/* set_osc_clk0-	enable/disables the osc clock0
+ * addr:		address of the register to write to
+ * enable:		bool to enable or disable the clock
+ */
+static inline void set_soc_osc_clk0(void __iomem *addr, bool enable)
+{
+	u32 osc_clk_ctrl;
+
+	osc_clk_ctrl = readl(addr);
+	if (enable)
+		osc_clk_ctrl |= BIT(31);
+	else
+		osc_clk_ctrl &= ~(BIT(31));
+
+	pr_debug("%s: enable:%d val 0x%x\n", __func__, enable, osc_clk_ctrl);
+
+	writel(osc_clk_ctrl, addr);
+}
+
 
 static inline struct snd_soc_codec *mrfld_8958_get_codec(struct snd_soc_card *card)
 {
@@ -68,10 +110,68 @@ static inline struct snd_soc_codec *mrfld_8958_get_codec(struct snd_soc_card *ca
 	return codec;
 }
 
+/* Function to switch the input clock for codec,  When audio is in
+ * progress input clock to codec will be through MCLK1 which is 19.2MHz
+ * while in off state input clock to codec will be through 32KHz through
+ * MCLK2
+ * card	: Sound card structure
+ * src	: Input clock source to codec
+ */
+static int mrfld_8958_set_codec_clk(struct snd_soc_card *card, int src)
+{
+	struct snd_soc_dai *aif1_dai = card->rtd[0].codec_dai;
+	int ret;
+
+	switch (src) {
+	case CODEC_IN_MCLK1:
+		/* Turn ON the PLL to generate required sysclk rate
+		 * from MCLK1 */
+		ret = snd_soc_dai_set_pll(aif1_dai,
+			WM8994_FLL1, WM8994_FLL_SRC_MCLK1,
+			CODEC_IN_MCLK1_RATE, CODEC_SYSCLK_RATE);
+		if (ret < 0) {
+			pr_err("Failed to start FLL: %d\n", ret);
+			return ret;
+		}
+		/* Switch to MCLK1 input */
+		ret = snd_soc_dai_set_sysclk(aif1_dai, WM8994_SYSCLK_FLL1,
+				CODEC_SYSCLK_RATE, SND_SOC_CLOCK_IN);
+		if (ret < 0) {
+			pr_err("Failed to set codec sysclk configuration %d\n",
+				 ret);
+			return ret;
+		}
+		break;
+	case CODEC_IN_MCLK2:
+		/* Switch to MCLK2 */
+		ret = snd_soc_dai_set_sysclk(aif1_dai, WM8994_SYSCLK_MCLK2,
+				32768, SND_SOC_CLOCK_IN);
+		if (ret < 0) {
+			pr_err("Failed to switch to MCLK2: %d", ret);
+			return ret;
+		}
+		/* Turn off PLL for MCLK1 */
+		ret = snd_soc_dai_set_pll(aif1_dai, WM8994_FLL1, 0, 0, 0);
+		if (ret < 0) {
+			pr_err("Failed to stop the FLL: %d", ret);
+			return ret;
+		}
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
 static int mrfld_wm8958_set_clk_fmt(struct snd_soc_dai *codec_dai)
 {
 	unsigned int fmt;
-	int ret;
+	int ret = 0;
+	struct snd_soc_card *card = codec_dai->card;
+	struct mrfld_8958_mc_private *ctx = snd_soc_card_get_drvdata(card);
+
+	/* Enable the osc clock at start so that it gets settling time */
+	set_soc_osc_clk0(ctx->osc_clk0_reg, true);
 
 	ret = snd_soc_dai_set_tdm_slot(codec_dai, 0, 0, 4, SNDRV_PCM_FORMAT_S24_LE);
 	if (ret < 0) {
@@ -88,22 +188,13 @@ static int mrfld_wm8958_set_clk_fmt(struct snd_soc_dai *codec_dai)
 		return ret;
 	}
 
-	ret = snd_soc_dai_set_pll(codec_dai,
-				WM8994_FLL1, WM8994_FLL_SRC_MCLK1,
-				DEFAULT_MCLK , SYSCLK_RATE);
-	if (ret < 0) {
-		pr_err("can't set codec pll configuration %d\n", ret);
-		return ret;
-	}
+	/* FIXME: move this to SYS_CLOCK event handler when codec driver
+	 * dependency is clean.
+	 */
+	/* Switch to 19.2MHz MCLK1 input clock for codec */
+	ret = mrfld_8958_set_codec_clk(card, CODEC_IN_MCLK1);
 
-	/* take input from 19.2MHz PLL, into MCLK1 to generate FLL1 */
-	ret = snd_soc_dai_set_sysclk(codec_dai, WM8994_SYSCLK_FLL1,
-				SYSCLK_RATE, SND_SOC_CLOCK_IN);
-	if (ret < 0) {
-		pr_err("can't set codec sysclk configuration %d\n", ret);
-		return ret;
-	}
-	return 0;
+	return ret;
 }
 
 static int mrfld_8958_hw_params(struct snd_pcm_substream *substream,
@@ -122,88 +213,104 @@ static int mrfld_wm8958_compr_set_params(struct snd_compr_stream *cstream)
 
 	return mrfld_wm8958_set_clk_fmt(codec_dai);
 }
-
-struct mrfld_8958_mc_private {
-	struct snd_soc_jack jack;
-	int jack_retry;
-};
-
 static int mrfld_8958_set_bias_level(struct snd_soc_card *card,
-				struct snd_soc_dapm_context *dapm,
-				enum snd_soc_bias_level level)
+		struct snd_soc_dapm_context *dapm,
+		enum snd_soc_bias_level level)
 {
 	struct snd_soc_dai *aif1_dai = card->rtd[0].codec_dai;
-	int ret;
+	int ret = 0;
 
 	if (dapm->dev != aif1_dai->dev)
 		return 0;
-
 	switch (level) {
 	case SND_SOC_BIAS_PREPARE:
-		if (card->dapm.bias_level == SND_SOC_BIAS_STANDBY) {
-			ret = snd_soc_dai_set_pll(aif1_dai,
-				WM8994_FLL1, WM8994_FLL_SRC_MCLK1,
-				DEFAULT_MCLK, SYSCLK_RATE);
-			if (ret < 0) {
-				pr_err("Failed to start FLL: %d\n", ret);
-				return ret;
-			}
+		if (card->dapm.bias_level == SND_SOC_BIAS_STANDBY)
 
-			ret = snd_soc_dai_set_sysclk(aif1_dai, WM8994_SYSCLK_FLL1,
-					SYSCLK_RATE, SND_SOC_CLOCK_IN);
-			if (ret < 0) {
-				pr_err("Failed to set codec sysclk configuration %d\n", ret);
-				return ret;
-			}
-		}
+			ret = mrfld_wm8958_set_clk_fmt(aif1_dai);
 		break;
 	default:
 		break;
 	}
-	pr_debug("card(%s)->bias_level %u\n", card->name,
+	pr_debug("%s card(%s)->bias_level %u\n", __func__, card->name,
 			card->dapm.bias_level);
-	return 0;
+	return ret;
 }
-
 static int mrfld_8958_set_bias_level_post(struct snd_soc_card *card,
 		 struct snd_soc_dapm_context *dapm,
 		 enum snd_soc_bias_level level)
 {
 	struct snd_soc_dai *aif1_dai = card->rtd[0].codec_dai;
-	int ret;
+	struct mrfld_8958_mc_private *ctx = snd_soc_card_get_drvdata(card);
+	int ret = 0;
 
 	if (dapm->dev != aif1_dai->dev)
 		return 0;
 
 	switch (level) {
 	case SND_SOC_BIAS_STANDBY:
-		pr_debug("in %s turning OFF PLL ", __func__);
-		ret = snd_soc_dai_set_sysclk(aif1_dai, WM8994_SYSCLK_MCLK2,
-				32768, SND_SOC_CLOCK_IN);
-		if (ret < 0) {
-			pr_err("Failed to switch to OSC: %d", ret);
-			return ret;
-		}
-
-		ret = snd_soc_dai_set_pll(aif1_dai, WM8994_FLL1, 0, 0, 0);
-		if (ret < 0) {
-			pr_err("Failed to stop the FLL: %d", ret);
-			return ret;
-		}
+		/* We are in stabdba down so */
+		/* Switch to 32KHz MCLK2 input clock for codec
+		 */
+		ret = mrfld_8958_set_codec_clk(card, CODEC_IN_MCLK2);
+		/* Turn off 19.2MHz soc osc clock */
+		set_soc_osc_clk0(ctx->osc_clk0_reg, false);
 		break;
 	default:
 		break;
 	}
-	dapm->bias_level = level;
-	pr_debug("card(%s)->bias_level %u\n", card->name,
+	card->dapm.bias_level = level;
+	pr_debug("%s card(%s)->bias_level %u\n", __func__, card->name,
 			card->dapm.bias_level);
-	return 0;
+	return ret;
+}
+
+#define PMIC_ID_ADDR		0x00
+#define PMIC_CHIP_ID_A0_VAL	0xC0
+
+static int mrfld_8958_set_vflex_vsel(struct snd_soc_dapm_widget *w,
+				struct snd_kcontrol *k, int event)
+{
+#define VFLEXCNT		0xAB
+#define VFLEXVSEL_5V		0x01
+#define VFLEXVSEL_B0_VSYS_PT	0x80	/* B0: Vsys pass-through */
+#define VFLEXVSEL_A0_4P5V	0x41	/* A0: 4.5V */
+
+	struct snd_soc_dapm_context *dapm = w->dapm;
+	struct snd_soc_card *card = dapm->card;
+	struct mrfld_8958_mc_private *ctx = snd_soc_card_get_drvdata(card);
+
+	u8 vflexvsel, pmic_id = ctx->pmic_id;
+	int retval = 0;
+
+	pr_debug("%s: ON? %d\n", __func__, SND_SOC_DAPM_EVENT_ON(event));
+
+	vflexvsel = (pmic_id == PMIC_CHIP_ID_A0_VAL) ? VFLEXVSEL_A0_4P5V : VFLEXVSEL_B0_VSYS_PT;
+	pr_debug("pmic_id %#x vflexvsel %#x\n", pmic_id,
+		SND_SOC_DAPM_EVENT_ON(event) ? VFLEXVSEL_5V : vflexvsel);
+
+	/*FIXME: seems to be issue with bypass mode in MOOR, for now
+		force the bias off volate as VFLEXVSEL_5V */
+	if ((INTEL_MID_BOARD(1, PHONE, MOFD)) ||
+			(INTEL_MID_BOARD(1, TABLET, MOFD)))
+		vflexvsel = VFLEXVSEL_5V;
+
+	if (SND_SOC_DAPM_EVENT_ON(event))
+		retval = intel_scu_ipc_iowrite8(VFLEXCNT, VFLEXVSEL_5V);
+	else if (SND_SOC_DAPM_EVENT_OFF(event))
+		retval = intel_scu_ipc_iowrite8(VFLEXCNT, vflexvsel);
+	if (retval)
+		pr_err("Error writing to VFLEXCNT register\n");
+
+	return retval;
 }
 
 static const struct snd_soc_dapm_widget widgets[] = {
 	SND_SOC_DAPM_HP("Headphones", NULL),
 	SND_SOC_DAPM_MIC("AMIC", NULL),
 	SND_SOC_DAPM_MIC("DMIC", NULL),
+	SND_SOC_DAPM_SUPPLY("VFLEXCNT", SND_SOC_NOPM, 0, 0,
+			mrfld_8958_set_vflex_vsel,
+			SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 };
 
 static const struct snd_soc_dapm_route map[] = {
@@ -218,22 +325,31 @@ static const struct snd_soc_dapm_route map[] = {
 	/*{ "DMIC3DAT", NULL, "DMIC" },*/
 	/*{ "DMIC4DAT", NULL, "DMIC" },*/
 
-	/* MICBIAS2 is connected as Bias for both DMIC and AMIC so we link it
-	 * here. Also AMIC wires up to IN1LP pin
+	/* MICBIAS2 is connected as Bias for AMIC so we link it
+	 * here. Also AMIC wires up to IN1LP pin.
+	 * DMIC is externally connected to 1.8V rail, so no link rqd.
 	 */
-	{ "DMIC", NULL, "MICBIAS1" },
 	{ "AMIC", NULL, "MICBIAS2" },
 	{ "IN1LP", NULL, "AMIC" },
 
 	/* SWM map link the SWM outs to codec AIF */
-	{ "AIF1DAC1L", "NULL", "Codec OUT0"  },
-	{ "AIF1DAC1R", "NULL", "Codec OUT0"  },
-	{ "AIF1DAC2L", "NULL", "Codec OUT1"  },
-	{ "AIF1DAC2R", "NULL", "Codec OUT1"  },
-	{ "Codec IN0", "NULL", "AIF1ADC1L" },
-	{ "Codec IN0", "NULL", "AIF1ADC1R" },
-	{ "Codec IN1", "NULL", "AIF1ADC2L" },
-	{ "Codec IN1", "NULL", "AIF1ADC2R" },
+	{ "AIF1DAC1L", NULL, "Codec OUT0"  },
+	{ "AIF1DAC1R", NULL, "Codec OUT0"  },
+	{ "AIF1DAC2L", NULL, "Codec OUT1"  },
+	{ "AIF1DAC2R", NULL, "Codec OUT1"  },
+	{ "Codec IN0", NULL, "AIF1ADC1L" },
+	{ "Codec IN0", NULL, "AIF1ADC1R" },
+	{ "Codec IN1", NULL, "AIF1ADC1L" },
+	{ "Codec IN1", NULL, "AIF1ADC1R" },
+
+	{ "AIF1DAC1L", NULL, "VFLEXCNT" },
+	{ "AIF1DAC1R", NULL, "VFLEXCNT" },
+	{ "AIF1DAC2L", NULL, "VFLEXCNT" },
+	{ "AIF1DAC2R", NULL, "VFLEXCNT" },
+
+	{ "AIF1ADC1L", NULL, "VFLEXCNT" },
+	{ "AIF1ADC1R", NULL, "VFLEXCNT" },
+
 };
 
 static const struct wm8958_micd_rate micdet_rates[] = {
@@ -246,6 +362,7 @@ static const struct wm8958_micd_rate micdet_rates[] = {
 static void wm8958_custom_micd_set_rate(struct snd_soc_codec *codec)
 {
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
+	struct wm8994 *control = dev_get_drvdata(codec->dev->parent);
 	int best, i, sysclk, val;
 	bool idle;
 	const struct wm8958_micd_rate *rates;
@@ -259,9 +376,9 @@ static void wm8958_custom_micd_set_rate(struct snd_soc_codec *codec)
 	else
 		sysclk = wm8994->aifclk[0];
 
-	if (wm8994->pdata && wm8994->pdata->micd_rates) {
-		rates = wm8994->pdata->micd_rates;
-		num_rates = wm8994->pdata->num_micd_rates;
+	if (control->pdata.micd_rates) {
+		rates = control->pdata.micd_rates;
+		num_rates = control->pdata.num_micd_rates;
 	} else {
 		rates = micdet_rates;
 		num_rates = ARRAY_SIZE(micdet_rates);
@@ -308,6 +425,9 @@ static void wm8958_custom_mic_id(void *data, u16 status)
 		return;
 	}
 
+	schedule_delayed_work(&wm8994->micd_set_custom_rate_work,
+		msecs_to_jiffies(wm8994->wm8994->pdata.micb_en_delay));
+
 	/* If the measurement is showing a high impedence we've got a
 	 * microphone.
 	 */
@@ -316,8 +436,6 @@ static void wm8958_custom_mic_id(void *data, u16 status)
 
 		wm8994->mic_detecting = false;
 		wm8994->jack_mic = true;
-
-		wm8958_custom_micd_set_rate(codec);
 
 		snd_soc_jack_report(wm8994->micdet[0].jack, SND_JACK_HEADSET,
 				    SND_JACK_HEADSET);
@@ -333,8 +451,6 @@ static void wm8958_custom_mic_id(void *data, u16 status)
 		 * or headset is detected)
 		 * */
 		wm8994->mic_detecting = true;
-
-		wm8958_custom_micd_set_rate(codec);
 
 		snd_soc_jack_report(wm8994->micdet[0].jack, SND_JACK_HEADPHONE,
 				    SND_JACK_HEADSET);
@@ -371,31 +487,50 @@ static int mrfld_8958_init(struct snd_soc_pcm_runtime *runtime)
 	mrfld_8958_set_bias_level(card, dapm, SND_SOC_BIAS_OFF);
 	card->dapm.idle_bias_off = true;
 
-	/* mark pins as NC */
-
-
-	snd_soc_dapm_sync(dapm);
-	/* FIXME
-	 * set all the nc_pins, set all the init control
-	 * and add any machine controls here
+	/* these pins are not used in SB config so mark as nc
+	 *
+	 * LINEOUT1, 2
+	 * IN1R
+	 * DMICDAT2
 	 */
+	snd_soc_dapm_nc_pin(dapm, "DMIC2DAT");
+	snd_soc_dapm_nc_pin(dapm, "LINEOUT1P");
+	snd_soc_dapm_nc_pin(dapm, "LINEOUT1N");
+	snd_soc_dapm_nc_pin(dapm, "LINEOUT2P");
+	snd_soc_dapm_nc_pin(dapm, "LINEOUT2N");
+	snd_soc_dapm_nc_pin(dapm, "IN1RN");
+	snd_soc_dapm_nc_pin(dapm, "IN1RP");
+
+	/* Force enable VMID to avoid cold latency constraints */
+	snd_soc_dapm_force_enable_pin(dapm, "VMID");
+	snd_soc_dapm_sync(dapm);
 
 	ctx->jack_retry = 0;
 	ret = snd_soc_jack_new(codec, "Intel MID Audio Jack",
-			       SND_JACK_HEADSET | SND_JACK_HEADPHONE | SND_JACK_BTN_0,
-			       &ctx->jack);
+			       SND_JACK_HEADSET | SND_JACK_HEADPHONE |
+				SND_JACK_BTN_0 | SND_JACK_BTN_1,
+				&ctx->jack);
 	if (ret) {
 		pr_err("jack creation failed\n");
 		return ret;
 	}
 
+	snd_jack_set_key(ctx->jack.jack, SND_JACK_BTN_1, KEY_MEDIA);
 	snd_jack_set_key(ctx->jack.jack, SND_JACK_BTN_0, KEY_MEDIA);
 
 	wm8958_mic_detect(codec, &ctx->jack, NULL, NULL,
 			  wm8958_custom_mic_id, codec);
 
+	wm8958_micd_set_custom_rate(codec, wm8958_custom_micd_set_rate, codec);
+
 	snd_soc_update_bits(codec, WM8994_AIF1_DAC1_FILTERS_1, WM8994_AIF1DAC1_MUTE, 0);
 	snd_soc_update_bits(codec, WM8994_AIF1_DAC2_FILTERS_1, WM8994_AIF1DAC2_MUTE, 0);
+
+	/* Micbias1 is always off, so for pm optimizations make sure the micbias1
+	 * discharge bit is set to floating to avoid discharge in disable state
+	 */
+	snd_soc_update_bits(codec, WM8958_MICBIAS1, WM8958_MICB1_DISCH, 0);
+
 	return 0;
 }
 
@@ -524,14 +659,48 @@ struct snd_soc_dai_link mrfld_8958_msic_dailink[] = {
 #ifdef CONFIG_PM_SLEEP
 static int snd_mrfld_8958_prepare(struct device *dev)
 {
-	pr_debug("In %s device name\n", __func__);
+	struct snd_soc_card *card = dev_get_drvdata(dev);
+	struct snd_soc_codec *codec;
+	struct snd_soc_dapm_context *dapm;
+
+	pr_debug("In %s\n", __func__);
+
+	codec = mrfld_8958_get_codec(card);
+	if (!codec) {
+		pr_err("%s: couldn't find the codec pointer!\n", __func__);
+		return -EAGAIN;
+	}
+
+	pr_debug("found codec %s\n", codec->name);
+	dapm = &codec->dapm;
+
+	snd_soc_dapm_disable_pin(dapm, "VMID");
+	snd_soc_dapm_sync(dapm);
+
 	snd_soc_suspend(dev);
 	return 0;
 }
 
 static void snd_mrfld_8958_complete(struct device *dev)
 {
+	struct snd_soc_card *card = dev_get_drvdata(dev);
+	struct snd_soc_codec *codec;
+	struct snd_soc_dapm_context *dapm;
+
 	pr_debug("In %s\n", __func__);
+
+	codec = mrfld_8958_get_codec(card);
+	if (!codec) {
+		pr_err("%s: couldn't find the codec pointer!\n", __func__);
+		return;
+	}
+
+	pr_debug("found codec %s\n", codec->name);
+	dapm = &codec->dapm;
+
+	snd_soc_dapm_force_enable_pin(dapm, "VMID");
+	snd_soc_dapm_sync(dapm);
+
 	snd_soc_resume(dev);
 	return;
 }
@@ -565,7 +734,6 @@ static int snd_mrfld_8958_mc_probe(struct platform_device *pdev)
 {
 	int ret_val = 0;
 	struct mrfld_8958_mc_private *drv;
-	struct mrfld_audio_platform_data *pdata;
 
 	pr_debug("Entry %s\n", __func__);
 
@@ -574,7 +742,22 @@ static int snd_mrfld_8958_mc_probe(struct platform_device *pdev)
 		pr_err("allocation failed\n");
 		return -ENOMEM;
 	}
-	pdata = pdev->dev.platform_data;
+
+	/* ioremap the register */
+	drv->osc_clk0_reg = devm_ioremap_nocache(&pdev->dev,
+					MERR_OSC_CLKOUT_CTRL0_REG_ADDR,
+					MERR_OSC_CLKOUT_CTRL0_REG_SIZE);
+	if (!drv->osc_clk0_reg) {
+		pr_err("osc clk0 ctrl ioremap failed\n");
+		ret_val = -1;
+		goto unalloc;
+	}
+
+	ret_val = intel_scu_ipc_ioread8(PMIC_ID_ADDR, &drv->pmic_id);
+	if (ret_val) {
+		pr_err("Error reading PMIC ID register\n");
+		goto unalloc;
+	}
 
 	/* register the soc card */
 	snd_soc_card_mrfld.dev = &pdev->dev;

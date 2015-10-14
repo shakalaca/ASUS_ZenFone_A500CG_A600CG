@@ -13,4 +13,7 @@
 #define _PLATFORM_EDLP_FAST_H_
 
 extern void *edlp_fast_platform_data(void *data) __attribute__((weak));
+
+extern void sfi_handle_edlp_fast_dev(struct sfi_device_table_entry *pentry,
+							struct devs_id *dev);
 #endif

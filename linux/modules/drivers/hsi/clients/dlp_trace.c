@@ -30,6 +30,7 @@
 #include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/hsi/hsi.h>
+#include <linux/hsi/hsi_info_board.h>
 #include <linux/uaccess.h>
 
 #include "dlp_main.h"
@@ -193,6 +194,8 @@ static void dlp_trace_complete_rx(struct hsi_msg *msg)
 		pr_debug(DRVNAME ": TRACE: CH%d PDU ignored (close:%d, Time out: %d)\n",
 				ch_ctx->ch_id,
 				dlp_drv.tty_closed, dlp_drv.tx_timeout);
+		/* Delete the received msg */
+		dlp_pdu_free(msg, msg->channel);
 		return;
 	}
 
@@ -284,9 +287,8 @@ static int dlp_trace_dev_open(struct inode *inode, struct file *filp)
 		ret = -EBUSY;
 		goto out;
 	}
-
 	/* reset hangup flag */
-	trace_ctx->hangup = 0 ;
+	trace_ctx->hangup = 0;
 	spin_unlock_irqrestore(&ch_ctx->lock, flags);
 
 	/* Save private data for futur use */
@@ -303,21 +305,22 @@ static int dlp_trace_dev_open(struct inode *inode, struct file *filp)
 		pr_err(DRVNAME ": ch%d open failed !\n", ch_ctx->ch_id);
 		ret = -EIO;
 	}
-	// Opent the HSI channel 4 for BP logging retrieval
-	pr_err(DRVNAME ": Opening HSI channel 4");
-	ret = dlp_ctrl_open_channel(ch_ctx);
-	if (ret) {
-		pr_err(DRVNAME ": open channel(ch%d) failed :%d)\n",
-				ch_ctx->hsi_channel, ret);
-		goto out;
+
+	if ((dlp_drv.sys_info->mdm_ver == MODEM_7160) || (dlp_drv.sys_info->mdm_ver == MODEM_6360)) {
+		ret = dlp_ctrl_open_channel(ch_ctx);
+		if (ret) {
+			pr_err(DRVNAME ": open channel(ch%d) failed :%d)\n",
+				   ch_ctx->hsi_channel, ret);
+			goto out;
+		}
+	} else {
+		/* device opened => Set the channel state flag */
+		dlp_ctrl_set_channel_state(ch_ctx->hsi_channel,
+		DLP_CH_STATE_OPENED);
 	}
-
-	/* device opened => Set the channel state flag */
-	dlp_ctrl_set_channel_state(ch_ctx->hsi_channel,
-				DLP_CH_STATE_OPENED);
-
 	/* Set the open flag */
 	trace_ctx->opened = 1;
+
 
 	/* Push RX PDUs */
 	count = DLP_HSI_RX_WAIT_FIFO + HSI_TRACE_TEMP_BUFFERS;

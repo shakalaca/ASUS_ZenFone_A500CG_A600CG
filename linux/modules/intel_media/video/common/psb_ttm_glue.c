@@ -257,8 +257,9 @@ void psb_remove_videoctx(struct drm_psb_private *dev_priv, struct file *filp)
 	/* iterate to query all ctx to if there is DRM running*/
 	ied_enabled = 0;
 	int ctx_type;
+	unsigned long irq_flags;
 
-	mutex_lock(&dev_priv->video_ctx_mutex);
+	spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 	list_for_each_entry_safe(pos, n, &dev_priv->video_ctx, head) {
 		if (pos->filp == filp) {
 			found_ctx = pos;
@@ -268,7 +269,7 @@ void psb_remove_videoctx(struct drm_psb_private *dev_priv, struct file *filp)
 				ied_enabled = 1;
 		}
 	}
-	mutex_unlock(&dev_priv->video_ctx_mutex);
+	spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 
 	if (found_ctx) {
 		PSB_DEBUG_PM("Video:remove context profile %d,"
@@ -283,19 +284,19 @@ void psb_remove_videoctx(struct drm_psb_private *dev_priv, struct file *filp)
 				(found_ctx->ctx_type & 0xff))
 			&& VAProfileVP8Version0_3 !=
 				((found_ctx->ctx_type >> 8) & 0xff)) {
-			if (dev_priv->topaz_ctx == found_ctx) {
 #ifdef MERRIFIELD
-				tng_topaz_remove_ctx(dev_priv,
-					found_ctx);
+			tng_topaz_remove_ctx(dev_priv,
+				found_ctx);
 #else
+			if (dev_priv->topaz_ctx == found_ctx) {
 				pnw_reset_fw_status(dev_priv->dev,
 					PNW_TOPAZ_END_CTX);
-#endif
 				dev_priv->topaz_ctx = NULL;
 			} else {
 				PSB_DEBUG_PM("Remove a inactive "\
 						"encoding context.\n");
 			}
+#endif
 			if (dev_priv->last_topaz_ctx == found_ctx)
 				dev_priv->last_topaz_ctx = NULL;
 #ifdef SUPPORT_VSP
@@ -307,7 +308,7 @@ void psb_remove_videoctx(struct drm_psb_private *dev_priv, struct file *filp)
 					((found_ctx->ctx_type >> 8) & 0xff))) {
 			ctx_type = found_ctx->ctx_type & 0xff;
 			PSB_DEBUG_PM("Remove vsp context.\n");
-			vsp_rm_context(dev_priv->dev, ctx_type);
+			vsp_rm_context(dev_priv->dev, filp, ctx_type);
 #endif
 		} else
 #endif
@@ -321,7 +322,7 @@ void psb_remove_videoctx(struct drm_psb_private *dev_priv, struct file *filp)
 		}
 
 		kfree(found_ctx);
-		#ifdef CONFIG_GFX_RTPM
+		#if (defined CONFIG_GFX_RTPM) && (!defined MERRIFIELD)
 		psb_ospm_post_power_down();
 		#endif
 	}
@@ -331,15 +332,16 @@ static struct psb_video_ctx *psb_find_videoctx(struct drm_psb_private *dev_priv,
 						struct file *filp)
 {
 	struct psb_video_ctx *pos, *n;
+	unsigned long irq_flags;
 
-	mutex_lock(&dev_priv->video_ctx_mutex);
+	spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 	list_for_each_entry_safe(pos, n, &dev_priv->video_ctx, head) {
 		if (pos->filp == filp) {
-			mutex_unlock(&dev_priv->video_ctx_mutex);
+			spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 			return pos;
 		}
 	}
-	mutex_unlock(&dev_priv->video_ctx_mutex);
+	spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 	return NULL;
 }
 
@@ -348,6 +350,7 @@ static int psb_entrypoint_number(struct drm_psb_private *dev_priv,
 {
 	struct psb_video_ctx *pos, *n;
 	int count = 0;
+	unsigned long irq_flags;
 
 	entry_type &= 0xff;
 
@@ -357,12 +360,12 @@ static int psb_entrypoint_number(struct drm_psb_private *dev_priv,
 		return -EINVAL;
 	}
 
-	mutex_lock(&dev_priv->video_ctx_mutex);
+	spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 	list_for_each_entry_safe(pos, n, &dev_priv->video_ctx, head) {
 		if (entry_type == (pos->ctx_type & 0xff))
 			count++;
 	}
-	mutex_unlock(&dev_priv->video_ctx_mutex);
+	spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 
 	PSB_DEBUG_GENERAL("There are %d active entrypoint %d.\n",
 			count, entry_type);
@@ -378,10 +381,16 @@ int psb_video_getparam(struct drm_device *dev, void *data,
 	drm_psb_msvdx_frame_info_t *current_frame = NULL;
 	uint32_t handle, i;
 	uint32_t device_info = 0;
-	uint32_t ctx_type = 0;
+	uint64_t ctx_type = 0;
 	struct psb_video_ctx *video_ctx = NULL;
 	struct msvdx_private *msvdx_priv = dev_priv->msvdx_private;
 	uint32_t imr_info[2], ci_info[2];
+	uint32_t ctx_num = 0;
+	unsigned long irq_flags;
+#ifdef CONFIG_VIDEO_MRFLD
+	struct ttm_object_file *tfile = psb_fpriv(file_priv)->tfile;
+	struct psb_msvdx_ec_ctx *ec_ctx = NULL;
+#endif
 
 	switch (arg->key) {
 #if (!defined(MERRIFIELD) && !defined(CONFIG_DRM_VXD_BYT))
@@ -419,10 +428,18 @@ int psb_video_getparam(struct drm_device *dev, void *data,
 		}
 		INIT_LIST_HEAD(&video_ctx->head);
 		video_ctx->ctx_type = ctx_type;
+#ifdef CONFIG_SLICE_HEADER_PARSING
+		video_ctx->frame_end_seq = 0xffffffff;
+		if (ctx_type & VA_RT_FORMAT_PROTECTED) {
+			video_ctx->slice_extract_flag = 1;
+			video_ctx->frame_boundary = 1;
+			video_ctx->frame_end_seq = 0;
+		}
+#endif
 		video_ctx->filp = file_priv->filp;
-		mutex_lock(&dev_priv->video_ctx_mutex);
+		spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 		list_add(&video_ctx->head, &dev_priv->video_ctx);
-		mutex_unlock(&dev_priv->video_ctx_mutex);
+		spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 #ifndef CONFIG_DRM_VXD_BYT
 #ifndef MERRIFIELD
 		if (IS_MDFLD(dev_priv->dev) &&
@@ -436,8 +453,14 @@ int psb_video_getparam(struct drm_device *dev, void *data,
 		if (VAEntrypointVideoProc == (ctx_type & 0xff)
 			|| (VAEntrypointEncSlice == (ctx_type & 0xff)
 				&& VAProfileVP8Version0_3 ==
-					((ctx_type >> 8) & 0xff)))
-			vsp_new_context(dev);
+					((ctx_type >> 8) & 0xff))) {
+			ctx_num = vsp_new_context(dev, ctx_type & 0xff);
+
+			ret = copy_to_user((void __user *)((unsigned long)arg->value),
+				&ctx_num, sizeof(ctx_num));
+			if (ret)
+				break;
+		}
 #endif
 #endif
 		PSB_DEBUG_INIT("Video:add ctx profile %d, entry %d.\n",
@@ -504,23 +527,58 @@ int psb_video_getparam(struct drm_device *dev, void *data,
 	case IMG_VIDEO_MB_ERROR:
 		/*get the right frame_info struct for current surface*/
 		ret = copy_from_user(&handle,
-				     (void __user *)((unsigned long)arg->arg), 4);
+			(void __user *)((unsigned long)arg->arg), 4);
 		if (ret)
 			break;
 
-		for (i = 0; i < MAX_DECODE_BUFFERS; i++) {
-			if (msvdx_priv->frame_info[i].handle == handle) {
-				current_frame = &msvdx_priv->frame_info[i];
-				break;
-			}
+		PSB_DEBUG_GENERAL(
+			"query surface (handle 0x%08x) decode error\n",
+			handle);
+
+		if (msvdx_priv->msvdx_ec_ctx[0] == NULL) {
+			PSB_DEBUG_GENERAL(
+				"Video: ec contexts are initilized\n");
+			return -EFAULT;
 		}
-		if (!current_frame) {
-			DRM_ERROR("MSVDX: didn't find frame_info which matched the surface_id. \n");
-			ret = -EFAULT;
+
+		for (i = 0; i < PSB_MAX_EC_INSTANCE; i++)
+			if (msvdx_priv->msvdx_ec_ctx[i]->tfile == tfile)
+				ec_ctx = msvdx_priv->msvdx_ec_ctx[i];
+
+		if (!ec_ctx) {
+			PSB_DEBUG_GENERAL(
+				"Video: no ec context found\n");
+			return -EFAULT;
+		}
+
+		if (ec_ctx->cur_frame_info &&
+			ec_ctx->cur_frame_info->handle == handle) {
+			ret = copy_to_user(
+				(void __user *)((unsigned long)arg->value),
+				&(ec_ctx->cur_frame_info->decode_status),
+				sizeof(drm_psb_msvdx_decode_status_t));
+			PSB_DEBUG_GENERAL(
+			"surface is cur_frame, fault region num is %d\n",
+			ec_ctx->cur_frame_info->decode_status.num_region);
 			break;
 		}
-		ret = copy_to_user((void __user *)((unsigned long)arg->value),
-				   &(current_frame->decode_status), sizeof(drm_psb_msvdx_decode_status_t));
+		for (i = 0; i < MAX_DECODE_BUFFERS; i++)
+			if (ec_ctx->frame_info[i].handle == handle) {
+				ret = copy_to_user(
+				(void __user *)((unsigned long)arg->value),
+				&(ec_ctx->frame_info[i].decode_status),
+				sizeof(drm_psb_msvdx_decode_status_t));
+				PSB_DEBUG_GENERAL(
+					"find surface with index %d, \
+					fault region num is %d \n",
+			i, ec_ctx->frame_info[i].decode_status.num_region);
+				break;
+			}
+
+		if (i >= MAX_DECODE_BUFFERS)
+			PSB_DEBUG_GENERAL(
+			    "could not find handle 0x%08x in ctx\n", handle);
+
 		break;
 #endif
 

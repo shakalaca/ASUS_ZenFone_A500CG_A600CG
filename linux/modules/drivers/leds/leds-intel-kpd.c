@@ -29,6 +29,7 @@
 #include <linux/earlysuspend.h>
 #include <linux/platform_device.h>
 #include <linux/rpmsg.h>
+#include <linux/early_suspend_sysfs.h>
 
 #include <asm/intel_scu_pmic.h>
 #include <asm/intel_mid_pwm.h>
@@ -39,8 +40,6 @@ static void intel_keypad_led_set(struct led_classdev *led_cdev,
 	enum led_brightness value)
 {
 	intel_mid_pwm(PWM_LED, value);
-
-
 }
 
 static struct led_classdev intel_kpd_led = {
@@ -60,6 +59,19 @@ static void intel_kpd_led_late_resume(struct early_suspend *h)
 	led_classdev_resume(&intel_kpd_led);
 }
 
+static ssize_t early_suspend_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	if (!strncmp(buf, EARLY_SUSPEND_ON, EARLY_SUSPEND_STATUS_LEN))
+		led_classdev_suspend(&intel_kpd_led);
+	else if (!strncmp(buf, EARLY_SUSPEND_OFF, EARLY_SUSPEND_STATUS_LEN))
+		led_classdev_resume(&intel_kpd_led);
+
+	return count;
+}
+
+static DEVICE_EARLY_SUSPEND_ATTR(early_suspend_store);
+
 static struct early_suspend intel_kpd_led_suspend_desc = {
 	.level   = EARLY_SUSPEND_LEVEL_BLANK_SCREEN,
 	.suspend = intel_kpd_led_early_suspend,
@@ -77,8 +89,11 @@ static int intel_kpd_led_rpmsg_probe(struct rpmsg_channel *rpdev)
 		dev_err(&rpdev->dev, "register kpd_led failed");
 		return ret;
 	}
+
+	device_create_file(&rpdev->dev, &dev_attr_early_suspend);
 	intel_keypad_led_set(&intel_kpd_led, intel_kpd_led.brightness);
 	register_early_suspend(&intel_kpd_led_suspend_desc);
+	register_early_suspend_device(&rpdev->dev);
 
 	return 0;
 }
@@ -86,7 +101,9 @@ static int intel_kpd_led_rpmsg_probe(struct rpmsg_channel *rpdev)
 static void intel_kpd_led_rpmsg_remove(struct rpmsg_channel *rpdev)
 {
 	intel_keypad_led_set(&intel_kpd_led, LED_OFF);
+	device_remove_file(&rpdev->dev, &dev_attr_early_suspend);
 	unregister_early_suspend(&intel_kpd_led_suspend_desc);
+	unregister_early_suspend_device(&rpdev->dev);
 	led_classdev_unregister(&intel_kpd_led);
 }
 

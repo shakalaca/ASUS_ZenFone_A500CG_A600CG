@@ -50,6 +50,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "allocmem.h"
 #include "pvr_debug.h"
 #include "sync_server.h"
+#include "process_stats.h"
 #include "pdump_km.h"
 
 /*!
@@ -160,6 +161,16 @@ PVRSRV_ERROR PVRSRVConnectionConnect(IMG_PVOID *ppvPrivData, IMG_PVOID pvOSData)
 		PVR_DPF((PVR_DBG_ERROR, "PVRSRVConnectionConnect: Couldn't register with the resource manager"));
 		goto failure;
 	}
+	
+	/* Allocate process statistics */
+#if defined(PVRSRV_ENABLE_PROCESS_STATS)
+	eError = PVRSRVStatsRegisterProcess(&psConnection->hProcessStats);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "PVRSRVConnectionConnect: Couldn't register process statistics (%d)", eError));
+		goto failure;
+	}
+#endif
 
 	*ppvPrivData = psConnection;
 
@@ -175,6 +186,12 @@ IMG_VOID PVRSRVConnectionDisconnect(IMG_PVOID pvDataPtr)
 {
 	PVRSRV_ERROR eError;
 	CONNECTION_DATA *psConnection = pvDataPtr;
+
+	/* Close the process statistics */
+#if defined(PVRSRV_ENABLE_PROCESS_STATS)
+	PVRSRVStatsDeregisterProcess(psConnection->hProcessStats);
+	psConnection->hProcessStats = 0;
+#endif
 
 	/* Close the Resource Manager connection */
 	PVRSRVResManDisconnect(psConnection->hResManContext);

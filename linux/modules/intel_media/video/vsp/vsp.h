@@ -93,14 +93,14 @@ static const unsigned int vsp_processor_base[] = {
 /* help macro */
 #define MM_WRITE32(base, offset, value)					\
 	do {								\
-		*((unsigned long *)((unsigned char *)(dev_priv->vsp_reg) \
+		*((uint32_t *)((unsigned char *)(dev_priv->vsp_reg) \
 				    + base + offset)) = value;		\
 	} while (0)
 
 #define MM_READ32(base, offset, pointer)				\
 	do {								\
 		*(pointer) =						\
-			*((unsigned long *)((unsigned char *)		\
+			*((uint32_t *)((unsigned char *)		\
 					    (dev_priv->vsp_reg)		\
 						 + base + offset));	\
 	} while (0)
@@ -140,7 +140,6 @@ static const unsigned int vsp_processor_base[] = {
 #define INVALID_MMU MM_WRITE32(0, MMU_INVALID, 0x1)
 #define SET_MMU_PTD(address)						\
 	do {								\
-		INVALID_MMU;						\
 		MM_WRITE32(0, MMU_TABLE_ADDR, address);			\
 	} while (0)
 
@@ -200,7 +199,7 @@ enum vsp_irq_reg {
 enum vsp_context_num {
 	VSP_CONTEXT_NUM_VPP = 0,
 	VSP_CONTEXT_NUM_VP8 = 1,
-	VSP_CONTEXT_NUM_MAX
+	VSP_CONTEXT_NUM_MAX = 3
 };
 
 enum vsp_fw_type {
@@ -214,15 +213,11 @@ struct vsp_private {
 
 	int fw_loaded;
 	int vsp_state;
-	int fw_loaded_by_punit;
 
 	spinlock_t lock;
 
 	unsigned int cmd_queue_size;
 	unsigned int ack_queue_size;
-
-	struct ttm_buffer_object *firmware;
-	unsigned int firmware_sz;
 
 	struct ttm_buffer_object *cmd_queue_bo;
 	unsigned int cmd_queue_sz;
@@ -238,11 +233,8 @@ struct vsp_private {
 	struct ttm_bo_kmap_obj setting_kmap;
 	struct vsp_settings_t *setting;
 
-	struct ttm_buffer_object *context_setting_bo;
-	struct ttm_bo_kmap_obj context_setting_kmap;
-	struct vsp_context_settings_t *context_setting;
-
 	struct vsp_secure_boot_header boot_header;
+	struct vsp_multi_app_blob_data ma_header;
 
 	struct vsp_ctrl_reg *ctrl;
 
@@ -260,15 +252,10 @@ struct vsp_private {
 	struct delayed_work vsp_suspend_wq;
 
 	/* irq tasklet */
-	struct tasklet_struct vsp_irq_tasklet;
+	struct delayed_work vsp_irq_wq;
 
 	/* the number of cmd will send to VSP */
 	int vsp_cmd_num;
-
-	unsigned int fw_type;
-	struct VssProcPictureVP8 ref_frame_buffers[4];
-	int available_recon_buffer;
-	int rec_surface_id;
 
 	/* save the address of vp8 cmd_buffer for now */
 	struct VssVp8encPictureParameterBuffer *vp8_encode_frame_cmd;
@@ -278,6 +265,17 @@ struct vsp_private {
 	struct ttm_bo_kmap_obj coded_buf_kmap;
 	struct ttm_buffer_object *coded_buf_bo;
 	int context_num;
+
+	/* For VP8 dual encoding */
+	struct file *vp8_filp[2];
+	int context_vp8_num;
+
+	/*
+	 * to fix problem when CTRL+C vp8 encoding *
+	 * save VssVp8encEncodeFrameCommand cmd numbers *
+	 * */
+	int vp8_cmd_num;
+	int context_vp8_id;
 };
 
 extern int vsp_init(struct drm_device *dev);
@@ -300,10 +298,10 @@ extern int vsp_cmdbuf_vpp(struct drm_file *priv,
 			  struct ttm_buffer_object *cmd_buffer,
 			  struct psb_ttm_fence_rep *fence_arg);
 
-extern void vsp_fence_poll(struct drm_device *dev);
+extern bool vsp_fence_poll(struct drm_device *dev);
 
-extern void vsp_new_context(struct drm_device *dev);
-extern void vsp_rm_context(struct drm_device *dev, int ctx_type);
+extern int vsp_new_context(struct drm_device *dev, int ctx_type);
+extern void vsp_rm_context(struct drm_device *dev, struct file *filp, int ctx_type);
 extern uint32_t psb_get_default_pd_addr(struct psb_mmu_driver *driver);
 
 extern int psb_vsp_save_context(struct drm_device *dev);
@@ -317,7 +315,7 @@ int vsp_resume_function(struct drm_psb_private *dev_priv);
 extern int psb_vsp_dump_info(struct drm_psb_private *dev_priv);
 
 extern void psb_powerdown_vsp(struct work_struct *work);
-extern void vsp_irq_task(unsigned long data);
+extern void vsp_irq_task(struct work_struct *work);
 
 static inline
 unsigned int vsp_is_idle(struct drm_psb_private *dev_priv,

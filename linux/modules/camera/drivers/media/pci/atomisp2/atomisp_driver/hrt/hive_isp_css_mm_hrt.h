@@ -46,47 +46,47 @@ struct hrt_userbuffer_attr {
 };
 
 void hrt_isp_css_mm_init(void);
-void hrt_isp_css_mm_set_user_ptr(unsigned int userptr,
+void hrt_isp_css_mm_set_user_ptr(void *userptr,
 				unsigned int num_pages, enum hrt_userptr_type);
 
-int hrt_isp_css_mm_set(void *virt_addr, int c, size_t bytes);
+int hrt_isp_css_mm_set(ia_css_ptr virt_addr, int c, size_t bytes);
 
 /* Allocate memory, returns a virtual address */
-void *hrt_isp_css_mm_alloc(size_t bytes);
-void *hrt_isp_css_mm_alloc_user_ptr(size_t bytes, unsigned int userptr,
+ia_css_ptr hrt_isp_css_mm_alloc(size_t bytes);
+ia_css_ptr hrt_isp_css_mm_alloc_user_ptr(size_t bytes, void *userptr,
 				    unsigned int num_pages,
 				    enum hrt_userptr_type,
 				    bool cached);
-void *hrt_isp_css_mm_alloc_cached(size_t bytes);
+ia_css_ptr hrt_isp_css_mm_alloc_cached(size_t bytes);
 
 /* allocate memory and initialize with zeros,
    returns a virtual address */
-void *hrt_isp_css_mm_calloc(size_t bytes);
-void *hrt_isp_css_mm_calloc_cached(size_t bytes);
+ia_css_ptr hrt_isp_css_mm_calloc(size_t bytes);
+ia_css_ptr hrt_isp_css_mm_calloc_cached(size_t bytes);
 
 /* Free memory, given a virtual address */
-void hrt_isp_css_mm_free(void *virt_addr);
+void hrt_isp_css_mm_free(ia_css_ptr virt_addr);
 
 /* Store data to a virtual address */
-int hrt_isp_css_mm_load(void *virt_addr, void *data, size_t bytes);
+int hrt_isp_css_mm_load(ia_css_ptr virt_addr, void *data, size_t bytes);
 
 /* Load data from a virtual address */
-int hrt_isp_css_mm_store(void *virt_addr, const void *data, size_t bytes);
+int hrt_isp_css_mm_store(ia_css_ptr virt_addr, const void *data, size_t bytes);
 
-int hrt_isp_css_mm_load_int(void *virt_addr, int *data);
-int hrt_isp_css_mm_load_short(void *virt_addr, short *data);
-int hrt_isp_css_mm_load_char(void *virt_addr, char *data);
+int hrt_isp_css_mm_load_int(ia_css_ptr virt_addr, int *data);
+int hrt_isp_css_mm_load_short(ia_css_ptr virt_addr, short *data);
+int hrt_isp_css_mm_load_char(ia_css_ptr virt_addr, char *data);
 
-int hrt_isp_css_mm_store_char(void *virt_addr, char data);
-int hrt_isp_css_mm_store_short(void *virt_addr, short data);
-int hrt_isp_css_mm_store_int(void *virt_addr, int data);
+int hrt_isp_css_mm_store_char(ia_css_ptr virt_addr, char data);
+int hrt_isp_css_mm_store_short(ia_css_ptr virt_addr, short data);
+int hrt_isp_css_mm_store_int(ia_css_ptr virt_addr, int data);
 
 /* translate a virtual to a physical address, used to program
    the display driver on  the FPGA system */
-void *hrt_isp_css_virt_to_phys(void *virt_addr);
+phys_addr_t hrt_isp_css_virt_to_phys(ia_css_ptr virt_addr);
 
-void *hrt_isp_css_mm_alloc_contiguous(size_t bytes);
-void *hrt_isp_css_mm_calloc_contiguous(size_t bytes);
+ia_css_ptr hrt_isp_css_mm_alloc_contiguous(size_t bytes);
+ia_css_ptr hrt_isp_css_mm_calloc_contiguous(size_t bytes);
 
 void hrt_isp_css_mm_clear(void);
 #endif /* _hive_isp_css_mm_hrt_h_ */

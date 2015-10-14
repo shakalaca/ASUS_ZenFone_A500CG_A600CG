@@ -32,6 +32,7 @@
 #define INTEL_ATOM_CLV 0x35
 #define INTEL_ATOM_MRFLD 0x4a
 #define INTEL_ATOM_BYT 0x37
+#define INTEL_ATOM_MOORFLD 0x5a
 
 static inline int platform_is(u8 model)
 {
@@ -83,14 +84,13 @@ static inline int platform_is(u8 model)
 /* Since entry latency is substantial
  * put exit_latency = entry+exit latency
  */
-#ifdef CONFIG_X86_MRFLD
+#ifdef CONFIG_REMOVEME_INTEL_ATOM_MRFLD_POWER
 #define CSTATE_EXIT_LATENCY_S0i1 1200
 #define CSTATE_EXIT_LATENCY_S0i2 2000
 #define CSTATE_EXIT_LATENCY_S0i3 10000
 #else
 #define CSTATE_EXIT_LATENCY_LPMP3 1040
 #define CSTATE_EXIT_LATENCY_S0i1 1040
-#define CSTATE_EXIT_LATENCY_S0i2 2000
 #define CSTATE_EXIT_LATENCY_S0i3 2800
 #endif
 #define BYT_S0I1_STATE         0x60
@@ -122,7 +122,7 @@ enum s3_parts {
 #define	SET_LPAUDIO			4
 #define	SET_AOAC_S0i2			7
 
-#ifdef CONFIG_X86_MRFLD
+#ifdef CONFIG_REMOVEME_INTEL_ATOM_MRFLD_POWER
 #define MID_S0I1_STATE         0x60
 #define MID_S0I2_STATE         0x62
 #define MID_LPMP3_STATE        0x62
@@ -160,7 +160,6 @@ extern unsigned int pmu_get_new_cstate(unsigned int cstate, int *index);
 extern int get_target_platform_state(unsigned long *eax);
 extern int mid_s0ix_enter(int);
 extern int pmu_set_devices_in_d0i0(void);
-extern int set_all_power_on_inpanic(void);
 extern int pmu_pci_set_power_state(struct pci_dev *pdev, pci_power_t state);
 extern pci_power_t pmu_pci_choose_state(struct pci_dev *pdev);
 

@@ -365,7 +365,7 @@ $(foreach _o,SYS_CFLAGS SYS_CXXFLAGS SYS_INCLUDES SYS_EXE_LDFLAGS SYS_LIB_LDFLAG
 # Check for words in EXCLUDED_APIS that aren't understood by the
 # common/apis/*.mk files. This should be kept in sync with all the tests on
 # EXCLUDED_APIS in those files
-_excludable_apis := rscompute opencl opengl opengles1 opengles2 openvg ews unittests xorg xorg_unittests scripts composerhal camerahal
+_excludable_apis := rscompute opencl opengl opengles1 opengles2 openvg ews unittests xorg xorg_unittests scripts composerhal camerahal memtrackhal
 _excluded_apis := $(subst $(comma),$(space),$(EXCLUDED_APIS))
 _unrecognised := $(strip $(filter-out $(_excludable_apis),$(_excluded_apis)))
 ifneq ($(_unrecognised),)
@@ -496,10 +496,17 @@ $(eval $(call TunableBothConfigC,USE_SGX_CORE_REV_HEAD,))
 $(eval $(call BothConfigC,TRANSFER_QUEUE,))
 $(eval $(call BothConfigC,PVR_SECURE_HANDLES,))
 
+# Support syncing LISR & MISR. This is required for OS's where
+# on SPM platforms the LISR and MISR can run at the same time and
+# thus during powerdown we need to drain all pending LISRs before
+# proceeding to do the actual powerdown
+$(eval $(call KernelConfigC,SUPPORT_LISR_MISR_SYNC))
+
 ifneq ($(DISPLAY_CONTROLLER),)
 $(eval $(call BothConfigC,DISPLAY_CONTROLLER,$(DISPLAY_CONTROLLER)))
 endif
 
+ifneq ($(strip $(KERNELDIR)),)
 PVR_LINUX_MEM_AREA_POOL_MAX_PAGES ?= 0
 ifneq ($(PVR_LINUX_MEM_AREA_POOL_MAX_PAGES),0)
 PVR_LINUX_MEM_AREA_USE_VMAP ?= 1
@@ -511,6 +518,7 @@ endif
 $(eval $(call KernelConfigC,PVR_LINUX_MEM_AREA_POOL_MAX_PAGES,$(PVR_LINUX_MEM_AREA_POOL_MAX_PAGES)))
 $(eval $(call TunableKernelConfigC,PVR_LINUX_MEM_AREA_USE_VMAP,))
 $(eval $(call TunableKernelConfigC,PVR_LINUX_MEM_AREA_POOL_ALLOW_SHRINK,))
+endif
 
 
 $(eval $(call BothConfigMake,PVR_SYSTEM,$(PVR_SYSTEM)))

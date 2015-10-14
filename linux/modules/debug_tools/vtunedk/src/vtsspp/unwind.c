@@ -57,7 +57,7 @@ int vtss_init_stack(stack_control_t * stk)
     stk->lock     = lock_stack;
     stk->trylock  = trylock_stack;
     stk->unlock   = unlock_stack;
-
+    stk->kernel_callchain_size =VTSS_DYNSIZE_STACKS;
     return realloc_stack(stk);
 }
 
@@ -123,7 +123,7 @@ static int unwind_stack_fwd(stack_control_t* stk)
     stkptr_t search_sp;
     stkptr_t search_border;
 
-    char* sp = stk->sp.chp;
+    char* sp = stk->user_sp.chp;
     char* bp = stk->bp.chp;
 
     int find_changed_region = 1;
@@ -139,7 +139,7 @@ static int unwind_stack_fwd(stack_control_t* stk)
     int wow64 = stk->wow64;
     int stride = wow64 ? 4 : sizeof(void*);
 
-    size_t tmp = stk->sp.szt;
+    size_t tmp = stk->user_sp.szt;
 
     /* check for bad args */
 
@@ -212,7 +212,7 @@ static int unwind_stack_fwd(stack_control_t* stk)
                 /// read in the actual stack contents
                 value.szt = 0;
                 if (stk->acc->read(stk->acc, stkmap_curr->sp.szp, &value.szt, stride) != stride) {
-                    TRACE("SP=0x%p: break search, [0x%p - 0x%p], ip=0x%p", stkmap_curr->sp.szp, stk->sp.vdp, stk->bp.vdp, stk->ip.vdp);
+                    TRACE("SP=0x%p: break search, [0x%p - 0x%p], ip=0x%p", stkmap_curr->sp.szp, stk->user_sp.vdp, stk->bp.vdp, stk->user_ip.vdp);
                     /// clear the stack map
                     stkmap_common = stkmap_end = stkmap_start;
                     /// search the entire stack, the map is emptied
@@ -276,7 +276,7 @@ static int unwind_stack_fwd(stack_control_t* stk)
                             {
                                 value.szt = 0;
                                 if (stk->acc->read(stk->acc, search_sp.szp, &value.szt, stride) != stride) {
-                                    TRACE("SP=0x%p: break search, [0x%p - 0x%p], ip=0x%p", search_sp.szp, stk->sp.vdp, stk->bp.vdp, stk->ip.vdp);
+                                    TRACE("SP=0x%p: break search, [0x%p - 0x%p], ip=0x%p", search_sp.szp, stk->user_sp.vdp, stk->bp.vdp, stk->user_ip.vdp);
                                     /// clear the stack map
                                     stkmap_common = stkmap_end = stkmap_start;
                                     /// search the entire stack, the map is emptied
@@ -344,7 +344,7 @@ end_of_search:
             /// read a value from the stack
             value.szt = 0;
             if (stk->acc->read(stk->acc, search_sp.szp, &value.szt, stride) != stride) {
-                TRACE("SP=0x%p: skip page, [0x%p - 0x%p], ip=0x%p", search_sp.szp, stk->sp.vdp, stk->bp.vdp, stk->ip.vdp);
+                TRACE("SP=0x%p: skip page, [0x%p - 0x%p], ip=0x%p", search_sp.szp, stk->user_sp.vdp, stk->bp.vdp, stk->user_ip.vdp);
 #ifdef VTSS_MEM_FAULT_BREAK
                 break;
 #else
@@ -362,7 +362,9 @@ end_of_search:
             if(value.chp < search_sp.chp || value.chp >= bp)
             {
                 /// it's not FP, check for IP
-                if(!stk->acc->validate(stk->acc, (unsigned long)value.szt))
+                unsigned long sa = (unsigned long)value.szt;
+//                if (!(0x1000 <= sa && sa < ~0xFFFUL)) continue;
+                if(!stk->acc->validate(stk->acc, sa))
                 {
                     /// not IP
                     continue;
@@ -443,9 +445,9 @@ static int compress_stack(stack_control_t* stk)
     compressed = stk->compressed;
 
     base = stk->bp.szt;
-    ip = stk->ip.szt;
-    sp = stk->sp.szt;
-    fp = stk->fp.szt;
+    ip = stk->user_ip.szt;
+    sp = stk->user_sp.szt;
+    fp = stk->user_fp.szt;
 
     map = (size_t*)stk->stkmap_start;
     count = (int)(stk->stkmap_common - stk->stkmap_start) * 2;
@@ -565,10 +567,10 @@ static void setup_stack(stack_control_t* stk, user_vm_accessor_t* acc,
                         void* ip, void* sp, void* bp, void* fp, int wow64)
 {
     stk->acc    = acc;
-    stk->ip.vdp = ip;
-    stk->sp.vdp = sp;
+    stk->user_ip.vdp = ip;
+    stk->user_sp.vdp = sp;
     stk->bp.vdp = bp;
-    stk->fp.vdp = fp;
+    stk->user_fp.vdp = fp;
     stk->wow64  = wow64;
 }
 

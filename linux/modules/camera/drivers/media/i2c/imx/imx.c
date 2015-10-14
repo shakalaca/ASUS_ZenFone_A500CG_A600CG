@@ -18,6 +18,8 @@
  * 02110-1301, USA.
  *
  */
+#include <asm/intel-mid.h>
+#include <linux/atomisp_platform.h>
 #include <linux/bitops.h>
 #include <linux/device.h>
 #include <linux/delay.h>
@@ -28,6 +30,7 @@
 #include <linux/i2c.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/libmsrlisthelper.h>
 #include <linux/mm.h>
 #include <linux/kmod.h>
 #include <linux/module.h>
@@ -36,14 +39,10 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <media/v4l2-chip-ident.h>
+#include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
-#include <asm/intel-mid.h>
 #include "imx.h"
-#include <asm/intel-mid.h>
-#include <linux/proc_fs.h>
 
-static u8 imx_otp_data[24];
-static int binning_sum;
 
 static enum atomisp_bayer_order imx_bayer_order_mapping[] = {
 	atomisp_bayer_order_rggb,
@@ -51,7 +50,6 @@ static enum atomisp_bayer_order imx_bayer_order_mapping[] = {
 	atomisp_bayer_order_gbrg,
 	atomisp_bayer_order_bggr
 };
-
 
 static int
 imx_read_reg(struct i2c_client *client, u16 len, u16 reg, u16 *val)
@@ -104,49 +102,6 @@ error:
 	return err;
 }
 
-static int
-imx_read_otp_data(struct i2c_client *client, u16 len, u16 reg, void *val)
-{
-	struct i2c_msg msg[2];
-	u16 data[IMX_SHORT_MAX] = { 0 };
-	int err;
-
-	if (len > IMX_BYTE_MAX) {
-		dev_err(&client->dev, "%s error, invalid data length\n",
-			__func__);
-		return -EINVAL;
-	}
-
-	memset(msg, 0 , sizeof(msg));
-	memset(data, 0 , sizeof(data));
-
-	msg[0].addr = client->addr;
-	msg[0].flags = 0;
-	msg[0].len = I2C_MSG_LENGTH;
-	msg[0].buf = (u8 *)data;
-	/* high byte goes first */
-	data[0] = cpu_to_be16(reg);
-
-	msg[1].addr = client->addr;
-	msg[1].len = len;
-	msg[1].flags = I2C_M_RD;
-	msg[1].buf = (u8 *)data;
-
-	err = i2c_transfer(client->adapter, msg, 2);
-	if (err != 2) {
-		if (err >= 0)
-			err = -EIO;
-		goto error;
-	}
-
-	memcpy(val, data, len);
-	return 0;
-
-error:
-	dev_err(&client->dev, "read from offset 0x%x error %d", reg, err);
-	return err;
-}
-
 static int imx_i2c_write(struct i2c_client *client, u16 len, u8 *data)
 {
 	struct i2c_msg msg;
@@ -163,7 +118,7 @@ static int imx_i2c_write(struct i2c_client *client, u16 len, u8 *data)
 	return ret == num_msg ? 0 : -EIO;
 }
 
-static int
+int
 imx_write_reg(struct i2c_client *client, u16 data_length, u16 reg, u16 val)
 {
 	int ret;
@@ -315,107 +270,38 @@ static int imx_write_reg_array(struct i2c_client *client,
 	return __imx_flush_reg_array(client, &ctrl);
 }
 
-static int imx_read_otp_reg_array(struct i2c_client *client, u16 size, u16 addr,
-				  u8 *buf)
+static int __imx_min_fps_diff(int fps, const struct imx_fps_setting *fps_list)
 {
-	u16 index;
-	int ret;
+	int diff = INT_MAX;
+	int i;
 
-	for (index = 0; index + IMX_OTP_READ_ONETIME <= size;
-					index += IMX_OTP_READ_ONETIME) {
-		ret = imx_read_otp_data(client, IMX_OTP_READ_ONETIME,
-					addr + index, &buf[index]);
-		if (ret)
-			return ret;
+	if (fps == 0)
+		return 0;
+
+	for (i = 0; i < MAX_FPS_OPTIONS_SUPPORTED; i++) {
+		if (!fps_list[i].fps)
+			break;
+		if (abs(fps_list[i].fps - fps) < diff)
+			diff = abs(fps_list[i].fps - fps);
 	}
-	return 0;
+
+	return diff;
 }
 
-static int __imx_otp_read(struct v4l2_subdev *sd, struct imx_af_data *buf)
+static int __imx_nearest_fps_index(int fps,
+					const struct imx_fps_setting *fps_list)
 {
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	int ret;
-	int i=0, j=0, k=1;
-	u8 read_value[24];
+	int fps_index = 0;
+	int i;
 
-	for(i=6; i>=0; i=i-3) {
-
-		/*set page NO.*/
-		ret = imx_write_reg(client, IMX_8BIT, IMX_OTP_PAGE_REG, i & 0xff);
-		if (ret) {
-			dev_err(&client->dev, "failed to prepare OTP page\n");
-			return ret;
-		}
-
-		/* Reading the OTP data array */
-		ret = imx_read_otp_reg_array(client, IMX_OTP_PAGE_SIZE,
-			IMX_OTP_START_ADDR + i * IMX_OTP_PAGE_SIZE, read_value);
-		if (ret) {
-			dev_err(&client->dev, "failed to read OTP data\n");
-			return ret;
-		}
-
-	    	printk("%s Check bank %d 0x%X 0x%X\n", __func__, i, read_value[0], read_value[1]);
-	    	if(((read_value[0] == 0) && (read_value[1] == 0)) || ((read_value[0] == 0xff) && (read_value[1] == 0xff))) {
-			continue;
-	    	}
-		break;
+	for (i = 0; i < MAX_FPS_OPTIONS_SUPPORTED; i++) {
+		if (!fps_list[i].fps)
+			break;
+		if (abs(fps_list[i].fps - fps)
+		    < abs(fps_list[fps_index].fps - fps))
+			fps_index = i;
 	}
-
-	for (j=i+1; j < i+3; j++) {
-
-		/*set page NO.*/
-		ret = imx_write_reg(client, IMX_8BIT, IMX_OTP_PAGE_REG, j & 0xff);
-		if (ret) {
-			dev_err(&client->dev, "failed to prepare OTP page\n");
-			return ret;
-		}
-
-		/* Reading the OTP data array */
-		ret = imx_read_otp_reg_array(client, IMX_OTP_PAGE_SIZE,
-			IMX_OTP_START_ADDR + j * IMX_OTP_PAGE_SIZE, read_value + k * IMX_OTP_PAGE_SIZE);
-		if (ret) {
-			dev_err(&client->dev, "failed to read OTP data\n");
-			return ret;
-		}
-		k++;
-	}
-
-	memcpy(imx_otp_data, read_value, 24);
-
-	buf->af_inf_pos = read_value[0]<<8 | read_value[1];
-	buf->af_1m_pos = read_value[2]<<8 | read_value[3];
-	buf->af_10cm_pos = read_value[4]<<8 | read_value[5];
-	buf->af_start_curr = read_value[6]<<8 | read_value[7];
-	buf->module_id = read_value[8];
-	buf->vendor_id = read_value[9];
-	buf->default_af_inf_pos = IMX111_DEFAULT_AF_INF;
-	buf->default_af_10cm_pos = IMX111_DEFAULT_AF_10CM;
-	buf->default_af_start = IMX111_DEFAULT_AF_START;
-	buf->default_af_end = IMX111_DEFAULT_AF_END;
-
-	return 0;
-}
-
-static void *imx_otp_read(struct v4l2_subdev *sd)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct imx_af_data *buf;
-	int ret;
-
-	buf = devm_kzalloc(&client->dev, IMX_OTP_DATA_SIZE, GFP_KERNEL);
-	if (!buf)
-		return ERR_PTR(-ENOMEM);
-
-	ret = __imx_otp_read(sd, buf);
-
-	/* Driver has failed to find valid data */
-	if (ret) {
-		dev_err(&client->dev, "sensor found no valid OTP data\n");
-		return ERR_PTR(ret);
-	}
-
-	return buf;
+	return fps_index;
 }
 
 static int __imx_get_max_fps_index(
@@ -496,8 +382,6 @@ static int imx_set_exposure_gain(struct v4l2_subdev *sd, u16 coarse_itg,
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret = 0;
 
-        //printk("%s exposure=%d gain=%d dgain=%d mode=0x%X\n", __func__, coarse_itg, gain, digitgain, dev->run_mode);
-
 	/* Validate exposure:  cannot exceed VTS-4 where VTS is 16bit */
 	coarse_itg = clamp_t(u16, coarse_itg, 0, IMX_MAX_EXPOSURE_SUPPORTED);
 
@@ -506,10 +390,6 @@ static int imx_set_exposure_gain(struct v4l2_subdev *sd, u16 coarse_itg,
 
 	/* Validate digital gain: must not exceed 12 bit value*/
 	digitgain = clamp_t(u16, digitgain, 0, IMX_MAX_DIGITAL_GAIN_SUPPORTED);
-
-	// Digital gain must be at least 0x100 for IMX111
-	if (digitgain < 0x100)
-		digitgain = 0x100;
 
 	mutex_lock(&dev->input_lock);
 
@@ -566,8 +446,8 @@ static int imx_g_priv_int_data(struct v4l2_subdev *sd,
 		return PTR_ERR(dev->otp_data);
 	}
 	/* Correct read_size value only if bigger than maximum */
-	if (read_size > IMX_OTP_DATA_SIZE)
-		read_size = IMX_OTP_DATA_SIZE;
+	if (read_size > dev->otp_driver->size)
+		read_size = dev->otp_driver->size;
 
 	ret = copy_to_user(to, dev->otp_data, read_size);
 	if (ret) {
@@ -577,7 +457,7 @@ static int imx_g_priv_int_data(struct v4l2_subdev *sd,
 	}
 out:
 	/* Return correct size */
-	priv->size = IMX_OTP_DATA_SIZE;
+	priv->size = dev->otp_driver->size;
 
 	return 0;
 }
@@ -613,33 +493,12 @@ static int imx_init(struct v4l2_subdev *sd, u32 val)
 
 static long imx_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
-	int ret;
-	int input_arg;
-	s32 value;
-	struct imx_device *dev = to_imx_sensor(sd);
 
 	switch (cmd) {
 	case ATOMISP_IOC_S_EXPOSURE:
 		return imx_s_exposure(sd, arg);
 	case ATOMISP_IOC_G_SENSOR_PRIV_INT_DATA:
 		return imx_g_priv_int_data(sd, arg);
-// <ChungYi>: Add some ioctl command for DIT test
-	case ATOMISP_TEST_CMD_SET_VCM_POS:
-		input_arg = *(int *)arg;
-		ret = dev->vcm_driver->t_vcm_slew(sd, input_arg);
-		ret = dev->vcm_driver->t_focus_abs(sd,input_arg);
-		printk("[AsusVCM] Set postion to %d\n",input_arg);
-		return 0;
-	case ATOMISP_TEST_CMD_GET_VCM_POS:
-		ret = dev->vcm_driver->q_focus_abs(sd, &value);
-		*(int*) arg = value;
-		printk("[AsusVCM] Get VCM postion %d\n",*(int*) arg);
-		return 0;
-// </ChungYi>
-    case ATOMISP_IOC_S_BINNING_SUM:
-        binning_sum = *(int*)arg;
-		printk("Set low-light mode %d\n", binning_sum);
-        return 0;
 	default:
 		return -EINVAL;
 	}
@@ -657,19 +516,17 @@ static int power_up(struct v4l2_subdev *sd)
 	if (ret)
 		goto fail_power;
 
+	/* flis clock control */
+	ret = dev->platform_data->flisclk_ctrl(sd, 1);
+	if (ret)
+		goto fail_clk;
+
 	/* gpio ctrl */
 	ret = dev->platform_data->gpio_ctrl(sd, 1);
 	if (ret) {
 		dev_err(&client->dev, "gpio failed\n");
 		goto fail_gpio;
 	}
-
-	/* flis clock control */
-	ret = dev->platform_data->flisclk_ctrl(sd, 1);
-	if (ret)
-		goto fail_clk;
-
-	msleep(600);
 
 	return 0;
 fail_gpio:
@@ -765,11 +622,10 @@ static int imx_get_intg_factor(struct i2c_client *client,
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx_device *dev = to_imx_sensor(sd);
+	u32 vt_pix_clk_div;
+	u32 vt_sys_clk_div;
 	u32 pre_pll_clk_div;
 	u32 pll_multiplier;
-	u32 rpgltd;
-	u32 post_pll_clk_div;
-	u32 ccp2_data_format;
 
 	const int ext_clk_freq_hz = 19200000;
 	struct atomisp_sensor_mode_data *buf = &info->data;
@@ -779,8 +635,6 @@ static int imx_get_intg_factor(struct i2c_client *client,
 	u32 vt_pix_clk_freq_mhz;
 	u32 coarse_integration_time_min;
 	u32 coarse_integration_time_max_margin;
-	u32 frame_length_lines;
-	u32 line_length_pck;
 	u32 read_mode;
 	u32 div;
 
@@ -788,33 +642,28 @@ static int imx_get_intg_factor(struct i2c_client *client,
 		return -EINVAL;
 
 	memset(data, 0, IMX_INTG_BUF_COUNT * sizeof(u16));
+	ret = imx_read_reg(client, 1, IMX_VT_PIX_CLK_DIV, data);
+	if (ret)
+		return ret;
+	vt_pix_clk_div = data[0] & IMX_MASK_5BIT;
+
+	if (dev->sensor_id == IMX132_ID)
+		ret = imx_read_reg(client, 1, IMX132_VT_RGPLTD, data);
+	else
+		ret = imx_read_reg(client, 1, IMX_VT_SYS_CLK_DIV, data);
+	if (ret)
+		return ret;
+	vt_sys_clk_div = data[0] & IMX_MASK_2BIT;
 	ret = imx_read_reg(client, 1, IMX_PRE_PLL_CLK_DIV, data);
 	if (ret)
 		return ret;
-	pre_pll_clk_div = data[0];
-	ret = imx_read_reg(client, 1,
+	pre_pll_clk_div = data[0] & IMX_MASK_4BIT;
+	ret = imx_read_reg(client, 2,
 		(dev->sensor_id == IMX132_ID) ?
 		IMX132_PLL_MULTIPLIER : IMX_PLL_MULTIPLIER, data);
 	if (ret)
 		return ret;
-	pll_multiplier = data[0];
-	ret = imx_read_reg(client, 1, IMX_RGPLTD, data);
-	if (ret)
-		return ret;
-	rpgltd = data[0] & IMX_MASK_2BIT;
-	ret = imx_read_reg(client, 1, IMX_CCP2_DATA_FORMAT, data);
-	if (ret)
-		return ret;
-	ccp2_data_format = data[0];
-
-	printk("%s pre_pll_clk_div=%d pll_multiplier=%d rpgltd=%d ccp2_data_format=%d\n", __func__, pre_pll_clk_div, pll_multiplier, rpgltd, ccp2_data_format);
-
-	memset(data, 0, IMX_INTG_BUF_COUNT * sizeof(u16));
-	ret = imx_read_reg(client, 4, IMX_FRAME_LENGTH_LINES, data);
-	if (ret)
-		return ret;
-	frame_length_lines = data[0];
-	line_length_pck = data[1];
+	pll_multiplier = data[0] & IMX_MASK_11BIT;
 
 	memset(data, 0, IMX_INTG_BUF_COUNT * sizeof(u16));
 	ret = imx_read_reg(client, 4, IMX_COARSE_INTG_TIME_MIN, data);
@@ -864,40 +713,12 @@ static int imx_get_intg_factor(struct i2c_client *client,
 		read_mode = data[0] & IMX_MASK_2BIT;
 	}
 
-#ifdef CONFIG_VIDEO_IMX111
-	if (rpgltd == 0)
-	{
-        	post_pll_clk_div = 2;
-	}
-	else if (rpgltd == 1)
-	{
-	        post_pll_clk_div = 4;
-	}
-	else
-	{
-	        post_pll_clk_div = 1;
-	}
-
-	div = pre_pll_clk_div*post_pll_clk_div*ccp2_data_format;
-
-	if (div == 0) {
-        	ret = -EINVAL;
-        	return ret;
-	}
-	/*
-	 * imx111_raw uses vt_pix_clk * 2 for calculations, i.e. integration
-	 * time: coarse_int_time * line_length_pck/(2*vt_pix_clk).
-	 * Provide correct value to user.
-	 */
-	vt_pix_clk_freq_mhz = ext_clk_freq_hz / div * pll_multiplier * 2;
-#else
 	div = pre_pll_clk_div*vt_sys_clk_div*vt_pix_clk_div;
 	if (div == 0)
 		return -EINVAL;
 
 	vt_pix_clk_freq_mhz = 2 * ext_clk_freq_hz / div;
 	vt_pix_clk_freq_mhz *= pll_multiplier;
-#endif
 
 	dev->vt_pix_clk_freq_mhz = vt_pix_clk_freq_mhz;
 
@@ -909,19 +730,14 @@ static int imx_get_intg_factor(struct i2c_client *client,
 	buf->fine_integration_time_min = IMX_FINE_INTG_TIME;
 	buf->fine_integration_time_max_margin = IMX_FINE_INTG_TIME;
 	buf->fine_integration_time_def = IMX_FINE_INTG_TIME;
-	buf->frame_length_lines = frame_length_lines;
-	buf->line_length_pck = line_length_pck;
+	buf->frame_length_lines = dev->lines_per_frame;
+	buf->line_length_pck = dev->pixels_per_line;
 	buf->read_mode = read_mode;
 
 	if (dev->sensor_id == IMX132_ID) {
 		buf->binning_factor_x = 1;
 		buf->binning_factor_y = 1;
-	}
-	else if (dev->sensor_id == IMX111_ID) {
-		buf->binning_factor_x = dev->curr_res_table[dev->fmt_idx].bin_factor_x;
-		buf->binning_factor_y = dev->curr_res_table[dev->fmt_idx].bin_factor_y;
-	}
-	else {
+	} else {
 		ret = imx_read_reg(client, 1, IMX_BINNING_ENABLE, data);
 		if (ret)
 			return ret;
@@ -931,7 +747,11 @@ static int imx_get_intg_factor(struct i2c_client *client,
 			if (ret)
 				return ret;
 			buf->binning_factor_x = data[0] >> 4 & 0x0f;
+			if (!buf->binning_factor_x)
+				buf->binning_factor_x = 1;
 			buf->binning_factor_y = data[0] & 0xf;
+			if (!buf->binning_factor_y)
+				buf->binning_factor_y = 1;
 		} else {
 			buf->binning_factor_x = 1;
 			buf->binning_factor_y = 1;
@@ -1449,6 +1269,8 @@ static int nearest_resolution_index(struct v4l2_subdev *sd, int w, int h)
 	int i;
 	int idx = -1;
 	int dist;
+	int fps_diff;
+	int min_fps_diff = INT_MAX;
 	int min_dist = INT_MAX;
 	const struct imx_resolution *tmp_res = NULL;
 	struct imx_device *dev = to_imx_sensor(sd);
@@ -1462,35 +1284,17 @@ static int nearest_resolution_index(struct v4l2_subdev *sd, int w, int h)
 			min_dist = dist;
 			idx = i;
 		}
-	}
-
-	if((binning_sum == 1) && (idx + 1 < dev->entries_curr_table)){
-		idx++;
-		printk("Select binning sum mode idx = %d\n",idx);
+		if (dist == min_dist) {
+			fps_diff = __imx_min_fps_diff(dev->fps,
+						tmp_res->fps_options);
+			if (fps_diff < min_fps_diff) {
+				min_fps_diff = fps_diff;
+				idx = i;
+			}
+		}
 	}
 
 	return idx;
-}
-
-static int get_resolution_index(struct v4l2_subdev *sd, int w, int h)
-{
-	int i;
-	struct imx_device *dev = to_imx_sensor(sd);
-
-	for (i = 0; i < dev->entries_curr_table; i++) {
-		if (w != dev->curr_res_table[i].width)
-			continue;
-		if (h != dev->curr_res_table[i].height)
-			continue;
-		/* Found it */
-
-		if((binning_sum == 1) && (i + 1 < dev->entries_curr_table)){
-			i++;
-			printk("Select binning sum mode idx = %d\n",i);
-		}
-		return i;
-	}
-	return -1;
 }
 
 static int imx_try_mbus_fmt(struct v4l2_subdev *sd,
@@ -1527,47 +1331,85 @@ static int imx_try_mbus_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
+/* Call with ctrl_handler.lock hold */
+static int __adjust_hvblank(struct v4l2_subdev *sd)
+{
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct imx_device *dev = to_imx_sensor(sd);
+	u16 new_frame_length_lines, new_line_length_pck;
+	int ret;
+
+	/*
+	 * No need to adjust h/v blank if not set dbg value
+	 * Note that there is no other checking on the h/v blank value,
+	 * as h/v blank can be set to any value above zero for debug purpose
+	 */
+	if (!dev->v_blank->val || !dev->h_blank->val)
+		return 0;
+
+	new_frame_length_lines = dev->curr_res_table[dev->fmt_idx].height +
+		dev->v_blank->val;
+	new_line_length_pck = dev->curr_res_table[dev->fmt_idx].width +
+		dev->h_blank->val;
+
+	ret = imx_write_reg(client, IMX_16BIT, IMX_LINE_LENGTH_PIXELS,
+			    new_line_length_pck);
+	if (ret)
+		return ret;
+	ret = imx_write_reg(client, IMX_16BIT, IMX_FRAME_LENGTH_LINES,
+			    new_frame_length_lines);
+	if (ret)
+		return ret;
+
+	dev->lines_per_frame = new_frame_length_lines;
+	dev->pixels_per_line = new_line_length_pck;
+
+	return 0;
+}
+
 static int imx_s_mbus_fmt(struct v4l2_subdev *sd,
 			      struct v4l2_mbus_framefmt *fmt)
 {
 	struct imx_device *dev = to_imx_sensor(sd);
-	const struct imx_reg *imx_def_reg;
 	struct camera_mipi_info *imx_info = NULL;
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	const struct imx_resolution *res;
 	int ret;
 	u16 val;
-	u32 exp_time;
 
 	imx_info = v4l2_get_subdev_hostdata(sd);
 	if (imx_info == NULL)
 		return -EINVAL;
-
 	ret = imx_try_mbus_fmt(sd, fmt);
 	if (ret)
 		return ret;
 
 	mutex_lock(&dev->input_lock);
 
-	dev->fmt_idx = get_resolution_index(sd, fmt->width, fmt->height);
+	dev->fmt_idx = nearest_resolution_index(sd, fmt->width, fmt->height);
+	if (dev->fmt_idx == -1)
+		return -EINVAL;
+	res = &dev->curr_res_table[dev->fmt_idx];
 
-	/* Sanity check */
-	if (unlikely(dev->fmt_idx == -1)) {
-		ret = -EINVAL;
-		goto out;
-	}
+	/* Adjust the FPS selection based on the resolution selected */
+	dev->fps_index = __imx_nearest_fps_index(dev->fps, res->fps_options);
+	dev->fps = res->fps_options[dev->fps_index].fps;
+	dev->regs = res->fps_options[dev->fps_index].regs;
+	if (!dev->regs)
+		dev->regs = res->regs;
 
-	imx_def_reg = dev->curr_res_table[dev->fmt_idx].regs;
-	printk("%s RES %s selected\n", __func__, dev->curr_res_table[dev->fmt_idx].desc);
-
-	ret = imx_write_reg_array(client, imx_def_reg);
+	ret = imx_write_reg_array(client, dev->regs);
 	if (ret)
 		goto out;
 
-	dev->fps = dev->curr_res_table[dev->fmt_idx].fps_options[dev->fps_index].fps;
-	dev->pixels_per_line =
-		dev->curr_res_table[dev->fmt_idx].fps_options[dev->fps_index].pixels_per_line;
-	dev->lines_per_frame =
-		dev->curr_res_table[dev->fmt_idx].fps_options[dev->fps_index].lines_per_frame;
+	dev->pixels_per_line = res->fps_options[dev->fps_index].pixels_per_line;
+	dev->lines_per_frame = res->fps_options[dev->fps_index].lines_per_frame;
+
+	/* dbg h/v blank time */
+	mutex_lock(dev->ctrl_handler.lock);
+	__adjust_hvblank(sd);
+	mutex_unlock(dev->ctrl_handler.lock);
+
 	ret = __imx_update_exposure_timing(client, dev->coarse_itg,
 		dev->pixels_per_line, dev->lines_per_frame);
 	if (ret)
@@ -1577,7 +1419,7 @@ static int imx_s_mbus_fmt(struct v4l2_subdev *sd,
 	if (ret)
 		goto out;
 
-	ret = imx_get_intg_factor(client, imx_info, imx_def_reg);
+	ret = imx_get_intg_factor(client, imx_info, dev->regs);
 	if (ret)
 		goto out;
 
@@ -1590,13 +1432,6 @@ static int imx_s_mbus_fmt(struct v4l2_subdev *sd,
 		imx_info->raw_bayer_order);
 out:
 	mutex_unlock(&dev->input_lock);
-
-	exp_time = dev->coarse_itg * dev->pixels_per_line;
-        if (exp_time >= (dev->vt_pix_clk_freq_mhz >> 4) &&
-		dev->curr_res_table[dev->fmt_idx].bin_factor_x <= 1 &&
-			dev->curr_res_table[dev->fmt_idx].bin_factor_y <= 1) {
-            msleep(300);
-        }
 	return ret;
 }
 
@@ -1609,10 +1444,11 @@ static int imx_g_mbus_fmt(struct v4l2_subdev *sd,
 	if (!fmt)
 		return -EINVAL;
 
+	mutex_lock(&dev->input_lock);
 	fmt->width = dev->curr_res_table[dev->fmt_idx].width;
 	fmt->height = dev->curr_res_table[dev->fmt_idx].height;
 	fmt->code = dev->format.code;
-
+	mutex_unlock(&dev->input_lock);
 	return 0;
 }
 
@@ -1629,7 +1465,7 @@ static int imx_detect(struct i2c_client *client, u16 *id, u8 *revision)
 		v4l2_err(client, "sensor_id = 0x%x\n", *id);
 		return -ENODEV;
 	}
-	if (*id == IMX132_ID || *id == IMX175_ID || *id == IMX111_ID)
+	if (*id == IMX132_ID || *id == IMX175_ID)
 		goto found;
 
 	if (imx_read_reg(client, IMX_16BIT, IMX134_135_CHIP_ID, id)) {
@@ -1649,6 +1485,29 @@ found:
 	return 0;
 }
 
+static void __imx_print_timing(struct v4l2_subdev *sd)
+{
+	struct imx_device *dev = to_imx_sensor(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	u16 width = dev->curr_res_table[dev->fmt_idx].width;
+	u16 height = dev->curr_res_table[dev->fmt_idx].height;
+
+	dev_dbg(&client->dev, "Dump imx timing in stream on:\n");
+	dev_dbg(&client->dev, "width: %d:\n", width);
+	dev_dbg(&client->dev, "height: %d:\n", height);
+	dev_dbg(&client->dev, "pixels_per_line: %d:\n", dev->pixels_per_line);
+	dev_dbg(&client->dev, "line per frame: %d:\n", dev->lines_per_frame);
+	dev_dbg(&client->dev, "pix freq: %d:\n", dev->vt_pix_clk_freq_mhz);
+	dev_dbg(&client->dev, "init fps: %d:\n", dev->vt_pix_clk_freq_mhz /
+			dev->pixels_per_line / dev->lines_per_frame);
+	dev_dbg(&client->dev, "HBlank: %d nS:\n",
+			1000 * (dev->pixels_per_line - width) /
+			(dev->vt_pix_clk_freq_mhz / 1000000));
+	dev_dbg(&client->dev, "VBlank: %d uS:\n",
+			(dev->lines_per_frame - height) * dev->pixels_per_line /
+			(dev->vt_pix_clk_freq_mhz / 1000000));
+}
+
 /*
  * imx stream on/off
  */
@@ -1660,6 +1519,17 @@ static int imx_s_stream(struct v4l2_subdev *sd, int enable)
 
 	mutex_lock(&dev->input_lock);
 	if (enable) {
+		/* Noise reduction & dead pixel applied before streaming */
+		if (dev->fw == NULL) {
+			dev_warn(&client->dev, "No MSR loaded from library");
+		} else {
+			ret = apply_msr_data(client, dev->fw);
+			if (ret) {
+				mutex_unlock(&dev->input_lock);
+				return ret;
+			}
+		}
+		__imx_print_timing(sd);
 		ret = imx_write_reg_array(client, imx_streaming);
 		if (ret != 0) {
 			v4l2_err(client, "write_reg_array err\n");
@@ -1676,9 +1546,9 @@ static int imx_s_stream(struct v4l2_subdev *sd, int enable)
 		}
 		dev->streaming = 0;
 		dev->fps_index = 0;
+		dev->fps = 0;
 	}
 	mutex_unlock(&dev->input_lock);
-
 
 	return 0;
 }
@@ -1692,14 +1562,17 @@ static int imx_enum_framesizes(struct v4l2_subdev *sd,
 	unsigned int index = fsize->index;
 	struct imx_device *dev = to_imx_sensor(sd);
 
-	if (index >= dev->entries_curr_table)
+	mutex_lock(&dev->input_lock);
+	if (index >= dev->entries_curr_table) {
+		mutex_unlock(&dev->input_lock);
 		return -EINVAL;
+	}
 
 	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
 	fsize->discrete.width = dev->curr_res_table[index].width;
 	fsize->discrete.height = dev->curr_res_table[index].height;
 	fsize->reserved[0] = dev->curr_res_table[index].used;
-
+	mutex_unlock(&dev->input_lock);
 	return 0;
 }
 
@@ -1710,6 +1583,7 @@ static int imx_enum_frameintervals(struct v4l2_subdev *sd,
 	int i;
 	struct imx_device *dev = to_imx_sensor(sd);
 
+	mutex_lock(&dev->input_lock);
 	/* since the isp will donwscale the resolution to the right size,
 	  * find the nearest one that will allow the isp to do so
 	  * important to ensure that the resolution requested is padded
@@ -1719,19 +1593,21 @@ static int imx_enum_frameintervals(struct v4l2_subdev *sd,
 	i = nearest_resolution_index(sd, fival->width, fival->height);
 
 	if (i == -1)
-		return -EINVAL;
+		goto out;
 
 	/* Check if this index is supported */
 	if (index > __imx_get_max_fps_index(dev->curr_res_table[i].fps_options))
-		return -EINVAL;
-
+		goto out;
 	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
 	fival->width = dev->curr_res_table[i].width;
 	fival->height = dev->curr_res_table[i].height;
 	fival->discrete.numerator = 1;
 	fival->discrete.denominator = dev->curr_res_table[i].fps_options[index].fps;
-
+	mutex_unlock(&dev->input_lock);
 	return 0;
+out:
+	mutex_unlock(&dev->input_lock);
+	return -EINVAL;
 }
 
 static int imx_enum_mbus_fmt(struct v4l2_subdev *sd, unsigned int index,
@@ -1740,8 +1616,55 @@ static int imx_enum_mbus_fmt(struct v4l2_subdev *sd, unsigned int index,
 	struct imx_device *dev = to_imx_sensor(sd);
 	if (index >= MAX_FMTS)
 		return -EINVAL;
+
+	mutex_lock(&dev->input_lock);
 	*code = dev->format.code;
+	mutex_unlock(&dev->input_lock);
 	return 0;
+}
+
+static int __update_imx_device_settings(struct imx_device *dev, u16 sensor_id)
+{
+	switch (sensor_id) {
+	case IMX175_ID:
+		if (INTEL_MID_BOARD(1, PHONE, BYT) ||
+			INTEL_MID_BOARD(1, TABLET, BYT)) {
+			dev->mode_tables = &imx_sets[IMX175_VALLEYVIEW];
+			dev->vcm_driver = &imx_vcms[IMX175_VALLEYVIEW];
+			dev->otp_driver = &imx_otps[IMX175_VALLEYVIEW];
+		} else {
+			dev->mode_tables = &imx_sets[IMX175_MERRFLD];
+			dev->vcm_driver = &imx_vcms[IMX175_MERRFLD];
+			dev->otp_driver = &imx_otps[IMX175_MERRFLD];
+		}
+		break;
+	case IMX135_ID:
+		if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CLOVERVIEW ||
+		    dev->i2c_id == IMX135_FUJI_ID) {
+			dev->mode_tables = &imx_sets[IMX135_VICTORIABAY];
+			dev->vcm_driver = &imx_vcms[IMX135_VICTORIABAY];
+			dev->otp_driver = &imx_otps[IMX135_VICTORIABAY];
+		} else {
+			dev->mode_tables = &imx_sets[IMX135_SALTBAY];
+			dev->vcm_driver = &imx_vcms[IMX135_SALTBAY];
+			dev->otp_driver = &imx_otps[IMX135_SALTBAY];
+		}
+		break;
+	case IMX134_ID:
+		dev->mode_tables = &imx_sets[IMX134_VALLEYVIEW];
+		dev->vcm_driver = &imx_vcms[IMX134_VALLEYVIEW];
+		dev->otp_driver = &imx_otps[IMX134_VALLEYVIEW];
+		break;
+	case IMX132_ID:
+		dev->mode_tables = &imx_sets[IMX132_SALTBAY];
+		dev->otp_driver = &imx_otps[IMX132_SALTBAY];
+		dev->vcm_driver = NULL;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+
+	return dev->vcm_driver->init(&dev->sd);
 }
 
 static int imx_s_config(struct v4l2_subdev *sd,
@@ -1789,14 +1712,18 @@ static int imx_s_config(struct v4l2_subdev *sd,
 	dev->sensor_id = sensor_id;
 	dev->sensor_revision = sensor_revision;
 
+	/* Resolution settings depend on sensor type and platform */
+	ret = __update_imx_device_settings(dev, dev->sensor_id);
+	if (ret)
+		goto fail_detect;
 	/* Read sensor's OTP data */
-	if (dev->sensor_id == IMX132_ID)
-		dev->otp_data = devm_kzalloc(&client->dev,
-				IMX_OTP_DATA_SIZE, GFP_KERNEL);
-	else
-		dev->otp_data = imx_otp_read(sd);
+	dev->otp_data = dev->otp_driver->otp_read(sd,
+		dev->otp_driver->dev_addr, dev->otp_driver->start_addr,
+		dev->otp_driver->size);
+
 	/* power off sensor */
 	ret = __imx_s_power(sd, 0);
+
 	mutex_unlock(&dev->input_lock);
 	if (ret)
 		v4l2_err(client, "imx power-down err.\n");
@@ -1821,7 +1748,10 @@ imx_enum_mbus_code(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 	struct imx_device *dev = to_imx_sensor(sd);
 	if (code->index >= MAX_FMTS)
 		return -EINVAL;
+
+	mutex_lock(&dev->input_lock);
 	code->code = dev->format.code;
+	mutex_unlock(&dev->input_lock);
 	return 0;
 }
 
@@ -1832,14 +1762,17 @@ imx_enum_frame_size(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 	int index = fse->index;
 	struct imx_device *dev = to_imx_sensor(sd);
 
-	if (index >= dev->entries_curr_table)
+	mutex_lock(&dev->input_lock);
+	if (index >= dev->entries_curr_table) {
+		mutex_unlock(&dev->input_lock);
 		return -EINVAL;
+	}
 
 	fse->min_width = dev->curr_res_table[index].width;
 	fse->min_height = dev->curr_res_table[index].height;
 	fse->max_width = dev->curr_res_table[index].width;
 	fse->max_height = dev->curr_res_table[index].height;
-
+	mutex_unlock(&dev->input_lock);
 	return 0;
 }
 
@@ -1912,43 +1845,13 @@ imx_g_frame_interval(struct v4l2_subdev *sd,
 				struct v4l2_subdev_frame_interval *interval)
 {
 	struct imx_device *dev = to_imx_sensor(sd);
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	u16 lines_per_frame;
-	/*
-	 * if no specific information to calculate the fps,
-	 * just used the value in sensor settings
-	 */
+	const struct imx_resolution *res =
+				&dev->curr_res_table[dev->fmt_idx];
 
-	if (!dev->pixels_per_line || !dev->lines_per_frame) {
-		interval->interval.numerator = 1;
-		interval->interval.denominator = dev->fps;
-		return 0;
-	}
-
-	/*
-	 * DS: if coarse_integration_time is set larger than
-	 * lines_per_frame the frame_size will be expanded to
-	 * coarse_integration_time+1
-	 */
-	if (dev->coarse_itg > dev->lines_per_frame) {
-		if ((dev->coarse_itg + 4) < dev->coarse_itg) {
-			/*
-			 * we can not add 4 according to ds, as this will
-			 * cause over flow
-			 */
-			v4l2_warn(client, "%s: abnormal coarse_itg:0x%x\n",
-				  __func__, dev->coarse_itg);
-			lines_per_frame = dev->coarse_itg;
-		} else {
-			lines_per_frame = dev->coarse_itg + 4;
-		}
-	} else {
-		lines_per_frame = dev->lines_per_frame;
-	}
-	interval->interval.numerator = dev->pixels_per_line *
-					lines_per_frame;
-	interval->interval.denominator = dev->vt_pix_clk_freq_mhz;
-
+	mutex_lock(&dev->input_lock);
+	interval->interval.denominator = res->fps_options[dev->fps_index].fps;
+	interval->interval.numerator = 1;
+	mutex_unlock(&dev->input_lock);
 	return 0;
 }
 
@@ -1958,9 +1861,12 @@ static int __imx_s_frame_interval(struct v4l2_subdev *sd,
 	struct imx_device *dev = to_imx_sensor(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	const struct imx_resolution *res =
-		res = &dev->curr_res_table[dev->fmt_idx];
+				&dev->curr_res_table[dev->fmt_idx];
 	struct camera_mipi_info *imx_info = NULL;
-	int i, fps, ret;
+	unsigned int fps_index;
+	int ret = 0;
+	int fps;
+
 
 	imx_info = v4l2_get_subdev_hostdata(sd);
 	if (imx_info == NULL)
@@ -1970,23 +1876,30 @@ static int __imx_s_frame_interval(struct v4l2_subdev *sd,
 		interval->interval.numerator = 1;
 
 	fps = interval->interval.denominator / interval->interval.numerator;
-	/* Ignore if we are already using the required FPS. */
+
+	/* No need to proceed further if we are not streaming */
+	if (!dev->streaming) {
+		/* Save the new FPS and use it while selecting setting */
+		dev->fps = fps;
+		return 0;
+	}
+
+	 /* Ignore if we are already using the required FPS. */
 	if (fps == res->fps_options[dev->fps_index].fps)
 		return 0;
 
-	dev->fps_index = 0;
+	fps_index = __imx_nearest_fps_index(fps, res->fps_options);
 
-	/* Go through the supported FPS list */
-	for (i = 0; i < MAX_FPS_OPTIONS_SUPPORTED; i++) {
-		if (!res->fps_options[i].fps)
-			break;
-		if (abs(res->fps_options[i].fps - fps)
-		    < abs(res->fps_options[dev->fps_index].fps - fps))
-			dev->fps_index = i;
+	if (res->fps_options[fps_index].regs &&
+	    res->fps_options[fps_index].regs != dev->regs) {
+		dev_err(&client->dev, "Sensor is streaming, cannot apply new configuration\n");
+		return -EBUSY;
 	}
 
-	/* Get the new Frame timing values for new exposure */
+	dev->fps_index = fps_index;
 	dev->fps = res->fps_options[dev->fps_index].fps;
+
+	/* Update the new frametimings based on FPS */
 	dev->pixels_per_line =
 		res->fps_options[dev->fps_index].pixels_per_line;
 	dev->lines_per_frame =
@@ -1994,17 +1907,17 @@ static int __imx_s_frame_interval(struct v4l2_subdev *sd,
 
 	/* Update the new values so that user side knows the current settings */
 	ret = __imx_update_exposure_timing(client,
-			dev->coarse_itg, dev->pixels_per_line, dev->lines_per_frame);
+		dev->coarse_itg, dev->pixels_per_line, dev->lines_per_frame);
 	if (ret)
 		return ret;
 
-	ret = imx_get_intg_factor(client, imx_info,
-			dev->curr_res_table[dev->fmt_idx].regs);
+	ret = imx_get_intg_factor(client, imx_info, dev->regs);
 	if (ret)
 		return ret;
 
 	interval->interval.denominator = res->fps_options[dev->fps_index].fps;
 	interval->interval.numerator = 1;
+	__imx_print_timing(sd);
 
 	return ret;
 }
@@ -2034,6 +1947,39 @@ static int imx_g_skip_frames(struct v4l2_subdev *sd, u32 *frames)
 
 static const struct v4l2_subdev_sensor_ops imx_sensor_ops = {
 	.g_skip_frames	= imx_g_skip_frames,
+};
+
+static int imx_set_ctrl(struct v4l2_ctrl *ctrl)
+{
+	return 0;
+}
+
+static int imx_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct imx_device *dev = container_of(ctrl->handler, struct imx_device,
+			ctrl_handler);
+
+	switch (ctrl->id) {
+	case V4L2_CID_VBLANK:
+		ctrl->val = dev->lines_per_frame -
+			dev->curr_res_table[dev->fmt_idx].height;
+		break;
+	case V4L2_CID_HBLANK:
+		ctrl->val = dev->pixels_per_line -
+			dev->curr_res_table[dev->fmt_idx].width;
+		break;
+	case V4L2_CID_PIXEL_RATE:
+		ctrl->val = dev->vt_pix_clk_freq_mhz;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static struct v4l2_ctrl_ops imx_ctrl_ops = {
+	.s_ctrl = imx_set_ctrl,
+	.g_volatile_ctrl = imx_g_volatile_ctrl,
 };
 
 static const struct v4l2_subdev_video_ops imx_video_ops = {
@@ -2086,74 +2032,48 @@ static int imx_remove(struct i2c_client *client)
 		dev->platform_data->platform_deinit();
 
 	media_entity_cleanup(&dev->sd.entity);
+	v4l2_ctrl_handler_free(&dev->ctrl_handler);
 	dev->platform_data->csi_cfg(sd, 0);
 	v4l2_device_unregister_subdev(sd);
+	release_msr_list(client, dev->fw);
 	kfree(dev);
 
 	return 0;
 }
 
-static void imx_shutdown(struct i2c_client *client)
+static int __imx_init_ctrl_handler(struct imx_device *dev)
 {
-	imx_remove(client);
-}
+	struct v4l2_ctrl_handler *hdl;
 
-static int __update_imx_device_settings(struct imx_device *dev, u16 sensor_id)
-{
-	switch (sensor_id) {
-	case IMX175_ID:
-		if (INTEL_MID_BOARD(1, PHONE, BYT) ||
-			INTEL_MID_BOARD(1, TABLET, BYT)) {
-			dev->mode_tables = &imx_sets[IMX175_VALLEYVIEW];
-			dev->vcm_driver = &imx_vcms[IMX175_VALLEYVIEW];
-		} else {
-			dev->mode_tables = &imx_sets[IMX175_MERRFLD];
-			dev->vcm_driver = &imx_vcms[IMX175_MERRFLD];
-		}
-		break;
-	case IMX135_ID:
-		if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CLOVERVIEW) {
-			dev->mode_tables = &imx_sets[IMX135_VICTORIABAY];
-			dev->vcm_driver = &imx_vcms[IMX135_VICTORIABAY];
-		} else {
-			dev->mode_tables = &imx_sets[IMX135_SALTBAY];
-			dev->vcm_driver = &imx_vcms[IMX135_SALTBAY];
-		}
-		break;
-	case IMX134_ID:
-		dev->mode_tables = &imx_sets[IMX134_VALLEYVIEW];
-		dev->vcm_driver = &imx_vcms[IMX134_VALLEYVIEW];
-		break;
-	case IMX132_ID:
-		dev->mode_tables = &imx_sets[IMX132_SALTBAY];
-		dev->vcm_driver = NULL;
-		return 0;
-	case IMX111_ID:
-		dev->mode_tables = &imx_sets[IMX111];
-		dev->vcm_driver = &imx_vcms[IMX111];
-		break;
-	default:
-		return -EINVAL;
+	hdl = &dev->ctrl_handler;
+
+	v4l2_ctrl_handler_init(&dev->ctrl_handler, 3);
+
+	dev->pixel_rate = v4l2_ctrl_new_std(&dev->ctrl_handler,
+					    &imx_ctrl_ops,
+					    V4L2_CID_PIXEL_RATE,
+					    0, UINT_MAX, 1, 0);
+
+	dev->h_blank = v4l2_ctrl_new_std(&dev->ctrl_handler,
+					  &imx_ctrl_ops,
+					  V4L2_CID_HBLANK, 0, SHRT_MAX, 1, 0);
+
+	dev->v_blank = v4l2_ctrl_new_std(&dev->ctrl_handler,
+					  &imx_ctrl_ops,
+					  V4L2_CID_VBLANK, 0, SHRT_MAX, 1, 0);
+
+	if (dev->ctrl_handler.error || dev->pixel_rate == NULL
+		|| dev->h_blank == NULL || dev->v_blank == NULL) {
+		return dev->ctrl_handler.error;
 	}
 
-	return dev->vcm_driver->init(&dev->sd);
-}
+	dev->sd.ctrl_handler = hdl;
 
-static int imx_read_otp_proc(char *page, char **start, off_t off, int count, int *eof, void *data)
-{
-	int len = 0;
-	int i;
+	dev->pixel_rate->flags |= V4L2_CTRL_FLAG_VOLATILE;
+	dev->h_blank->flags |= V4L2_CTRL_FLAG_VOLATILE;
+	dev->v_blank->flags |= V4L2_CTRL_FLAG_VOLATILE;
 
-	for(i=0 ; i<20 ; i++)
-	{
-		len += sprintf(page + len, "0x%X", imx_otp_data[i]);
-		if((i+1) % 8 != 0 && (i+1) != 20)
-			len += sprintf(page + len, " ");
-		else
-			len += sprintf(page + len, "\n");
-	}
-
-	return len;
+	return 0;
 }
 
 static int imx_probe(struct i2c_client *client,
@@ -2162,6 +2082,7 @@ static int imx_probe(struct i2c_client *client,
 	struct imx_device *dev;
 	struct camera_mipi_info *imx_info = NULL;
 	int ret;
+	char *msr_file_name = NULL;
 
 	/* allocate sensor device & init sub device */
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
@@ -2172,6 +2093,7 @@ static int imx_probe(struct i2c_client *client,
 
 	mutex_init(&dev->input_lock);
 
+	dev->i2c_id = id->driver_data;
 	dev->fmt_idx = 0;
 	dev->sensor_id = IMX_ID_DEFAULT;
 	dev->vcm_driver = &imx_vcms[IMX_ID_DEFAULT];
@@ -2194,10 +2116,9 @@ static int imx_probe(struct i2c_client *client,
 		IMX_SUBDEV_PREFIX, dev->sensor_id,
 		i2c_adapter_id(client->adapter), client->addr);
 
-	/* Resolution settings depend on sensor type and platform */
-	ret = __update_imx_device_settings(dev, dev->sensor_id);
+	ret = __imx_init_ctrl_handler(dev);
 	if (ret)
-		goto out_free;
+		goto out_ctrl_handler_free;
 
 	dev->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	dev->pad.flags = MEDIA_PAD_FL_SOURCE;
@@ -2207,12 +2128,29 @@ static int imx_probe(struct i2c_client *client,
 	dev->sd.entity.type = MEDIA_ENT_T_V4L2_SUBDEV_SENSOR;
 
 	ret = media_entity_init(&dev->sd.entity, 1, &dev->pad, 0);
-	if (ret)
+	if (ret) {
 		imx_remove(client);
+		return ret;
+	}
 
-	create_proc_read_entry("otp", 0, NULL, imx_read_otp_proc, NULL);
+	/* Load the Noise reduction, Dead pixel registers from cpf file*/
+	if (dev->platform_data->msr_file_name != NULL)
+		msr_file_name = dev->platform_data->msr_file_name();
+	if (msr_file_name) {
+		ret = load_msr_list(client, msr_file_name, &dev->fw);
+		if (ret) {
+			imx_remove(client);
+			return ret;
+		}
+	} else {
+		dev_warn(&client->dev, "Drvb file not present");
+	}
 
 	return ret;
+
+out_ctrl_handler_free:
+	v4l2_ctrl_handler_free(&dev->ctrl_handler);
+
 out_free:
 	v4l2_device_unregister_subdev(&dev->sd);
 	kfree(dev);
@@ -2222,9 +2160,9 @@ out_free:
 static const struct i2c_device_id imx_ids[] = {
 	{IMX_NAME_175, IMX175_ID},
 	{IMX_NAME_135, IMX135_ID},
+	{IMX_NAME_135_FUJI, IMX135_FUJI_ID},
 	{IMX_NAME_134, IMX134_ID},
 	{IMX_NAME_132, IMX132_ID},
-	{IMX_NAME_111, IMX111_ID},
 	{}
 };
 
@@ -2237,7 +2175,6 @@ static struct i2c_driver imx_driver = {
 	},
 	.probe = imx_probe,
 	.remove = imx_remove,
-	.shutdown = imx_shutdown,
 	.id_table = imx_ids,
 };
 
@@ -2249,7 +2186,6 @@ static __init int init_imx(void)
 
 static __exit void exit_imx(void)
 {
-	remove_proc_entry("otp", NULL);
 	i2c_del_driver(&imx_driver);
 }
 

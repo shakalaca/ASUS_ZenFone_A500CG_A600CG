@@ -41,21 +41,43 @@ static struct sst_dev_stream_map ctp_vb_strm_map[] = {
 	{CTP_VB_AUD_PROBE_DEV, 0, SNDRV_PCM_STREAM_CAPTURE, SST_PROBE_IN, SST_TASK_ID_NONE, SST_DEV_MAP_IN_USE},
 };
 
-static struct sst_dev_stream_map merr_bb_strm_map[] = {
-	{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, /* Reserved, not in use */
-	{MERR_BB_AUD_ASP_DEV, 0, SNDRV_PCM_STREAM_PLAYBACK, SST_PCM_OUT0, SST_TASK_ID_NONE, SST_DEV_MAP_IN_USE},
-	{MERR_BB_AUD_ASP_DEV, 1, SNDRV_PCM_STREAM_PLAYBACK, SST_PCM_OUT1, SST_TASK_ID_NONE, SST_DEV_MAP_IN_USE},
-	{MERR_BB_AUD_ASP_DEV, 0, SNDRV_PCM_STREAM_CAPTURE, SST_CAPTURE_IN, SST_TASK_ID_NONE, SST_DEV_MAP_IN_USE},
-	{MERR_BB_AUD_PROBE_DEV, 0, SNDRV_PCM_STREAM_CAPTURE, SST_PROBE_IN, SST_TASK_ID_NONE, SST_DEV_MAP_IN_USE},
-};
-
 static struct sst_dev_stream_map byt_bl_strm_map[] = {
 	{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, /* Reserved, not in use */
 	{BYT_AUD_AIF1, 0, SNDRV_PCM_STREAM_PLAYBACK, SST_PCM_OUT0, SST_TASK_ID_NONE, SST_DEV_MAP_IN_USE},
 	{BYT_AUD_AIF1, 1, SNDRV_PCM_STREAM_PLAYBACK, SST_PCM_OUT1, SST_TASK_ID_NONE, SST_DEV_MAP_IN_USE},
+	{BYT_AUD_COMPR_DEV, 0, SNDRV_PCM_STREAM_PLAYBACK, SST_COMPRESSED_OUT,
+					SST_TASK_ID_NONE, SST_DEV_MAP_IN_USE},
 	{BYT_AUD_AIF1, 0, SNDRV_PCM_STREAM_CAPTURE, SST_CAPTURE_IN, SST_TASK_ID_NONE, SST_DEV_MAP_IN_USE},
 };
 
+#if IS_BUILTIN(CONFIG_SST_MRFLD_DPCM)
+static struct sst_dev_stream_map mrfld_strm_map[] = {
+	{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, /* Reserved, not in use */
+	{MERR_DPCM_AUDIO, 0, SNDRV_PCM_STREAM_PLAYBACK, PIPE_MEDIA1_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_DB,    0, SNDRV_PCM_STREAM_PLAYBACK, PIPE_MEDIA3_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_LL,    0, SNDRV_PCM_STREAM_PLAYBACK, PIPE_LOW_PCM0_IN, SST_TASK_ID_SBA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_COMPR, 0, SNDRV_PCM_STREAM_PLAYBACK, PIPE_MEDIA0_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_VOIP,  0, SNDRV_PCM_STREAM_PLAYBACK, PIPE_VOIP_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 0, SNDRV_PCM_STREAM_PLAYBACK, PIPE_PROBE1_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 1, SNDRV_PCM_STREAM_PLAYBACK, PIPE_PROBE2_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 2, SNDRV_PCM_STREAM_PLAYBACK, PIPE_PROBE3_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 3, SNDRV_PCM_STREAM_PLAYBACK, PIPE_PROBE4_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 4, SNDRV_PCM_STREAM_PLAYBACK, PIPE_PROBE5_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 5, SNDRV_PCM_STREAM_PLAYBACK, PIPE_PROBE6_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 6, SNDRV_PCM_STREAM_PLAYBACK, PIPE_PROBE7_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 7, SNDRV_PCM_STREAM_PLAYBACK, PIPE_PROBE8_IN, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_AUDIO, 0, SNDRV_PCM_STREAM_CAPTURE, PIPE_PCM1_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_VOIP,  0, SNDRV_PCM_STREAM_CAPTURE, PIPE_VOIP_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 0, SNDRV_PCM_STREAM_CAPTURE, PIPE_PROBE1_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 1, SNDRV_PCM_STREAM_CAPTURE, PIPE_PROBE2_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 2, SNDRV_PCM_STREAM_CAPTURE, PIPE_PROBE3_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 3, SNDRV_PCM_STREAM_CAPTURE, PIPE_PROBE4_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 4, SNDRV_PCM_STREAM_CAPTURE, PIPE_PROBE5_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 5, SNDRV_PCM_STREAM_CAPTURE, PIPE_PROBE6_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 6, SNDRV_PCM_STREAM_CAPTURE, PIPE_PROBE7_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+	{MERR_DPCM_PROBE, 7, SNDRV_PCM_STREAM_CAPTURE, PIPE_PROBE8_OUT, SST_TASK_ID_MEDIA, SST_DEV_MAP_IN_USE},
+};
+#else
 static struct sst_dev_stream_map mrfld_strm_map[] = {
 	{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, /* Reserved, not in use */
 	{MERR_SALTBAY_AUDIO, 0, SNDRV_PCM_STREAM_PLAYBACK, PIPE_RSVD, SST_TASK_ID_MEDIA, SST_DEV_MAP_FREE},
@@ -84,29 +106,55 @@ static struct sst_dev_stream_map mrfld_strm_map[] = {
 	{MERR_SALTBAY_AWARE, 0, SNDRV_PCM_STREAM_CAPTURE, PIPE_AWARE_OUT, SST_TASK_ID_AWARE, SST_DEV_MAP_IN_USE},
 	{MERR_SALTBAY_VAD, 0, SNDRV_PCM_STREAM_CAPTURE, PIPE_VAD_OUT, SST_TASK_ID_AWARE, SST_DEV_MAP_IN_USE},
 };
+#endif
+
+#define EQ_EFFECT_ALGO_ID 0x99
+static struct sst_dev_effects_map mrfld_effs_map[] = {
+	{
+	  {0xc1, 0x47, 0xa2, 0xf7, 0x7b, 0x1a, 0xe0, 0x11, 0x0d, 0xbb, 0x2a, 0x30, 0xdf, 0xd7, 0x20, 0x45},/* uuid */
+	   EQ_EFFECT_ALGO_ID,										   /* algo id */
+	  {0x00, 0x43, 0xed, 0x0b, 0xd6, 0xdd, 0xdb, 0x11, 0x34, 0x8f, 0x00, 0x02, 0xa5, 0xd5, 0xc5, 0x1b, /* descriptor */
+	   0xc1, 0x47, 0xa2, 0xf7, 0x7b, 0x1a, 0xe0, 0x11, 0x0d, 0xbb, 0x2a, 0x30, 0xdf, 0xd7, 0x20, 0x45,
+	   0x12, 0x00, 0x00, 0x00, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x45, 0x71, 0x75, 0x61,
+	   0x6c, 0x69, 0x7a, 0x65, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x49, 0x6e, 0x74, 0x65,
+	   0x6c, 0x20, 0x43, 0x6f, 0x72, 0x70, 0x6f, 0x72, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x00, 0x00, 0x00,
+	   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+	  },
+	}
+};
+
+static struct sst_dev_effects_resource_map mrfld_effs_res_map[] = {
+	{
+	 {0xc1, 0x47, 0xa2, 0xf7, 0x7b, 0x1a, 0xe0, 0x11, 0x0d, 0xbb, 0x2a, 0x30, 0xdf, 0xd7, 0x20, 0x45}, /* uuid */
+	  0x50, /* Flags */
+	  0x00, /* Cpu load */
+	  0x01, /* Memory Usage */
+	 }
+};
 
 static void set_ctp_platform_config(void)
 {
-	/* FIX ME: SPID for PRh is not yet available */
-#ifdef CONFIG_PRH_TEMP_WA_FOR_SPID
-	sst_platform_pdata.pdev_strm_map = merr_bb_strm_map;
-	sst_platform_pdata.strm_map_size = ARRAY_SIZE(merr_bb_strm_map);
-#else
+	sst_platform_pdata.pdev_effs.effs_map = NULL;
+	sst_platform_pdata.pdev_effs.effs_res_map = NULL;
+	sst_platform_pdata.pdev_effs.effs_num_map = 0;
+
 	if ((INTEL_MID_BOARD(2, PHONE, CLVTP, VB, PRO)) ||
 	    (INTEL_MID_BOARD(2, PHONE, CLVTP, VB, ENG))) {
-
 		sst_platform_pdata.pdev_strm_map = ctp_vb_strm_map;
 		sst_platform_pdata.strm_map_size = ARRAY_SIZE(ctp_vb_strm_map);
-
 	} else if ((INTEL_MID_BOARD(2, PHONE, CLVTP, RHB, PRO)) ||
 		   (INTEL_MID_BOARD(2, PHONE, CLVTP, RHB, ENG)) ||
 		   (INTEL_MID_BOARD(2, TABLET, CLVT, TBD, PRO)) ||
 		   (INTEL_MID_BOARD(2, TABLET, CLVT, TBD, ENG))) {
-
 		sst_platform_pdata.pdev_strm_map = ctp_rhb_strm_map;
 		sst_platform_pdata.strm_map_size = ARRAY_SIZE(ctp_rhb_strm_map);
 	}
-#endif
+
 	/*force use clv one*/
 	sst_platform_pdata.pdev_strm_map = ctp_rhb_strm_map;
 	sst_platform_pdata.strm_map_size = ARRAY_SIZE(ctp_rhb_strm_map);
@@ -119,35 +167,45 @@ static void set_byt_platform_config(void)
 	sst_platform_pdata.strm_map_size =  ARRAY_SIZE(byt_bl_strm_map);
 }
 
-static void set_mrfld_platform_config(void)
+static void set_cht_platform_config(void)
 {
 	sst_platform_pdata.pdev_strm_map = mrfld_strm_map;
 	sst_platform_pdata.strm_map_size = ARRAY_SIZE(mrfld_strm_map);
 }
 
+static void set_mrfld_platform_config(void)
+{
+	sst_platform_pdata.pdev_strm_map = mrfld_strm_map;
+	sst_platform_pdata.strm_map_size = ARRAY_SIZE(mrfld_strm_map);
+	sst_platform_pdata.pdev_effs.effs_map = mrfld_effs_map;
+	sst_platform_pdata.pdev_effs.effs_res_map = mrfld_effs_res_map;
+	sst_platform_pdata.pdev_effs.effs_num_map = ARRAY_SIZE(mrfld_effs_map);
+}
+
 static void  populate_platform_data(void)
 {
 	sst_platform_pdata.spid = &spid;
-	/* FIX ME: SPID for PRh is not yet available */
+
 #if 0
-#ifdef CONFIG_PRH_TEMP_WA_FOR_SPID
-	set_ctp_platform_config();
-#else
 	if ((INTEL_MID_BOARD(1, PHONE, CLVTP)) ||
-		   (INTEL_MID_BOARD(1, TABLET, CLVT))) {
+	    (INTEL_MID_BOARD(1, TABLET, CLVT))) {
 		set_ctp_platform_config();
 	} else if ((INTEL_MID_BOARD(1, TABLET, BYT))) {
 		set_byt_platform_config();
 	} else if ((INTEL_MID_BOARD(1, PHONE, MRFL)) ||
-		   (INTEL_MID_BOARD(1, TABLET, MRFL))) {
+			(INTEL_MID_BOARD(1, TABLET, MRFL)) ||
+			(INTEL_MID_BOARD(1, PHONE, MOFD)) ||
+			(INTEL_MID_BOARD(1, TABLET, MOFD))) {
 		set_mrfld_platform_config();
+	} else if ((INTEL_MID_BOARD(1, TABLET, CHT))) {
+		set_cht_platform_config();
 	} else {
 		pr_warn("Board not Supported\n");
 	}
 #endif
-#endif
 	/*force use clv one*/
 	set_ctp_platform_config();
+
 }
 
 int add_sst_platform_device(void)

@@ -50,13 +50,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "device.h"
 #include "pvrsrv.h"
 #include "connection_server.h"
+#include "rgxta3d.h"
 
-typedef struct _RGX_SERVER_COMMON_CONTEXT_ RGX_SERVER_COMMON_CONTEXT;
-
-typedef struct {
-	DEVMEM_MEMDESC		*psFWFrameworkMemDesc;
-	IMG_DEV_VIRTADDR	*psMCUFenceAddr;
-} RGX_COMMON_CONTEXT_INFO;
 
 
 /*
@@ -68,6 +63,7 @@ typedef struct {
 static INLINE PVRSRV_ERROR DevmemFwAllocate(PVRSRV_RGXDEV_INFO *psDevInfo,
 											IMG_DEVMEM_SIZE_T uiSize,
 											DEVMEM_FLAGS_T uiFlags,
+						                    IMG_PCHAR pszText,
 											DEVMEM_MEMDESC **ppsMemDescPtr)
 {
 	IMG_DEV_VIRTADDR sTmpDevVAddr;
@@ -79,7 +75,7 @@ static INLINE PVRSRV_ERROR DevmemFwAllocate(PVRSRV_RGXDEV_INFO *psDevInfo,
 							uiSize,
 							ROGUE_CACHE_LINE_SIZE,
 							uiFlags,
-							"FWAllocate",
+							pszText,
 							ppsMemDescPtr);
 	if (eError != PVRSRV_OK)
 	{
@@ -99,6 +95,7 @@ static INLINE PVRSRV_ERROR DevmemFwAllocate(PVRSRV_RGXDEV_INFO *psDevInfo,
 static INLINE PVRSRV_ERROR DevmemFwAllocateExportable(PVRSRV_DEVICE_NODE *psDeviceNode,
 													  IMG_DEVMEM_SIZE_T uiSize,
 													  DEVMEM_FLAGS_T uiFlags,
+									                  IMG_PCHAR pszText,
 													  DEVMEM_MEMDESC **ppsMemDescPtr)
 {
 	PVRSRV_RGXDEV_INFO *psDevInfo = (PVRSRV_RGXDEV_INFO *) psDeviceNode->pvDevice;
@@ -112,7 +109,7 @@ static INLINE PVRSRV_ERROR DevmemFwAllocateExportable(PVRSRV_DEVICE_NODE *psDevi
 									  uiSize,
 									  64,
 									  uiFlags,
-									  "FWAllocateExportable",
+									  pszText,
 									  ppsMemDescPtr);
 	if (eError != PVRSRV_OK)
 	{
@@ -181,7 +178,9 @@ PVRSRV_ERROR RGXSetupFirmware(PVRSRV_DEVICE_NODE	*psDeviceNode,
 							     IMG_UINT32            ui32NumTilingCfgs,
 							     IMG_UINT32            *pui32BIFTilingXStrides,
 							     IMG_UINT32			ui32FilterMode,
-							     RGXFWIF_DEV_VIRTADDR	*psRGXFWInitFWAddr);
+							     RGXFWIF_DEV_VIRTADDR	*psRGXFWInitFWAddr,
+							     IMG_UINT32 ui32APMLatency,
+							     IMG_UINT32 ui32CoreClockSpeed);
 
 
 IMG_VOID RGXFreeFirmware(PVRSRV_RGXDEV_INFO 	*psDevInfo);
@@ -258,6 +257,8 @@ IMG_VOID FWCommonContextFree(RGX_SERVER_COMMON_CONTEXT *psServerCommonContext);
 PRGXFWIF_FWCOMMONCONTEXT FWCommonContextGetFWAddress(RGX_SERVER_COMMON_CONTEXT *psServerCommonContext);
 
 RGX_CLIENT_CCB *FWCommonContextGetClientCCB(RGX_SERVER_COMMON_CONTEXT *psServerCommonContext);
+
+RGXFWIF_CONTEXT_RESET_REASON FWCommonContextGetLastResetReason(RGX_SERVER_COMMON_CONTEXT *psServerCommonContext);
 
 PVRSRV_ERROR RGXStartFirmware(PVRSRV_RGXDEV_INFO 	*psDevInfo);
 
@@ -461,14 +462,11 @@ PVRSRV_ERROR RGXFWRequestCommonContextCleanUp(PVRSRV_DEVICE_NODE *psDeviceNode,
 
  @Input psHWRTData - firmware address of the HWRTData to be cleaned up
 
- @Input ui32SubmittedCommands - number of commands submitted by the host with this HWRTData
-
  @Input eDM - Data master, to which the cleanup command should be send
 
  ******************************************************************************/
 PVRSRV_ERROR RGXFWRequestHWRTDataCleanUp(PVRSRV_DEVICE_NODE *psDeviceNode,
 										 PRGXFWIF_HWRTDATA psHWRTData,
-										 IMG_UINT32 ui32SubmittedCommands,
 										 PVRSRV_CLIENT_SYNC_PRIM *psSync,
 										 RGXFWIF_DM eDM);
 
@@ -505,15 +503,12 @@ PVRSRV_ERROR RGXFWRequestFreeListCleanUp(PVRSRV_RGXDEV_INFO *psDeviceNode,
 
  @Input psFWZSBuffer - firmware address of the ZS Buffer to be cleaned up
 
- @Input ui32SubmittedCommands - number of commands submitted by the host with this Z/S Buffer
-
  @Input eDM - Data master, to which the cleanup command should be send
 
  ******************************************************************************/
 
 PVRSRV_ERROR RGXFWRequestZSBufferCleanUp(PVRSRV_RGXDEV_INFO *psDevInfo,
 										 PRGXFWIF_ZSBUFFER psFWZSBuffer,
-										 IMG_UINT32 ui32SubmittedCommands,
 										 PVRSRV_CLIENT_SYNC_PRIM *psSync);
 
 PVRSRV_ERROR ContextSetPriority(RGX_SERVER_COMMON_CONTEXT *psContext,
@@ -575,6 +570,47 @@ IMG_VOID RGXCheckFirmwareCCBs(PVRSRV_RGXDEV_INFO *psDevInfo);
 PVRSRV_ERROR RGXUpdateHealthStatus(PVRSRV_DEVICE_NODE* psDevNode,
                                    IMG_BOOL bCheckAfterTimePassed);
 
+
+IMG_VOID DumpStalledFWCommonContext(RGX_SERVER_COMMON_CONTEXT *psCurrentServerCommonContext);
+
+/*!
+******************************************************************************
+
+ @Function	   AttachKickResourcesCleanupCtls
+
+ @Description  Attaches the cleanup structures to a kick command so that
+               submission reference counting can be performed when the
+               firmware processes the command
+
+ @Output        apsCleanupCtl          Array of CleanupCtl structure pointers to populate.
+ @Output        pui32NumCleanupCtl     Number of CleanupCtl structure pointers written out.
+ @Input         eDM                    Which data master is the subject of the command.
+ @Input         bKick                  TRUE if the client originally wanted to kick this DM.
+ @Input         psRTDataCleanup        Optional RTData cleanup associated with the command.
+ @Input         psZBuffer              Optional ZBuffer associated with the command.
+ @Input         psSBuffer              Optional SBuffer associated with the command.
+ ******************************************************************************/
+IMG_VOID AttachKickResourcesCleanupCtls(PRGXFWIF_CLEANUP_CTL *apsCleanupCtl,
+									IMG_UINT32 *pui32NumCleanupCtl,
+									RGXFWIF_DM eDM,
+									IMG_BOOL bKick,
+									RGX_RTDATA_CLEANUP_DATA        *psRTDataCleanup,
+									RGX_ZSBUFFER_DATA              *psZBuffer,
+									RGX_ZSBUFFER_DATA              *psSBuffer);
+
+/*!
+******************************************************************************
+
+ @Function			RGXResetHWRLogs
+
+ @Description 		Resets the HWR Logs buffer (the hardware recovery count is not reset)
+
+ @Input 			psDevInfo	Pointer to the device
+
+ @Return			PVRSRV_ERROR	PVRSRV_OK on success. Otherwise, a PVRSRV_
+                                	error code
+ ******************************************************************************/
+PVRSRV_ERROR RGXResetHWRLogs(PVRSRV_DEVICE_NODE *psDevNode);
 
 #endif /* __RGXFWUTILS_H__ */
 /******************************************************************************

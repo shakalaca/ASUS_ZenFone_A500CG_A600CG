@@ -1,1 +1,1 @@
-source "../modules/drivers/staging/sep/Kconfig"
+source "drivers/external_drivers/drivers/staging/sep/Kconfig"

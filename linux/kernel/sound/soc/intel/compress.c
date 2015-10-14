@@ -42,6 +42,15 @@ static void sst_compr_fragment_elapsed(void *arg)
 		snd_compr_fragment_elapsed(cstream);
 }
 
+static void sst_drain_notify(void *arg)
+{
+	struct snd_compr_stream *cstream = (struct snd_compr_stream *)arg;
+
+	pr_debug("drain notify by driver\n");
+	if (cstream)
+		snd_compr_drain_notify(cstream);
+}
+
 static int sst_platform_compr_open(struct snd_compr_stream *cstream)
 {
 
@@ -79,6 +88,8 @@ out_ops:
 static int sst_platform_compr_free(struct snd_compr_stream *cstream)
 {
 	struct sst_runtime_stream *stream;
+	struct snd_soc_pcm_runtime *rtd = cstream->private_data;
+	struct snd_soc_dai_link *dai_link = rtd->dai_link;
 	int ret_val = 0, str_id;
 
 	stream = cstream->runtime->private_data;
@@ -88,7 +99,8 @@ static int sst_platform_compr_free(struct snd_compr_stream *cstream)
 		ret_val = stream->compr_ops->close(str_id);
 	module_put(sst_dsp->dev->driver->owner);
 	kfree(stream);
-	pr_debug("%s: %d\n", __func__, ret_val);
+	pr_debug("%s called for dai %s: ret = %d\n", __func__,
+				dai_link->cpu_dai_name, ret_val);
 	return 0;
 }
 
@@ -155,6 +167,8 @@ static int sst_platform_compr_set_params(struct snd_compr_stream *cstream,
 
 	cb.param = cstream;
 	cb.compr_cb = sst_compr_fragment_elapsed;
+	cb.drain_cb_param = cstream;
+	cb.drain_notify = sst_drain_notify;
 
 	retval = stream->compr_ops->open(&str_params, &cb);
 	if (retval < 0) {

@@ -104,6 +104,9 @@ bool ps_hdmi_power_islands_on(void);
 /* turn off HDMI power islands */
 void ps_hdmi_power_islands_off();
 
+/* enable IRQ and CPD_HPD */
+bool ps_hdmi_enable_hpd(bool enable);
+
 /* control HDMI vblank interrupt */
 void ps_hdmi_vblank_control(struct drm_device *dev, bool on);
 

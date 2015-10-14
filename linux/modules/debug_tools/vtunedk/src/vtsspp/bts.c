@@ -39,7 +39,6 @@
 
 static int vtss_bts_count = VTSS_BTS_MIN;
 static DEFINE_PER_CPU_SHARED_ALIGNED(vtss_bts_t*, vtss_bts_per_cpu);
-
 int vtss_bts_overflowed(int cpu)
 {
     vtss_dsa_t* dsa = vtss_dsa_get(cpu);
@@ -54,10 +53,10 @@ int vtss_bts_overflowed(int cpu)
 void vtss_bts_enable(void)
 {
     unsigned long long msr_val;
-
     if (hardcfg.family == 0x06 || hardcfg.family == 0x0f) {
         rdmsrl(DEBUGCTL_MSR, msr_val);
         msr_val |= (hardcfg.family == 0x0f) ? BTS_ENABLE_MASK_P4 : BTS_ENABLE_MASK_P6;
+//        if (cnt_bts <50) printk("before bts enable\n");
         wrmsrl(DEBUGCTL_MSR, msr_val);
     }
 }
@@ -69,6 +68,7 @@ void vtss_bts_disable(void)
     if (hardcfg.family == 0x06 || hardcfg.family == 0x0f) {
         rdmsrl(DEBUGCTL_MSR, msr_val);
         msr_val &= (hardcfg.family == 0x0f) ? ~BTS_ENABLE_MASK_P4 : ~BTS_ENABLE_MASK_P6;
+//        if (cnt_bts <50)printk("before bts disable\n");
         wrmsrl(DEBUGCTL_MSR, msr_val);
     }
 }
@@ -78,24 +78,24 @@ unsigned short vtss_bts_dump(unsigned char *bts_buff)
     unsigned char *dst;
     size_t offset, value;
     int i, j, sign, prefix;
-    vtss_bts_t *src, *src_end;
+    char *src, *src_end;
     vtss_dsa_t *dsa = vtss_dsa_get(smp_processor_id());
 
-    src     = (vtss_bts_t*)(IS_DSA_64ON32 ? dsa->v32.bts_base  : dsa->v64.bts_base);
-    src_end = (vtss_bts_t*)(IS_DSA_64ON32 ? dsa->v32.bts_index : dsa->v64.bts_index);
-    for (dst = bts_buff, offset = 0; ((dst - bts_buff) < (VTSS_BTS_MAX*sizeof(vtss_bts_t) - sizeof(size_t))) && (src < src_end); src++) {
+    src     = (char*)/*(vtss_bts_t*)*/(IS_DSA_64ON32 ? dsa->v32.bts_base  : dsa->v64.bts_base);
+    src_end = (char*)/*(vtss_bts_t*)*/(IS_DSA_64ON32 ? dsa->v32.bts_index : dsa->v64.bts_index);
+    for (dst = bts_buff, offset = 0; ((dst - bts_buff) < (VTSS_BTS_MAX*sizeof(vtss_bts_t) - sizeof(size_t))) && (src < src_end); src = (IS_DSA_64ON32) ? src + 6*sizeof(void*) : src + 3*sizeof(void*)) {
         for (i = 0; i < 2; i++) {
             /// BTS structures are always 64-bit on Merom
             if (IS_DSA_64ON32) {
                 value  = ((size_t*)src)[i << 1];
                 value -= offset;
                 offset = ((size_t*)src)[i << 1];
-                prefix = (int)((size_t)src->v32.prediction << 3);
+                prefix = (int)((size_t)((vtss_bts_t*)src)->v32.prediction << 3);
             } else {
                 value  = ((size_t*)src)[i];
                 value -= offset;
                 offset = ((size_t*)src)[i];
-                prefix = (int)((size_t)src->v64.prediction << 3);
+                prefix = (int)((size_t)((vtss_bts_t*)src)->v64.prediction << 3);
             }
             sign = (value & (((size_t)1) << ((sizeof(size_t) << 3) - 1))) ? 0xff : 0;
             for (j = sizeof(size_t) - 1; j >= 0; j--) {
@@ -111,9 +111,9 @@ unsigned short vtss_bts_dump(unsigned char *bts_buff)
                 value >>= 8;
             }
         }
-        if (IS_DSA_64ON32) {
-            src++;
-        }
+//        if (IS_DSA_64ON32) {
+//            src++;
+//        }
     }
     return (unsigned short)(size_t)(dst-bts_buff);
 }
@@ -157,7 +157,6 @@ static void vtss_bts_on_each_cpu_func(void* ctx)
 int vtss_bts_init(int brcount)
 {
     int cpu;
-
     /* Fix count of branches */
     brcount = (brcount < VTSS_BTS_MIN) ? VTSS_BTS_MIN : brcount;
     brcount = (brcount > VTSS_BTS_MAX) ? VTSS_BTS_MAX : brcount;

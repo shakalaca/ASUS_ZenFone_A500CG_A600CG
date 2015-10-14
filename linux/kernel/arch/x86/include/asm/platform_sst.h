@@ -15,6 +15,11 @@
 #define _PLATFORM_SST_H_
 
 #include <linux/sfi.h>
+
+#define MAX_NUM_STREAMS_CTP	5
+#define MAX_NUM_STREAMS_MRFLD	25
+#define MAX_NUM_STREAMS	MAX_NUM_STREAMS_MRFLD
+
 #define SST_MAX_SSP_PORTS 4
 #define SST_MAX_DMA 2
 
@@ -36,7 +41,7 @@ struct sst_gpio_config {
 struct sst_ssp_info {
 	u32 base_add;
 	struct sst_gpio_config gpio;
-	bool in_use;
+	bool gpio_in_use;
 };
 
 struct sst_info {
@@ -49,8 +54,9 @@ struct sst_info {
 	u32 imr_start;
 	u32 imr_end;
 	bool imr_use;
+	u32 mailbox_start;
 	bool use_elf;
-	bool dma_addr_ia_viewpt;
+	bool lpe_viewpt_rqd;
 	unsigned int max_streams;
 	u32 dma_max_len;
 	u8 num_probes;
@@ -71,9 +77,10 @@ struct sst_ssp_platform_cfg {
 	u8 frame_sync_width;
 	u8 dma_handshake_interface_tx;
 	u8 dma_handshake_interface_rx;
-	u8 reserved[2];
-	u32 sst_ssp_base_add;
-};
+	u8 network_mode;
+	u8 start_delay;
+	u32 ssp_base_add;
+} __packed;
 
 struct sst_board_config_data {
 	struct sst_ssp_platform_cfg ssp_platform_data[SST_MAX_SSP_PORTS];
@@ -82,18 +89,44 @@ struct sst_board_config_data {
 	u8 board_id;
 	u8 ihf_num_chan;
 	u32 osc_clk_freq;
-};
+} __packed;
 
 struct sst_platform_config_data {
 	u32 sst_sram_buff_base;
 	u32 sst_dma_base[SST_MAX_DMA];
+} __packed;
+
+struct sst_platform_debugfs_data {
+	u32 ssp_reg_size;
+	u32 dma_reg_size;
+	u32 checkpoint_offset;
+	u32 checkpoint_size;
+	u8 num_ssp;
+	u8 num_dma;
 };
 
-struct sst_pci_info {
-	struct sst_info *probe_data;
-	struct sst_ssp_info *ssp_data;
-	struct sst_board_config_data *bdata;
-	struct sst_platform_config_data *pdata;
+struct sst_ipc_info {
+	int ipc_offset;
+	bool use_32bit_ops;
+	unsigned int mbox_recv_off;
+};
+
+struct sst_lib_dnld_info {
+	unsigned int mod_base;
+	unsigned int mod_end;
+	unsigned int mod_table_offset;
+	unsigned int mod_table_size;
+	bool mod_ddr_dnld;
+};
+
+struct sst_platform_info {
+	const struct sst_info *probe_data;
+	const struct sst_ssp_info *ssp_data;
+	const struct sst_board_config_data *bdata;
+	const struct sst_platform_config_data *pdata;
+	const struct sst_ipc_info *ipc_info;
+	const struct sst_platform_debugfs_data *debugfs_data;
+	const struct sst_lib_dnld_info *lib_info;
 };
 
 #endif

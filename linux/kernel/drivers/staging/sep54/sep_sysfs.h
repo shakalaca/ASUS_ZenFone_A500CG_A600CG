@@ -38,4 +38,12 @@ void sysfs_update_sep_stats(unsigned int qid, enum sep_sw_desc_type desc_type,
 			    unsigned long long start_ns,
 			    unsigned long long end_ns);
 
+#ifdef SEP_HWK_UNIT_TEST
+ssize_t sys_hwk_st_show(struct kobject *kobj, struct kobj_attribute *attr,
+			char *buf);
+ssize_t sys_hwk_st_start(struct kobject *kobj, struct kobj_attribute *attr,
+			 const char *buf, size_t count);
+#endif
+
+
 #endif /*_SEP_SYSFS_H_*/

@@ -67,7 +67,6 @@ struct kbd_struct {
 
 extern int kbd_init(void);
 
-extern unsigned char getledstate(void);
 extern void setledstate(struct kbd_struct *kbd, unsigned int led);
 
 extern int do_poke_blanked_console;
@@ -77,8 +76,8 @@ extern void (*kbd_ledfunc)(unsigned int led);
 extern int set_console(int nr);
 extern void schedule_console_callback(void);
 
-/* FIXME: review locking for vt.c callers */
 #ifndef CONFIG_ANDROID
+/* FIXME: review locking for vt.c callers */
 static inline void set_leds(void)
 {
 	tasklet_schedule(&keyboard_tasklet);
@@ -150,17 +149,5 @@ void compute_shiftstate(void);
 /* defkeymap.c */
 
 extern unsigned int keymap_count;
-
-/* console.c */
-
-static inline void con_schedule_flip(struct tty_struct *t)
-{
-	unsigned long flags;
-	spin_lock_irqsave(&t->buf.lock, flags);
-	if (t->buf.tail != NULL)
-		t->buf.tail->commit = t->buf.tail->used;
-	spin_unlock_irqrestore(&t->buf.lock, flags);
-	schedule_work(&t->buf.work);
-}
 
 #endif

@@ -69,17 +69,22 @@
 #define ADC_TO_TEMP 1
 #define TEMP_TO_ADC 0
 #define is_valid_temp(tmp)\
-	(!(tmp > adc_tbl[0].temp ||\
-		tmp < adc_tbl[ARRAY_SIZE(adc_tbl) - 1].temp))
+	(!(tmp > chc.pdata->adc_tbl[0].temp ||\
+	tmp < chc.pdata->adc_tbl[chc.pdata->max_tbl_row_cnt - 1].temp))
 #define is_valid_adc_code(val)\
-	(!(val < adc_tbl[0].adc_val ||\
-		val > adc_tbl[ARRAY_SIZE(adc_tbl) - 1].adc_val))
+	(!(val < chc.pdata->adc_tbl[0].adc_val ||\
+	val > chc.pdata->adc_tbl[chc.pdata->max_tbl_row_cnt - 1].adc_val))
 #define CONVERT_ADC_TO_TEMP(adc_val, temp)\
 	adc_temp_conv(adc_val, temp, ADC_TO_TEMP)
 #define CONVERT_TEMP_TO_ADC(temp, adc_val)\
 	adc_temp_conv(temp, adc_val, TEMP_TO_ADC)
 #define NEED_ZONE_SPLIT(bprof)\
 	 ((bprof->temp_mon_ranges < MIN_BATT_PROF))
+
+#define USB_WAKE_LOCK_TIMEOUT	(5 * HZ)
+
+/* 100mA value definition for setting the inlimit in bq24261 */
+#define USBINPUTICC100VAL	100
 
 /* Type definitions */
 static void pmic_bat_zone_changed(void);
@@ -127,26 +132,6 @@ static struct interrupt_info chgrirq0_info[] = {
 		NULL,
 		NULL
 	},
-};
-
-static struct temp_lookup adc_tbl[] = {
-	{0x24, 125, 0}, {0x28, 120, 0},
-	{0x2D, 115, 0}, {0x32, 110, 0},
-	{0x38, 105, 0}, {0x40, 100, 0},
-	{0x48, 95, 0}, {0x51, 90, 0},
-	{0x5C, 85, 0}, {0x68, 80, 0},
-	{0x77, 75, 0}, {0x87, 70, 0},
-	{0x99, 65, 0}, {0xAE, 60, 0},
-	{0xC7, 55, 0}, {0xE2, 50, 0},
-	{0x101, 45, 0}, {0x123, 40, 0},
-	{0x149, 35, 0}, {0x172, 30, 0},
-	{0x19F, 25, 0}, {0x1CE, 20, 0},
-	{0x200, 15, 0}, {0x233, 10, 0},
-	{0x266, 5, 0}, {0x299, 0, 0},
-	{0x2CA, -5, 0}, {0x2F9, -10, 0},
-	{0x324, -15, 0}, {0x34B, -20, 0},
-	{0x36D, -25, 0}, {0x38A, -30, 0},
-	{0x3A4, -35, 0}, {0x3B8, -40, 0},
 };
 
 u16 pmic_inlmt[][2] = {
@@ -200,42 +185,55 @@ static int interpolate_x(int dy1y0, int dx1x0, int dyy0, int x0)
 
 static int adc_temp_conv(int in_val, int *out_val, int conv)
 {
-	int tbl_row_cnt = ARRAY_SIZE(adc_tbl), i;
+	int tbl_row_cnt, i;
+	struct temp_lookup *adc_temp_tbl;
+
+	if (!chc.pdata) {
+		dev_err(chc.dev, "ADC-lookup table not yet available\n");
+		return -ERANGE;
+	}
+
+	tbl_row_cnt = chc.pdata->max_tbl_row_cnt;
+	adc_temp_tbl = chc.pdata->adc_tbl;
 
 	if (conv == ADC_TO_TEMP) {
 		if (!is_valid_adc_code(in_val))
 			return -ERANGE;
 
-		if (in_val == adc_tbl[tbl_row_cnt-1].adc_val)
+		if (in_val == adc_temp_tbl[tbl_row_cnt-1].adc_val)
 			i = tbl_row_cnt - 1;
 		else {
 			for (i = 0; i < tbl_row_cnt; ++i)
-				if (in_val < adc_tbl[i].adc_val)
+				if (in_val < adc_temp_tbl[i].adc_val)
 					break;
 		}
 
 		*out_val =
-		    interpolate_y((adc_tbl[i].adc_val - adc_tbl[i - 1].adc_val),
-				  (adc_tbl[i].temp - adc_tbl[i - 1].temp),
-				  (in_val - adc_tbl[i - 1].adc_val),
-				  adc_tbl[i - 1].temp);
+		    interpolate_y((adc_temp_tbl[i].adc_val
+					- adc_temp_tbl[i - 1].adc_val),
+				  (adc_temp_tbl[i].temp
+				   - adc_temp_tbl[i - 1].temp),
+				  (in_val - adc_temp_tbl[i - 1].adc_val),
+				  adc_temp_tbl[i - 1].temp);
 	} else {
 		if (!is_valid_temp(in_val))
 			return -ERANGE;
 
-		if (in_val == adc_tbl[tbl_row_cnt-1].temp)
+		if (in_val == adc_temp_tbl[tbl_row_cnt-1].temp)
 			i = tbl_row_cnt - 1;
 		else {
 			for (i = 0; i < tbl_row_cnt; ++i)
-				if (in_val > adc_tbl[i].temp)
+				if (in_val > adc_temp_tbl[i].temp)
 					break;
 		}
 
 		*((short int *)out_val) =
-		    interpolate_x((adc_tbl[i].temp - adc_tbl[i - 1].temp),
-				  (adc_tbl[i].adc_val - adc_tbl[i - 1].adc_val),
-				  (in_val - adc_tbl[i - 1].temp),
-				  adc_tbl[i - 1].adc_val);
+		    interpolate_x((adc_temp_tbl[i].temp
+					- adc_temp_tbl[i - 1].temp),
+				  (adc_temp_tbl[i].adc_val
+				   - adc_temp_tbl[i - 1].adc_val),
+				  (in_val - adc_temp_tbl[i - 1].temp),
+				  adc_temp_tbl[i - 1].adc_val);
 	}
 	return 0;
 }
@@ -273,6 +271,13 @@ static inline int pmic_write_tt(u8 addr, u8 data)
 	ret = __pmic_write_tt(addr, data);
 	mutex_unlock(&pmic_lock);
 
+	/* If access is blocked return success to avoid additional
+	*  error handling at client side
+	*/
+	if (ret == -EACCES) {
+		dev_warn(chc.dev, "IPC write blocked due to unsigned kernel/invalid battery\n");
+		ret = 0;
+	}
 	return ret;
 }
 
@@ -378,7 +383,8 @@ static int pmic_chrgr_reg_open(struct inode *inode, struct file *file)
 }
 
 static struct dentry *charger_debug_dir;
-static struct pmic_regs_def pmic_regs[] = {
+static struct pmic_regs_def pmic_regs_bc[] = {
+	PMIC_REG_DEF(PMIC_ID_ADDR),
 	PMIC_REG_DEF(IRQLVL1_ADDR),
 	PMIC_REG_DEF(IRQLVL1_MASK_ADDR),
 	PMIC_REG_DEF(CHGRIRQ0_ADDR),
@@ -398,17 +404,53 @@ static struct pmic_regs_def pmic_regs[] = {
 	PMIC_REG_DEF(USBIDCTRL_ADDR),
 	PMIC_REG_DEF(USBIDSTAT_ADDR),
 	PMIC_REG_DEF(WAKESRC_ADDR),
-	PMIC_REG_DEF(THRMBATZONE_ADDR),
-	PMIC_REG_DEF(THRMZN0L_ADDR),
-	PMIC_REG_DEF(THRMZN0H_ADDR),
-	PMIC_REG_DEF(THRMZN1L_ADDR),
-	PMIC_REG_DEF(THRMZN1H_ADDR),
-	PMIC_REG_DEF(THRMZN2L_ADDR),
-	PMIC_REG_DEF(THRMZN2H_ADDR),
-	PMIC_REG_DEF(THRMZN3L_ADDR),
-	PMIC_REG_DEF(THRMZN3H_ADDR),
-	PMIC_REG_DEF(THRMZN4L_ADDR),
-	PMIC_REG_DEF(THRMZN4H_ADDR),
+	PMIC_REG_DEF(THRMBATZONE_ADDR_BC),
+	PMIC_REG_DEF(THRMZN0L_ADDR_BC),
+	PMIC_REG_DEF(THRMZN0H_ADDR_BC),
+	PMIC_REG_DEF(THRMZN1L_ADDR_BC),
+	PMIC_REG_DEF(THRMZN1H_ADDR_BC),
+	PMIC_REG_DEF(THRMZN2L_ADDR_BC),
+	PMIC_REG_DEF(THRMZN2H_ADDR_BC),
+	PMIC_REG_DEF(THRMZN3L_ADDR_BC),
+	PMIC_REG_DEF(THRMZN3H_ADDR_BC),
+	PMIC_REG_DEF(THRMZN4L_ADDR_BC),
+	PMIC_REG_DEF(THRMZN4H_ADDR_BC),
+};
+
+static struct pmic_regs_def pmic_regs_sc[] = {
+	PMIC_REG_DEF(PMIC_ID_ADDR),
+	PMIC_REG_DEF(IRQLVL1_ADDR),
+	PMIC_REG_DEF(IRQLVL1_MASK_ADDR),
+	PMIC_REG_DEF(CHGRIRQ0_ADDR),
+	PMIC_REG_DEF(SCHGRIRQ0_ADDR),
+	PMIC_REG_DEF(MCHGRIRQ0_ADDR),
+	PMIC_REG_DEF(LOWBATTDET0_ADDR),
+	PMIC_REG_DEF(LOWBATTDET1_ADDR),
+	PMIC_REG_DEF(BATTDETCTRL_ADDR),
+	PMIC_REG_DEF(VBUSDETCTRL_ADDR),
+	PMIC_REG_DEF(VDCINDETCTRL_ADDR),
+	PMIC_REG_DEF(CHRGRIRQ1_ADDR),
+	PMIC_REG_DEF(SCHGRIRQ1_ADDR),
+	PMIC_REG_DEF(MCHGRIRQ1_ADDR),
+	PMIC_REG_DEF(CHGRCTRL0_ADDR),
+	PMIC_REG_DEF(CHGRCTRL1_ADDR),
+	PMIC_REG_DEF(CHGRSTATUS_ADDR),
+	PMIC_REG_DEF(USBIDCTRL_ADDR),
+	PMIC_REG_DEF(USBIDSTAT_ADDR),
+	PMIC_REG_DEF(WAKESRC_ADDR),
+	PMIC_REG_DEF(USBPATH_ADDR),
+	PMIC_REG_DEF(USBSRCDETSTATUS_ADDR),
+	PMIC_REG_DEF(THRMBATZONE_ADDR_SC),
+	PMIC_REG_DEF(THRMZN0L_ADDR_SC),
+	PMIC_REG_DEF(THRMZN0H_ADDR_SC),
+	PMIC_REG_DEF(THRMZN1L_ADDR_SC),
+	PMIC_REG_DEF(THRMZN1H_ADDR_SC),
+	PMIC_REG_DEF(THRMZN2L_ADDR_SC),
+	PMIC_REG_DEF(THRMZN2H_ADDR_SC),
+	PMIC_REG_DEF(THRMZN3L_ADDR_SC),
+	PMIC_REG_DEF(THRMZN3H_ADDR_SC),
+	PMIC_REG_DEF(THRMZN4L_ADDR_SC),
+	PMIC_REG_DEF(THRMZN4H_ADDR_SC),
 };
 
 static struct pmic_regs_def pmic_tt_regs[] = {
@@ -465,11 +507,20 @@ static struct pmic_regs_def pmic_tt_regs[] = {
 
 void dump_pmic_regs(void)
 {
-	u32 pmic_reg_cnt = ARRAY_SIZE(pmic_regs);
+	int vendor_id = chc.pmic_id & PMIC_VENDOR_ID_MASK;
+	u32 pmic_reg_cnt = 0;
 	u32 reg_index;
 	u8 data;
 	int retval;
+	struct pmic_regs_def *pmic_regs = NULL;
 
+	if (vendor_id == BASINCOVE_VENDORID) {
+		pmic_reg_cnt = ARRAY_SIZE(pmic_regs_bc);
+		pmic_regs = pmic_regs_bc;
+	} else if (vendor_id == SHADYCOVE_VENDORID) {
+		pmic_reg_cnt = ARRAY_SIZE(pmic_regs_sc);
+		pmic_regs = pmic_regs_sc;
+	}
 
 	dev_info(chc.dev, "PMIC Register dump\n");
 	dev_info(chc.dev, "====================\n");
@@ -477,7 +528,7 @@ void dump_pmic_regs(void)
 	for (reg_index = 0; reg_index < pmic_reg_cnt; reg_index++) {
 
 		retval = intel_scu_ipc_ioread8(pmic_regs[reg_index].addr,
-						&data);
+				&data);
 		if (retval)
 			dev_err(chc.dev, "Error in reading %x\n",
 				pmic_regs[reg_index].addr);
@@ -532,9 +583,19 @@ static void pmic_debugfs_init(void)
 	struct dentry *pmic_tt_regs_dir;
 
 	u32 reg_index;
-	u32 pmic_reg_cnt = ARRAY_SIZE(pmic_regs);
+	int vendor_id = chc.pmic_id & PMIC_VENDOR_ID_MASK;
+	u32 pmic_reg_cnt = 0;
 	u32 pmic_tt_reg_cnt = ARRAY_SIZE(pmic_tt_regs);
 	char name[PMIC_REG_NAME_LEN] = {0};
+	struct pmic_regs_def *pmic_regs = NULL;
+
+	if (vendor_id == BASINCOVE_VENDORID) {
+		pmic_reg_cnt = ARRAY_SIZE(pmic_regs_bc);
+		pmic_regs = pmic_regs_bc;
+	} else if (vendor_id == SHADYCOVE_VENDORID) {
+		pmic_reg_cnt = ARRAY_SIZE(pmic_regs_sc);
+		pmic_regs = pmic_regs_sc;
+	}
 
 	/* Creating a directory under debug fs for charger */
 	charger_debug_dir = debugfs_create_dir(DRIVER_NAME , NULL) ;
@@ -551,7 +612,7 @@ static void pmic_debugfs_init(void)
 	for (reg_index = 0; reg_index < pmic_reg_cnt; reg_index++) {
 
 		sprintf(name, "%s",
-				pmic_regs[reg_index].reg_name);
+			pmic_regs[reg_index].reg_name);
 
 		fentry = debugfs_create_file(name,
 				S_IRUGO,
@@ -605,12 +666,18 @@ static void pmic_bat_zone_changed(void)
 {
 	int retval;
 	int cur_zone;
+	u16 addr = 0;
 	u8 data = 0;
 	struct power_supply *psy_bat;
 	int vendor_id;
 
 	vendor_id = chc.pmic_id & PMIC_VENDOR_ID_MASK;
-	retval = intel_scu_ipc_ioread8(GET_THRMBATZONE_ADDR(vendor_id), &data);
+	if (vendor_id == BASINCOVE_VENDORID)
+		addr = THRMBATZONE_ADDR_BC;
+	else if (vendor_id == SHADYCOVE_VENDORID)
+		addr = THRMBATZONE_ADDR_SC;
+
+	retval = intel_scu_ipc_ioread8(addr, &data);
 	if (retval) {
 		dev_err(chc.dev, "Error in reading battery zone\n");
 		return;
@@ -677,6 +744,14 @@ int pmic_enable_vbus(bool enable)
 					0x0, CHGRCTRL1_OTGMODE_MASK);
 	}
 
+	/* If access is blocked return success to avoid additional
+	*  error handling at client side
+	*/
+	if (ret == -EACCES) {
+		dev_warn(chc.dev, "IPC blocked due to unsigned kernel/invalid battery\n");
+		ret = 0;
+	}
+
 	return ret;
 }
 
@@ -696,6 +771,14 @@ int pmic_enable_charging(bool enable)
 
 	ret = intel_scu_ipc_update_register(CHGRCTRL0_ADDR,
 			val, CHGRCTRL0_EXTCHRDIS_MASK);
+	/* If access is blocked return success to avoid additional
+	*  error handling at client side
+	*/
+	if (ret == -EACCES) {
+		dev_warn(chc.dev, "IPC blocked due to unsigned kernel/invalid battery\n");
+		ret = 0;
+	}
+
 	return ret;
 }
 
@@ -716,7 +799,22 @@ static inline int update_zone_cv(int zone, u8 reg_val)
 static inline int update_zone_temp(int zone, u16 adc_val)
 {
 	int ret;
-	u16 addr_tzone = THRMZN4H_ADDR - (2 * zone);
+	u16 addr_tzone;
+	int vendor_id = chc.pmic_id & PMIC_VENDOR_ID_MASK;
+
+	if (vendor_id == BASINCOVE_VENDORID)
+		addr_tzone = THRMZN4H_ADDR_BC - (2 * zone);
+	else if (vendor_id == SHADYCOVE_VENDORID) {
+		/* to take care of address-discontinuity of zone-registers */
+		int offset_zone = zone;
+		if (zone >= 3)
+			offset_zone += 1;
+
+		addr_tzone = THRMZN4H_ADDR_SC - (2 * offset_zone);
+	} else {
+		dev_err(chc.dev, "%s: invalid vendor id %X\n", __func__, vendor_id);
+		return -EINVAL;
+	}
 
 	ret = intel_scu_ipc_iowrite8(addr_tzone, (u8)(adc_val >> 8));
 	if (unlikely(ret))
@@ -805,15 +903,26 @@ int pmic_set_cv(int new_cv)
 	return 0;
 }
 
-int pmic_set_ilimmA(int ilim_mA)
+int pmic_set_ilimma(int ilim_ma)
 {
 	u8 reg_val;
+	int ret;
 
 	lookup_regval(pmic_inlmt, ARRAY_SIZE(pmic_inlmt),
-			ilim_mA, &reg_val);
-	dev_dbg(chc.dev, "Setting inlmt %d in register %x=%x\n", ilim_mA,
+			ilim_ma, &reg_val);
+	dev_dbg(chc.dev, "Setting inlmt %d in register %x=%x\n", ilim_ma,
 		CHGRCTRL1_ADDR, reg_val);
-	return intel_scu_ipc_iowrite8(CHGRCTRL1_ADDR, reg_val);
+	ret = intel_scu_ipc_iowrite8(CHGRCTRL1_ADDR, reg_val);
+
+	/* If access is blocked return success to avoid additional
+	*  error handling at client side
+	*/
+	if (ret == -EACCES) {
+		dev_warn(chc.dev, "IPC blocked due to unsigned kernel/invalid battery\n");
+		ret = 0;
+	}
+
+	return ret;
 }
 
 /**
@@ -834,7 +943,7 @@ static int pmic_read_adc_val(int channel, int *sensor_val,
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
 	indio_chan = iio_st_channel_get("BATTEMP", "BATTEMP0");
 #else
-	indio_chan = iio_channel_get(chc->dev, "BATTEMP0");
+	indio_chan = iio_channel_get(NULL, "BATTEMP0");
 #endif
 	if (IS_ERR_OR_NULL(indio_chan)) {
 		ret = PTR_ERR(indio_chan);
@@ -880,19 +989,37 @@ int pmic_get_battery_pack_temp(int *temp)
 
 static int get_charger_type()
 {
-	int ret;
+	int ret, i = 0;
 	u8 val;
 	int chgr_type;
 
-	ret = pmic_read_reg(USBSRCDETSTATUS_ADDR, &val);
-	if (ret != 0) {
-		dev_err(chc.dev,
-			"Error reading USBSRCDETSTAT-register 0x%2x\n",
-			USBSRCDETSTATUS_ADDR);
+	do {
+		ret = pmic_read_reg(USBSRCDETSTATUS_ADDR, &val);
+		if (ret != 0) {
+			dev_err(chc.dev,
+				"Error reading USBSRCDETSTAT-register 0x%2x\n",
+				USBSRCDETSTATUS_ADDR);
+			return 0;
+		}
+
+		i++;
+		dev_info(chc.dev, "Read USBSRCDETSTATUS val: %x\n", val);
+
+		if (val & USBSRCDET_SUSBHWDET_DETSUCC)
+			break;
+		else
+			msleep(USBSRCDET_SLEEP_TIME);
+	} while (i < USBSRCDET_RETRY_CNT);
+
+	if (!(val & USBSRCDET_SUSBHWDET_DETSUCC)) {
+		dev_err(chc.dev, "Charger detection unsuccessful after %dms\n",
+			i * USBSRCDET_SLEEP_TIME);
 		return 0;
 	}
 
 	chgr_type = (val & USBSRCDET_USBSRCRSLT_MASK) >> 2;
+	dev_info(chc.dev, "Charger type after detection complete: %d\n",
+			(val & USBSRCDET_USBSRCRSLT_MASK) >> 2);
 
 	switch (chgr_type) {
 	case PMIC_CHARGER_TYPE_SDP:
@@ -914,22 +1041,67 @@ static int get_charger_type()
 
 static void handle_internal_usbphy_notifications(int mask)
 {
-	struct power_supply_cable_props cap;
+	struct power_supply_cable_props cap = {0};
 
-	cap.chrg_evt = mask ?
-		POWER_SUPPLY_CHARGER_EVENT_CONNECT :
-		POWER_SUPPLY_CHARGER_EVENT_DISCONNECT;
-	cap.chrg_type = get_charger_type();
+	if (mask) {
+		cap.chrg_evt = POWER_SUPPLY_CHARGER_EVENT_CONNECT;
+		cap.chrg_type = get_charger_type();
+		chc.charger_type = cap.chrg_type;
+	} else {
+		cap.chrg_evt = POWER_SUPPLY_CHARGER_EVENT_DISCONNECT;
+		cap.chrg_type = chc.charger_type;
+	}
 
 	if (cap.chrg_type == POWER_SUPPLY_CHARGER_TYPE_USB_SDP)
-		cap.mA = 0;
+		cap.ma = 0;
 	else if ((cap.chrg_type == POWER_SUPPLY_CHARGER_TYPE_USB_DCP)
 			|| (cap.chrg_type == POWER_SUPPLY_TYPE_USB_CDP)
 			|| (cap.chrg_type == POWER_SUPPLY_CHARGER_TYPE_SE1))
-		cap.mA = 1500;
+		cap.ma = 1500;
 
+	dev_info(chc.dev, "Notifying OTG ev:%d, evt:%d, chrg_type:%d, mA:%d\n",
+			USB_EVENT_CHARGER, cap.chrg_evt, cap.chrg_type,
+			cap.ma);
 	atomic_notifier_call_chain(&chc.otg->notifier,
 			USB_EVENT_CHARGER, &cap);
+}
+
+/* ShadyCove-WA for VBUS removal detect issue */
+int pmic_handle_low_supply(void)
+{
+	int ret;
+	u8 val;
+	int vendor_id = chc.pmic_id & PMIC_VENDOR_ID_MASK;
+
+	dev_info(chc.dev, "Low-supply event received from external-charger\n");
+	if (vendor_id == BASINCOVE_VENDORID || !chc.vbus_connect_status) {
+		dev_err(chc.dev, "Ignore Low-supply event received\n");
+		return 0;
+	}
+
+	msleep(50);
+	ret = pmic_read_reg(SCHGRIRQ1_ADDR, &val);
+	if (ret) {
+		dev_err(chc.dev,
+			"Error reading SCHGRIRQ1-register 0x%2x\n",
+			SCHGRIRQ1_ADDR);
+		return ret;
+	}
+
+	if (!(val & SCHRGRIRQ1_SVBUSDET_MASK)) {
+		int mask = 0;
+
+		dev_info(chc.dev, "USB VBUS Removed. Notifying OTG driver\n");
+		chc.vbus_connect_status = false;
+
+		if (chc.is_internal_usb_phy)
+			handle_internal_usbphy_notifications(mask);
+		else
+			atomic_notifier_call_chain(&chc.otg->notifier,
+					USB_EVENT_VBUS, &mask);
+	}
+
+	return ret;
 }
 
 static void handle_level0_interrupt(u8 int_reg, u8 stat_reg,
@@ -1009,27 +1181,10 @@ static void handle_level1_interrupt(u8 int_reg, u8 stat_reg)
 		if (mask) {
 			dev_info(chc.dev,
 				"USB VBUS Detected. Notifying OTG driver\n");
-			ret = intel_scu_ipc_ioread8(USBIDSTAT_ADDR,
-							&usb_id_sts);
-			if (unlikely(ret)) {
-				dev_err(chc.dev, "Error reading USBIDSTAT reg\n");
-				return;
-			}
-			if ((stat_reg & CHRGRIRQ1_SUSBIDDET_MASK) &&
-				(!(is_aca(usb_id_sts)))) {
-				dev_dbg(chc.dev, "VBUS drive for device!!\n");
-				if (wake_lock_active(&chc.wakelock)) {
-					dev_dbg(chc.dev,
-						"Releasing wakelock for device!!\n");
-					wake_unlock(&chc.wakelock);
-				}
-			}
+			chc.vbus_connect_status = true;
 		} else {
 			dev_info(chc.dev, "USB VBUS Removed. Notifying OTG driver\n");
-			if (wake_lock_active(&chc.wakelock)) {
-				dev_dbg(chc.dev, "Releasing the wakelock!!\n");
-				wake_unlock(&chc.wakelock);
-			}
+			chc.vbus_connect_status = false;
 		}
 
 		if (chc.is_internal_usb_phy)
@@ -1073,7 +1228,7 @@ static irqreturn_t pmic_isr(int irq, void *data)
 	u16 pmic_intr;
 	u8 chgrirq0_int;
 	u8 chgrirq1_int;
-	u8 mask = (CHRGRIRQ1_SVBUSDET_MASK);
+	u8 mask = ((CHRGRIRQ1_SVBUSDET_MASK) | (CHRGRIRQ1_SUSBIDDET_MASK));
 
 	pmic_intr = ioread16(chc.pmic_intr_iomap);
 	chgrirq0_int = (u8)pmic_intr;
@@ -1082,8 +1237,12 @@ static irqreturn_t pmic_isr(int irq, void *data)
 	if (!chgrirq1_int && !(chgrirq0_int & PMIC_CHRGR_INT0_MASK))
 		return IRQ_NONE;
 
-	if ((chgrirq1_int & mask) && (!wake_lock_active(&chc.wakelock)))
-		wake_lock(&chc.wakelock);
+	if ((chgrirq1_int & mask) && (!wake_lock_active(&chc.wakelock))) {
+		/*
+		Setting the Usb wake lock hold timeout to a safe value of 5s.
+		*/
+		wake_lock_timeout(&chc.wakelock, USB_WAKE_LOCK_TIMEOUT);
+	}
 
 	dev_dbg(chc.dev, "%s", __func__);
 
@@ -1176,12 +1335,6 @@ static int pmic_init(void)
 	u8 reg_val;
 	struct ps_pse_mod_prof *bcprof = chc.actual_bcprof;
 
-	ret = intel_scu_ipc_update_register(CHGRCTRL0_ADDR, SWCONTROL_ENABLE,
-			CHGRCTRL0_SWCONTROL_MASK);
-	if (ret) {
-		dev_err(chc.dev, "Error enabling sw control!!\n");
-		return ret;
-	}
 
 	temp_mon_ranges = min_t(u16, bcprof->temp_mon_ranges,
 			BATT_TEMP_NR_RNG);
@@ -1202,6 +1355,7 @@ static int pmic_init(void)
 				i);
 			return ret;
 		}
+
 		if (chc.pdata->cc_to_reg)
 			chc.pdata->cc_to_reg(bcprof->temp_mon_range[i].
 					full_chrg_cur, &reg_val);
@@ -1249,6 +1403,16 @@ static int pmic_init(void)
 	ret = pmic_update_tt(TT_CUSTOMFIELDEN_ADDR,
 				TT_HOT_COLD_LC_MASK,
 				TT_HOT_COLD_LC_DIS);
+
+	if (unlikely(ret)) {
+		dev_err(chc.dev, "Error updating TT_CUSTOMFIELD_EN reg\n");
+		return ret;
+	}
+
+	if (chc.pdata->inlmt_to_reg)
+		chc.pdata->inlmt_to_reg(USBINPUTICC100VAL, &reg_val);
+
+	ret = pmic_write_tt(TT_USBINPUTICC100VAL_ADDR, reg_val);
 	return ret;
 }
 
@@ -1260,7 +1424,7 @@ static inline void print_ps_pse_mod_prof(struct ps_pse_mod_prof *bcprof)
 	dev_info(chc.dev, "ChrgProf: battery_type:%u\n", bcprof->battery_type);
 	dev_info(chc.dev, "ChrgProf: capacity:%u\n", bcprof->capacity);
 	dev_info(chc.dev, "ChrgProf: voltage_max:%u\n", bcprof->voltage_max);
-	dev_info(chc.dev, "ChrgProf: chrg_term_mA:%u\n", bcprof->chrg_term_mA);
+	dev_info(chc.dev, "ChrgProf: chrg_term_ma:%u\n", bcprof->chrg_term_ma);
 	dev_info(chc.dev, "ChrgProf: low_batt_mV:%u\n", bcprof->low_batt_mV);
 	dev_info(chc.dev, "ChrgProf: disch_tmp_ul:%d\n", bcprof->disch_tmp_ul);
 	dev_info(chc.dev, "ChrgProf: disch_tmp_ll:%d\n", bcprof->disch_tmp_ll);
@@ -1342,7 +1506,7 @@ static void set_pmic_batt_prof(struct ps_pse_mod_prof *new_prof,
 	new_prof->battery_type = bprof->battery_type;
 	new_prof->capacity = bprof->capacity;
 	new_prof->voltage_max =  bprof->voltage_max;
-	new_prof->chrg_term_mA = bprof->chrg_term_mA;
+	new_prof->chrg_term_ma = bprof->chrg_term_ma;
 	new_prof->low_batt_mV =  bprof->low_batt_mV;
 	new_prof->disch_tmp_ul = bprof->disch_tmp_ul;
 	new_prof->disch_tmp_ll = bprof->disch_tmp_ll;
@@ -1400,8 +1564,12 @@ static int pmic_check_initial_events(void)
 		schedule_work(&chc.evt_work);
 	}
 
-	if ((evt->chgrirq1_stat & mask) && !wake_lock_active(&chc.wakelock))
-		wake_lock(&chc.wakelock);
+	if ((evt->chgrirq1_stat & mask) && !wake_lock_active(&chc.wakelock)) {
+		/*
+		Setting the Usb wake lock hold timeout to a safe value of 5s.
+		*/
+		wake_lock_timeout(&chc.wakelock, USB_WAKE_LOCK_TIMEOUT);
+	}
 
 	pmic_bat_zone_changed();
 
@@ -1421,7 +1589,6 @@ static int pmic_chrgr_probe(struct platform_device *pdev)
 {
 	int retval = 0;
 	u8 val;
-	int reg_index;
 
 	if (!pdev)
 		return -ENODEV;
@@ -1445,8 +1612,8 @@ static int pmic_chrgr_probe(struct platform_device *pdev)
 	}
 
 	dev_info(chc.dev, "PMIC-ID: %x\n", chc.pmic_id);
-	if ((chc.pmic_id & PMIC_VENDOR_ID_MASK) != BASINCOVE_VENDORID) {
-		retval = pmic_read_reg(CHGRSTATUS_ADDR, &val);
+	if ((chc.pmic_id & PMIC_VENDOR_ID_MASK) == SHADYCOVE_VENDORID) {
+		retval = pmic_read_reg(USBPATH_ADDR, &val);
 		if (retval) {
 			dev_err(chc.dev,
 				"Error reading CHGRSTATUS-register 0x%2x\n",
@@ -1454,17 +1621,11 @@ static int pmic_chrgr_probe(struct platform_device *pdev)
 			return retval;
 		}
 
-		if (val & CHGRSTATUS_USBSEL_MASK) {
+		if (val & USBPATH_USBSEL_MASK) {
 			dev_info(chc.dev, "SOC-Internal-USBPHY used\n");
 			chc.is_internal_usb_phy = true;
-		}
-	}
-
-	for (reg_index = 0; reg_index < ARRAY_SIZE(pmic_regs); reg_index++) {
-		int vendor_id = chc.pmic_id & PMIC_VENDOR_ID_MASK;
-		if (!strcmp(pmic_regs[reg_index].reg_name, "THRMBATZONE_ADDR"))
-			pmic_regs[reg_index].addr
-				= GET_THRMBATZONE_ADDR(vendor_id);
+		} else
+			dev_info(chc.dev, "External-USBPHY used\n");
 	}
 
 	chc.sfi_bcprof = kzalloc(sizeof(struct ps_batt_chg_prof),
@@ -1483,6 +1644,11 @@ static int pmic_chrgr_probe(struct platform_device *pdev)
 		chc.invalid_batt = true;
 		chc.sfi_bcprof = NULL;
 	}
+
+	retval = intel_scu_ipc_update_register(CHGRCTRL0_ADDR, SWCONTROL_ENABLE,
+			CHGRCTRL0_SWCONTROL_MASK);
+	if (retval)
+		dev_err(chc.dev, "Error enabling sw control. Charging may continue in h/w control mode\n");
 
 	if (!chc.invalid_batt) {
 		chc.actual_bcprof = kzalloc(sizeof(struct ps_pse_mod_prof),
@@ -1508,17 +1674,13 @@ static int pmic_chrgr_probe(struct platform_device *pdev)
 				chc.sfi_bcprof->batt_prof);
 		print_ps_pse_mod_prof(chc.actual_bcprof);
 		retval = pmic_init();
-		if (retval) {
-			dev_err(chc.dev, "Error in Initializing PMIC\n");
-			kfree(chc.sfi_bcprof);
-			kfree(chc.actual_bcprof);
-			kfree(chc.runtime_bcprof);
-			return retval;
-		}
+		if (retval)
+			dev_err(chc.dev, "Error in Initializing PMIC. Continue in h/w charging mode\n");
 
 		memcpy(chc.runtime_bcprof, chc.actual_bcprof,
 			sizeof(struct ps_pse_mod_prof));
 	}
+
 	chc.pmic_intr_iomap = ioremap_nocache(PMIC_SRAM_INTR_ADDR, 8);
 	if (!chc.pmic_intr_iomap) {
 		dev_err(&pdev->dev, "ioremap Failed\n");
@@ -1529,9 +1691,9 @@ static int pmic_chrgr_probe(struct platform_device *pdev)
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
 	chc.otg = usb_get_transceiver();
 #else
-	chc.otg = usb_get_phy(USB_PHY_TYPE_USB3);
+	chc.otg = usb_get_phy(USB_PHY_TYPE_USB2);
 #endif
-	if (!chc.otg) {
+	if (!chc.otg || IS_ERR(chc.otg)) {
 		dev_err(&pdev->dev, "Failed to get otg transceiver!!\n");
 		retval = -ENOMEM;
 		goto otg_req_failed;

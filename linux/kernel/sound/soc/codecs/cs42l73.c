@@ -255,6 +255,8 @@ static bool cs42l73_readable_register(struct device *dev, unsigned int reg)
 	case CS42L73_ESLMVSPMA:
 	case CS42L73_IM1:
 	case CS42L73_IM2:
+	case CS42L73_IS1:
+	case CS42L73_IS2:
 		return true;
 	default:
 		return false;
@@ -414,10 +416,10 @@ static const struct snd_kcontrol_new ear_amp_ctl =
 static const char * const loopback_text[] = {
 	"Enable", "Disable"};
 
-static const unsigned int loopback_values[] = { 0x3e, 0x3f };
+static const unsigned int loopback_values[] = { 0, 1 };
 
 static const struct soc_enum esl_loopback_enum =
-	SOC_VALUE_ENUM_SINGLE(CS42L73_ESLMIPMA, 0, 0x3f,
+	SOC_VALUE_ENUM_SINGLE(CS42L73_ESLMIPMA, 0, 1,
 			      ARRAY_SIZE(loopback_text),
 			      loopback_text,
 			      loopback_values);
@@ -426,7 +428,7 @@ static const struct snd_kcontrol_new esl_loopback_mux =
 	SOC_DAPM_ENUM("ESL Loopback Mux", esl_loopback_enum);
 
 static const struct soc_enum spk_loopback_enum =
-	SOC_VALUE_ENUM_SINGLE(CS42L73_SPKMIPMA, 0, 0x3f,
+	SOC_VALUE_ENUM_SINGLE(CS42L73_SPKMIPMA, 0, 1,
 			      ARRAY_SIZE(loopback_text),
 			      loopback_text,
 			      loopback_values);
@@ -435,7 +437,7 @@ static const struct snd_kcontrol_new spk_loopback_mux =
 	SOC_DAPM_ENUM("SPK Loopback Mux", spk_loopback_enum);
 
 static const struct soc_enum hl_loopback_enum =
-	SOC_VALUE_ENUM_SINGLE(CS42L73_HLBIPBA, 0, 0x3f,
+	SOC_VALUE_ENUM_SINGLE(CS42L73_HLBIPBA, 0, 1,
 			      ARRAY_SIZE(loopback_text),
 			      loopback_text,
 			      loopback_values);
@@ -1413,16 +1415,6 @@ int cs42l73_hp_detection(struct snd_soc_codec *codec,
 		}
 	}
 
-#ifdef CONFIG_SWITCH_MID
-	if (status) {
-		if (status == SND_JACK_HEADPHONE)
-			mid_headset_report((1<<1));
-		else if (status == SND_JACK_HEADSET)
-			mid_headset_report(1);
-	} else {
-		mid_headset_report(0);
-	}
-#endif
 	pr_debug("Plug Status = %x\n", plug_status);
 	pr_debug("Jack Status = %x\n", status);
 	return status;
@@ -1498,7 +1490,7 @@ static struct regmap_config cs42l73_regmap = {
 	.cache_type = REGCACHE_RBTREE,
 };
 
-static __devinit int cs42l73_i2c_probe(struct i2c_client *i2c_client,
+static int cs42l73_i2c_probe(struct i2c_client *i2c_client,
 				       const struct i2c_device_id *id)
 {
 	struct cs42l73_private *cs42l73;
@@ -1573,7 +1565,7 @@ err:
 	return ret;
 }
 
-static __devexit int cs42l73_i2c_remove(struct i2c_client *client)
+static int cs42l73_i2c_remove(struct i2c_client *client)
 {
 	struct cs42l73_private *cs42l73 = i2c_get_clientdata(client);
 
@@ -1597,7 +1589,7 @@ static struct i2c_driver cs42l73_i2c_driver = {
 		   },
 	.id_table = cs42l73_id,
 	.probe = cs42l73_i2c_probe,
-	.remove = __devexit_p(cs42l73_i2c_remove),
+	.remove = cs42l73_i2c_remove,
 
 };
 

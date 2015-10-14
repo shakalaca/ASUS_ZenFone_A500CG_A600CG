@@ -52,33 +52,67 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /*************************************************************************/ /*!
  Logging type
 */ /**************************************************************************/
-#define RGXFWIF_LOG_TYPE_NONE			 0x00000000
-#define RGXFWIF_LOG_TYPE_TRACE			 0x00000001
-#define RGXFWIF_LOG_TYPE_GROUP_MAIN		 0x00000002
-#define RGXFWIF_LOG_TYPE_GROUP_MTS		 0x00000004
-#define RGXFWIF_LOG_TYPE_GROUP_CLEANUP	 0x00000008
-#define RGXFWIF_LOG_TYPE_GROUP_CSW		 0x00000010
-#define RGXFWIF_LOG_TYPE_GROUP_BIF		 0x00000020
-#define RGXFWIF_LOG_TYPE_GROUP_PM		 0x00000040
-#define RGXFWIF_LOG_TYPE_GROUP_RTD		 0x00000080
-#define RGXFWIF_LOG_TYPE_GROUP_SPM		 0x00000100
-#define RGXFWIF_LOG_TYPE_GROUP_POW		 0x00000200
-#define RGXFWIF_LOG_TYPE_GROUP_HWR		 0x00000400
-#define RGXFWIF_LOG_TYPE_GROUP_DEBUG	 0x00000800
-#define RGXFWIF_LOG_TYPE_GROUP_MASK		 0x00000FFE
-#define RGXFWIF_LOG_TYPE_MASK			 0x00000FFF
+#define RGXFWIF_LOG_TYPE_NONE			0x00000000
+#define RGXFWIF_LOG_TYPE_TRACE			0x00000001
+#define RGXFWIF_LOG_TYPE_GROUP_MAIN		0x00000002
+#define RGXFWIF_LOG_TYPE_GROUP_MTS		0x00000004
+#define RGXFWIF_LOG_TYPE_GROUP_CLEANUP	0x00000008
+#define RGXFWIF_LOG_TYPE_GROUP_CSW		0x00000010
+#define RGXFWIF_LOG_TYPE_GROUP_BIF		0x00000020
+#define RGXFWIF_LOG_TYPE_GROUP_PM		0x00000040
+#define RGXFWIF_LOG_TYPE_GROUP_RTD		0x00000080
+#define RGXFWIF_LOG_TYPE_GROUP_SPM		0x00000100
+#define RGXFWIF_LOG_TYPE_GROUP_POW		0x00000200
+#define RGXFWIF_LOG_TYPE_GROUP_HWR		0x00000400
+#define RGXFWIF_LOG_TYPE_GROUP_HWP		0x00000800
+#define RGXFWIF_LOG_TYPE_GROUP_DEBUG	0x80000000
+#define RGXFWIF_LOG_TYPE_GROUP_MASK		0x80000FFE
+#define RGXFWIF_LOG_TYPE_MASK			0x80000FFF
 
-#define RGXFWIF_LOG_ENABLED_GROUPS_LIST(types)	(((types) & RGXFWIF_LOG_TYPE_GROUP_MAIN)	?("main ")		:("")),		\
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_MTS)		?("mts ")		:("")),		\
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_CLEANUP)	?("cleanup ")	:("")),		\
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_CSW)		?("csw ")		:("")),		\
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_BIF)		?("bif ")		:("")),		\
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_PM)		?("pm ")		:("")),		\
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_RTD)		?("rtd ")		:("")),		\
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_SPM)		?("spm ")		:("")),		\
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_POW)		?("pow ")		:("")),		\
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_HWR)		?("hwr ")		:("")),     \
-												(((types) & RGXFWIF_LOG_TYPE_GROUP_DEBUG)	?("debug ")		:(""))
+/* String used in pvrdebug -h output */
+#define RGXFWIF_LOG_GROUPS_STRING_LIST   "main,mts,cleanup,csw,bif,pm,rtd,spm,pow,hwr,hwp"
+
+/* Table entry to map log group strings to log type value */
+typedef struct {
+	const IMG_CHAR* pszLogGroupName;
+	IMG_UINT32      ui32LogGroupType;
+} RGXFWIF_LOG_GROUP_MAP_ENTRY;
+
+/*
+  Macro for use with the RGXFWIF_LOG_GROUP_MAP_ENTRY type to create a lookup
+  table where needed. Keep log group names short, no more than 20 chars.
+*/
+#define RGXFWIF_LOG_GROUP_NAME_VALUE_MAP { "main",    RGXFWIF_LOG_TYPE_GROUP_MAIN }, \
+                                         { "mts",     RGXFWIF_LOG_TYPE_GROUP_MTS }, \
+                                         { "cleanup", RGXFWIF_LOG_TYPE_GROUP_CLEANUP }, \
+                                         { "csw",     RGXFWIF_LOG_TYPE_GROUP_CSW }, \
+                                         { "bif",     RGXFWIF_LOG_TYPE_GROUP_BIF }, \
+                                         { "pm",      RGXFWIF_LOG_TYPE_GROUP_PM }, \
+                                         { "rtd",     RGXFWIF_LOG_TYPE_GROUP_RTD }, \
+                                         { "spm",     RGXFWIF_LOG_TYPE_GROUP_SPM }, \
+                                         { "pow",     RGXFWIF_LOG_TYPE_GROUP_POW }, \
+                                         { "hwr",     RGXFWIF_LOG_TYPE_GROUP_HWR }, \
+                                         { "hwp",     RGXFWIF_LOG_TYPE_GROUP_HWP }, \
+                                         { "debug",   RGXFWIF_LOG_TYPE_GROUP_DEBUG }
+
+
+/* Used in print statements to display log group state, one %s per group defined */
+#define RGXFWIF_LOG_ENABLED_GROUPS_LIST_PFSPEC  "%s%s%s%s%s%s%s%s%s%s%s%s"
+
+/* Used in a print statement to display log group state, one per group */
+#define RGXFWIF_LOG_ENABLED_GROUPS_LIST(types)  (((types) & RGXFWIF_LOG_TYPE_GROUP_MAIN)	?("main ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_MTS)		?("mts ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_CLEANUP)	?("cleanup ")	:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_CSW)		?("csw ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_BIF)		?("bif ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_PM)		?("pm ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_RTD)		?("rtd ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_SPM)		?("spm ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_POW)		?("pow ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_HWR)		?("hwr ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_HWP)		?("hwp ")		:("")),		\
+                                                (((types) & RGXFWIF_LOG_TYPE_GROUP_DEBUG)	?("debug ")		:(""))
+
 
 /*! Logging function */
 typedef IMG_VOID (*PFN_RGXFW_LOG) (const IMG_CHAR* pszFmt, ...);
@@ -153,6 +187,10 @@ typedef IMG_UINT32 RGXFWIF_HWR_STATEFLAGS;
 #define RGXFWIF_DM_STATE_NEEDS_SKIP					(0x1 << 2)	/*!< DM need to skip to next cmd before resuming processing */
 #define RGXFWIF_DM_STATE_NEEDS_PR_CLEANUP			(0x1 << 3)	/*!< DM need partial render cleanup before resuming processing */
 #define RGXFWIF_DM_STATE_NEEDS_TRACE_CLEAR			(0x1 << 4)	/*!< DM need to increment Recovery Count once fully recovered */
+#define RGXFWIF_DM_STATE_GUILTY_LOCKUP				(0x1 << 5)	/*!< DM was identified as locking up and causing HWR */
+#define RGXFWIF_DM_STATE_INNOCENT_LOCKUP			(0x1 << 6)	/*!< DM was innocently affected by another lockup which caused HWR */
+#define RGXFWIF_DM_STATE_GUILTY_OVERRUNING			(0x1 << 7)	/*!< DM was identified as over-running and causing HWR */
+#define RGXFWIF_DM_STATE_INNOCENT_OVERRUNING		(0x1 << 8)	/*!< DM was innocently affected by another DM over-running which caused HWR */
 typedef IMG_UINT32 RGXFWIF_HWR_RECOVERYFLAGS;
 
 typedef struct _RGXFWIF_TRACEBUF_
@@ -162,7 +200,10 @@ typedef struct _RGXFWIF_TRACEBUF_
 	RGXFWIF_TRACEBUF_SPACE	sTraceBuf[RGXFW_THREAD_NUM];
 
 	IMG_UINT16				aui16HwrDmLockedUpCount[RGXFWIF_DM_MAX];
+	IMG_UINT16				aui16HwrDmOverranCount[RGXFWIF_DM_MAX];
 	IMG_UINT16				aui16HwrDmRecoveredCount[RGXFWIF_DM_MAX];
+	IMG_UINT16				aui16HwrDmFalseDetectCount[RGXFWIF_DM_MAX];
+	IMG_UINT32				ui32HwrCounter;
 	RGXFWIF_DEV_VIRTADDR	apsHwrDmFWCommonContext[RGXFWIF_DM_MAX];
 
 	IMG_UINT32				aui32CrPollAddr[RGXFW_THREAD_NUM];
@@ -177,7 +218,7 @@ typedef struct _RGXFWIF_TRACEBUF_
 	IMG_UINT32				ui32HWPerfSize;      /* Constant after setup, needed in FW */
 	IMG_UINT32				ui32HWPerfDropCount; /* The number of times the FW drops a packet due to buffer full */
 	
-	/* These next three items are only valid at runtime whe the FW is built
+	/* These next three items are only valid at runtime when the FW is built
 	 * with RGX_HWPERF_UTILIZATION defined in rgxfw_hwperf.c */
 	IMG_UINT32				ui32HWPerfUt;        /* Buffer utilisation, high watermark of bytes in use */
 	IMG_UINT32				ui32FirstDropOrdinal;/* The ordinal of the first packet the FW dropped */
@@ -232,19 +273,66 @@ typedef struct _RGXFWIF_GPU_UTIL_FWCB_
 	RGXFWIF_GPU_UTIL_FWCB_ENTRY	RGXFW_ALIGN aui64CB[RGXFWIF_GPU_UTIL_FWCB_SIZE];
 } RGXFWIF_GPU_UTIL_FWCB;
 
+/* HWR Data */
+typedef enum _RGX_HWRTYPE_
+{
+	RGX_HWRTYPE_UNKNOWNFAILURE 	= 0,
+	RGX_HWRTYPE_OVERRUN 		= 1,
+	RGX_HWRTYPE_POLLFAILURE 	= 2,
+	RGX_HWRTYPE_BIF0FAILURE 	= 3,
+	RGX_HWRTYPE_BIF1FAILURE 	= 4,
+} RGX_HWRTYPE;
+
+#define RGXFWIF_BIFFAULTBIT_GET(ui32BIFMMUStatus) \
+		((ui32BIFMMUStatus & ~RGX_CR_BIF_FAULT_BANK0_MMU_STATUS_FAULT_CLRMSK) >> RGX_CR_BIF_FAULT_BANK0_MMU_STATUS_FAULT_SHIFT)
+
+#define RGXFWIF_HWRTYPE_BIF_BANK_GET(eHWRType) ((eHWRType == RGX_HWRTYPE_BIF0FAILURE) ? 0 : 1 )
+
+typedef struct _RGX_BIFINFO_
+{
+	IMG_UINT64	RGXFW_ALIGN		ui64BIFReqStatus;
+	IMG_UINT64	RGXFW_ALIGN		ui64BIFMMUStatus;
+} RGX_BIFINFO;
+
+typedef struct _RGX_POLLINFO_
+{
+	IMG_UINT32	ui32ThreadNum;
+	IMG_UINT32 	ui32CrPollAddr;
+	IMG_UINT32 	ui32CrPollValue;
+} RGX_POLLINFO;
+
 typedef struct _RGX_HWRINFO_
 {
-	IMG_UINT32	ui32FrameNum;
-	IMG_UINT32	ui32PID;
-	IMG_UINT32	ui32ActiveHWRTData;
-	IMG_UINT32	ui32HWRNumber;
+	union
+	{
+		RGX_BIFINFO		sBIFInfo;
+		RGX_POLLINFO	sPollInfo;
+	} uHWRData;
+
+	IMG_UINT64	RGXFW_ALIGN		ui64CRTimer;
+	IMG_UINT32					ui32FrameNum;
+	IMG_UINT32					ui32PID;
+	IMG_UINT32					ui32ActiveHWRTData;
+	IMG_UINT32					ui32HWRNumber;
+	IMG_UINT32					ui32EventStatus;
+	IMG_UINT32					ui32HWRRecoveryFlags;
+	RGX_HWRTYPE 				eHWRType;
+
+	RGXFWIF_DM					eDM;
 } RGX_HWRINFO;
 
-#define RGXFWIF_MAX_HWINFO 10
+#define RGXFWIF_HWINFO_MAX_FIRST 8							/* Number of first HWR logs recorded (never overwritten by newer logs) */
+#define RGXFWIF_HWINFO_MAX_LAST 8							/* Number of latest HWR logs (older logs are overwritten by newer logs) */
+#define RGXFWIF_HWINFO_MAX (RGXFWIF_HWINFO_MAX_FIRST + RGXFWIF_HWINFO_MAX_LAST)	/* Total number of HWR logs stored in a buffer */
+#define RGXFWIF_HWINFO_LAST_INDEX (RGXFWIF_HWINFO_MAX - 1)	/* Index of the last log in the HWR log buffer */
 typedef struct _RGXFWIF_HWRINFOBUF_
 {
-	RGX_HWRINFO sHWRInfo[RGXFWIF_DM_MAX][RGXFWIF_MAX_HWINFO];
-	IMG_UINT32	ui32WriteIndex[RGXFWIF_DM_MAX];
+	RGX_HWRINFO sHWRInfo[RGXFWIF_HWINFO_MAX];
+
+	IMG_UINT32	ui32FirstCrPollAddr[RGXFW_THREAD_NUM];
+	IMG_UINT32	ui32FirstCrPollValue[RGXFW_THREAD_NUM];
+	IMG_UINT32	ui32WriteIndex;
+	IMG_BOOL	bDDReqIssued;
 } RGXFWIF_HWRINFOBUF;
 
 /*! RGX firmware Init Config Data */
@@ -265,10 +353,10 @@ typedef struct _RGXFWIF_HWRINFOBUF_
 #define RGXFWIF_INICFG_VDM_CTX_STORE_MODE_LIST		(RGX_CR_VDM_CONTEXT_STORE_MODE_MODE_LIST << 12)
 #define RGXFWIF_INICFG_VDM_CTX_STORE_MODE_CLRMSK	(0xFFFFCFFFU)
 #define RGXFWIF_INICFG_VDM_CTX_STORE_MODE_SHIFT		(12)
-#if defined(RGX_FEATURE_RAY_TRACING)
 #define RGXFWIF_INICFG_SHG_BYPASS_EN		(0x1 << 14)
-#endif
-#define RGXFWIF_INICFG_ALL					(0x00007FDFU)
+#define RGXFWIF_INICFG_RTU_BYPASS_EN		(0x1 << 15)
+#define RGXFWIF_INICFG_REGCONFIG_EN		(0x1 << 16)
+#define RGXFWIF_INICFG_ALL					(0x0001FFDFU)
 #define RGXFWIF_SRVCFG_DISABLE_PDP_EN 		(0x1 << 31)
 #define RGXFWIF_SRVCFG_ALL					(0x80000000U)
 #define RGXFWIF_FILTCFG_TRUNCATE_HALF		(0x1 << 3)
@@ -289,6 +377,17 @@ typedef enum
 	RGX_ACTIVEPM_FORCE_ON = 1,
 	RGX_ACTIVEPM_DEFAULT = 3
 } RGX_ACTIVEPM_CONF;
+
+/*!
+* Active Power Latency default in ms
+*/
+#define RGX_APM_LATENCY_DEFAULT			(500)
+
+/*!
+* Core Clock Speed in Hz
+*/
+#define RGX_CORE_CLOCK_SPEED_DEFAULT		(400000000)
+
 
 /*!
  ******************************************************************************

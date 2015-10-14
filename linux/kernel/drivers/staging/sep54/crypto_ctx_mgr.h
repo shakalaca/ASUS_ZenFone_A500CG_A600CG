@@ -50,6 +50,11 @@ enum host_ctx_state {
 	   - Requires INIT on next SeP operations. */
 };
 
+struct crypto_ctx_uid {
+	u64 addr;
+	u32 cntr;
+};
+
 /* Algorithm family/class enumeration */
 enum crypto_alg_class {
 	ALG_CLASS_NONE = 0,
@@ -63,7 +68,7 @@ enum crypto_alg_class {
 
 /* The common fields at start of a user context strcuture */
 #define HOST_CTX_COMMON						\
-		u64 uid;					\
+		struct crypto_ctx_uid uid;					\
 		/* To hold CTX_VALID_SIG when initialized */	\
 		enum host_ctx_state state;			\
 		/*determine the context specification*/		\
@@ -278,7 +283,7 @@ enum host_ctx_state ctxmgr_get_ctx_state(const struct client_crypto_ctx_info
  * (Assumes invoked within session mutex so no need for counter protection)
  */
 void ctxmgr_set_ctx_id(struct client_crypto_ctx_info *ctx_info,
-		       const u64 ctx_id);
+		       const struct crypto_ctx_uid ctx_id);
 
 /**
  * ctxmgr_get_ctx_id() - Return the unique ID for current user context
@@ -286,7 +291,8 @@ void ctxmgr_set_ctx_id(struct client_crypto_ctx_info *ctx_info,
  *
  * Returns Allocated ID (or CTX_INVALID_ID if none)
  */
-u64 ctxmgr_get_ctx_id(struct client_crypto_ctx_info *ctx_info);
+struct crypto_ctx_uid ctxmgr_get_ctx_id(struct client_crypto_ctx_info
+					*ctx_info);
 
 /**
  * ctxmgr_get_session_id() - Return the session ID of given context ID
@@ -297,7 +303,7 @@ u64 ctxmgr_get_ctx_id(struct client_crypto_ctx_info *ctx_info);
  * in a manner that can allow access to a session of another process
  * Returns u32
  */
-u32 ctxmgr_get_session_id(struct client_crypto_ctx_info *ctx_info);
+u64 ctxmgr_get_session_id(struct client_crypto_ctx_info *ctx_info);
 
 /**
  * ctxmgr_get_alg_class() - Get algorithm class of context
@@ -665,7 +671,7 @@ int ctxmgr_sep_cache_get_size(void *sep_cache);
  * Returns cache index
  */
 int ctxmgr_sep_cache_alloc(void *sep_cache,
-			   u64 ctx_id, int *load_required_p);
+			   struct crypto_ctx_uid ctx_id, int *load_required_p);
 
 /**
  * ctxmgr_sep_cache_invalidate() - Invalidate cache entry for given context ID
@@ -677,7 +683,7 @@ int ctxmgr_sep_cache_alloc(void *sep_cache,
  * Returns void
  */
 void ctxmgr_sep_cache_invalidate(void *sep_cache,
-				 u64 ctx_id,
+				 struct crypto_ctx_uid ctx_id,
 				 u64 id_mask);
 
 #endif /*_CRYPTO_CTX_MGR_H_*/

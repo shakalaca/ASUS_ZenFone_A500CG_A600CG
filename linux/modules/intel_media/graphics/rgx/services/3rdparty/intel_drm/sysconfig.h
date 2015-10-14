@@ -43,6 +43,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "pvrsrv_device.h"
 #include "rgxdevice.h"
+#include "rgxsysinfo.h"
 
 #if !defined(__SYSCCONFIG_H__)
 #define __SYSCCONFIG_H__
@@ -65,16 +66,14 @@ static PVRSRV_ERROR SysDevicePrePowerState(
 		PVRSRV_DEV_POWER_STATE eCurrentPowerState,
 		IMG_BOOL bForced);
 
-#define SYS_RGX_ACTIVE_POWER_LATENCY_MS (10)
 static RGX_TIMING_INFORMATION sRGXTimingInfo =
 {
-	.ui32CoreClockSpeed        = 230000000, /* changed from 100000000, */
-	//.ui32CoreClockSpeed        = 400000000, /* changed from 100000000, */
-	.bEnableActivePM           = IMG_FALSE,
-	.bEnableRDPowIsland	       = IMG_FALSE,
+	.ui32CoreClockSpeed		= RGX_CORE_CLOCK_SPEED_DEFAULT,
+	.bEnableActivePM		= IMG_TRUE,
+	.bEnableRDPowIsland		= IMG_FALSE,
 
 	/* ui32ActivePMLatencyms */
-	.ui32ActivePMLatencyms 	   = SYS_RGX_ACTIVE_POWER_LATENCY_MS
+	.ui32ActivePMLatencyms		= RGX_APM_LATENCY_DEFAULT
 };
 
 static RGX_DATA sRGXData =
@@ -90,7 +89,7 @@ static PVRSRV_DEVICE_CONFIG sDevices[] =
 		.pszName                = "RGX",
 
 		/* Device setup information */
-		.sRegsCpuPBase.uiAddr   = { 0 },
+		.sRegsCpuPBase          = { 0 },
 		.ui32RegsSize           = 0,
 		.ui32IRQ                = 0,
 		.bIRQIsShared           = IMG_TRUE,
@@ -157,11 +156,13 @@ static PVRSRV_SYSTEM_CONFIG sSysConfig = {
 
 #define VENDOR_ID_MERRIFIELD        0x8086
 #define DEVICE_ID_MERRIFIELD        0x1180
+#define DEVICE_ID_MOOREFIELD        0x1480
 
 #define RGX_REG_OFFSET              0x100000
 #define RGX_REG_SIZE                0x10000
 
-#define IS_MRFLD(dev) (((dev)->pci_device & 0xFFF8) == DEVICE_ID_MERRIFIELD)
+#define IS_MRFLD(dev) ((((dev)->pci_device & 0xFFF8) == DEVICE_ID_MERRIFIELD) || \
+			(((dev)->pci_device & 0xFFF8) == DEVICE_ID_MOOREFIELD))
 
 /*****************************************************************************
  * system specific data structures

@@ -34,6 +34,8 @@
 #define		PS_CANC       0x05
 #define		PS_THD        0x06
 #define		RESERVED      0x07
+#define		PS_THDL       0x06
+#define		PS_THDH       0x07
 
 #define		PS_DATA       0x08
 #define		ALS_DATA      0x09
@@ -112,8 +114,8 @@ struct CM36283_platform_data {
 	uint16_t golden_adc;
 	int (*power)(int, uint8_t); /* power to the chip */
 	uint8_t slave_addr;
-	uint8_t ps_close_thd_set;
-	uint8_t ps_away_thd_set;	
+	uint16_t ps_close_thd_set;
+	uint16_t ps_away_thd_set;	
 	uint16_t ls_cmd;
 	uint16_t ps_conf1_val;
 	

@@ -39,11 +39,11 @@
 
 #include "lwpmudrv_types.h"
 #include "rise_errors.h"
+#include "lwpmudrv.h"
 #include "lwpmudrv_ioctl.h"
 #include "lwpmudrv_ecb.h"
 #include "lwpmudrv_struct.h"
 
-#include "lwpmudrv.h"
 #include "control.h"
 #include "output.h"
 
@@ -128,14 +128,14 @@ OUTPUT_Reserve_Buffer_Space (
         // indicies.
         //
         signal_full = TRUE;
-        start = OUTPUT_current_buffer(outbuf); 
+        start = OUTPUT_current_buffer(outbuf);
         for (i = start+1; i < start+OUTPUT_NUM_BUFFERS; i++) {
 
             j = i%OUTPUT_NUM_BUFFERS;
 
             if (!OUTPUT_buffer_full(outbuf,j)) {
                 OUTPUT_current_buffer(outbuf) = j;
-                OUTPUT_remaining_buffer_size(outbuf) = OUTPUT_total_buffer_size(outbuf); 
+                OUTPUT_remaining_buffer_size(outbuf) = OUTPUT_total_buffer_size(outbuf);
                 outloc = OUTPUT_buffer(outbuf,j);
             }
             else {
@@ -602,8 +602,12 @@ OUTPUT_Destroy (
 )
 {
     int    i, n;
-    OUTPUT outbuf = &BUFFER_DESC_outbuf(module_buf);
-    output_Free_Buffers(module_buf, OUTPUT_total_buffer_size(outbuf));
+    OUTPUT outbuf;
+
+    if (module_buf != NULL) {
+        outbuf = &BUFFER_DESC_outbuf(module_buf);
+        output_Free_Buffers(module_buf, OUTPUT_total_buffer_size(outbuf));
+    }
 
     if (cpu_buf != NULL) {
         n = GLOBAL_STATE_num_cpus(driver_state);

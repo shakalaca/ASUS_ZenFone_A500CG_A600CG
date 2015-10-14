@@ -38,6 +38,7 @@
 #include "intel_dsi.h"
 #include "intel_dsi_cmd.h"
 #include "dsi_mod_panasonic_vvx09f006a00.h"
+#include "linux/mfd/intel_mid_pmic.h"
 
 static void  vvx09f006a00_get_panel_info(int pipe,
 					struct drm_connector *connector)
@@ -48,8 +49,13 @@ static void  vvx09f006a00_get_panel_info(int pipe,
 	}
 
 	if (pipe == 0) {
-		connector->display_info.width_mm = 192;
-		connector->display_info.height_mm = 120;
+		if (BYT_CR_CONFIG) {
+			connector->display_info.width_mm = 128;
+			connector->display_info.height_mm = 80;
+		} else {
+			connector->display_info.width_mm = 192;
+			connector->display_info.height_mm = 120;
+		}
 	}
 
 	return;
@@ -97,8 +103,8 @@ static struct drm_display_mode *vvx09f006a00_get_modes(
 	/* Configure */
 	drm_mode_set_name(mode);
 	drm_mode_set_crtcinfo(mode, 0);
-	mode->type |= DRM_MODE_TYPE_PREFERRED;
-
+	if (!BYT_CR_CONFIG)
+		mode->type |= DRM_MODE_TYPE_PREFERRED;
 	return mode;
 }
 
@@ -131,6 +137,42 @@ static int vvx09f006a00_mode_valid(struct intel_dsi_device *dsi,
 	return MODE_OK;
 }
 
+void vvx09f006a00_panel_reset(struct intel_dsi_device *dsi)
+{
+	if (BYT_CR_CONFIG) {
+		struct intel_dsi *intel_dsi = container_of(dsi,
+						struct intel_dsi, dev);
+		struct drm_device *dev = intel_dsi->base.base.dev;
+		struct drm_i915_private *dev_priv = dev->dev_private;
+
+		/* CABC disable */
+		vlv_gpio_nc_write(dev_priv, 0x4100, 0x2000CC00);
+		vlv_gpio_nc_write(dev_priv, 0x4108, 0x00000004);
+
+		/* panel enable */
+		vlv_gpio_nc_write(dev_priv, 0x40F0, 0x2000CC00);
+		vlv_gpio_nc_write(dev_priv, 0x40F8, 0x00000005);
+	} else
+		intel_mid_pmic_writeb(0x52, 0x01);
+	usleep_range(85000, 90000);
+}
+
+void  vvx09f006a00_disable_panel_power(struct intel_dsi_device *dsi)
+{
+	if (BYT_CR_CONFIG) {
+		struct intel_dsi *intel_dsi = container_of(dsi,
+						struct intel_dsi, dev);
+		struct drm_device *dev = intel_dsi->base.base.dev;
+		struct drm_i915_private *dev_priv = dev->dev_private;
+
+		/* panel disable */
+		vlv_gpio_nc_write(dev_priv, 0x40F0, 0x2000CC00);
+		vlv_gpio_nc_write(dev_priv, 0x40F8, 0x00000004);
+	} else
+		intel_mid_pmic_writeb(0x52, 0x00);
+	msleep(20);
+}
+
 static void vvx09f006a00_dpms(struct intel_dsi_device *dsi, bool enable)
 {
 	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
@@ -153,19 +195,7 @@ static void vvx09f006a00_dpms(struct intel_dsi_device *dsi, bool enable)
 
 bool vvx09f006a00_init(struct intel_dsi_device *dsi)
 {
-	/* create private data, slam to dsi->dev_priv. could support many panels
-	 * based on dsi->name. This panal supports both command and video mode,
-	 * so check the type. */
-
-	/* where to get all the board info style stuff:
-	 *
-	 * - gpio numbers, if any (external te, reset)
-	 * - pin config, mipi lanes
-	 * - dsi backlight? (->create another bl device if needed)
-	 * - esd interval, ulps timeout
-	 *
-	 */
-
+	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
 	DRM_DEBUG_KMS("Init: Panasonic panel\n");
 
 	if (!dsi) {
@@ -173,24 +203,26 @@ bool vvx09f006a00_init(struct intel_dsi_device *dsi)
 		return false;
 	}
 
-	dsi->eotp_pkt = 1;
-	dsi->operation_mode = DSI_VIDEO_MODE;
-	dsi->video_mode_type = DSI_VIDEO_NBURST_SPULSE;
-	dsi->pixel_format = VID_MODE_FORMAT_RGB888;
-	dsi->port_bits = 0;
-	dsi->turn_arnd_val = 0x14;
-	dsi->rst_timer_val = 0xffff;
-	dsi->hs_to_lp_count = 0x46;
-	dsi->lp_byte_clk = 1;
-	dsi->bw_timer = 0x820;
-	dsi->clk_lp_to_hs_count = 0xa;
-	dsi->clk_hs_to_lp_count = 0x14;
-	dsi->video_frmt_cfg_bits = 0;
-	dsi->dphy_reg = 0x3c1fc51f;
+	intel_dsi->hs = true;
+	intel_dsi->channel = 0;
+	intel_dsi->lane_count = 4;
+	intel_dsi->eot_disable = 1;
+	intel_dsi->port_bits = 0;
+	intel_dsi->video_mode_type = DSI_VIDEO_NBURST_SPULSE;
+	intel_dsi->pixel_format = VID_MODE_FORMAT_RGB888;
+	intel_dsi->turn_arnd_val = 0x14;
+	intel_dsi->rst_timer_val = 0xffff;
+	intel_dsi->hs_to_lp_count = 0x46;
+	intel_dsi->lp_byte_clk = 1;
+	intel_dsi->bw_timer = 0x820;
+	intel_dsi->clk_lp_to_hs_count = 0xa;
+	intel_dsi->clk_hs_to_lp_count = 0x14;
+	intel_dsi->video_frmt_cfg_bits = 0;
+	intel_dsi->dphy_reg = 0x3c1fc51f;
 
-	dsi->backlight_off_delay = 20;
-	dsi->send_shutdown = true;
-	dsi->shutdown_pkt_delay = 20;
+	intel_dsi->backlight_off_delay = 20;
+	intel_dsi->send_shutdown = true;
+	intel_dsi->shutdown_pkt_delay = 20;
 
 	return true;
 }
@@ -204,6 +236,8 @@ struct intel_dsi_dev_ops panasonic_vvx09f006a00_dsi_display_ops = {
 	.dpms = vvx09f006a00_dpms,
 	.mode_valid = vvx09f006a00_mode_valid,
 	.mode_fixup = vvx09f006a00_mode_fixup,
+	.panel_reset = vvx09f006a00_panel_reset,
+	.disable_panel_power = vvx09f006a00_disable_panel_power,
 	.detect = vvx09f006a00_detect,
 	.get_hw_state = vvx09f006a00_get_hw_state,
 	.get_modes = vvx09f006a00_get_modes,

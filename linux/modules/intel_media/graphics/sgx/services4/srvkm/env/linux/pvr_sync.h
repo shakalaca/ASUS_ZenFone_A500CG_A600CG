@@ -49,7 +49,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include <linux/seq_file.h>
 
-#if(LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
+#if(LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
 #include <linux/sync.h>
 #else
 #include <sync.h>

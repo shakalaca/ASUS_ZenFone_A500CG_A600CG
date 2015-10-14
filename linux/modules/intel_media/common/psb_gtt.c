@@ -1120,7 +1120,7 @@ int psb_gtt_unmap_meminfo(struct drm_device *dev, IMG_HANDLE hKernelMemInfo)
 				(unsigned int)hKernelMemInfo);
 }
 
-static int psb_gtt_map_vaddr(struct drm_device *dev,
+int psb_gtt_map_vaddr(struct drm_device *dev,
 			uint32_t vaddr,
 			uint32_t size,
 			uint32_t page_align,

@@ -29,6 +29,8 @@
 #include <linux/kxtj9.h>
 #include <linux/input-polldev.h>
 #include <linux/miscdevice.h>
+#include <linux/HWVersion.h>
+extern int Read_PROJ_ID(void);
 //20131224 ASUS-Eve_Wen add for IOCTL
 #include <linux/proc_fs.h>
 //--
@@ -37,6 +39,11 @@
 #include <linux/earlysuspend.h>
 // 2012.11.30 cheng_kao early_suspend --
 //<-- ASUS-Bevis_Chen + -->
+#if LINUX_VERSION_CODE>=KERNEL_VERSION(3,8,0)
+#define __devinit
+#define __devexit_p(x) x
+#endif
+
 bool enAccelConfig_flag;
 int Max_x,Min_x,Max_y,Min_y,Max_z,Min_z; //Calibration file  input value
 int ACCEL_CALIDATA[6] = {0}; //input calibration data . Format : "Xmax, Xmin, Ymax, Ymin, Zmax, Zmin"
@@ -60,12 +67,73 @@ static int asus_gsensor_status_read(char *buffer, char **buffer_location,
 	return sprintf(buffer, "1\n");;
 }
 
+static long asus_gsensor_ioctl(struct file *file,
+			  unsigned int cmd, unsigned long arg)
+{
+	void __user *argp = (void __user *)arg;
+	int result = 0;
+	char encalibration_flag = 0 ;
+	int rawdata_x=0,rawdata_y=0,rawdata_z=0,err=0;
+	int reportdata_x=0,reportdata_y=0,reportdata_z=0;
+	char value = 0;
+	if(ex_client == NULL){
+		printk("%s: ERROR ! ASUS GSENSOR ioctl ex_client is NULL  \n", __func__);
+		return -EFAULT;
+		}
+struct kxtj9_data *tj9 = i2c_get_clientdata(ex_client);
+	switch (cmd) {
+	case ASUS_GSENSOR_SETCALI_DATA:
+		memset(ACCEL_CALIDATA, 0, 6*sizeof(int));
+		if (copy_from_user(ACCEL_CALIDATA, argp, sizeof(ACCEL_CALIDATA)))
+		{
+			result = -EFAULT;
+			goto error;
+		}	
+		printk("%s:ASUS_SETCALI_DATA : MAX_x:  %d , Min_x:  %d , MAX_y:  %d , Min_y:  %d ,MAX_z:  %d , Min_z:  %d \n", 
+			__func__, ACCEL_CALIDATA[0],ACCEL_CALIDATA[1],ACCEL_CALIDATA[2], \
+			ACCEL_CALIDATA[3],ACCEL_CALIDATA[4],ACCEL_CALIDATA[5]);
+
+					 Max_x =  ACCEL_CALIDATA[0];
+					 Min_x  =  ACCEL_CALIDATA[1];
+					 Max_y =  ACCEL_CALIDATA[2];
+					 Min_y  =  ACCEL_CALIDATA[3];
+					 Max_z =  ACCEL_CALIDATA[4];
+					 Min_z  =  ACCEL_CALIDATA[5];
+		break;
+		
+	case ASUS_GSENSOR_ENACCEL_CALIBRATION:
+		if (copy_from_user(&encalibration_flag, argp, sizeof(encalibration_flag)))
+		{
+			result = -EFAULT;
+			goto error;
+		}	
+		enAccelConfig_flag =  encalibration_flag;
+		break;
+	default:
+		result = -ENOTTY;
+	goto error;
+	}
+
+error:
+	return result;
+}
+struct file_operations asus_gsensor_fops = {
+	.owner = THIS_MODULE,
+	.unlocked_ioctl = asus_gsensor_ioctl,
+};
+
+struct miscdevice asus_gsensor_device = {
+	.minor = MISC_DYNAMIC_MINOR,
+	.name = "asus_gsensor",
+	.fops = &asus_gsensor_fops,
+};
+
 int create_asusproc_gsensor_status_entry( void )
 {   
-    gsensor_entry = create_proc_entry("asus_gsensor_a500_status", S_IWUGO| S_IRUGO, NULL);
+    gsensor_entry = proc_create("asus_gsensor_a500_status", S_IWUGO| S_IRUGO, NULL, &asus_gsensor_fops);
     if (!gsensor_entry)
         return -ENOMEM;
-   	 gsensor_entry->read_proc = asus_gsensor_status_read;
+   	// gsensor_entry->read_proc = asus_gsensor_status_read;
     	return 0;
 }
 //<-- ASUS-Bevis_Chen - -->
@@ -123,7 +191,7 @@ int create_asusproc_gsensor_status_entry( void )
 //#define HW_ID_SR    KXTJ9_CHIP_LOCATION_SR
 //#define HW_ID_PRE_ER KXTJ9_CHIP_LOCATION_PRE_ER
 //<<ASUS-Eve_Wen 20131115
-//int g_ilocation=0;
+int g_ilocation=0;
 
 // added by cheng_kao 2013.06.01  for sensors calibration ++
 #define GSENSOR_CALIBRATION_FILE_PATH	"/data/sensors/accel_cal_data.ini"
@@ -133,7 +201,6 @@ extern int Read_HW_ID(); //20131118 ASUS-Eve_Wen for SR HW ID
 
 // define the GPIO PIN for Intel x86
 int gpio_line =  76;
-static int raw_camera[3];
 static bool canEnableGsensor = true;
 //int i2c_bus =    5;
 //module_param(gpio_line, int, S_IRUGO);
@@ -213,6 +280,7 @@ static void kxtj9_report_acceleration_data(struct kxtj9_data *tj9)
 	unsigned char acc_data[6];
 	int rawdata_x=0,rawdata_y=0,rawdata_z=0,err=0;
 	int reportdata_x=0,reportdata_y=0,reportdata_z=0;
+        int direction_x=1, direction_y=1, direction_z=1;
 	err = kxtj9_i2c_read(tj9, XOUT_L, (u8 *)acc_data, 6);
 //	printk("Eve_Wen kxtj9_report_acceleration_data 1 \n");
 	if (err < 0){
@@ -236,8 +304,8 @@ static void kxtj9_report_acceleration_data(struct kxtj9_data *tj9)
 //	reportdata_z = rawdata_z;
 	
 	// transfromed by chip location
-	/*switch(g_ilocation){
-		case KXTJ9_CHIP_LOCATION_EVB :
+	switch(g_ilocation){
+		/*case KXTJ9_CHIP_LOCATION_EVB :
 			if( (tj9->accel_cal_sensitivity[0]==0)||(tj9->accel_cal_sensitivity[1]==0)||(tj9->accel_cal_sensitivity[2]==0) ){
 				reportdata_x = (-1)*rawdata_x;
 				reportdata_y = (-1)*rawdata_y;
@@ -281,18 +349,26 @@ static void kxtj9_report_acceleration_data(struct kxtj9_data *tj9)
 				}
 				//if(KXTJ9_DEBUG_MESSAGE) printk("KXTJ9_CHIP_LOCATION_SR 2\n");
 			}
-		break;
-		default:*/
+		break;*/
+                case PROJ_ID_A502CG:
+                        direction_y = -1;
+                        break; 
+
+		default:
+                        direction_x = -1;
+	                break;
+	}
+
 			if( (tj9->accel_cal_sensitivity[0]==0)||(tj9->accel_cal_sensitivity[1]==0)||(tj9->accel_cal_sensitivity[2]==0) ){
-				reportdata_y = rawdata_x*(-1);
-				reportdata_x = rawdata_y;
-				reportdata_z = rawdata_z;
+				reportdata_y = rawdata_x*direction_x;
+				reportdata_x = rawdata_y*direction_y;
+				reportdata_z = rawdata_z*direction_z;
 				if(KXTJ9_DEBUG_MESSAGE) printk("KXTJ9_CHIP_LOCATION_default 1\n");
 			}
 			else{
-				reportdata_y = (-1024)*(rawdata_x - tj9->accel_cal_offset[0])/tj9->accel_cal_sensitivity[0];
-				reportdata_x = 1024*(rawdata_y - tj9->accel_cal_offset[1])/tj9->accel_cal_sensitivity[1];
-				reportdata_z = 1024*(rawdata_z - tj9->accel_cal_offset[2])/tj9->accel_cal_sensitivity[2];
+				reportdata_y = 1024*direction_x*(rawdata_x - tj9->accel_cal_offset[0])/tj9->accel_cal_sensitivity[0];
+				reportdata_x = 1024*direction_y*(rawdata_y - tj9->accel_cal_offset[1])/tj9->accel_cal_sensitivity[1];
+				reportdata_z = 1024*direction_z*(rawdata_z - tj9->accel_cal_offset[2])/tj9->accel_cal_sensitivity[2];
 				if (enAccelConfig_flag == 1)
 				{
 					reportdata_x =enAccelConfig_func(reportdata_x,Max_x,Min_x); //use calibration data without reboot	
@@ -302,13 +378,10 @@ static void kxtj9_report_acceleration_data(struct kxtj9_data *tj9)
 				}
 				//if(KXTJ9_DEBUG_MESSAGE) printk("KXTJ9_CHIP_LOCATION_SR 2\n");
 			}
-		//break;
-	//}
+	
 
-    /*if(KXTJ9_DEBUG_MESSAGE) printk("report_acceleration data : (%d), (%d), (%d)\n",reportdata_x, reportdata_y, reportdata_z);*/
-    raw_camera[0] = reportdata_x;
-    raw_camera[1] = reportdata_y;
-    raw_camera[2] = reportdata_z;
+//	if(KXTJ9_DEBUG_MESSAGE) printk("report_acceleration data : (%d), (%d), (%d)\n",reportdata_x, reportdata_y, reportdata_z);
+
 	input_report_abs(tj9->input_dev, ABS_X, reportdata_x);
 	input_report_abs(tj9->input_dev, ABS_Y, reportdata_y);
 	input_report_abs(tj9->input_dev, ABS_Z, reportdata_z);
@@ -728,16 +801,6 @@ static ssize_t get_cal_rawdata(struct device *dev, struct device_attribute *deva
 	return sprintf(buf, "%d %d %d\n",rawdata_x, rawdata_y, rawdata_z);
 }
 
-static ssize_t get_rawdata_for_camera(struct device *dev, struct device_attribute *devattr, char *buf)
-{
-    int cam_x, cam_y, cam_z;
-    cam_x = (raw_camera[0]*98)/1024;
-    cam_y = (raw_camera[1]*98)/1024;
-    cam_z = (raw_camera[2]*98)/1024;
-    printk("Accelerometer report to camera %d %d %d\n", cam_x, cam_y, cam_z);
-	return sprintf(buf, "%d %d %d\n", cam_x, cam_y, cam_z);
-}
-
 static ssize_t get_rawdata(struct device *dev, struct device_attribute *devattr, char *buf)
 {	
 	struct i2c_client *client = to_i2c_client(dev);
@@ -869,7 +932,6 @@ static DEVICE_ATTR(enable, 0660,kxtj9_enable_show,kxtj9_enable_store);
 static DEVICE_ATTR(rawdata, S_IRUGO, get_rawdata, NULL);
 static DEVICE_ATTR(state, S_IRUGO, get_kxtj9_state, NULL);
 static DEVICE_ATTR(cal_rawdata, S_IRUGO, get_cal_rawdata, NULL);
-static DEVICE_ATTR(camera_rawdata, S_IRUGO, get_rawdata_for_camera, NULL);
 static DEVICE_ATTR(calibration, S_IRUGO, reset_kxtj9_calibration, NULL);
 static struct attribute *kxtj9_attributes[] = {
 	&dev_attr_delay.attr,
@@ -877,7 +939,6 @@ static struct attribute *kxtj9_attributes[] = {
 	&dev_attr_rawdata.attr,
 	&dev_attr_state.attr,
 	&dev_attr_cal_rawdata.attr,
-    &dev_attr_camera_rawdata.attr,
 	&dev_attr_calibration.attr,
 	NULL
 };
@@ -1053,8 +1114,8 @@ static int __devinit kxtj9_probe(struct i2c_client *client,
 	int gpio=0, iloop=0;
 	int err;
 	ex_client= client;
- 	//g_ilocation = Read_HW_ID();
-	//printk("GSENSOR KXTJ9 read HW ID = %d\n", g_ilocation);
+ 	g_ilocation = Read_PROJ_ID();
+	printk("GSENSOR KXTJ9 read PROJ ID = %d\n", g_ilocation);
 
 	//g_ilocation = KXTJ9_CHIP_LOCATION_SR;
 
@@ -1114,11 +1175,11 @@ static int __devinit kxtj9_probe(struct i2c_client *client,
 		if (err)
 			goto err_pdata_exit;
 
-//		err = request_threaded_irq(tj9->irq, NULL, kxtj9_isr,
-//					   IRQF_TRIGGER_RISING |
-//					   IRQF_ONESHOT |
-//					   "kxtj9-irq", tj9);
-		err = request_threaded_irq(tj9->irq, NULL, kxtj9_isr,IRQF_TRIGGER_RISING , "kxtj9-irq", tj9);
+		err = request_threaded_irq(tj9->irq, NULL, kxtj9_isr,
+					   IRQF_TRIGGER_RISING |
+					   IRQF_ONESHOT, 
+					   "kxtj9-irq", tj9);
+		//err = request_threaded_irq(tj9->irq, NULL, kxtj9_isr,IRQF_TRIGGER_RISING , "kxtj9-irq", tj9);
 		if (err) {
 			dev_err(&client->dev, "request irq failed: %d\n", err);
 			goto err_destroy_input;
@@ -1179,66 +1240,6 @@ int enAccelConfig_func(int raw_result,int Max,int Min)
 	 After_calib = raw_result -zero_offset;
    	 return After_calib;
 }
-static long asus_gsensor_ioctl(struct file *file,
-			  unsigned int cmd, unsigned long arg)
-{
-	void __user *argp = (void __user *)arg;
-	int result = 0;
-	char encalibration_flag = 0 ;
-	int rawdata_x=0,rawdata_y=0,rawdata_z=0,err=0;
-	int reportdata_x=0,reportdata_y=0,reportdata_z=0;
-	char value = 0;
-	if(ex_client == NULL){
-		printk("%s: ERROR ! ASUS GSENSOR ioctl ex_client is NULL  \n", __func__);
-		return -EFAULT;
-		}
-struct kxtj9_data *tj9 = i2c_get_clientdata(ex_client);
-	switch (cmd) {
-	case ASUS_GSENSOR_SETCALI_DATA:
-		memset(ACCEL_CALIDATA, 0, 6*sizeof(int));
-		if (copy_from_user(ACCEL_CALIDATA, argp, sizeof(ACCEL_CALIDATA)))
-		{
-			result = -EFAULT;
-			goto error;
-		}	
-		printk("%s:ASUS_SETCALI_DATA : MAX_x:  %d , Min_x:  %d , MAX_y:  %d , Min_y:  %d ,MAX_z:  %d , Min_z:  %d \n", 
-			__func__, ACCEL_CALIDATA[0],ACCEL_CALIDATA[1],ACCEL_CALIDATA[2], \
-			ACCEL_CALIDATA[3],ACCEL_CALIDATA[4],ACCEL_CALIDATA[5]);
-
-					 Max_x =  ACCEL_CALIDATA[0];
-					 Min_x  =  ACCEL_CALIDATA[1];
-					 Max_y =  ACCEL_CALIDATA[2];
-					 Min_y  =  ACCEL_CALIDATA[3];
-					 Max_z =  ACCEL_CALIDATA[4];
-					 Min_z  =  ACCEL_CALIDATA[5];
-		break;
-		
-	case ASUS_GSENSOR_ENACCEL_CALIBRATION:
-		if (copy_from_user(&encalibration_flag, argp, sizeof(encalibration_flag)))
-		{
-			result = -EFAULT;
-			goto error;
-		}	
-		enAccelConfig_flag =  encalibration_flag;
-		break;
-	default:
-		result = -ENOTTY;
-	goto error;
-	}
-
-error:
-	return result;
-}
-struct file_operations asus_gsensor_fops = {
-	.owner = THIS_MODULE,
-	.unlocked_ioctl = asus_gsensor_ioctl,
-};
-
-struct miscdevice asus_gsensor_device = {
-	.minor = MISC_DYNAMIC_MINOR,
-	.name = "asus_gsensor",
-	.fops = &asus_gsensor_fops,
-};
 
 int gsensor_register(void)
 {
@@ -1249,7 +1250,7 @@ int gsensor_register(void)
 	return err;
 }
 
-static int __devexit kxtj9_remove(struct i2c_client *client)
+static int __devexit_p(kxtj9_remove)(struct i2c_client *client)
 {
 	struct kxtj9_data *tj9 = i2c_get_clientdata(client);
 
@@ -1314,18 +1315,6 @@ static const struct i2c_device_id kxtj9_id[] = {
 	{ },
 };
 
-static int kxtj9_shutdown(struct i2c_client *client)
-{
-	printk("Gsensor : kxtj9 shutdown.\n");
-	struct kxtj9_data *tj9 = i2c_get_clientdata(client);
-	free_irq(tj9->irq, tj9);
-	input_unregister_device(tj9->input_dev);
-	input_free_device(tj9->input_dev);
-	misc_deregister(&asus_gsensor_device);
-	kfree(tj9);
-
-	return 0;
-};
 MODULE_DEVICE_TABLE(i2c, kxtj9_id);
 
 static struct i2c_driver kxtj9_driver = {
@@ -1336,7 +1325,6 @@ static struct i2c_driver kxtj9_driver = {
 	},
 	.probe		= kxtj9_probe,
 	.remove		= __devexit_p(kxtj9_remove),
-	.shutdown	=kxtj9_shutdown,
 	.id_table	= kxtj9_id,
 };
 

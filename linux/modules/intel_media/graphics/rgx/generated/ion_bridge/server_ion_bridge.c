@@ -108,7 +108,6 @@ PVRSRVBridgePhysmemImportIon(IMG_UINT32 ui32BridgeID,
 	hPMRPtrInt2 = ResManRegisterRes(psConnection->hResManContext,
 												RESMAN_TYPE_PMR,
 												psPMRPtrInt,
-												/* FIXME: how can we avoid this cast? */
 												(RESMAN_FREE_FN)&PMRUnrefPMR);
 	if (hPMRPtrInt2 == IMG_NULL)
 	{

@@ -4,4 +4,5 @@
 
 int crystal_cove_enable_vbus(void);
 int crystal_cove_disable_vbus(void);
+int crystal_cove_vbus_on_status(void);
 #endif

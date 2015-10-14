@@ -33,14 +33,33 @@
 
 #include "intel_mid_dma_regs.h"
 
-static struct device *acpi_dma_dev;
+#define HID_MAX_SIZE 8
 
-struct device *intel_mid_get_acpi_dma(void)
+struct list_head dma_dev_list;
+
+LIST_HEAD(dma_dev_list);
+
+struct acpi_dma_dev_list {
+	struct list_head dmadev_list;
+	char dma_hid[HID_MAX_SIZE];
+	struct device *acpi_dma_dev;
+};
+
+struct device *intel_mid_get_acpi_dma(const char *hid)
 {
-	return acpi_dma_dev;
+	struct acpi_dma_dev_list *listnode;
+	if (list_empty(&dma_dev_list))
+		return NULL;
+
+	list_for_each_entry(listnode, &dma_dev_list, dmadev_list) {
+		if (!(strncmp(listnode->dma_hid, hid, HID_MAX_SIZE)))
+			return listnode->acpi_dma_dev;
+	}
+	return NULL;
 }
 EXPORT_SYMBOL_GPL(intel_mid_get_acpi_dma);
 
+#if IS_ENABLED(CONFIG_ACPI)
 static int mid_get_and_map_rsrc(void **dest, struct platform_device *pdev,
 				unsigned int num)
 {
@@ -50,16 +69,16 @@ static int mid_get_and_map_rsrc(void **dest, struct platform_device *pdev,
 		pr_err("%s: Invalid resource - %d", __func__, num);
 		return -EIO;
 	}
-	pr_debug("rsrc #%d = %#x", num, rsrc->start);
+	pr_debug("rsrc #%d = %#x", num, (unsigned int) rsrc->start);
 	*dest = devm_ioremap_nocache(&pdev->dev, rsrc->start, resource_size(rsrc));
 	if (!*dest) {
-		pr_err("%s: unable to map resource: %#x", __func__, rsrc->start);
+		pr_err("%s: unable to map resource: %#x", __func__, (unsigned int)rsrc->start);
 		return -EIO;
 	}
 	return 0;
 }
 
-static int mid_platform_get_resources(struct middma_device *mid_device,
+static int mid_platform_get_resources_fdk(struct middma_device *mid_device,
 				      struct platform_device *pdev)
 {
 	int ret;
@@ -78,11 +97,52 @@ static int mid_platform_get_resources(struct middma_device *mid_device,
 		mapping is performed in common code */
 	rsrc = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	if (!rsrc) {
-		pr_err("%s: Invalid resource", __func__);
+		pr_warn("%s: Invalid resource for pimr", __func__);
+	} else {
+		/* add offset for ISRX register */
+		mid_device->pimr_base = rsrc->start + SHIM_ISRX_OFFSET;
+		pr_debug("pimr_base:%#x", mid_device->pimr_base);
+	}
+
+	mid_device->irq = platform_get_irq(pdev, 0);
+	if (mid_device->irq < 0) {
+		pr_err("invalid irq:%d", mid_device->irq);
+		return mid_device->irq;
+	}
+	pr_debug("irq from pdev is:%d", mid_device->irq);
+
+	return 0;
+}
+
+#define DMA_BASE_OFFSET 0x98000
+#define DMA_BASE_SIZE 0x4000
+
+static int mid_platform_get_resources_edk2(struct middma_device *mid_device,
+				      struct platform_device *pdev)
+{
+	struct resource *rsrc;
+	u32 dma_base_add;
+
+	pr_debug("%s", __func__);
+	/* All ACPI resource request here */
+	/* Get DDR addr from platform resource table */
+	rsrc = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!rsrc) {
+		pr_warn("%s: Invalid resource for pimr", __func__);
+		return -EINVAL;
+	}
+
+	pr_debug("rsrc %#x", (unsigned int)rsrc->start);
+	dma_base_add = rsrc->start + DMA_BASE_OFFSET;
+	mid_device->dma_base = devm_ioremap_nocache(&pdev->dev, dma_base_add, DMA_BASE_SIZE);
+	if (!mid_device->dma_base) {
+		pr_err("%s: unable to map resource: %#x", __func__, dma_base_add);
 		return -EIO;
 	}
+	pr_debug("dma_base:%p", mid_device->dma_base);
+
 	/* add offset for ISRX register */
-	mid_device->pimr_base = rsrc->start + SHIM_ISRX_OFFSET;
+	mid_device->pimr_base = rsrc->start + SHIM_OFFSET + SHIM_ISRX_OFFSET;
 	pr_debug("pimr_base:%#x", mid_device->pimr_base);
 
 	mid_device->irq = platform_get_irq(pdev, 0);
@@ -95,8 +155,24 @@ static int mid_platform_get_resources(struct middma_device *mid_device,
 	return 0;
 }
 
-#if IS_ENABLED(CONFIG_ACPI)
-int __devinit dma_acpi_probe(struct platform_device *pdev)
+static int mid_platform_get_resources(const char *hid,
+		struct middma_device *mid_device, struct platform_device *pdev)
+{
+	if (!strncmp(hid, "DMA0F28", 7))
+		return mid_platform_get_resources_fdk(mid_device, pdev);
+	if (!strncmp(hid, "INTL9C60", 8))
+		return mid_platform_get_resources_fdk(mid_device, pdev);
+	if (!strncmp(hid, "ADMA0F28", 8))
+		return mid_platform_get_resources_edk2(mid_device, pdev);
+	else if ((!strncmp(hid, "ADMA22A8", 8))) {
+		return mid_platform_get_resources_edk2(mid_device, pdev);
+	} else {
+		pr_err("Invalid device id..\n");
+		return -EINVAL;
+	}
+}
+
+int dma_acpi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	acpi_handle handle = ACPI_HANDLE(dev);
@@ -105,6 +181,7 @@ int __devinit dma_acpi_probe(struct platform_device *pdev)
 	struct intel_mid_dma_probe_info *info;
 	const char *hid;
 	int ret;
+	struct acpi_dma_dev_list *listnode;
 
 	ret = acpi_bus_get_device(handle, &device);
 	if (ret) {
@@ -147,7 +224,7 @@ int __devinit dma_acpi_probe(struct platform_device *pdev)
 	if (!mid_device)
 		goto err_dma;
 
-	ret = mid_platform_get_resources(mid_device, pdev);
+	ret = mid_platform_get_resources(hid, mid_device, pdev);
 	if (ret) {
 		pr_err("Error while get resources:%d", ret);
 		goto err_dma;
@@ -156,8 +233,21 @@ int __devinit dma_acpi_probe(struct platform_device *pdev)
 	ret = mid_setup_dma(&pdev->dev);
 	if (ret)
 		goto err_dma;
+	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
-	acpi_dma_dev = &pdev->dev;
+	pm_runtime_allow(&pdev->dev);
+
+	listnode = devm_kzalloc(&pdev->dev, sizeof(*listnode), GFP_KERNEL);
+	if (!listnode) {
+		pr_err("dma dev list alloc failed\n");
+		ret = -ENOMEM;
+		goto err_dma;
+	}
+
+	strncpy(listnode->dma_hid, hid, HID_MAX_SIZE);
+	listnode->acpi_dma_dev = &pdev->dev;
+	list_add_tail(&listnode->dmadev_list, &dma_dev_list);
+
 	pr_debug("%s:completed", __func__);
 	return 0;
 err_dma:
@@ -165,7 +255,7 @@ err_dma:
 	return ret;
 }
 #else
-int __devinit dma_acpi_probe(struct platform_device *pdev)
+int dma_acpi_probe(struct platform_device *pdev)
 {
 	return -EIO;
 }
@@ -173,9 +263,7 @@ int __devinit dma_acpi_probe(struct platform_device *pdev)
 
 int dma_acpi_remove(struct platform_device *pdev)
 {
-	pm_runtime_get_noresume(&pdev->dev);
-	pm_runtime_disable(&pdev->dev);
-	acpi_dma_dev = NULL;
+	pm_runtime_forbid(&pdev->dev);
 	middma_shutdown(&pdev->dev);
 	platform_set_drvdata(pdev, NULL);
 	return 0;

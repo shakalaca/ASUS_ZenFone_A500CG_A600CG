@@ -22,7 +22,7 @@
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 
 struct rpmsg_ns_list nslist = {
 	.list = LIST_HEAD_INIT(nslist.list),
@@ -70,6 +70,7 @@ int intel_mid_rproc_init(void)
 					RPROC_SCU, RP_FW_ACCESS);
 	register_rpmsg_service("rpmsg_ipc_util",
 					RPROC_SCU, RP_IPC_UTIL);
+	register_rpmsg_service("rpmsg_flis", RPROC_SCU, RP_FLIS_ACCESS);
 	register_rpmsg_service("rpmsg_watchdog", RPROC_SCU, RP_SET_WATCHDOG);
 	register_rpmsg_service("rpmsg_umip", RPROC_SCU, RP_UMIP_ACCESS);
 	register_rpmsg_service("rpmsg_osip", RPROC_SCU, RP_OSIP_ACCESS);
@@ -78,7 +79,9 @@ int intel_mid_rproc_init(void)
 	register_rpmsg_service("rpmsg_kpd_led", RPROC_SCU,
 				RP_MSIC_KPD_LED);
 	register_rpmsg_service("rpmsg_modem_nvram", RPROC_SCU,
-					RP_IPC_SIMPLE_COMMAND);
+					RP_IPC_RAW_COMMAND);
+	register_rpmsg_service("rpmsg_mid_pwm", RPROC_SCU,
+				RP_MSIC_PWM);
 
 	err = platform_device_register(&intel_scu_device);
 	if (err < 0)
@@ -86,3 +89,4 @@ int intel_mid_rproc_init(void)
 
 	return 0;
 }
+arch_initcall_sync(intel_mid_rproc_init);

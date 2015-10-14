@@ -55,7 +55,7 @@ static int t4k37_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 		gpio_set_value(camera_reset, 1);
 		printk("<<< camera_reset = 1\n");
 		/* min 250us -Initializing time of silicon */
-		usleep_range(4000, 4500);
+        usleep_range(4000, 4500);
 
 	} else {
 		gpio_set_value(camera_reset, 0);

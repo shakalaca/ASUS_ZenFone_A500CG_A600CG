@@ -20,23 +20,25 @@
  * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
  */
 
-#include <linux/init.h>
-#include <linux/kernel.h>
 #include <linux/platform_device.h>
-#include <asm/intel-mid.h>
+#include <asm/spid.h>
 
-void __init *vlv2_plat_clk_device_platform_data(void *info)
+static int __init vlv2_plat_clk_init(void)
 {
-	int ret;
 	struct platform_device *pdev;
-	struct sfi_device_table_entry *pentry = info;
 
-	pdev = platform_device_register_simple(pentry->name, -1, NULL, 0);
+	/* Register only if SoC is Valleyview2 */
+	if (!SPID_PLATFORM_ID(INTEL, BYT, TABLET))
+		return 0;
+
+	pdev = platform_device_register_simple("vlv2_plat_clk", -1, NULL, 0);
 	if (IS_ERR(pdev)) {
-		ret = PTR_ERR(pdev);
-		pr_err("platform_vlv2_plat_clk:register failed: %d\n", ret);
+		pr_err("platform_vlv2_plat_clk:register failed: %d\n",
+			PTR_ERR(pdev));
+		return PTR_ERR(pdev);
 	}
 
-	return NULL;
+	return 0;
 }
 
+device_initcall(vlv2_plat_clk_init);

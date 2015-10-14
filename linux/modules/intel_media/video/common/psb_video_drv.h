@@ -62,10 +62,25 @@ struct drm_psb_private;
 #define PSB_TT_PRIV0_PLIMIT	 (PSB_TT_PRIV0_LIMIT >> PAGE_SHIFT)
 #define PSB_NUM_VALIDATE_BUFFERS 2048
 
+#ifdef MERRIFIELD
+/*
+ * For Merrifield, the VSP memory must be in 1GB.
+ *	MMU size is 448M
+ *	IMR size is 64M
+ *	TT size is 256M
+ *	TILING size is 256M
+ */
+#define PSB_MEM_MMU_START		0x00000000
+#define PSB_MEM_IMR_START		0x1C000000
+#define PSB_MEM_TT_START		0x20000000
+#define PSB_MEM_MMU_TILING_START	0x30000000
+#else
 #define PSB_MEM_MMU_START		0x00000000
 #define PSB_MEM_TT_START		0x30000000
 #define PSB_MEM_IMR_START		0x2C000000
 #define PSB_MEM_MMU_TILING_START	0x50000000
+
+#endif
 
 #define PSB_MAX_RELOC_PAGES 1024
 
@@ -249,22 +264,19 @@ struct psb_validate_buffer {
 struct psb_video_ctx {
 	struct list_head head;
 	struct file *filp; /* DRM device file pointer */
-	int ctx_type; /* (msvdx_tile&0xff)<<16|profile<<8|entrypoint */
+	uint64_t ctx_type; /* (msvdx_tile&0xff)<<16|profile<<8|entrypoint */
 	/* todo: more context specific data for multi-context support */
-	/* Context save and restore */
-	struct ttm_buffer_object *reg_saving_bo;
-	struct ttm_buffer_object *data_saving_bo;
 	/* Write back buffer object */
 	struct ttm_buffer_object *wb_bo;
 	struct ttm_bo_kmap_obj wb_bo_kmap;
-	uint32_t wb_addr[WB_FIFO_SIZE];
+	uint32_t *wb_addr[WB_FIFO_SIZE];
 	/* Setvideo buffer object */
 	struct ttm_buffer_object *mtx_ctx_bo;
 	struct ttm_bo_kmap_obj mtx_ctx_kmap;
 	uint32_t setv_addr;
 	/* Save state registers */
-	uint32_t *mtx_reg_state;
-	struct ttm_bo_kmap_obj reg_kmap;
+	uint32_t *mtx_reg;
+	uint32_t *bias_reg;
 
 	uint32_t status;
 	uint32_t codec;
@@ -282,6 +294,11 @@ struct psb_video_ctx {
 
 	uint32_t enc_ctx_param;
 	uint32_t enc_ctx_addr;
+#ifdef CONFIG_SLICE_HEADER_PARSING
+	uint32_t slice_extract_flag;
+	uint32_t frame_boundary;
+	uint32_t frame_end_seq;
+#endif
 };
 
 #ifdef MERRIFIELD

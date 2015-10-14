@@ -48,6 +48,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rgxfwutils.h"
 #include "rgxtransfer.h"
 #include "rgx_tq_shared.h"
+#include "rgxmem.h"
 #include "allocmem.h"
 #include "devicemem.h"
 #include "devicemem_pdump.h"
@@ -85,6 +86,7 @@ struct _RGX_SERVER_TQ_CONTEXT_ {
 	RGX_SERVER_TQ_3D_DATA		s3DData;
 	RGX_SERVER_TQ_2D_DATA		s2DData;
 	PVRSRV_CLIENT_SYNC_PRIM		*psCleanupSync;
+	DLLIST_NODE					sListNode;
 };
 
 /*
@@ -110,6 +112,7 @@ static PVRSRV_ERROR _Create3DTransferContext(CONNECTION_DATA *psConnection,
 	eError = DevmemFwAllocate(psDevInfo,
 							sizeof(RGXFWIF_3DCTX_STATE),
 							RGX_FWCOMCTX_ALLOCFLAGS,
+							"FirmwareTQ3DContext",
 							&ps3DData->psFWContextStateMemDesc);
 	if (eError != PVRSRV_OK)
 	{
@@ -118,7 +121,7 @@ static PVRSRV_ERROR _Create3DTransferContext(CONNECTION_DATA *psConnection,
 
 	eError = FWCommonContextAllocate(psConnection,
 									 psDeviceNode,
-									 "TQ 3D",
+									 "TQ_3D",
 									 IMG_NULL,
 									 0,
 									 psFWMemContextMemDesc,
@@ -157,7 +160,7 @@ static PVRSRV_ERROR _Create2DTransferContext(CONNECTION_DATA *psConnection,
 
 	eError = FWCommonContextAllocate(psConnection,
 									 psDeviceNode,
-									 "TQ 2D",
+									 "TQ_2D",
 									 IMG_NULL,
 									 0,
 									 psFWMemContextMemDesc,
@@ -250,7 +253,7 @@ PVRSRV_ERROR PVRSRVRGXCreateTransferContextKM(CONNECTION_DATA		*psConnection,
 										   RGX_SERVER_TQ_CONTEXT	**ppsTransferContext)
 {
 	RGX_SERVER_TQ_CONTEXT	*psTransferContext;
-	DEVMEM_MEMDESC			*psFWMemContextMemDesc = hMemCtxPrivData;
+	DEVMEM_MEMDESC			*psFWMemContextMemDesc = RGXGetFWMemDescFromMemoryContextHandle(hMemCtxPrivData);
 	RGX_COMMON_CONTEXT_INFO	sInfo;
 	PVRSRV_ERROR			eError = PVRSRV_OK;
 
@@ -327,6 +330,11 @@ PVRSRV_ERROR PVRSRVRGXCreateTransferContextKM(CONNECTION_DATA		*psConnection,
 	}
 	psTransferContext->ui32Flags |= RGX_SERVER_TQ_CONTEXT_FLAGS_2D;
 
+	{
+		PVRSRV_RGXDEV_INFO			*psDevInfo = psDeviceNode->pvDevice;
+		dllist_add_to_tail(&(psDevInfo->sTransferCtxtListHead), &(psTransferContext->sListNode));
+	}
+
 	return PVRSRV_OK;
 
 fail_2dtransfercontext:
@@ -374,6 +382,7 @@ PVRSRV_ERROR PVRSRVRGXDestroyTransferContextKM(RGX_SERVER_TQ_CONTEXT *psTransfer
 		/* We've freed the 3D context, don't try to free it again */
 		psTransferContext->ui32Flags &= ~RGX_SERVER_TQ_CONTEXT_FLAGS_3D;
 	}
+	dllist_remove_node(&(psTransferContext->sListNode));
 	DevmemFwFree(psTransferContext->psFWFrameworkMemDesc);
 	SyncPrimFree(psTransferContext->psCleanupSync);
 
@@ -519,20 +528,23 @@ PVRSRV_ERROR PVRSRVRGXSubmitTransferKM(RGX_SERVER_TQ_CONTEXT	*psTransferContext,
 	for (i=0;i<ui32PrepareCount;i++)
 	{
 		RGX_CLIENT_CCB *psClientCCB;
+		RGX_SERVER_COMMON_CONTEXT *psServerCommonCtx;
 		IMG_CHAR *pszCommandName;
 		RGX_CCB_CMD_HELPER_DATA *psCmdHelper;
 		RGXFWIF_CCB_CMD_TYPE eType;
 
 		if (TQ_PREP_FLAGS_COMMAND_IS(pui32TQPrepareFlags[i], 3D))
 		{
-			psClientCCB = FWCommonContextGetClientCCB(psTransferContext->s3DData.psServerCommonContext);
+			psServerCommonCtx = psTransferContext->s3DData.psServerCommonContext;
+			psClientCCB = FWCommonContextGetClientCCB(psServerCommonCtx);
 			pszCommandName = "TQ-3D";
 			psCmdHelper = &pas3DCmdHelper[ui323DCmdCount++];
 			eType = RGXFWIF_CCB_CMD_TYPE_TQ_3D;
 		}
 		else if (TQ_PREP_FLAGS_COMMAND_IS(pui32TQPrepareFlags[i], 2D))
 		{
-			psClientCCB = FWCommonContextGetClientCCB(psTransferContext->s2DData.psServerCommonContext);
+			psServerCommonCtx = psTransferContext->s2DData.psServerCommonContext;
+			psClientCCB = FWCommonContextGetClientCCB(psServerCommonCtx);
 			pszCommandName = "TQ-2D";
 			psCmdHelper = &pas2DCmdHelper[ui322DCmdCount++];
 			eType = RGXFWIF_CCB_CMD_TYPE_TQ_2D;
@@ -546,6 +558,8 @@ PVRSRV_ERROR PVRSRVRGXSubmitTransferKM(RGX_SERVER_TQ_CONTEXT	*psTransferContext,
 		if (i == 0)
 		{
 			bPDumpContinuous = ((pui32TQPrepareFlags[i] & TQ_PREP_FLAGS_PDUMPCONTINUOUS) == TQ_PREP_FLAGS_PDUMPCONTINUOUS);
+			PDUMPCOMMENTWITHFLAGS((bPDumpContinuous) ? PDUMP_FLAGS_CONTINUOUS : 0,
+					"%s Command Server Submit on FWCtx %08x", pszCommandName, FWCommonContextGetFWAddress(psServerCommonCtx).ui32Addr);
 		}
 		else
 		{
@@ -763,14 +777,18 @@ PVRSRV_ERROR PVRSRVRGXSubmitTransferKM(RGX_SERVER_TQ_CONTEXT	*psTransferContext,
 	if (ui323DCmdCount)
 	{
 		RGXCmdHelperReleaseCmdCCB(ui323DCmdCount,
-								  &pas3DCmdHelper[0]);
+								  &pas3DCmdHelper[0],
+								  "TQ_3D",
+								  FWCommonContextGetFWAddress(psTransferContext->s3DData.psServerCommonContext).ui32Addr);
 		
 	}
 
 	if (ui322DCmdCount)
 	{
 		RGXCmdHelperReleaseCmdCCB(ui322DCmdCount,
-								  &pas2DCmdHelper[0]);
+								  &pas2DCmdHelper[0],
+								  "TQ_2D",
+								  FWCommonContextGetFWAddress(psTransferContext->s2DData.psServerCommonContext).ui32Addr);
 	}
 
 	/*
@@ -786,6 +804,7 @@ PVRSRV_ERROR PVRSRVRGXSubmitTransferKM(RGX_SERVER_TQ_CONTEXT	*psTransferContext,
 		s3DKCCBCmd.eCmdType = RGXFWIF_KCCB_CMD_KICK;
 		s3DKCCBCmd.uCmdData.sCmdKickData.psContext = FWCommonContextGetFWAddress(psTransferContext->s3DData.psServerCommonContext);
 		s3DKCCBCmd.uCmdData.sCmdKickData.ui32CWoffUpdate = RGXGetHostWriteOffsetCCB(FWCommonContextGetClientCCB(psTransferContext->s3DData.psServerCommonContext));
+		s3DKCCBCmd.uCmdData.sCmdKickData.ui32NumCleanupCtl = 0;
 
 		LOOP_UNTIL_TIMEOUT(MAX_HW_TIME_US)
 		{
@@ -810,6 +829,7 @@ PVRSRV_ERROR PVRSRVRGXSubmitTransferKM(RGX_SERVER_TQ_CONTEXT	*psTransferContext,
 		s2DKCCBCmd.eCmdType = RGXFWIF_KCCB_CMD_KICK;
 		s2DKCCBCmd.uCmdData.sCmdKickData.psContext = FWCommonContextGetFWAddress(psTransferContext->s2DData.psServerCommonContext);
 		s2DKCCBCmd.uCmdData.sCmdKickData.ui32CWoffUpdate = RGXGetHostWriteOffsetCCB(FWCommonContextGetClientCCB(psTransferContext->s2DData.psServerCommonContext));
+		s2DKCCBCmd.uCmdData.sCmdKickData.ui32NumCleanupCtl = 0;
 
 		LOOP_UNTIL_TIMEOUT(MAX_HW_TIME_US)
 		{
@@ -943,6 +963,25 @@ fail_3dcontext:
 fail_2dcontext:
 	PVR_ASSERT(eError != PVRSRV_OK);
 	return eError;
+}
+
+static IMG_BOOL CheckForStalledTransferCtxtCommand(PDLLIST_NODE psNode, IMG_PVOID pvCallbackData)
+{
+	RGX_SERVER_TQ_CONTEXT 		*psCurrentServerTransferCtx = IMG_CONTAINER_OF(psNode, RGX_SERVER_TQ_CONTEXT, sListNode);
+	RGX_SERVER_TQ_2D_DATA		*psTransferCtx2DData = &(psCurrentServerTransferCtx->s2DData);
+	RGX_SERVER_COMMON_CONTEXT	*psCurrentServerTQ2DCommonCtx = psTransferCtx2DData->psServerCommonContext;
+	RGX_SERVER_TQ_3D_DATA		*psTransferCtx3DData = &(psCurrentServerTransferCtx->s3DData);
+	RGX_SERVER_COMMON_CONTEXT	*psCurrentServerTQ3DCommonCtx = psTransferCtx3DData->psServerCommonContext;
+
+
+	DumpStalledFWCommonContext(psCurrentServerTQ2DCommonCtx);
+	DumpStalledFWCommonContext(psCurrentServerTQ3DCommonCtx);
+
+	return IMG_TRUE;
+}
+IMG_VOID CheckForStalledTransferCtxt(PVRSRV_RGXDEV_INFO *psDevInfo)
+{
+	dllist_foreach_node(&(psDevInfo->sTransferCtxtListHead), CheckForStalledTransferCtxtCommand, IMG_NULL);
 }
 
 /**************************************************************************//**

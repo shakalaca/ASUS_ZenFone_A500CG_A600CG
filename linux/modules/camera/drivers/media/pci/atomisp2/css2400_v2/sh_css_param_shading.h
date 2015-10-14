@@ -1,4 +1,4 @@
-/* Release Version: ci_master_byt_20130823_2200 */
+/* Release Version: ci_master_byt_20130916_2228 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  *
@@ -29,6 +29,7 @@
 void
 prepare_shading_table(const struct ia_css_shading_table *in_table,
 		      unsigned int sensor_binning,
+		      bool raw_binning,
 		      struct ia_css_shading_table **target_table,
 		      const struct sh_css_binary *binary);
 

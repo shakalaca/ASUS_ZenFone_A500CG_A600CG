@@ -45,11 +45,7 @@
 #define DLP_HANGUP_DELAY	1000000
 
 /* Defaut HSI TX delay (in microseconds) */
-#ifdef CHANGE_DLP_HSI_TX_DELAY
-    #define DLP_HSI_TX_DELAY		10000
-#else
-    #define DLP_HSI_TX_DELAY            100000
-#endif
+#define DLP_HSI_TX_DELAY    100000
 
 /* Defaut HSI RX delay (in microseconds) */
 #define DLP_HSI_RX_DELAY		10000
@@ -387,6 +383,8 @@ struct dlp_driver {
 	unsigned int is_dma_capable;
 	struct hsi_client *client;
 	struct device *controller;
+	struct hsi_client_base_info *sys_info;
+	bool is_dlp_disabled;
 
 	/* Hangup (TX timemout/ TTY close) */
 	spinlock_t lock;
@@ -394,6 +392,7 @@ struct dlp_driver {
 	unsigned int tx_timeout;
 	struct notifier_block nb;
 	atomic_t drv_remove_ongoing;
+	atomic_t is_tty_device_closed;
 	struct timer_list timer[DLP_CHANNEL_COUNT];
 
 	/* Workqueue for tty buffer forwarding */

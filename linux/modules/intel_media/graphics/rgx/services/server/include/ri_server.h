@@ -49,21 +49,23 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <pmr.h>
 #include <pvrsrv_error.h>
 
+PVRSRV_ERROR RIInitKM(IMG_VOID);
+IMG_VOID RIDeInitKM(IMG_VOID);
+
 PVRSRV_ERROR RIWritePMREntryKM(PMR *hPMR,
-					   	   	   IMG_CHAR ai8TextA[RI_MAX_TEXT_LEN+1],
-					   	   	   IMG_SIZE_T uiLogicalSize,
-					   	   	   RI_HANDLE *phRIHandle);
+					   	   	   const IMG_CHAR ai8TextA[RI_MAX_TEXT_LEN+1],
+					   	   	   IMG_SIZE_T uiLogicalSize);
 
 PVRSRV_ERROR RIWriteMEMDESCEntryKM(PMR *hPMR,
-					   	   	   	   IMG_CHAR ai8TextB[RI_MAX_TEXT_LEN+1],
-					   	   	   	   IMG_SIZE_T uiAddr,
+					   	   	   	   const IMG_CHAR ai8TextB[RI_MAX_TEXT_LEN+1],
 					   	   	   	   IMG_SIZE_T uiOffset,
 					   	   	   	   IMG_SIZE_T uiSize,
 					   	   	   	   IMG_BOOL bIsImport,
+					   	   	   	   IMG_BOOL bIsExportable,
 					   	   	   	   RI_HANDLE *phRIHandle);
 
 PVRSRV_ERROR RIUpdateMEMDESCAddrKM(RI_HANDLE hRIHandle,
-					   	   	   	   IMG_SIZE_T uiAddr);
+								   IMG_DEV_VIRTADDR sVAddr);
 
 PVRSRV_ERROR RIDeletePMREntryKM(RI_HANDLE hRIHandle);
 PVRSRV_ERROR RIDeleteMEMDESCEntryKM(RI_HANDLE hRIHandle);

@@ -34,6 +34,7 @@
 #include <linux/spinlock.h>
 
 #include "user_vm.h"
+#include "globals.h"
 
 /**
 // Constants and Macros
@@ -124,16 +125,23 @@ typedef struct _stack_control_t
     unsigned char *compressed;  /// compressed data buffer
 
     /// sample properties
-    stkptr_t ip;                /// IP for the current sample
-    stkptr_t sp;                /// SP for the current sample
+    stkptr_t user_ip;                /// IP for the current sample
+    stkptr_t user_sp;                /// SP for the current sample
     stkptr_t bp;                /// stack base for the current sample
-    stkptr_t fp;                /// frame pointer for the current sample
+    stkptr_t user_fp;                /// frame pointer for the current sample
     int wow64;                  /// WoW64 process flag
 
     spinlock_t spin_lock;       /// spin lock protection
     user_vm_accessor_t* acc;    /// user vm accessor
     char dbgmsg[192];
 
+    /// kernel compressed clean_stack
+    unsigned char kernel_callchain[VTSS_DYNSIZE_STACKS];  //TODO: allocate memory dynamically
+    int kernel_callchain_size;
+    int kernel_callchain_pos;
+    stkptr_t fp;                      /// frame pointer for the current sample
+    stkptr_t ip;                /// IP for the current sample
+    stkptr_t sp;                /// SP for the current sample
 } stack_control_t;
 
 /**

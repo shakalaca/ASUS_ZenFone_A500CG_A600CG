@@ -95,6 +95,15 @@ int pw_max_num_cpus = -1;
  * Convenience macro: iterate over each segment in a per-cpu output buffer.
  */
 #define for_each_segment(i) for (i=0; i<NUM_SEGS_PER_BUFFER; ++i)
+/*
+ * How many buffers are we using?
+ */
+// #define GET_NUM_OUTPUT_BUFFERS() (pw_max_num_cpus)
+#define GET_NUM_OUTPUT_BUFFERS() (pw_max_num_cpus + 1)
+/*
+ * Convenience macro: iterate over each per-cpu output buffer.
+ */
+#define for_each_output_buffer(i) for (i=0; i<GET_NUM_OUTPUT_BUFFERS(); ++i)
 
 /*
  * Typedefs and forward declarations.
@@ -264,23 +273,104 @@ int pw_produce_generic_msg(struct PWCollector_msg *msg, bool allow_wakeup)
     return retval;
 };
 
+int pw_produce_generic_msg_on_cpu(int cpu, struct PWCollector_msg *msg, bool allow_wakeup)
+{
+    // unsigned long flags = 0;
+    const int retval = PW_SUCCESS;
+    bool should_wakeup = false;
+    bool should_print_error = false;
+    bool did_drop_sample = false;
+    bool did_switch_buffer = false;
+    int size = msg->data_len + PW_MSG_HEADER_SIZE;
+
+    pw_pr_debug("[%d]: cpu = %d, size = %d\n", RAW_CPU(), cpu, size);
+
+    // local_irq_save(flags);
+    // get_cpu();
+    {
+        pw_output_buffer_t *buffer = GET_OUTPUT_BUFFER(cpu);
+        int buff_index = buffer->buff_index;
+        pw_data_buffer_t *seg = buffer->buffers[buff_index];
+        char *dst = NULL;
+
+        if (unlikely(SPACE_AVAIL(seg) < size)) {
+            seg->is_full = 1;
+            should_wakeup = true;
+            seg = pw_get_next_available_segment_i(buffer, size);
+            if (seg == NULL) {
+                /*
+                 * We couldn't find a non-full segment.
+                 */
+                // retval = -PW_ERROR;
+                should_wakeup = true;
+                buffer->dropped_samples++;
+                did_drop_sample = true;
+                goto done;
+            }
+        }
+
+        dst = &seg->buffer[seg->bytes_written];
+
+        *((PWCollector_msg_t *)dst) = *msg;
+        dst += PW_MSG_HEADER_SIZE;
+        // pw_pr_debug("Diff = %d\n", (dst - &seg->buffer[seg->bytes_written]));
+        memcpy(dst, (void *)((unsigned long)msg->p_data), msg->data_len);
+
+        seg->bytes_written += size;
+
+        buffer->produced_samples++;
+
+        pw_pr_debug(KERN_INFO "OK: [%d] PRODUCED a generic msg!\n", cpu);
+    }
+done:
+    // local_irq_restore(flags);
+    // put_cpu();
+
+    if (should_wakeup && allow_wakeup && waitqueue_active(&pw_reader_queue)) {
+        set_bit(cpu, &reader_map); // we're guaranteed this won't get reordered!
+        smp_mb(); // TODO: do we really need this?
+        // printk(KERN_INFO "[%d]: has full seg!\n", cpu);
+        pw_pr_debug(KERN_INFO "[%d]: has full seg!\n", cpu);
+        wake_up_interruptible(&pw_reader_queue);
+    }
+
+    if (did_drop_sample) {
+        // pw_pr_warn("Dropping sample\n");
+    }
+
+    if (should_print_error) {
+        // pw_pr_error("ERROR in produce!\n");
+    }
+
+    if (did_switch_buffer) {
+        // pw_pr_debug("[%d]: switched sub buffers!\n", cpu);
+    }
+
+    return retval;
+};
+
 int pw_init_per_cpu_buffers(void)
 {
     int cpu = -1;
     unsigned long per_cpu_mem_size = PW_OUTPUT_BUFFER_SIZE;
 
-    if (pw_max_num_cpus <= 0) {
-        pw_pr_error("ERROR: max # cpus = %d\n", pw_max_num_cpus);
+    // if (pw_max_num_cpus <= 0)
+    if (GET_NUM_OUTPUT_BUFFERS() <= 0) {
+        // pw_pr_error("ERROR: max # cpus = %d\n", pw_max_num_cpus);
+        pw_pr_error("ERROR: max # output buffers= %d\n", GET_NUM_OUTPUT_BUFFERS());
         return -PW_ERROR;
     }
 
-    per_cpu_output_buffers = (pw_output_buffer_t *)pw_kmalloc(sizeof(pw_output_buffer_t) * pw_max_num_cpus, GFP_KERNEL | __GFP_ZERO);
+    pw_pr_debug("DEBUG: pw_max_num_cpus = %d, num output buffers = %d\n", pw_max_num_cpus, GET_NUM_OUTPUT_BUFFERS());
+
+    per_cpu_output_buffers = (pw_output_buffer_t *)pw_kmalloc(sizeof(pw_output_buffer_t) * GET_NUM_OUTPUT_BUFFERS(), GFP_KERNEL | __GFP_ZERO);
     if (per_cpu_output_buffers == NULL) {
         pw_pr_error("ERROR allocating space for per-cpu output buffers!\n");
         pw_destroy_per_cpu_buffers();
         return -PW_ERROR;
     }
-    for (cpu=0; cpu<pw_max_num_cpus; ++cpu) {
+    // for (cpu=0; cpu<pw_max_num_cpus; ++cpu)
+    for_each_output_buffer(cpu) {
         pw_output_buffer_t *buffer = &per_cpu_output_buffers[cpu];
         char *buff = NULL;
         int i=0;
@@ -316,7 +406,8 @@ void pw_destroy_per_cpu_buffers(void)
          */
         int cpu = -1, i=0;
         // for_each_possible_cpu(cpu) {
-        for (cpu=0; cpu<pw_max_num_cpus; ++cpu) {
+        // for (cpu=0; cpu<pw_max_num_cpus; ++cpu)
+        for_each_output_buffer(cpu) {
             pw_pr_debug("CPU: %d: # dropped = %d\n", cpu, per_cpu_output_buffers[cpu].dropped_samples);
             for_each_segment(i) {
                 pw_data_buffer_t *buffer = per_cpu_output_buffers[cpu].buffers[i];
@@ -327,7 +418,8 @@ void pw_destroy_per_cpu_buffers(void)
 #endif // DO_DEBUG_OUTPUT
     if (per_cpu_output_buffers != NULL) {
         // for_each_possible_cpu(cpu) {
-        for (cpu=0; cpu<pw_max_num_cpus; ++cpu) {
+        // for (cpu=0; cpu<pw_max_num_cpus; ++cpu)
+        for_each_output_buffer(cpu) {
             pw_output_buffer_t *buffer = &per_cpu_output_buffers[cpu];
             if (buffer->free_pages != 0) {
                 free_pages(buffer->free_pages, get_order(buffer->mem_alloc_size));
@@ -343,7 +435,8 @@ void pw_reset_per_cpu_buffers(void)
 {
     int cpu = 0, i = 0;
     // for_each_possible_cpu(cpu) {
-    for (cpu=0; cpu<pw_max_num_cpus; ++cpu) {
+    // for (cpu=0; cpu<pw_max_num_cpus; ++cpu)
+    for_each_output_buffer(cpu) {
         pw_output_buffer_t *buffer = GET_OUTPUT_BUFFER(cpu);
         buffer->buff_index = buffer->dropped_samples = buffer->produced_samples = 0;
         buffer->last_seg_read = -1;
@@ -366,7 +459,8 @@ int pw_map_per_cpu_buffers(struct vm_area_struct *vma, unsigned long *total_size
      * loop over each buffer and map in its memory area.
      */
     // for_each_possible_cpu(cpu) {
-    for (cpu=0; cpu<pw_max_num_cpus; ++cpu) {
+    // for (cpu=0; cpu<pw_max_num_cpus; ++cpu)
+    for_each_output_buffer(cpu) {
         pw_output_buffer_t *buffer = &per_cpu_output_buffers[cpu];
         unsigned long buff_size = buffer->mem_alloc_size;
         int ret = remap_pfn_range(vma, start, virt_to_phys((void *)buffer->free_pages) >> PAGE_SHIFT, buff_size, vma->vm_page_prot);
@@ -391,9 +485,15 @@ bool pw_any_seg_full(u32 *val, const bool *is_flush_mode)
 
     *val = PW_NO_DATA_AVAIL_MASK;
     pw_pr_debug(KERN_INFO "Checking for full seg: val = %u, flush = %s\n", *val, GET_BOOL_STRING(*is_flush_mode));
-    for_each_online_cpu(num_visited) {
+    // for_each_online_cpu(num_visited)
+    for_each_output_buffer(num_visited) {
         pw_output_buffer_t *buffer = NULL;
+        /*
         if (++pw_last_cpu_read >= num_online_cpus()) {
+            pw_last_cpu_read = 0;
+        }
+        */
+        if (++pw_last_cpu_read >= GET_NUM_OUTPUT_BUFFERS()) {
             pw_last_cpu_read = 0;
         }
         buffer = GET_OUTPUT_BUFFER(pw_last_cpu_read);
@@ -483,7 +583,8 @@ void pw_count_samples_produced_dropped(void)
         return;
     }
     // for_each_possible_cpu(cpu) {
-    for (cpu=0; cpu<pw_max_num_cpus; ++cpu) {
+    // for (cpu=0; cpu<pw_max_num_cpus; ++cpu)
+    for_each_output_buffer(cpu) {
         pw_output_buffer_t *buff = GET_OUTPUT_BUFFER(cpu);
         pw_pr_debug(KERN_INFO "[%d]: # samples = %u\n", cpu, buff->produced_samples);
         pw_num_samples_dropped += buff->dropped_samples;

@@ -32,7 +32,7 @@ static int synaptics_gpio_setup(int gpio, bool configure, int dir, int state);
 #define DSX_RESET_ON_STATE 0
 #define DSX_RESET_DELAY_MS 100
 #define DSX_RESET_ACTIVE_MS 20
-#define DSX_IRQ_FLAGS IRQF_TRIGGER_FALLING
+#define DSX_IRQ_FLAGS (IRQF_TRIGGER_FALLING | IRQF_ONESHOT)
 static unsigned char regulator_name[] = "";
 static unsigned char cap_button_codes[] =
 		{};
@@ -49,7 +49,7 @@ static unsigned char cap_button_codes[] =
 #define DSX_RESET_ON_STATE 0
 #define DSX_RESET_DELAY_MS 100
 #define DSX_RESET_ACTIVE_MS 20
-#define DSX_IRQ_FLAGS IRQF_TRIGGER_FALLING
+#define DSX_IRQ_FLAGS (IRQF_TRIGGER_FALLING | IRQF_ONESHOT)
 static unsigned char regulator_name[] = "";
 static unsigned char cap_button_codes[] =
 		{KEY_MENU, KEY_HOME, KEY_BACK, KEY_SEARCH};
@@ -72,7 +72,7 @@ static unsigned char cap_button_codes[] =
 #define DSX_RESET_ON_STATE 0
 #define DSX_RESET_DELAY_MS 100
 #define DSX_RESET_ACTIVE_MS 20
-#define DSX_IRQ_FLAGS IRQF_TRIGGER_FALLING
+#define DSX_IRQ_FLAGS (IRQF_TRIGGER_FALLING | IRQF_ONESHOT)
 static unsigned char regulator_name[] = "";
 static unsigned char cap_button_codes[] =
 		{};

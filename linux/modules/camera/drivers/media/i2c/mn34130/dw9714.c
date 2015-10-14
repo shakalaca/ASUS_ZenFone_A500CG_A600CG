@@ -43,11 +43,11 @@ static int dw9714_i2c_write(struct i2c_client *client, u16 data)
 int dw9714_vcm_power_up(struct v4l2_subdev *sd)
 {
 	/* Enable power */
-	/*ChungYi :
+	/*ChungYi : 
 	   We don't use this GPIO for power-on VCM,
-	   In A500CG , VCM XSD will connect to VCM VDD.
+	   In A500CG , VCM XSD will connect to VCM VDD. 
 	   Camera IMX111 turn on the power for VCM,
-	   So always return 0 for A500CG.
+	   So always return 0 for A500CG.	   
 	   In fact we still need wait for 12ms to meet DW9714 spec.
 	*/
 	//ret = dw9714_dev.platform_data->power_ctrl(sd, 1);
@@ -58,7 +58,7 @@ int dw9714_vcm_power_up(struct v4l2_subdev *sd)
 
 int dw9714_vcm_power_down(struct v4l2_subdev *sd)
 {
-	/*ChungYi :
+	/*ChungYi : 
 	   We don't use this GPIO for power-down VCM,
 	   Camera IMX111 turn off the power for VCM.
 	   So always return 0 for A500CG.

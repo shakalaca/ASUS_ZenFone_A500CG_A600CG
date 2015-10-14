@@ -12,6 +12,7 @@ config GPIO_INTEL_MSIC
 
 config INTEL_MID_OSNIB_ILB
         tristate "cmos osnib driver for Intel BYT platforms"
+	depends on INTEL_REBOOT_TARGET
         default n
         ---help---
 			This driver adds OSNIB support using CMOS.
@@ -22,7 +23,6 @@ config INTEL_MID_OSNIB_ILB
 
 config INTEL_MID_OSIP
 	tristate "osip driver for Intel MID platforms"
-	depends on INTEL_SCU_IPC
 	default y
 	help
 	  This driver modifies the osip header when rebooting,
@@ -58,3 +58,15 @@ config INTEL_PSH_IPC
 	  machines.
 
 	  Say Y here to get Intel PSH IPC support.
+
+config INTEL_REBOOT_TARGET
+	bool "Intel Reboot Target"
+	---help---
+	  This driver provides a generic implementation for reboot target setting at
+	  reset time.
+
+config INTEL_REBOOT_TARGET_UEFI
+	tristate "Intel Target Mode UEFI implementation"
+	depends on INTEL_REBOOT_TARGET && EFI && !MID_OSNIB_ILB
+	---help---
+	  Reboot Target UEFI based implementation

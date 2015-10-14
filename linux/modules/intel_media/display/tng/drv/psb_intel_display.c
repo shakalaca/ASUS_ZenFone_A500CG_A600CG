@@ -19,7 +19,6 @@
  */
 
 #include <linux/i2c.h>
-#include <linux/pm_runtime.h>
 
 #include <drm/drmP.h>
 #include "psb_fb.h"
@@ -30,7 +29,7 @@
 #include "pwr_mgmt.h"
 #include "mrfld_clock.h"
 #include "mrfld_s3d.h"
-
+#include "mdfld_dsi_dbi_dsr.h"
 /* FIXME may delete after MRFLD PO */
 #include "mrfld_display.h"
 
@@ -240,13 +239,21 @@ void psb_intel_crtc_load_lut(struct drm_crtc *crtc)
 	struct drm_psb_private *dev_priv =
 	    (struct drm_psb_private *)dev->dev_private;
 	struct psb_intel_crtc *psb_intel_crtc = to_psb_intel_crtc(crtc);
+	struct mdfld_dsi_config *dsi_config = NULL;
+	struct mdfld_dsi_hw_context *ctx = NULL;
 	int palreg = PALETTE_A;
 	u32 power_island = 0;
 	int i;
 
 	/* The clocks have to be on to load the palette. */
-	if (!crtc->enabled)
+	if (!crtc->enabled || !dev_priv)
 		return;
+
+	dsi_config = dev_priv->dsi_configs[0];
+	if (!dsi_config)
+		return;
+
+	ctx = &dsi_config->dsi_hw_context;
 
 	switch (psb_intel_crtc->pipe) {
 	case 0:
@@ -265,15 +272,18 @@ void psb_intel_crtc_load_lut(struct drm_crtc *crtc)
 	power_island = pipe_to_island(psb_intel_crtc->pipe);
 
 	if (power_island_get(power_island)) {
+
 		for (i = 0; i < 256; i++) {
-			REG_WRITE(palreg + 4 * i,
-				  ((psb_intel_crtc->lut_r[i] +
-				    psb_intel_crtc->lut_adj[i]) << 16) |
-				  ((psb_intel_crtc->lut_g[i] +
-				    psb_intel_crtc->lut_adj[i]) << 8) |
-				  (psb_intel_crtc->lut_b[i] +
-				   psb_intel_crtc->lut_adj[i]));
+			ctx->palette[i]=
+				((psb_intel_crtc->lut_r[i] +
+				psb_intel_crtc->lut_adj[i]) << 16) |
+				((psb_intel_crtc->lut_g[i] +
+				psb_intel_crtc->lut_adj[i]) << 8) |
+				(psb_intel_crtc->lut_b[i] +
+				psb_intel_crtc->lut_adj[i]);
+			REG_WRITE((palreg + 4 * i), ctx->palette[i]);
 		}
+
 		power_island_put(power_island);
 	} else {
 		for (i = 0; i < 256; i++) {

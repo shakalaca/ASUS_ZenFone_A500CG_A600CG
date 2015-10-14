@@ -19,6 +19,9 @@
  *
  **************************************************************************/
 
+#include <linux/compat.h>
+#include <linux/ioctl.h>
+
 #include <drm/drmP.h>
 #include <drm/drm.h>
 #include "psb_drm.h"
@@ -42,9 +45,6 @@
 #include <linux/cpu.h>
 #include <linux/notifier.h>
 #include <linux/spinlock.h>
-#ifdef CONFIG_GFX_RTPM
-#include <linux/pm_runtime.h>
-#endif
 
 #include <asm/intel_scu_ipc.h>
 #include <asm/intel-mid.h>
@@ -67,6 +67,8 @@
 #include "mdfld_csc.h"
 #include "mrfld_s3d.h"
 
+#include "pvr_bridge.h"
+
 /* SH DPST */
 #include "psb_dpst_func.h"
 
@@ -80,6 +82,24 @@
 #define KEEP_UNUSED_CODE_DRIVER_DISPATCH 0
 
 #define HDMI_MONITOR_NAME_LENGTH 20
+
+/* Hack to Turn GFX islands up - BEGIN */
+static void power_up(int pm_reg, u32 pm_mask);
+
+static void power_up(int pm_reg, u32 pm_mask) {
+	u32 pwr_mask = 0;
+
+	pwr_mask = intel_mid_msgbus_read32(0x04, pm_reg);
+	printk ("\nHACK - pwr_mask read: reg=0x%x pwr_mask=0x%x \n", pm_reg, pwr_mask);
+	// pwr_mask &= ~pm_mask;
+	pwr_mask =0;
+
+	intel_mid_msgbus_write32(0x04, pm_reg, pwr_mask);
+	printk ("\nHACK - pwr_mask read modify write: reg=0x%x pwr_mask=0x%x \n", pm_reg, pwr_mask);
+	udelay(10);
+}
+/* Hack to Turn GFX islands up - END */
+
 int drm_psb_debug;
 int drm_decode_flag = 0x0;
 int drm_psb_enable_pr2_cabc = 1;
@@ -96,8 +116,8 @@ int drm_msvdx_pmpolicy = PSB_PMPOLICY_POWERDOWN;
 int drm_psb_cpurelax;
 int drm_psb_udelaydivider = 1;
 int drm_topaz_pmpolicy = PSB_PMPOLICY_POWERDOWN;
-int drm_vsp_pmpolicy = PSB_PMPOLICY_POWERDOWN;
-int drm_topaz_cgpolicy = PSB_CGPOLICY_VECCG_DIS;
+int drm_vsp_pmpolicy = PSB_PMPOLICY_SUSPEND_HWIDLE;
+int drm_topaz_cgpolicy = PSB_CGPOLICY_ON;
 int drm_topaz_cmdpolicy = PSB_CMDPOLICY_PARALLEL;
 int drm_topaz_sbuswa;
 int drm_psb_ospm = 1;
@@ -114,15 +134,22 @@ int drm_psb_te_timer_delay = (DRM_HZ / 40);
 char HDMI_EDID[HDMI_MONITOR_NAME_LENGTH];
 int hdmi_state;
 u32 DISP_PLANEB_STATUS = ~DISPLAY_PLANE_ENABLE;
-int drm_psb_msvdx_tiling = 0;
+int drm_psb_msvdx_tiling = 1;
 int drm_msvdx_bottom_half;
 int drm_hdmi_hpd_auto;
-int drm_vsp_burst = 0;
+int default_hdmi_scaling_mode = DRM_MODE_SCALE_CENTER;
+int drm_vsp_burst = 1;
 int drm_vsp_force_up_freq = 0;
 int drm_vsp_force_down_freq = 0;
 int drm_vsp_single_int = 0;
+int drm_vec_force_up_freq = 0;
+int drm_vec_force_down_freq = 0;
 
 static int psb_probe(struct pci_dev *pdev, const struct pci_device_id *ent);
+
+#ifdef CONFIG_COMPAT
+static long psb_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
+#endif
 
 MODULE_PARM_DESC(debug, "Enable debug output");
 MODULE_PARM_DESC(no_fb, "Disable FBdev");
@@ -151,10 +178,13 @@ MODULE_PARM_DESC(vsp_pm, "Power on/off the VSP");
 MODULE_PARM_DESC(ved_pm, "Power on/off the Msvdx");
 MODULE_PARM_DESC(vec_pm, "Power on/off the Topaz");
 MODULE_PARM_DESC(hdmi_hpd_auto, "HDMI hot-plug auto test flag");
+MODULE_PARM_DESC(default_hdmi_scaling_mode, "Default HDMI scaling mode");
 MODULE_PARM_DESC(vsp_burst, "VSP burst mode enable");
 MODULE_PARM_DESC(vsp_force_up_freq, "force VSP running at certain freq");
 MODULE_PARM_DESC(vsp_force_down_freq, "force VSP power down at certain freq");
 MODULE_PARM_DESC(vsp_single_int, "force VSP VPP generate one irq per command group");
+MODULE_PARM_DESC(vec_force_up_freq, "force VEC running at certain freq");
+MODULE_PARM_DESC(vec_force_down_freq, "force VEC power down at certain freq");
 
 module_param_named(enable_color_conversion, drm_psb_enable_color_conversion,
 					int, 0600);
@@ -192,10 +222,14 @@ module_param_named(te_delay, drm_psb_te_timer_delay, int, 0600);
 module_param_named(decode_flag, drm_decode_flag, int, 0600);
 #endif
 module_param_named(hdmi_hpd_auto, drm_hdmi_hpd_auto, int, 0600);
+module_param_named(default_hdmi_scaling_mode, default_hdmi_scaling_mode,
+					int, 0600);
 module_param_named(vsp_burst, drm_vsp_burst, int, 0600);
 module_param_named(vsp_force_up_freq, drm_vsp_force_up_freq, int, 0600);
 module_param_named(vsp_force_down_freq, drm_vsp_force_down_freq, int, 0600);
 module_param_named(vsp_single_int, drm_vsp_single_int, int, 0600);
+module_param_named(vec_force_up_freq, drm_vec_force_up_freq, int, 0600);
+module_param_named(vec_force_down_freq, drm_vec_force_down_freq, int, 0600);
 
 #ifndef MODULE
 /* Make ospm configurable via cmdline firstly,
@@ -685,9 +719,9 @@ static struct drm_ioctl_desc psb_ioctls[] = {
 	PSB_IOCTL_DEF(DRM_IOCTL_PSB_GET_HDCP_STATUS, psb_get_hdcp_status_ioctl,
 		      DRM_AUTH),
 	PSB_IOCTL_DEF(DRM_IOCTL_PSB_ENABLE_HDCP, psb_enable_hdcp_ioctl,
-		      DRM_AUTH),
+		      DRM_AUTH | DRM_UNLOCKED),
 	PSB_IOCTL_DEF(DRM_IOCTL_PSB_DISABLE_HDCP, psb_disable_hdcp_ioctl,
-		      DRM_AUTH),
+		      DRM_AUTH | DRM_UNLOCKED),
 	PSB_IOCTL_DEF(DRM_IOCTL_PSB_GET_HDCP_LINK_STATUS,
 			psb_get_hdcp_link_status_ioctl, DRM_AUTH),
 	PSB_IOCTL_DEF(DRM_IOCTL_PSB_HDCP_DISPLAY_IED_OFF,
@@ -1053,160 +1087,31 @@ bool mid_get_pci_revID(struct drm_psb_private *dev_priv)
 
 bool mrst_get_vbt_data(struct drm_psb_private *dev_priv)
 {
-	struct mrst_vbt *pVBT = &dev_priv->vbt_data;
-	u32 platform_config_address;
-	u16 new_size;
-	u8 *pVBT_virtual;
-	u8 bpi;
-	u8 number_desc = 0;
-	struct mrst_timing_info *dp_ti = &dev_priv->gct_data.DTD;
-	struct gct_r10_timing_info ti;
-	void *pGCT;
-	struct pci_dev *pci_gfx_root = pci_get_bus_and_slot(0, PCI_DEVFN(2, 0));
-	if (!pci_gfx_root) {
-		DRM_ERROR("pci_gfx_root is NULL\n");
-		return false;
-	}
-
-	/*get the address of the platform config vbt, B0:D2:F0;0xFC */
-	pci_read_config_dword(pci_gfx_root, 0xFC, &platform_config_address);
-	pci_dev_put(pci_gfx_root);
-	DRM_INFO("drm platform config address is %x\n",
-		 platform_config_address);
-
-	/* check for platform config address == 0. */
-	/* this means fw doesn't support vbt */
-
-	if (platform_config_address == 0) {
-		pVBT->Size = 0;
-		return false;
-	}
-
-	/* get the virtual address of the vbt */
-	pVBT_virtual = ioremap(platform_config_address, sizeof(*pVBT));
-
-	if (!pVBT_virtual) {
-		DRM_ERROR("pVBT_virtual is NULL, problem during ioremap\n");
-		return false;
-	}
-
-	memcpy(pVBT, pVBT_virtual, sizeof(*pVBT));
-	iounmap(pVBT_virtual);	/* Free virtual address space */
-
-	PSB_DEBUG_ENTRY("GCT Revision is %x\n", pVBT->Revision);
-	switch (pVBT->Revision) {
-	case 0:
-		pVBT->mrst_gct = NULL;
-		pVBT->mrst_gct =
-		    ioremap(platform_config_address + sizeof(*pVBT) - 4,
-			    pVBT->Size - sizeof(*pVBT) + 4);
-		if (!pVBT->mrst_gct) {
-			DRM_ERROR("pVBT->mrst_gct NULL from ioremap\n");
-			return false;
-		}
-		pGCT = pVBT->mrst_gct;
-		bpi = ((struct mrst_gct_v1 *)pGCT)->PD.BootPanelIndex;
-		dev_priv->gct_data.bpi = bpi;
-		dev_priv->gct_data.pt =
-		    ((struct mrst_gct_v1 *)pGCT)->PD.PanelType;
-		memcpy(&dev_priv->gct_data.DTD,
-		       &((struct mrst_gct_v1 *)pGCT)->panel[bpi].DTD,
-		       sizeof(struct mrst_timing_info));
-		dev_priv->gct_data.Panel_Port_Control =
-		    ((struct mrst_gct_v1 *)pGCT)->panel[bpi].Panel_Port_Control;
-		dev_priv->gct_data.Panel_MIPI_Display_Descriptor =
-		    ((struct mrst_gct_v1 *)pGCT)->
-		    panel[bpi].Panel_MIPI_Display_Descriptor;
-		break;
-	case 1:
-		pVBT->mrst_gct = NULL;
-		pVBT->mrst_gct =
-		    ioremap(platform_config_address + sizeof(*pVBT) - 4,
-			    pVBT->Size - sizeof(*pVBT) + 4);
-		if (!pVBT->mrst_gct) {
-		    DRM_ERROR("pVBT->mrst_gct NULL from ioremap\n");
-		    return false;
-		}
-		pGCT = pVBT->mrst_gct;
-		bpi = ((struct mrst_gct_v2 *)pGCT)->PD.BootPanelIndex;
-		dev_priv->gct_data.bpi = bpi;
-		dev_priv->gct_data.pt =
-		    ((struct mrst_gct_v2 *)pGCT)->PD.PanelType;
-		memcpy(&dev_priv->gct_data.DTD,
-		       &((struct mrst_gct_v2 *)pGCT)->panel[bpi].DTD,
-		       sizeof(struct mrst_timing_info));
-		dev_priv->gct_data.Panel_Port_Control =
-		    ((struct mrst_gct_v2 *)pGCT)->panel[bpi].Panel_Port_Control;
-		dev_priv->gct_data.Panel_MIPI_Display_Descriptor =
-		    ((struct mrst_gct_v2 *)pGCT)->
-		    panel[bpi].Panel_MIPI_Display_Descriptor;
-		break;
-	case 0x10:
-		/*header definition changed from rev 01 (v2) to rev 10h. */
-		/*so, some values have changed location */
-		new_size = pVBT->Checksum;
-		/*checksum contains lo size byte */
-		/*LSB of mrst_gct contains hi size byte */
-		new_size |= ((0xff & (unsigned int)pVBT->mrst_gct)) << 8;
-
-		pVBT->Checksum = pVBT->Size;	/*size contains the checksum */
-		if (new_size > 0xff)
-			pVBT->Size = 0xff;	/*restrict size to 255 */
-		else
-			pVBT->Size = new_size;
-
-		/* number of descriptors defined in the GCT */
-		number_desc = ((0xff00 & (unsigned int)pVBT->mrst_gct)) >> 8;
-		bpi = ((0xff0000 & (unsigned int)pVBT->mrst_gct)) >> 16;
-		pVBT->mrst_gct = NULL;
-		pVBT->mrst_gct =
-		    ioremap(platform_config_address + GCT_R10_HEADER_SIZE,
-			    GCT_R10_DISPLAY_DESC_SIZE * number_desc);
-		pGCT = pVBT->mrst_gct;
-		pGCT = (u8 *) pGCT + (bpi * GCT_R10_DISPLAY_DESC_SIZE);
-		dev_priv->gct_data.bpi = bpi;	/*save boot panel id */
-
-		/*copy the GCT display timings into a temp structure */
-		memcpy(&ti, pGCT, sizeof(struct gct_r10_timing_info));
-
-		/*now copy the temp struct into the dev_priv->gct_data */
-		dp_ti->pixel_clock = ti.pixel_clock;
-		dp_ti->hactive_hi = ti.hactive_hi;
-		dp_ti->hactive_lo = ti.hactive_lo;
-		dp_ti->hblank_hi = ti.hblank_hi;
-		dp_ti->hblank_lo = ti.hblank_lo;
-		dp_ti->hsync_offset_hi = ti.hsync_offset_hi;
-		dp_ti->hsync_offset_lo = ti.hsync_offset_lo;
-		dp_ti->hsync_pulse_width_hi = ti.hsync_pulse_width_hi;
-		dp_ti->hsync_pulse_width_lo = ti.hsync_pulse_width_lo;
-		dp_ti->vactive_hi = ti.vactive_hi;
-		dp_ti->vactive_lo = ti.vactive_lo;
-		dp_ti->vblank_hi = ti.vblank_hi;
-		dp_ti->vblank_lo = ti.vblank_lo;
-		dp_ti->vsync_offset_hi = ti.vsync_offset_hi;
-		dp_ti->vsync_offset_lo = ti.vsync_offset_lo;
-		dp_ti->vsync_pulse_width_hi = ti.vsync_pulse_width_hi;
-		dp_ti->vsync_pulse_width_lo = ti.vsync_pulse_width_lo;
-
-		/*mov the MIPI_Display_Descriptor data from GCT to dev priv */
-		dev_priv->gct_data.Panel_MIPI_Display_Descriptor =
-		    *((u8 *) pGCT + 0x0d);
-		dev_priv->gct_data.Panel_MIPI_Display_Descriptor |=
-		    (*((u8 *) pGCT + 0x0e)) << 8;
-		break;
-	case 0x20:
-		pVBT->Size = 0;
-		break;
-	default:
-		PSB_DEBUG_ENTRY("Unknown revision of GCT!\n");
-		pVBT->Size = 0;
-		return false;
-	}
+	struct drm_device *dev = dev_priv->dev;
 
 	dev_priv->panel_id = PanelID;
 	dev_priv->mipi_encoder_type = is_panel_vid_or_cmd(dev_priv->dev);
-	enable_HFPLL(dev_priv->dev);
 
+	if (is_dual_dsi(dev) && IS_ANN_A0(dev)) {
+		dev_priv->bUseHFPLL = false;
+		dev_priv->bRereadZero = false;
+	} else if (IS_TNG_B0(dev) || IS_ANN_A0(dev)) {
+		if (dev_priv->mipi_encoder_type == MDFLD_DSI_ENCODER_DBI) {
+			if (IS_ANN_A0(dev))
+				dev_priv->bUseHFPLL = false;
+			else {
+				dev_priv->bUseHFPLL = true;
+				enable_HFPLL(dev_priv->dev);
+			}
+			dev_priv->bRereadZero = false;
+		} else {
+			dev_priv->bUseHFPLL = false;
+			dev_priv->bRereadZero = true;
+		}
+	} else {
+		dev_priv->bUseHFPLL = false;
+		dev_priv->bRereadZero = false;
+	}
 	return true;
 }
 
@@ -1392,12 +1297,12 @@ static int psb_do_init(struct drm_device *dev)
 	PSB_DEBUG_INIT("Init MSVDX\n");
 
 	/* on TNG B0, VED not needed to be on here since firmware is not loaded in psb_msvdx_init */
-	if (!IS_TNG_B0(dev))
+	if (IS_TNG_A0(dev))
 		power_island_get(OSPM_VIDEO_DEC_ISLAND);
 
 	psb_msvdx_init(dev);
 
-	if (!IS_TNG_B0(dev))
+	if (IS_TNG_A0(dev))
 		power_island_put(OSPM_VIDEO_DEC_ISLAND);
 
 #ifdef SUPPORT_VSP
@@ -1426,6 +1331,8 @@ static int psb_driver_unload(struct drm_device *dev)
 
 	if (drm_psb_no_fb == 0)
 		psb_modeset_cleanup(dev);
+
+	destroy_workqueue(dev_priv->vsync_wq);
 
 	if (dev_priv) {
 		/* psb_watchdog_takedown(dev_priv); */
@@ -1554,6 +1461,32 @@ static int psb_driver_load(struct drm_device *dev, unsigned long chipset)
 	unsigned long irqflags;
 	int ret = -ENOMEM;
 	uint32_t tt_pages;
+	u32 pm_mask = 0x0;
+	int pm_reg = 0x0;
+
+	if (IS_ANN_A0(dev)) {
+		pm_reg = 0x3f;
+		pm_mask = intel_mid_msgbus_read32(0x04, pm_reg);
+		printk ("\nHACK - Before PWR ON - pwr_mask read: reg=0x%x pwr_mask=0x%x \n", pm_reg, pm_mask);
+
+		pm_mask = 0x0;
+		pm_reg = 0x30; //GFXSS
+		power_up(pm_reg,pm_mask);
+
+		pm_mask = 0x0;
+		pm_reg = 0x36; //DSPSS
+		power_up(pm_reg,pm_mask);
+
+		pm_reg = 0x3c; //HDMISS
+		power_up(pm_reg,pm_mask);
+
+		pm_reg = 0x39; //ATOMISP
+		power_up(pm_reg,pm_mask);
+
+		pm_reg = 0x3f;
+		pm_mask = intel_mid_msgbus_read32(0x04, pm_reg);
+		printk ("\nHACK - PR: After PWR ON - pwr_mask read: reg=0x%x pwr_mask=0x%x \n", pm_reg, pm_mask);
+	}
 
 	DRM_INFO("psb - %s\n", PSB_PACKAGE_VERSION);
 
@@ -1563,7 +1496,7 @@ static int psb_driver_load(struct drm_device *dev, unsigned long chipset)
 	if (dev_priv == NULL)
 		return -ENOMEM;
 	INIT_LIST_HEAD(&dev_priv->video_ctx);
-	mutex_init(&dev_priv->video_ctx_mutex);
+	spin_lock_init(&dev_priv->video_ctx_lock);
 	if (IS_FLDS(dev))
 		dev_priv->num_pipe = 3;
 	else
@@ -1580,6 +1513,9 @@ static int psb_driver_load(struct drm_device *dev, unsigned long chipset)
 	bdev = &dev_priv->bdev;
 
 	hdmi_state = 0;
+	dev_priv->ied_enabled = false;
+	dev_priv->ied_context = NULL;
+
 	drm_hdmi_hpd_auto = 0;
 
 	ret = psb_ttm_global_init(dev_priv);
@@ -1609,6 +1545,7 @@ static int psb_driver_load(struct drm_device *dev, unsigned long chipset)
 	spin_lock_init(&dev_priv->irqmask_lock);
 
 	DRM_INIT_WAITQUEUE(&dev_priv->rel_mapped_queue);
+	init_waitqueue_head(&dev_priv->eof_wait);
 
 	dev->dev_private = (void *)dev_priv;
 	dev_priv->chipset = chipset;
@@ -1861,8 +1798,14 @@ static int psb_driver_load(struct drm_device *dev, unsigned long chipset)
 		INIT_WORK(&dev_priv->reset_panel_work,
 				mdfld_reset_panel_handler_work);
 	}
-
 	INIT_WORK(&dev_priv->vsync_event_work, mdfld_vsync_event_work);
+
+	dev_priv->vsync_wq = alloc_workqueue("vsync_wq", WQ_UNBOUND, 1);
+	if (!dev_priv->vsync_wq) {
+		DRM_ERROR("failed to create vsync workqueue\n");
+		ret = -ENOMEM;
+		goto out_err;
+	}
 
 	if (drm_psb_no_fb == 0) {
 		psb_modeset_init(dev);
@@ -2096,14 +2039,77 @@ static int psb_vbt_ioctl(struct drm_device *dev, void *data,
 static int psb_enable_ied_session_ioctl(struct drm_device *dev, void *data,
 						struct drm_file *file_priv)
 {
-	/* TODO */
+	struct drm_psb_private *dev_priv = psb_priv(dev);
+	struct mdfld_dsi_config *dsi_config = dev_priv->dsi_configs[0];
+
+	DRM_DEBUG("Enabling IED session...\n");
+
+	if (file_priv == NULL) {
+		DRM_ERROR("%s: file_priv is NULL.\n", __func__);
+		return -1;
+	}
+
+	if (dev_priv->ied_enabled) {
+		DRM_ERROR("%s: ied_enabled has been set.\n", __func__);
+		return 0;
+	}
+
+	dev_priv->ied_enabled = true;
+	dev_priv->ied_context = file_priv->filp;
+
+	if (power_island_get(OSPM_DISPLAY_A)) {
+		mdfld_dsi_dsr_forbid(dsi_config);
+
+		/* Set bit 31 to enable IED pipeline */
+		REG_WRITE(PSB_IED_DRM_CNTL_STATUS, 0x80000000);
+		power_island_put(OSPM_DISPLAY_A);
+		return 0;
+	} else {
+		DRM_ERROR("%s: Failed to power on display island.\n", __func__);
+		return -1;
+	}
+
 	return 0;
 }
 
 static int psb_disable_ied_session_ioctl(struct drm_device *dev, void *data,
 					struct drm_file *file_priv)
 {
-	/* TODO */
+	int ret = 0;
+	struct drm_psb_private *dev_priv = psb_priv(dev);
+	struct mdfld_dsi_config *dsi_config = dev_priv->dsi_configs[0];
+
+	DRM_DEBUG("Disabling IED session...\n");
+
+	if (file_priv == NULL) {
+		DRM_ERROR("%s: file_priv is NULL.\n", __func__);
+		return -1;
+	}
+
+	if (dev_priv->ied_enabled == false) {
+		DRM_ERROR("%s: ied_enabled is not set.\n", __func__);
+		return 0;
+	}
+
+	if (dev_priv->ied_context != file_priv->filp) {
+		DRM_ERROR("%s: Wrong context.\n", __func__);
+		return -1;
+	}
+
+	if (power_island_get(OSPM_DISPLAY_A)) {
+		REG_WRITE(PSB_IED_DRM_CNTL_STATUS, 0);
+		mdfld_dsi_dsr_allow(dsi_config);
+
+		power_island_put(OSPM_DISPLAY_A);
+
+		dev_priv->ied_enabled = false;
+		dev_priv->ied_context = NULL;
+		ret = 0;
+	} else {
+		DRM_ERROR("%s: Failed to power on display island.\n", __func__);
+		ret = -1;
+	}
+
 	return 0;
 }
 
@@ -2237,6 +2243,7 @@ static int psb_get_hdcp_link_status_ioctl(struct drm_device *dev, void *data,
 
 	return 0;
 }
+
 
 #endif /* ifdef CONFIG_SUPPORT_HDMI */
 
@@ -2836,9 +2843,14 @@ static int psb_vsync_set_ioctl(struct drm_device *dev, void *data,
 	u32 vbl_count = 0;
 	s64 nsecs = 0;
 	int ret = 0;
+	struct android_hdmi_priv *hdmi_priv = dev_priv->hdmi_priv;
 
 	if (arg->vsync_operation_mask) {
 		pipe = arg->vsync.pipe;
+		if (pipe < 0 || pipe > 2) {
+			DRM_ERROR("%s: invalid pipe %d", __func__, pipe);
+			return -EINVAL;
+		}
 
 		if (arg->vsync_operation_mask & GET_VSYNC_COUNT) {
 			vbl_count = drm_vblank_count(dev, pipe);
@@ -2856,7 +2868,7 @@ static int psb_vsync_set_ioctl(struct drm_device *dev, void *data,
 			dsi_config = dev_priv->dsi_configs[1];
 
 		if (arg->vsync_operation_mask & VSYNC_WAIT) {
-			/* TODO: find a clean way to protect vblank_enabled */
+
 			if (dev->vblank_enabled[pipe]) {
 				vblwait.request.type =
 					(_DRM_VBLANK_RELATIVE |
@@ -2872,9 +2884,14 @@ static int psb_vsync_set_ioctl(struct drm_device *dev, void *data,
 				ret = drm_wait_vblank(dev, (void *)&vblwait,
 						file_priv);
 				if (ret) {
-					DRM_ERROR("Fail to get pipe %d vsync\n",
-							pipe);
-					schedule_work(&dev_priv->reset_panel_work);
+					DRM_ERROR("%s: fail to get pipe %d vsync\n",
+							__func__, pipe);
+
+					if (!IS_ANN_A0(dev)) {
+						if ((pipe != 1) && (is_panel_vid_or_cmd(dev) ==
+									MDFLD_DSI_ENCODER_DBI))
+							schedule_work(&dev_priv->reset_panel_work);
+					}
 				}
 
 				mdfld_dsi_dsr_allow(dsi_config);
@@ -2888,18 +2905,33 @@ static int psb_vsync_set_ioctl(struct drm_device *dev, void *data,
 			return ret;
 		}
 
-		if (arg->vsync_operation_mask & VSYNC_ENABLE) {
-			mdfld_dsi_dsr_forbid(dsi_config);
-
-			if ((pipe == 0) || (pipe == 1) || (pipe == 2))
+		if (!IS_ANN_A0(dev)) {
+			if (arg->vsync_operation_mask & VSYNC_ENABLE) {
+				if (dev_priv->vsync_enabled[pipe]) {
+					DRM_ERROR("%s: vsync has been enabled on pipe %d",
+							__func__, pipe);
+					return 0;
+				}
+				mdfld_dsi_dsr_forbid(dsi_config);
 				ret = drm_vblank_get(dev, pipe);
-		}
+				if (ret != 0) {
+					DRM_ERROR("%s: fail to enable vsync on pipe %d\n",
+							__func__, pipe);
+					mdfld_dsi_dsr_allow(dsi_config);
+				} else
+					dev_priv->vsync_enabled[pipe] = true;
+			}
 
-		if (arg->vsync_operation_mask & VSYNC_DISABLE) {
-			if ((pipe == 0) || (pipe == 1) || (pipe == 2))
+			if (arg->vsync_operation_mask & VSYNC_DISABLE) {
+				if (!dev_priv->vsync_enabled[pipe]) {
+					DRM_ERROR("%s: vsync has been disabled on pipe %d",
+							__func__, pipe);
+					return 0;
+				}
+				dev_priv->vsync_enabled[pipe] = false;
 				drm_vblank_put(dev, pipe);
-
-			mdfld_dsi_dsr_allow(dsi_config);
+				mdfld_dsi_dsr_allow(dsi_config);
+			}
 		}
 	}
 
@@ -2931,7 +2963,7 @@ static int psb_register_rw_ioctl(struct drm_device *dev, void *data,
 			u32 ov_ogamc0_reg;
 
 			switch (index) {
-			case OVERLAY_A:
+			case 0:  /* overlay A */
 				ov_ogamc5_reg = OV_OGAMC5;
 				ov_ogamc4_reg = OV_OGAMC4;
 				ov_ogamc3_reg = OV_OGAMC3;
@@ -2939,7 +2971,7 @@ static int psb_register_rw_ioctl(struct drm_device *dev, void *data,
 				ov_ogamc1_reg = OV_OGAMC1;
 				ov_ogamc0_reg = OV_OGAMC0;
 				break;
-			case OVERLAY_C:
+			case 1:  /* overlay C */
 				ov_ogamc5_reg = OVC_OGAMC5;
 				ov_ogamc4_reg = OVC_OGAMC4;
 				ov_ogamc3_reg = OVC_OGAMC3;
@@ -2965,6 +2997,12 @@ static int psb_register_rw_ioctl(struct drm_device *dev, void *data,
 				PSB_WVDC32(arg->overlay.OGAMC0, ov_ogamc0_reg);
 			}
 
+			if (arg->overlay_write_mask & OV_REGRWBITS_OVADD) {
+				PSB_WVDC32(arg->overlay.OVADD, OV_OVADD);
+				if (arg->overlay.b_wms){
+					mdfld_dsi_dsr_update_panel_fb(dsi_config);
+				}
+			}
 			/*allow entering dsr*/
 			mdfld_dsi_dsr_allow(dsi_config);
 
@@ -2980,6 +3018,35 @@ static int psb_register_rw_ioctl(struct drm_device *dev, void *data,
 		DC_MRFLD_Disable_Plane(arg->plane.type,
 				arg->plane.index, arg->plane.ctx);
 
+	if (arg->overlay_read_mask & OVSTATUS_REGRBIT_OVR_UPDT) {
+		u32 ovstat_reg = OV_DOVASTA;
+		u32 pipe = arg->plane.ctx;
+		u32 pipeconf_reg;
+		power_island |= OSPM_DISPLAY_A;
+		if (arg->plane.index) {
+			power_island |= OSPM_DISPLAY_C;
+			ovstat_reg = OVC_DOVCSTA;
+		}
+		/* By default overlay is not updated since last vblank event*/
+		arg->plane.ctx = 1;
+		if (pipe == PIPEA)
+			pipeconf_reg = PIPEACONF;
+		else if (pipe == PIPEB)
+			pipeconf_reg = PIPEBCONF;
+		else {
+			DRM_ERROR("Invalid pipe:%d!\n", pipe);
+			return -EINVAL;
+		}
+
+		if (REG_READ(pipeconf_reg) & BIT31) {
+			if (power_island_get(power_island)) {
+				arg->plane.ctx =
+					(PSB_RVDC32(ovstat_reg) & BIT31) == 0 ? 0 : 1;
+				power_island_put(power_island);
+			}
+		} else
+			DRM_INFO("%s: pipe %d is disabled!\n", __func__, pipe);
+	}
 	return 0;
 }
 
@@ -3751,11 +3818,12 @@ static void psb_debugfs_cleanup(struct drm_minor *minor)
 	mdfld_debugfs_cleanup(minor);
 }
 #endif
-
 static const struct dev_pm_ops psb_pm_ops = {
 	.runtime_suspend = rtpm_suspend,
 	.runtime_resume = rtpm_resume,
 	.runtime_idle = rtpm_idle,
+	.suspend_noirq = rtpm_suspend,
+	.resume_noirq = rtpm_resume,
 };
 
 static struct vm_operations_struct psb_ttm_vm_ops;
@@ -3832,6 +3900,9 @@ int psb_release(struct inode *inode, struct file *filp)
 	file_priv = (struct drm_file *)filp->private_data;
 	psb_fp = BCVideoGetPriv(file_priv);
 	dev_priv = psb_priv(file_priv->minor->dev);
+	struct ttm_object_file *tfile = psb_fpriv(file_priv)->tfile;
+	int i;
+	struct psb_msvdx_ec_ctx *ec_ctx;
 	msvdx_priv = (struct msvdx_private *)dev_priv->msvdx_private;
 
 #if 0
@@ -3848,6 +3919,21 @@ int psb_release(struct inode *inode, struct file *filp)
 	tng_topaz_handle_sigint(file_priv->minor->dev, filp);
 
 	BCVideoDestroyBuffers(psb_fp->bcd_index);
+
+	if (msvdx_priv->msvdx_ec_ctx[0] != NULL) {
+		for (i = 0; i < PSB_MAX_EC_INSTANCE; i++) {
+			if (msvdx_priv->msvdx_ec_ctx[i]->tfile == tfile)
+				break;
+		}
+
+		if (i < PSB_MAX_EC_INSTANCE) {
+			ec_ctx = msvdx_priv->msvdx_ec_ctx[i];
+			printk(KERN_DEBUG "remove ec ctx with tfile 0x%08x\n",
+			       ec_ctx->tfile);
+			ec_ctx->tfile = NULL;
+			ec_ctx->fence = PSB_MSVDX_INVALID_FENCE;
+		}
+	}
 
 	ttm_object_file_release(&psb_fp->tfile);
 	kfree(psb_fp);
@@ -3900,6 +3986,9 @@ static const struct file_operations driver_psb_fops = {
 	.poll = psb_poll,
 	.fasync = drm_fasync,
 	.read = drm_read,
+#ifdef CONFIG_COMPAT
+        .compat_ioctl = psb_compat_ioctl,
+#endif
 };
 
 static struct drm_driver driver = {
@@ -4048,6 +4137,483 @@ static void __exit psb_exit(void)
 		return;
 	drm_pci_exit(&driver, &psb_pci_driver);
 }
+
+#ifdef CONFIG_COMPAT
+
+#define PVR_DRM_SRVKM_CMD       DRM_PVR_RESERVED1
+#define PVR_DRM_IS_MASTER_CMD   DRM_PVR_RESERVED4
+#define PVR_DRM_DBGDRV_CMD      DRM_PVR_RESERVED6
+
+#define PVR_DRM_SRVKM_IOCTL \
+	DRM_IOW(DRM_COMMAND_BASE + PVR_DRM_SRVKM_CMD, PVRSRV_BRIDGE_PACKAGE)
+
+#define PVR_DRM_IS_MASTER_IOCTL \
+	DRM_IO(DRM_COMMAND_BASE + PVR_DRM_IS_MASTER_CMD)
+
+typedef struct drm_psb_mem_alloc32 {
+	int region;
+	int alignment;
+	int size;
+	u32 region_offset;	/* offset from start of fb or agp */
+} drm_psb_mem_alloc32_t;
+
+typedef struct drm_psb_mem_alloc {
+	int region;
+	int alignment;
+	int size;
+	int __user *region_offset;	/* offset from start of fb or agp */
+} drm_psb_mem_alloc_t;
+
+typedef struct pvrsrv_bridge_package_32
+{
+	u32	ui32BridgeID;		/*!< ioctl/drvesc index */
+	u32	ui32Size;			/*!< size of structure */
+	u32	pvParamIn;			/*!< input data buffer */
+	u32	ui32InBufferSize;		/*!< size of input data buf */
+	u32	pvParamOut;			/*!< output data buffer */
+	u32	ui32OutBufferSize;		/*!< size of output data buf */
+} pvrsrv_bridge_package_32_t;
+
+int compat_PVRSRV_BridgeDispatchKM2(struct file *filp, unsigned int cmd,
+					unsigned long arg)
+{
+	int retval;
+	pvrsrv_bridge_package_32_t req32;
+	PVRSRV_BRIDGE_PACKAGE __user *request;
+
+	if (copy_from_user(&req32, (void __user *)arg, sizeof(req32))) {
+		printk(KERN_ERR "%s: copy_from_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	request = compat_alloc_user_space(sizeof(*request));
+	if (!access_ok(VERIFY_WRITE, request, sizeof(*request))
+		|| __put_user(req32.ui32BridgeID, &request->ui32BridgeID)
+		|| __put_user(req32.ui32Size, &request->ui32Size)
+		|| __put_user((void __user *)(unsigned long)req32.pvParamIn, &request->pvParamIn)
+		|| __put_user(req32.ui32InBufferSize, &request->ui32InBufferSize)
+		|| __put_user((void __user *)(unsigned long)req32.pvParamOut, &request->pvParamOut)
+		|| __put_user(req32.ui32OutBufferSize, &request->ui32OutBufferSize)) {
+		printk(KERN_ERR "%s: __put_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	/* Correct cmd with the proper size */
+	cmd &= ~(_IOC_SIZEMASK << _IOC_SIZESHIFT);
+	cmd |= (sizeof(*request) << _IOC_SIZESHIFT);
+
+	retval = drm_ioctl(filp, cmd, (unsigned long)request);
+	return retval;
+}
+
+struct drm_psb_register_rw_arg_32 {
+	uint32_t b_force_hw_on;
+	uint32_t display_read_mask;
+	uint32_t display_write_mask;
+	struct {
+		uint32_t pfit_controls;
+		uint32_t pfit_autoscale_ratios;
+		uint32_t pfit_programmed_scale_ratios;
+		uint32_t pipeasrc;
+		uint32_t pipebsrc;
+		uint32_t vtotal_a;
+		uint32_t vtotal_b;
+		uint32_t dspcntr_a;
+		uint32_t dspcntr_b;
+		uint32_t pipestat_a;
+		uint32_t int_mask;
+		uint32_t int_enable;
+	} display;
+	uint32_t overlay_read_mask;
+	uint32_t overlay_write_mask;
+	struct {
+		uint32_t OVADD;
+		uint32_t OGAMC0;
+		uint32_t OGAMC1;
+		uint32_t OGAMC2;
+		uint32_t OGAMC3;
+		uint32_t OGAMC4;
+		uint32_t OGAMC5;
+		uint32_t IEP_ENABLED;
+		uint32_t IEP_BLE_MINMAX;
+		uint32_t IEP_BSSCC_CONTROL;
+		uint32_t index;
+		uint32_t b_wait_vblank;
+		uint32_t b_wms;
+		uint32_t buffer_handle;
+	} overlay;
+	uint32_t vsync_operation_mask;
+	struct {
+		uint32_t pipe;
+		int vsync_pipe;
+		int vsync_count;
+		uint64_t timestamp  __attribute__ ((__packed__));
+	} vsync;
+	uint32_t sprite_enable_mask;
+	uint32_t sprite_disable_mask;
+	struct {
+		uint32_t dspa_control;
+		uint32_t dspa_key_value;
+		uint32_t dspa_key_mask;
+		uint32_t dspc_control;
+		uint32_t dspc_stride;
+		uint32_t dspc_position;
+		uint32_t dspc_linear_offset;
+		uint32_t dspc_size;
+		uint32_t dspc_surface;
+	} sprite;
+	uint32_t subpicture_enable_mask;
+	uint32_t subpicture_disable_mask;
+	struct {
+		uint32_t CursorADDR;
+		uint32_t xPos;
+		uint32_t yPos;
+		uint32_t CursorSize;
+	} cursor;
+	uint32_t cursor_enable_mask;
+	uint32_t cursor_disable_mask;
+	uint32_t plane_enable_mask;
+	uint32_t plane_disable_mask;
+	struct {
+		uint32_t type;
+		uint32_t index;
+		uint32_t ctx;
+	} plane;
+}__attribute__ ((__packed__));
+
+int compat_PVRSRV_BridgeDispatchKM3(struct file *filp, unsigned int cmd,
+					unsigned long arg)
+{
+	int retval;
+	struct drm_psb_register_rw_arg_32 req32;
+	struct drm_psb_register_rw_arg __user *request;
+	struct drm_psb_register_rw_arg returnBuffer;
+	struct drm_psb_register_rw_arg_32 __user *p_buf =
+		(struct drm_psb_register_rw_arg_32 __user *)((void __user *)arg);
+
+	if (copy_from_user(&req32, (void __user *)arg, sizeof(req32))) {
+		printk(KERN_ERR "%s: copy_from_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	request = compat_alloc_user_space(sizeof(*request));
+	if (!access_ok(VERIFY_WRITE, request, sizeof(*request))
+		|| __put_user(req32.b_force_hw_on, &request->b_force_hw_on)
+		|| __put_user(req32.display_read_mask, &request->display_read_mask)
+		|| __put_user(req32.display_write_mask, &request->display_write_mask)
+		|| __put_user(req32.display.pfit_controls, &request->display.pfit_controls)
+		|| __put_user(req32.display.pfit_autoscale_ratios, &request->display.pfit_autoscale_ratios)
+		|| __put_user(req32.display.pfit_programmed_scale_ratios, &request->display.pfit_programmed_scale_ratios)
+		|| __put_user(req32.display.pipeasrc, &request->display.pipeasrc)
+		|| __put_user(req32.display.pipebsrc, &request->display.pipebsrc)
+		|| __put_user(req32.display.vtotal_a, &request->display.vtotal_a)
+		|| __put_user(req32.display.vtotal_b, &request->display.vtotal_b)
+		|| __put_user(req32.display.dspcntr_a, &request->display.dspcntr_a)
+		|| __put_user(req32.display.dspcntr_b, &request->display.dspcntr_b)
+		|| __put_user(req32.display.pipestat_a, &request->display.pipestat_a)
+		|| __put_user(req32.display.int_mask, &request->display.int_mask)
+		|| __put_user(req32.display.int_enable, &request->display.int_enable)
+		|| __put_user(req32.overlay_read_mask, &request->overlay_read_mask)
+		|| __put_user(req32.overlay_write_mask, &request->overlay_write_mask)
+		|| __put_user(req32.overlay.OVADD, &request->overlay.OVADD)
+		|| __put_user(req32.overlay.OGAMC0, &request->overlay.OGAMC0)
+		|| __put_user(req32.overlay.OGAMC1, &request->overlay.OGAMC1)
+		|| __put_user(req32.overlay.OGAMC2, &request->overlay.OGAMC2)
+		|| __put_user(req32.overlay.OGAMC3, &request->overlay.OGAMC3)
+		|| __put_user(req32.overlay.OGAMC4, &request->overlay.OGAMC4)
+		|| __put_user(req32.overlay.OGAMC5, &request->overlay.OGAMC5)
+		|| __put_user(req32.overlay.IEP_ENABLED, &request->overlay.IEP_ENABLED)
+		|| __put_user(req32.overlay.IEP_BLE_MINMAX, &request->overlay.IEP_BLE_MINMAX)
+		|| __put_user(req32.overlay.IEP_BSSCC_CONTROL, &request->overlay.IEP_BSSCC_CONTROL)
+		|| __put_user(req32.overlay.index, &request->overlay.index)
+		|| __put_user(req32.overlay.b_wait_vblank, &request->overlay.b_wait_vblank)
+		|| __put_user(req32.overlay.b_wms, &request->overlay.b_wms)
+		|| __put_user(req32.overlay.buffer_handle, &request->overlay.buffer_handle)
+		|| __put_user(req32.vsync_operation_mask, &request->vsync_operation_mask)
+		|| __put_user(req32.vsync.pipe, &request->vsync.pipe)
+		|| __put_user(req32.vsync.vsync_pipe, &request->vsync.vsync_pipe)
+		|| __put_user(req32.vsync.vsync_count, &request->vsync.vsync_count)
+		|| __put_user(req32.vsync.timestamp, &request->vsync.timestamp)
+		|| __put_user(req32.sprite_enable_mask, &request->sprite_enable_mask)
+		|| __put_user(req32.sprite_disable_mask, &request->sprite_disable_mask)
+		|| __put_user(req32.sprite.dspa_control, &request->sprite.dspa_control)
+		|| __put_user(req32.sprite.dspa_key_value, &request->sprite.dspa_key_value)
+		|| __put_user(req32.sprite.dspa_key_mask, &request->sprite.dspa_key_mask)
+		|| __put_user(req32.sprite.dspc_control, &request->sprite.dspc_control)
+		|| __put_user(req32.sprite.dspc_stride, &request->sprite.dspc_stride)
+		|| __put_user(req32.sprite.dspc_position, &request->sprite.dspc_position)
+		|| __put_user(req32.sprite.dspc_linear_offset, &request->sprite.dspc_linear_offset)
+		|| __put_user(req32.sprite.dspc_size, &request->sprite.dspc_size)
+		|| __put_user(req32.sprite.dspc_surface, &request->sprite.dspc_surface)
+		|| __put_user(req32.subpicture_enable_mask, &request->subpicture_enable_mask)
+		|| __put_user(req32.subpicture_disable_mask, &request->subpicture_disable_mask)
+		|| __put_user(req32.cursor.CursorADDR, &request->cursor.CursorADDR)
+		|| __put_user(req32.cursor.xPos, &request->cursor.xPos)
+		|| __put_user(req32.cursor.yPos, &request->cursor.yPos)
+		|| __put_user(req32.cursor.CursorSize, &request->cursor.CursorSize)
+		|| __put_user(req32.cursor_enable_mask, &request->cursor_enable_mask)
+		|| __put_user(req32.cursor_disable_mask, &request->cursor_disable_mask)
+		|| __put_user(req32.plane_enable_mask, &request->plane_enable_mask)
+		|| __put_user(req32.plane_disable_mask, &request->plane_disable_mask)
+		|| __put_user(req32.plane.type, &request->plane.type)
+		|| __put_user(req32.plane.index, &request->plane.index)
+		|| __put_user(req32.plane.ctx, &request->plane.ctx)) {
+		printk(KERN_ERR "%s: __put_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	/* Correct cmd with the proper size */
+	cmd &= ~(_IOC_SIZEMASK << _IOC_SIZESHIFT);
+	cmd |= (sizeof(*request) << _IOC_SIZESHIFT);
+
+	retval = drm_ioctl(filp, cmd, (unsigned long)request);
+	if (copy_from_user(&returnBuffer, (void __user *)request, sizeof(returnBuffer))) {
+		printk(KERN_ERR "%s: copy_from_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	if (!access_ok(VERIFY_WRITE, request, sizeof(*p_buf))
+		|| __put_user(returnBuffer.b_force_hw_on, &p_buf->b_force_hw_on)
+		|| __put_user(returnBuffer.display_read_mask, &p_buf->display_read_mask)
+		|| __put_user(returnBuffer.display_write_mask, &p_buf->display_write_mask)
+		|| __put_user(returnBuffer.display.pfit_controls, &p_buf->display.pfit_controls)
+		|| __put_user(returnBuffer.display.pfit_autoscale_ratios, &p_buf->display.pfit_autoscale_ratios)
+		|| __put_user(returnBuffer.display.pfit_programmed_scale_ratios, &p_buf->display.pfit_programmed_scale_ratios)
+		|| __put_user(returnBuffer.display.pipeasrc, &p_buf->display.pipeasrc)
+		|| __put_user(returnBuffer.display.pipebsrc, &p_buf->display.pipebsrc)
+		|| __put_user(returnBuffer.display.vtotal_a, &p_buf->display.vtotal_a)
+		|| __put_user(returnBuffer.display.vtotal_b, &p_buf->display.vtotal_b)
+		|| __put_user(returnBuffer.display.dspcntr_a, &p_buf->display.dspcntr_a)
+		|| __put_user(returnBuffer.display.dspcntr_b, &p_buf->display.dspcntr_b)
+		|| __put_user(returnBuffer.display.pipestat_a, &p_buf->display.pipestat_a)
+		|| __put_user(returnBuffer.display.int_mask, &p_buf->display.int_mask)
+		|| __put_user(returnBuffer.display.int_enable, &p_buf->display.int_enable)
+		|| __put_user(returnBuffer.overlay_read_mask, &p_buf-> overlay_read_mask)
+		|| __put_user(returnBuffer.overlay_write_mask, &p_buf->overlay_write_mask)
+		|| __put_user(returnBuffer.overlay.OVADD, &p_buf->overlay.OVADD)
+		|| __put_user(returnBuffer.overlay.OGAMC0, &p_buf->overlay.OGAMC0)
+		|| __put_user(returnBuffer.overlay.OGAMC1, &p_buf->overlay.OGAMC1)
+		|| __put_user(returnBuffer.overlay.OGAMC2, &p_buf->overlay.OGAMC2)
+		|| __put_user(returnBuffer.overlay.OGAMC3, &p_buf->overlay.OGAMC3)
+		|| __put_user(returnBuffer.overlay.OGAMC4, &p_buf->overlay.OGAMC4)
+		|| __put_user(returnBuffer.overlay.OGAMC5, &p_buf->overlay.OGAMC5)
+		|| __put_user(returnBuffer.overlay.IEP_ENABLED, &p_buf->overlay.IEP_ENABLED)
+		|| __put_user(returnBuffer.overlay.IEP_BLE_MINMAX, &p_buf->overlay.IEP_BLE_MINMAX)
+		|| __put_user(returnBuffer.overlay.IEP_BSSCC_CONTROL, &p_buf->overlay.IEP_BSSCC_CONTROL)
+		|| __put_user(returnBuffer.overlay.index, &p_buf->overlay.index)
+		|| __put_user(returnBuffer.overlay.b_wait_vblank, &p_buf->overlay.b_wait_vblank)
+		|| __put_user(returnBuffer.overlay.b_wms, &p_buf-> overlay.b_wms)
+		|| __put_user(returnBuffer.overlay.buffer_handle, &p_buf->overlay.buffer_handle)
+		|| __put_user(returnBuffer.vsync_operation_mask, &p_buf->vsync_operation_mask)
+		|| __put_user(returnBuffer.vsync.pipe, &p_buf->vsync.pipe)
+		|| __put_user(returnBuffer.vsync.vsync_pipe, &p_buf->vsync.vsync_pipe)
+		|| __put_user(returnBuffer.vsync.vsync_count, &p_buf->vsync.vsync_count)
+		|| __put_user(returnBuffer.vsync.timestamp, &p_buf->vsync.timestamp)
+		|| __put_user(returnBuffer.sprite_enable_mask, &p_buf->sprite_enable_mask)
+		|| __put_user(returnBuffer.sprite_disable_mask, &p_buf->sprite_disable_mask)
+		|| __put_user(returnBuffer.sprite.dspa_control, &p_buf->sprite.dspa_control)
+		|| __put_user(returnBuffer.sprite.dspa_key_value, &p_buf->sprite.dspa_key_value)
+		|| __put_user(returnBuffer.sprite.dspa_key_mask, &p_buf->sprite.dspa_key_mask)
+		|| __put_user(returnBuffer.sprite.dspc_control, &p_buf->sprite.dspc_control)
+		|| __put_user(returnBuffer.sprite.dspc_stride, &p_buf->sprite.dspc_stride)
+		|| __put_user(returnBuffer.sprite.dspc_position, &p_buf->sprite.dspc_position)
+		|| __put_user(returnBuffer.sprite.dspc_linear_offset, &p_buf->sprite.dspc_linear_offset)
+		|| __put_user(returnBuffer.sprite.dspc_size, &p_buf->sprite.dspc_size)
+		|| __put_user(returnBuffer.sprite.dspc_surface, &p_buf->sprite.dspc_surface)
+		|| __put_user(returnBuffer.subpicture_enable_mask, &p_buf->subpicture_enable_mask)
+		|| __put_user(returnBuffer.subpicture_disable_mask, &p_buf->subpicture_disable_mask)
+		|| __put_user(returnBuffer.cursor.CursorADDR, &p_buf->cursor.CursorADDR)
+		|| __put_user(returnBuffer.cursor.xPos, &p_buf->cursor.xPos)
+		|| __put_user(returnBuffer.cursor.yPos, &p_buf->cursor.yPos)
+		|| __put_user(returnBuffer.cursor.CursorSize, &p_buf->cursor.CursorSize)
+		|| __put_user(returnBuffer.cursor_enable_mask, &p_buf->cursor_enable_mask)
+		|| __put_user(returnBuffer.cursor_disable_mask, &p_buf->cursor_disable_mask)
+		|| __put_user(returnBuffer.plane_enable_mask, &p_buf->plane_enable_mask)
+		|| __put_user(returnBuffer.plane_disable_mask, &p_buf->plane_disable_mask)
+		|| __put_user(returnBuffer.plane.type, &p_buf->plane.type)
+		|| __put_user(returnBuffer.plane.index, &p_buf->plane.index)
+		|| __put_user(returnBuffer.plane.ctx, &p_buf->plane.ctx)) {
+		printk(KERN_ERR "%s: __put_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	return retval;
+}
+
+struct drm_psb_vsync_set_arg_32 {
+	uint32_t vsync_operation_mask;
+	struct {
+		uint32_t pipe;
+		int vsync_pipe;
+		int vsync_count;
+		uint64_t timestamp  __attribute__ ((__packed__));
+	} vsync;
+} __attribute__ ((__packed__));
+
+int compat_PVRSRV_BridgeDispatchKM4(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	int retval;
+	struct drm_psb_vsync_set_arg_32 req32;
+	struct drm_psb_vsync_set_arg __user *request;
+	struct drm_psb_vsync_set_arg returnBuffer;
+	struct drm_psb_vsync_set_arg_32 __user *p_buf =
+		(struct drm_psb_vsync_set_arg_32 __user *)((void __user *)arg);
+
+	if (copy_from_user(&req32, (void __user *)arg, sizeof(req32))) {
+		printk(KERN_ERR "%s: copy_from_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	request = compat_alloc_user_space(sizeof(*request));
+	if (!access_ok(VERIFY_WRITE, request, sizeof(*request))
+		|| __put_user(req32.vsync_operation_mask, &request->vsync_operation_mask)
+		|| __put_user(req32.vsync.pipe, &request->vsync.pipe)
+		|| __put_user(req32.vsync.vsync_pipe, &request->vsync.vsync_pipe)
+		|| __put_user(req32.vsync.vsync_count, &request->vsync.vsync_count)
+		|| __put_user(req32.vsync.timestamp, &request->vsync.timestamp)) {
+		printk(KERN_ERR "%s __put_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	/* Correct cmd with the proper size */
+	cmd &= ~(_IOC_SIZEMASK << _IOC_SIZESHIFT);
+	cmd |= (sizeof(*request) << _IOC_SIZESHIFT);
+
+	retval = drm_ioctl(filp, cmd, (unsigned long)request);
+	if (copy_from_user(&returnBuffer, (void __user *)request, sizeof(returnBuffer))) {
+		printk(KERN_ERR "%s: copy_from_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	if (!access_ok(VERIFY_WRITE, request, sizeof(*p_buf))
+		|| __put_user(returnBuffer.vsync_operation_mask, &p_buf->vsync_operation_mask)
+		|| __put_user(returnBuffer.vsync.pipe, &p_buf->vsync.pipe)
+		|| __put_user(returnBuffer.vsync.vsync_pipe, &p_buf->vsync.vsync_pipe)
+		|| __put_user(returnBuffer.vsync.vsync_count, &p_buf->vsync.vsync_count)
+		|| __put_user(returnBuffer.vsync.timestamp, &p_buf->vsync.timestamp)){
+		printk(KERN_ERR "%s: __put_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	return retval;
+}
+
+struct psb_gtt_mapping_arg_32 {
+	uint32_t type;
+	uint32_t hKernelMemInfo; /* void *hKernelMemInfo; */
+	uint32_t offset_pages;
+	uint32_t page_align;
+	uint32_t bcd_device_id;
+	uint32_t bcd_buffer_id;
+	uint32_t bcd_buffer_count;
+	uint32_t bcd_buffer_stride;
+	uint32_t vaddr;
+	uint32_t size;
+};
+
+int compat_PVRSRV_BridgeDispatchKM5(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	int retval;
+	struct psb_gtt_mapping_arg_32 req32;
+	struct psb_gtt_mapping_arg __user *request;
+	struct psb_gtt_mapping_arg returnBuffer;
+	struct psb_gtt_mapping_arg_32 __user *p_buf = (struct psb_gtt_mapping_arg_32 __user *)((void __user *)arg);
+
+	if (copy_from_user(&req32, (void __user *)arg, sizeof(req32))) {
+		printk(KERN_ERR "%s: copy_from_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	request = compat_alloc_user_space(sizeof(*request));
+	if (!access_ok(VERIFY_WRITE, request, sizeof(*request))
+		|| __put_user(req32.type, &request->type)
+		|| __put_user((void *)(unsigned long)req32.hKernelMemInfo, &request->hKernelMemInfo)
+		|| __put_user(req32.offset_pages, &request->offset_pages)
+		|| __put_user(req32.page_align, &request->page_align)
+		|| __put_user(req32.bcd_device_id, &request->bcd_device_id)
+		|| __put_user(req32.bcd_buffer_id, &request->bcd_buffer_id)
+		|| __put_user(req32.bcd_buffer_count, &request->bcd_buffer_count)
+		|| __put_user(req32.bcd_buffer_stride, &request->bcd_buffer_stride)
+		|| __put_user(req32.vaddr, &request->vaddr)
+		|| __put_user(req32.size, &request->size)) {
+		printk(KERN_ERR "%s: __put_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	/* Correct cmd with the proper size */
+	cmd &= ~(_IOC_SIZEMASK << _IOC_SIZESHIFT);
+	cmd |= (sizeof(*request) << _IOC_SIZESHIFT);
+
+	retval = drm_ioctl(filp, cmd, (unsigned long)request);
+	if (copy_from_user(&returnBuffer, (void __user *)request, sizeof(returnBuffer))) {
+		printk(KERN_ERR "%s: copy_from_user failed\n", __func__);
+		return -EFAULT;
+        }
+
+	if (!access_ok(VERIFY_WRITE, request, sizeof(*p_buf))
+		|| __put_user(returnBuffer.type, &p_buf->type)
+		|| __put_user((uint32_t)(unsigned long)returnBuffer.hKernelMemInfo, &p_buf->hKernelMemInfo)
+		|| __put_user(returnBuffer.offset_pages, &p_buf->offset_pages)
+		|| __put_user(returnBuffer.page_align, &p_buf->page_align)
+		|| __put_user(returnBuffer.bcd_device_id, &p_buf->bcd_device_id)
+		|| __put_user(returnBuffer.bcd_buffer_id, &p_buf->bcd_buffer_id)
+		|| __put_user(returnBuffer.bcd_buffer_count, &p_buf->bcd_buffer_count)
+		|| __put_user(returnBuffer.bcd_buffer_stride, &p_buf->bcd_buffer_stride)
+		|| __put_user(returnBuffer.vaddr, &p_buf->vaddr)
+		|| __put_user(returnBuffer.size, &p_buf->size)) {
+		printk(KERN_ERR "%s: __put_user failed\n", __func__);
+		return -EFAULT;
+	}
+
+	return retval;
+}
+
+static drm_ioctl_compat_t *psb_compat_ioctls[] = {
+	[PVR_DRM_SRVKM_CMD] = compat_PVRSRV_BridgeDispatchKM2,
+	[DRM_PSB_REGISTER_RW] = compat_PVRSRV_BridgeDispatchKM3,
+	[DRM_PSB_VSYNC_SET] = compat_PVRSRV_BridgeDispatchKM4,
+	[DRM_PSB_GTT_MAP] = compat_PVRSRV_BridgeDispatchKM5,
+	[DRM_PSB_GTT_UNMAP] = compat_PVRSRV_BridgeDispatchKM5,
+};
+
+/**
+ * Called whenever a 32-bit process running under a 64-bit kernel
+ * performs an ioctl on /dev/dri/card<n>.
+ *
+ * \param filp file pointer.
+ * \param cmd command.
+ * \param arg user argument.
+ * \return zero on success or negative number on failure.
+ */
+static long psb_compat_ioctl(struct file *filp, unsigned int cmd,
+			       unsigned long arg)
+{
+	unsigned int nr = DRM_IOCTL_NR(cmd);
+	drm_ioctl_compat_t *fn = NULL;
+	long ret;
+
+	/*
+	 * The driver private ioctls and TTM ioctls should be
+	 * thread-safe.
+	 */
+
+	if (nr < DRM_COMMAND_BASE) {
+		ret = drm_compat_ioctl(filp, cmd, arg);
+		goto out;
+	}
+
+	if (nr < DRM_COMMAND_BASE + DRM_ARRAY_SIZE(psb_compat_ioctls))
+		fn = psb_compat_ioctls[nr - DRM_COMMAND_BASE];
+
+	if (fn != NULL) {
+		ret = (*fn) (filp, cmd, arg);
+	} else {
+		ret = drm_ioctl(filp, cmd, arg);
+	}
+out:
+	return ret;
+}
+#endif /* CONFIG_COMPAT */
 
 #ifdef CONFIG_SUPPORT_TMD_MIPI_600X1024_DISPLAY
 module_init(psb_init);

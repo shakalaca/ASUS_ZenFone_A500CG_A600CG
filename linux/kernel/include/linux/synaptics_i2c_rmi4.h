@@ -36,6 +36,7 @@
 #define RMI4_S3400_IGZO 3
 
 #define S3202_DEV_ID		"synaptics_3202"
+#define S3402_DEV_ID            "synaptics_3402"
 #define S3400_CGS_DEV_ID	"syn_3400_cgs"
 #define S3400_IGZO_DEV_ID	"syn_3400_igzo"
 

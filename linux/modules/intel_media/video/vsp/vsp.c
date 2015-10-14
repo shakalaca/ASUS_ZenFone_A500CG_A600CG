@@ -41,9 +41,11 @@
 #define REF_FRAME_GOLD	2
 
 static int vsp_submit_cmdbuf(struct drm_device *dev,
+			     struct file *filp,
 			     unsigned char *cmd_start,
 			     unsigned long cmd_size);
 static int vsp_send_command(struct drm_device *dev,
+			    struct file *filp,
 			    unsigned char *cmd_start,
 			    unsigned long cmd_size);
 static int vsp_prehandle_command(struct drm_file *priv,
@@ -85,15 +87,22 @@ int vsp_handle_response(struct drm_psb_private *dev_priv)
 	uint32_t sequence;
 	uint32_t status;
 
-	rd = vsp_priv->ctrl->ack_rd;
-	wr = vsp_priv->ctrl->ack_wr;
-	msg_num = wr > rd ? wr - rd : wr == rd ? 0 :
-		VSP_ACK_QUEUE_SIZE - (rd - wr);
-	VSP_DEBUG("ack rd %d wr %d, msg_num %d, size %d\n",
-		  rd, wr, msg_num, VSP_ACK_QUEUE_SIZE);
-
+	idx = 0;
 	sequence = vsp_priv->current_sequence;
-	for (idx = 0; idx < msg_num; ++idx) {
+	while (1) {
+		rd = vsp_priv->ctrl->ack_rd;
+		wr = vsp_priv->ctrl->ack_wr;
+		msg_num = wr > rd ? wr - rd : wr == rd ? 0 :
+			VSP_ACK_QUEUE_SIZE - (rd - wr);
+		VSP_DEBUG("ack rd %d wr %d, msg_num %d, size %d\n",
+			  rd, wr, msg_num, VSP_ACK_QUEUE_SIZE);
+
+		if (msg_num == 0)
+			break;
+		else if ( msg_num < 0) {
+			DRM_ERROR("invalid msg num, exit\n");
+			break;
+		}
 
 		msg = vsp_priv->ack_queue + (idx + rd) % VSP_ACK_QUEUE_SIZE;
 		VSP_DEBUG("ack[%d]->type = %x\n", idx, msg->type);
@@ -103,13 +112,8 @@ int vsp_handle_response(struct drm_psb_private *dev_priv)
 			DRM_ERROR("error response:%.8x %.8x %.8x %.8x %.8x\n",
 				  msg->context, msg->type, msg->buffer,
 				  msg->size, msg->vss_cc);
-			if (vsp_priv->fw_type == VSP_FW_TYPE_VPP) {
-				handle_error_response(msg->buffer & 0xFFFF0000,
-						msg->buffer & 0xFFFF);
-			} else {
-				handle_error_response(msg->buffer & 0xFFFF,
-						msg->buffer >> 16);
-			}
+			handle_error_response(msg->buffer & 0xFFFF,
+					msg->buffer >> 16);
 			ret = false;
 			break;
 
@@ -122,8 +126,7 @@ int vsp_handle_response(struct drm_psb_private *dev_priv)
 			break;
 
 		case VssOutputSurfaceReadyResponse:
-			PSB_DEBUG_GENERAL("sequence %x is done!!\n",
-					  msg->buffer);
+			VSP_DEBUG("sequence %x is done!!\n", msg->buffer);
 			VSP_DEBUG("VSP clock cycles from pre response %x\n",
 				  msg->vss_cc);
 			vsp_priv->vss_cc_acc += msg->vss_cc;
@@ -172,28 +175,8 @@ int vsp_handle_response(struct drm_psb_private *dev_priv)
 			cmd_wr = vsp_priv->ctrl->cmd_wr;
 			VSP_DEBUG("cmd_rd=%d, cmd_wr=%d\n", cmd_rd, cmd_wr);
 
-			if (vsp_priv->fw_loaded_by_punit) {
-				if (vsp_priv->vsp_state == VSP_STATE_ACTIVE)
-					vsp_priv->vsp_state = VSP_STATE_IDLE;
-				break;
-			}
-
-			vsp_priv->vsp_state = VSP_STATE_IDLE;
-			/* If there is still commands in the cmd buffer,
-			 * set CONTINUE command and start API main directly not
-			 * via the boot program. The boot program might damage
-			 * the application state.
-			 */
-			if (cmd_rd == cmd_wr) {
-				if (!vsp_priv->vsp_cmd_num) {
-					PSB_DEBUG_PM("Trying to off...\n");
-					schedule_delayed_work(
-						&vsp_priv->vsp_suspend_wq, 0);
-				}
-			} else {
-				PSB_DEBUG_PM("cmd_queue has data,continue.\n");
-				vsp_continue_function(dev_priv);
-			}
+			if (vsp_priv->vsp_state == VSP_STATE_ACTIVE)
+				vsp_priv->vsp_state = VSP_STATE_IDLE;
 			break;
 		}
 		case VssVp8encSetSequenceParametersResponse:
@@ -215,43 +198,19 @@ int vsp_handle_response(struct drm_psb_private *dev_priv)
 		case VssVp8encEncodeFrameResponse:
 		{
 			sequence = msg->buffer;
+			/* received VssVp8encEncodeFrameResponse indicates cmd has been handled */
+			vsp_priv->vp8_cmd_num--;
+
 			VSP_DEBUG("sequence %d\n", sequence);
 			VSP_DEBUG("receive vp8 encoded frame response\n");
 
-			int i;
+#ifdef VP8_ENC_DEBUG
 			struct VssVp8encEncodedFrame *encoded_frame =
 				(struct VssVp8encEncodedFrame *)
 					(vsp_priv->coded_buf);
-			int ref_frame_surface_id;
-			VSP_DEBUG("encoded_frame.surfaceId_of_ref_frame[REF_FRAME_LAST] %x\n",
-					encoded_frame->surfaceId_of_ref_frame[REF_FRAME_LAST]);
-			VSP_DEBUG("encoded_frame.surfaceId_of_ref_frame[REF_FRAME_ALT] %x\n",
-					encoded_frame->surfaceId_of_ref_frame[REF_FRAME_ALT]);
-			VSP_DEBUG("encoded_frame.surfaceId_of_ref_frame[REF_FRAME_GOLD] %x\n",
-					encoded_frame->surfaceId_of_ref_frame[REF_FRAME_GOLD]);
-
-			for (i = 0; i < 4; i++) {
-				ref_frame_surface_id = vsp_priv->ref_frame_buffers[i].surface_id;
-				VSP_DEBUG("%d: ref_frame_surface_id=%x\n",
-					   i, ref_frame_surface_id);
-				if (ref_frame_surface_id !=
-					encoded_frame->surfaceId_of_ref_frame[REF_FRAME_LAST]
-				 && ref_frame_surface_id !=
-					encoded_frame->surfaceId_of_ref_frame[REF_FRAME_ALT]
-				 && ref_frame_surface_id !=
-					encoded_frame->surfaceId_of_ref_frame[REF_FRAME_GOLD])
-					break;
-			}
-
-			vsp_priv->available_recon_buffer = i;
-			VSP_DEBUG("vsp_priv->available_recon_buffer=%d\n",
-					vsp_priv->available_recon_buffer);
-
-			encoded_frame->reserved[0] = vsp_priv->rec_surface_id;
-
-#ifdef VP8_ENC_DEBUG
 			struct VssVp8encPictureParameterBuffer *t =
 					vsp_priv->vp8_encode_frame_cmd;
+			int i = 0;
 			int j = 0;
 			VSP_DEBUG("VSP clock cycles from pre response %x\n",
 				  msg->vss_cc);
@@ -283,8 +242,14 @@ int vsp_handle_response(struct drm_psb_private *dev_priv)
 					encoded_frame->partitions);
 			VSP_DEBUG("coded data start %p\n",
 					encoded_frame->coded_data);
-			VSP_DEBUG("surfaceId_of_ref_frame %p\n",
-					encoded_frame->surfaceId_of_ref_frame);
+			VSP_DEBUG("surfaceId_of_ref_frame[0] %x\n",
+					encoded_frame->surfaceId_of_ref_frame[0]);
+			VSP_DEBUG("surfaceId_of_ref_frame[1] %x\n",
+					encoded_frame->surfaceId_of_ref_frame[1]);
+			VSP_DEBUG("surfaceId_of_ref_frame[2] %x\n",
+					encoded_frame->surfaceId_of_ref_frame[2]);
+			VSP_DEBUG("surfaceId_of_ref_frame[3] %x\n",
+					encoded_frame->surfaceId_of_ref_frame[3]);
 
 			if (encoded_frame->partitions > PARTITIONS_MAX) {
 				VSP_DEBUG("partitions num error\n");
@@ -331,7 +296,6 @@ bool vsp_interrupt(void *pvData)
 	struct vsp_private *vsp_priv;
 	unsigned long status;
 	bool ret = true;
-	uint32_t sequence;
 
 	VSP_DEBUG("got vsp interrupt\n");
 
@@ -359,24 +323,7 @@ bool vsp_interrupt(void *pvData)
 		(void)PSB_RVDC32(PSB_INT_IDENTITY_R);
 	}
 
-	if (vsp_priv->fw_loaded_by_punit) {
-		tasklet_hi_schedule(&vsp_priv->vsp_irq_tasklet);
-	} else {
-		/* handle the response message */
-		spin_lock(&vsp_priv->lock);
-		sequence = vsp_handle_response(dev_priv);
-		spin_unlock(&vsp_priv->lock);
-
-		/* handle fence info */
-		if (sequence != vsp_priv->current_sequence) {
-			vsp_priv->current_sequence = sequence;
-			psb_fence_handler(dev, VSP_ENGINE_VPP);
-		} else {
-			VSP_DEBUG("will not handle fence for %x "
-					"vs current %x\n",
-					sequence, vsp_priv->current_sequence);
-		}
-	}
+	schedule_delayed_work(&vsp_priv->vsp_irq_wq, 0);
 
 	VSP_DEBUG("will leave interrupt\n");
 	return ret;
@@ -398,11 +345,24 @@ int vsp_cmdbuf_vpp(struct drm_file *priv,
 	struct ttm_bo_kmap_obj cmd_kmap;
 	bool is_iomem;
 	uint32_t invalid_mmu = 0;
+	struct file *filp = priv->filp;
+
+	ret = mutex_lock_interruptible(&vsp_priv->vsp_mutex);
+	if (unlikely(ret != 0))
+		return -EFAULT;
+
+	if (vsp_priv->vsp_state == VSP_STATE_IDLE)
+		ospm_apm_power_down_vsp(dev);
+
+	if (power_island_get(OSPM_VIDEO_VPP_ISLAND) == false) {
+		ret = -EBUSY;
+		goto out_err;
+	}
 
 	/* check if mmu should be invalidated */
 	invalid_mmu = atomic_cmpxchg(&dev_priv->vsp_mmu_invaldc, 1, 0);
 	if (invalid_mmu && psb_check_vsp_idle(dev) == 0)
-		INVALID_MMU;
+		vsp_priv->ctrl->mmu_tlb_soft_invalidate = 1;
 
 	memset(&cmd_kmap, 0, sizeof(cmd_kmap));
 	vsp_priv->vsp_cmd_num = 1;
@@ -416,7 +376,8 @@ int vsp_cmdbuf_vpp(struct drm_file *priv,
 			  arg->cmdbuf_offset, arg->cmdbuf_size,
 			  cmd_buffer->acc_size);
 		vsp_priv->vsp_cmd_num = 0;
-		return -EFAULT;
+		ret = -EFAULT;
+		goto out_err1;
 	}
 
 	VSP_DEBUG("map command first\n");
@@ -425,7 +386,7 @@ int vsp_cmdbuf_vpp(struct drm_file *priv,
 	if (ret) {
 		DRM_ERROR("VSP: ttm_bo_kmap failed: %d\n", ret);
 		vsp_priv->vsp_cmd_num = 0;
-		return ret;
+		goto out_err1;
 	}
 
 	cmd_start = (unsigned char *) ttm_kmap_obj_virtual(&cmd_kmap,
@@ -439,7 +400,7 @@ int vsp_cmdbuf_vpp(struct drm_file *priv,
 		goto out;
 
 	VSP_DEBUG("will submit command\n");
-	ret = vsp_submit_cmdbuf(dev, cmd_start, arg->cmdbuf_size);
+	ret = vsp_submit_cmdbuf(dev, filp, cmd_start, arg->cmdbuf_size);
 	if (ret)
 		goto out;
 
@@ -452,25 +413,22 @@ out:
 	spin_unlock(&cmd_buffer->bdev->fence_lock);
 
 	vsp_priv->vsp_cmd_num = 0;
+out_err1:
+	power_island_put(OSPM_VIDEO_VPP_ISLAND);
+out_err:
+	mutex_unlock(&vsp_priv->vsp_mutex);
+
 	return ret;
 }
 
 int vsp_submit_cmdbuf(struct drm_device *dev,
+		      struct file *filp,
 		      unsigned char *cmd_start,
 		      unsigned long cmd_size)
 {
 	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct vsp_private *vsp_priv = dev_priv->vsp_private;
 	int ret;
-
-	if (!vsp_priv->fw_loaded_by_punit &&
-	    vsp_priv->fw_loaded == VSP_FW_NONE) {
-		ret = vsp_init_fw(dev);
-		if (ret != 0) {
-			DRM_ERROR("VSP: failed to load firmware\n");
-			return -EFAULT;
-		}
-	}
 
 	/* If VSP timeout, don't send cmd to hardware anymore */
 	if (vsp_priv->vsp_state == VSP_STATE_HANG) {
@@ -489,30 +447,30 @@ int vsp_submit_cmdbuf(struct drm_device *dev,
 		}
 	}
 
-	/* submit command to HW */
-	ret = vsp_send_command(dev, cmd_start, cmd_size);
-	if (ret != 0) {
-		DRM_ERROR("VSP: failed to send command\n");
-		return ret;
-	}
-
-	/* If the VSP is ind idle, need to send "Continue" */
-	if (!vsp_priv->fw_loaded_by_punit &&
-	    vsp_priv->vsp_state == VSP_STATE_IDLE) {
-		vsp_continue_function(dev_priv);
-		VSP_DEBUG("The VSP is on idle, send continue!\n");
-	}
-
-	/* If the VSP is in Suspend, need to send "Resume" */
 	if (vsp_priv->vsp_state == VSP_STATE_SUSPEND) {
 		ret = vsp_resume_function(dev_priv);
 		VSP_DEBUG("The VSP is on suspend, send resume!\n");
 	}
 
+	/* submit command to HW */
+	ret = vsp_send_command(dev, filp, cmd_start, cmd_size);
+	if (ret != 0) {
+		DRM_ERROR("VSP: failed to send command\n");
+		return ret;
+	}
+
+#if 0
+	/* If the VSP is in Suspend, need to send "Resume" */
+	if (vsp_priv->vsp_state == VSP_STATE_SUSPEND) {
+		ret = vsp_resume_function(dev_priv);
+		VSP_DEBUG("The VSP is on suspend, send resume!\n");
+	}
+#endif
 	return ret;
 }
 
 int vsp_send_command(struct drm_device *dev,
+		     struct file *filp,
 		     unsigned char *cmd_start,
 		     unsigned long cmd_size)
 {
@@ -528,12 +486,15 @@ int vsp_send_command(struct drm_device *dev,
 
 	cur_cmd = (struct vss_command_t *)cmd_start;
 
+
 	/* if the VSP in suspend, update the saved config info */
+#if 0
 	if (vsp_priv->vsp_state == VSP_STATE_SUSPEND) {
 		VSP_DEBUG("In suspend, need update saved cmd_wr!\n");
 		vsp_priv->ctrl = (struct vsp_ctrl_reg *)
 				 &(vsp_priv->saved_config_regs[2]);
 	}
+#endif
 
 	while (cmd_size) {
 		rd = vsp_priv->ctrl->cmd_rd;
@@ -574,10 +535,10 @@ int vsp_send_command(struct drm_device *dev,
 				else
 					continue;
 			} else if (cur_cmd->type == VspSetContextCommand ||
-				cur_cmd->type == Vss_Sys_STATE_BUF_COMMAND ||
-				cur_cmd->type == Vss_Sys_Ref_Frame_COMMAND) {
-				VSP_DEBUG("skip VspSetContextCommand");
+					cur_cmd->type == Vss_Sys_Ref_Frame_COMMAND) {
+				VSP_DEBUG("skip Vss_Sys_Ref_Frame_COMMAND\n");
 				cur_cmd++;
+
 				cmd_size -= sizeof(*cur_cmd);
 				if (cmd_size == 0)
 					goto out;
@@ -589,6 +550,7 @@ int vsp_send_command(struct drm_device *dev,
 			cur_cell_cmd = vsp_priv->cmd_queue +
 				(wr + cmd_idx) % VSP_CMD_QUEUE_SIZE;
 			++cmd_idx;
+
 			memcpy(cur_cell_cmd, cur_cmd, sizeof(*cur_cmd));
 			VSP_DEBUG("cmd: %.8x %.8x %.8x %.8x %.8x %.8x\n",
 				cur_cell_cmd->context, cur_cell_cmd->type,
@@ -637,9 +599,7 @@ static int vsp_prehandle_command(struct drm_file *priv,
 	struct vsp_private *vsp_priv = dev_priv->vsp_private;
 	struct ttm_buffer_object *pic_bo_vp8;
 	struct ttm_buffer_object *coded_buf_bo;
-	struct ttm_buffer_object *ref_vp8_bo;
 	int vp8_pic_num = 0;
-	int i = 0;
 
 	cur_cmd = (struct vss_command_t *)cmd_start;
 
@@ -671,80 +631,43 @@ static int vsp_prehandle_command(struct drm_file *priv,
 				goto out;
 			}
 		} else if (cur_cmd->type == VspSetContextCommand) {
-			struct vsp_context_settings_t *context_setting;
-			context_setting =
-			    &(vsp_priv->context_setting[VSP_CONTEXT_NUM_VPP]);
 			VSP_DEBUG("set context and new vsp FRC context\n");
-			VSP_DEBUG("set context base %x, size %x\n",
-				  cur_cmd->buffer, cur_cmd->size);
-
-			/* initialize the context-data */
-			context_setting->app_id = VSP_APP_ID_FRC_VPP;
-			context_setting->usage = vsp_context_starting;
-			context_setting->state_buffer_size = cur_cmd->size;
-			context_setting->state_buffer_addr = cur_cmd->buffer;
-
-			vsp_priv->fw_type = VSP_FW_TYPE_VPP;
-
 		} else if (cur_cmd->type == Vss_Sys_STATE_BUF_COMMAND) {
-			struct vsp_context_settings_t *context_setting;
-			context_setting =
-			    &(vsp_priv->context_setting[VSP_CONTEXT_NUM_VP8]);
 			VSP_DEBUG("set context and new vsp VP8 context\n");
-			VSP_DEBUG("set context base %x, size %x\n",
-				  cur_cmd->buffer, cur_cmd->size);
+			/* store the fd of 2 vp8 encoding processes */
+			vsp_priv->vp8_filp[vsp_priv->context_vp8_id] = priv->filp;
+			vsp_priv->context_vp8_id++;
+			if (vsp_priv->context_vp8_id > 1)
+				vsp_priv->context_vp8_id = 0;
 
-			/* initialize the context-data */
-			context_setting->app_id = VSP_APP_ID_VP8_ENC;
-			context_setting->usage = vsp_context_starting;
-			context_setting->state_buffer_size = cur_cmd->size;
-			context_setting->state_buffer_addr = cur_cmd->buffer;
+			cur_cmd->context = VSP_API_GENERIC_CONTEXT_ID;
+			cur_cmd->type = VssGenInitializeContext;
+			if (priv->filp == vsp_priv->vp8_filp[0])
+				cur_cmd->buffer = 1;
+			if (priv->filp == vsp_priv->vp8_filp[1])
+				cur_cmd->buffer = 2;
 
-			vsp_priv->fw_type = VSP_FW_TYPE_VP8;
-
-		} else if (cur_cmd->type == Vss_Sys_Ref_Frame_COMMAND) {
-			ref_vp8_bo =
-				ttm_buffer_object_lookup(tfile,
-					cur_cmd->reserved7);
-			if (ref_vp8_bo == NULL) {
-				DRM_ERROR("VSP: failed to find %x bo\n",
-					cur_cmd->reserved7);
-				ret = -1;
-				goto out;
-			}
-			bool is_iomem;
-			struct ttm_bo_kmap_obj vp8_ref__kmap;
-			ret = ttm_bo_kmap(ref_vp8_bo, 0,
-					ref_vp8_bo->num_pages,
-					&vp8_ref__kmap);
-			if (ret) {
-				DRM_ERROR("VSP: ttm_bo_kmap failed: %d\n", ret);
-				ttm_bo_unref(&ref_vp8_bo);
-				goto out;
-			}
-			struct VssProcPictureVP8* ref =
-				(struct VssProcPictureVP8*)
-					ttm_kmap_obj_virtual(&vp8_ref__kmap,
-							     &is_iomem);
-
-			ref = ((char *)ref)+256;
-			for (i = 0; i<4; i++) {
-			vsp_priv->ref_frame_buffers[i] = ref[i];
-			VSP_DEBUG("vsp_priv->ref_frame_buffers[%d]=%x\n",
-					i,vsp_priv->ref_frame_buffers[i]);
-			VSP_DEBUG("vsp_priv->ref_frame_buffers[%d].surface_id=%x\n",
-					i,vsp_priv->ref_frame_buffers[i].surface_id);
-			VSP_DEBUG("vsp_priv->ref_frame_buffers[%d].base=%x\n",
-					i,vsp_priv->ref_frame_buffers[i].base);
-			}
-
-			ttm_bo_kunmap(&vp8_ref__kmap);
-			ttm_bo_unref(&ref_vp8_bo);
+			cur_cmd->size = VSP_APP_ID_VP8_ENC;
+			cur_cmd->buffer_id = 0;
+			cur_cmd->irq = 0;
+			cur_cmd->reserved6 = 0;
+			cur_cmd->reserved7 = 0;
 		} else
 			/* calculate the numbers of cmd send to VSP */
 			vsp_cmd_num++;
 
 		if (cur_cmd->type == VssVp8encEncodeFrameCommand) {
+			/* calculate VssVp8encEncodeFrameCommand cmd numbers */
+			vsp_priv->vp8_cmd_num++;
+
+			/* set 1st VP8 process context_vp8_id=1 *
+			 * set 2nd VP8 process context_vp8_id=2 *
+			 * */
+			if (priv->filp == vsp_priv->vp8_filp[0])
+				cur_cmd->context = 1;
+			else if (priv->filp == vsp_priv->vp8_filp[1])
+				cur_cmd->context = 2;
+
 			pic_bo_vp8 =
 				ttm_buffer_object_lookup(tfile,
 						cur_cmd->reserved7);
@@ -777,6 +700,13 @@ static int vsp_prehandle_command(struct drm_file *priv,
 				ret = -1;
 				goto out;
 			}
+		}
+
+		if (cur_cmd->type == VssVp8encSetSequenceParametersCommand) {
+			if (priv->filp == vsp_priv->vp8_filp[0])
+				cur_cmd->context = 1;
+			else if (priv->filp == vsp_priv->vp8_filp[1])
+				cur_cmd->context = 2;
 		}
 
 		cmd_size -= sizeof(*cur_cmd);
@@ -926,6 +856,11 @@ int vsp_fence_surfaces(struct drm_file *priv,
 		VSP_DEBUG("fence sequence %x at output pic %d\n",
 			  fence->sequence, idx);
 		pic_param->output_picture[idx].surface_id = fence->sequence;
+
+		if (drm_vsp_single_int)
+			for (idx = 0; idx < output_surf_num - 1; ++idx)
+				pic_param->output_picture[idx].surface_id = 0;
+
 		ttm_fence_object_unref(&fence);
 	}
 
@@ -948,7 +883,6 @@ static int vsp_fence_vp8enc_surfaces(struct drm_file *priv,
 				struct ttm_buffer_object *pic_param_bo,
 				struct ttm_buffer_object *coded_buf_bo)
 {
-	struct psb_ttm_fence_rep local_fence_arg;
 	bool is_iomem;
 	int ret = 0;
 	struct VssVp8encPictureParameterBuffer *pic_param;
@@ -977,20 +911,15 @@ static int vsp_fence_vp8enc_surfaces(struct drm_file *priv,
 
 	VSP_DEBUG("save vp8 pic param address %x\n", pic_param);
 
-	VSP_DEBUG("bo addr %x  kernel addr %x surfaceid %x base %x\n",
+	VSP_DEBUG("bo addr %x kernel addr %x surfaceid %x base %x base_uv %x\n",
 			pic_param_bo,
 			pic_param,
 			pic_param->input_frame.surface_id,
-			pic_param->input_frame.base);
+			pic_param->input_frame.base,
+			pic_param->input_frame.base_uv);
 
 	VSP_DEBUG("pic_param->encoded_frame_base = %p\n",
 			pic_param->encoded_frame_base);
-
-	pic_param->recon_frame =
-		vsp_priv->ref_frame_buffers[vsp_priv->available_recon_buffer];
-	vsp_priv->rec_surface_id = pic_param->recon_frame.surface_id;
-	VSP_DEBUG("vsp_priv->rec_surface_id = %x\n",
-			vsp_priv->rec_surface_id);
 
 	vsp_priv->vp8_encode_frame_cmd = (void *)pic_param;
 
@@ -1014,6 +943,7 @@ static int vsp_fence_vp8enc_surfaces(struct drm_file *priv,
 				&vsp_priv->coded_buf_kmap,
 				&is_iomem);
 
+
 	/* just fence pic param if this is not end command */
 	/* only send last output fence_arg back */
 	psb_fence_or_sync(priv, VSP_ENGINE_VPP, fence_type,
@@ -1023,6 +953,7 @@ static int vsp_fence_vp8enc_surfaces(struct drm_file *priv,
 		VSP_DEBUG("vp8 fence sequence %x at output pic %x\n",
 			  fence->sequence);
 		pic_param->input_frame.surface_id = fence->sequence;
+
 		ttm_fence_object_unref(&fence);
 	} else {
 		VSP_DEBUG("NO fence?????\n");
@@ -1036,23 +967,14 @@ out:
 	return ret;
 }
 
-void vsp_fence_poll(struct drm_device *dev)
+bool vsp_fence_poll(struct drm_device *dev)
 {
 	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct vsp_private *vsp_priv = dev_priv->vsp_private;
-	unsigned int rd, wr;
-	unsigned int idx;
-	unsigned int msg_num;
 	uint32_t sequence;
 	unsigned long irq_flags;
-	struct vss_response_t *msg;
 
 	VSP_DEBUG("polling vsp msg\n");
-
-	if (vsp_priv->vsp_state == VSP_STATE_HANG &&
-	    vsp_priv->vsp_state == VSP_STATE_DOWN &&
-	    vsp_priv->vsp_state == VSP_STATE_SUSPEND)
-		return;
 
 	sequence = vsp_priv->current_sequence;
 
@@ -1066,12 +988,13 @@ void vsp_fence_poll(struct drm_device *dev)
 	if (sequence != vsp_priv->current_sequence) {
 		vsp_priv->current_sequence = sequence;
 		psb_fence_handler(dev, VSP_ENGINE_VPP);
+		return true;
 	}
-out:
-	return;
+
+	return false;
 }
 
-void vsp_new_context(struct drm_device *dev)
+int vsp_new_context(struct drm_device *dev, int ctx_type)
 {
 	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct vsp_private *vsp_priv = dev_priv->vsp_private;
@@ -1079,25 +1002,36 @@ void vsp_new_context(struct drm_device *dev)
 	dev_priv = dev->dev_private;
 	if (dev_priv == NULL) {
 		DRM_ERROR("VSP: drm driver is not initialized correctly\n");
-		return;
+		return -1;
 	}
 
 	vsp_priv = dev_priv->vsp_private;
 	if (vsp_priv == NULL) {
 		DRM_ERROR("VSP: vsp driver is not initialized correctly\n");
-		return;
+		return -1;
 	}
 
 	vsp_priv->context_num++;
 
-	return;
+	if (VAEntrypointEncSlice == ctx_type) {
+		vsp_priv->context_vp8_num++;
+		if (vsp_priv->context_vp8_num > 2) {
+			DRM_ERROR("Only support dual vp8 encoding!\n");
+		}
+		return vsp_priv->context_vp8_num;
+	}
+
+	return vsp_priv->context_num;
 }
 
-void vsp_rm_context(struct drm_device *dev, int ctx_type)
+void vsp_rm_context(struct drm_device *dev, struct file *filp, int ctx_type)
 {
 	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct vsp_private *vsp_priv = dev_priv->vsp_private;
-	bool ret;
+	bool ret = true;
+	int count = 0;
+	struct vss_command_t *cur_cmd;
+	bool tmp = true;
 
 	dev_priv = dev->dev_private;
 	if (dev_priv == NULL) {
@@ -1111,34 +1045,69 @@ void vsp_rm_context(struct drm_device *dev, int ctx_type)
 		return;
 	}
 
-	if (vsp_priv->ctrl == NULL)
+	if (vsp_priv->ctrl == NULL) {
+		vsp_priv->context_num--;
+		if (VAEntrypointEncSlice == ctx_type) {
+			vsp_priv->context_vp8_num--;
+		}
 		return;
+	}
 
 	VSP_DEBUG("ctx_type=%d\n", ctx_type);
+
 	if (VAEntrypointEncSlice == ctx_type) {
+		/* power on again to send VssGenDestroyContext to firmware */
+		if (power_island_get(OSPM_VIDEO_VPP_ISLAND) == false) {
+			tmp = -EBUSY;
+		}
+		if (vsp_priv->vsp_state == VSP_STATE_SUSPEND) {
+			tmp = vsp_resume_function(dev_priv);
+			VSP_DEBUG("The VSP is on suspend, send resume!\n");
+		}
+
+		VSP_DEBUG("VP8 send the last command here to destroy context buffer\n ");
+		cur_cmd = vsp_priv->cmd_queue + vsp_priv->ctrl->cmd_wr % VSP_CMD_QUEUE_SIZE;
+
+		cur_cmd->context = VSP_API_GENERIC_CONTEXT_ID;
+		cur_cmd->type = VssGenDestroyContext;
+		cur_cmd->size = 0;
+		cur_cmd->buffer_id = 0;
+		cur_cmd->irq = 0;
+		cur_cmd->reserved6 = 0;
+		cur_cmd->reserved7 = 0;
+
+		/* judge which vp8 process should be remove context */
+		if (filp == vsp_priv->vp8_filp[0]) {
+			cur_cmd->buffer = 1;
+		} else if (filp == vsp_priv->vp8_filp[1]) {
+			cur_cmd->buffer = 2;
+		} else {
+			VSP_DEBUG("support dual VP8 encoding at most\n");
+		}
+		
+		vsp_priv->ctrl->cmd_wr =
+			(vsp_priv->ctrl->cmd_wr + 1) % VSP_CMD_QUEUE_SIZE;
+
+		/* Wait all the cmd be finished */
+		while (vsp_priv->vp8_cmd_num > 0 && count++ < 120) {
+			msleep(1);
+		}
+
+		if (count == 120) {
+			DRM_ERROR("Failed to handle sigint event\n");
+		}
+
 		if (vsp_priv->coded_buf != NULL) {
 			ttm_bo_kunmap(&vsp_priv->coded_buf_kmap);
 			ttm_bo_unref(&vsp_priv->coded_buf_bo);
 			vsp_priv->coded_buf = NULL;
 		}
-		struct vsp_context_settings_t *context_setting;
-		context_setting =
-			&(vsp_priv->context_setting[VSP_CONTEXT_NUM_VP8]);
-		context_setting->app_id = 0;
-		context_setting->usage = vsp_context_unused;
-		context_setting->state_buffer_size = 0;
-		context_setting->state_buffer_addr = 0;
-	 } else {
-		struct vsp_context_settings_t *context_setting;
-		context_setting =
-			&(vsp_priv->context_setting[VSP_CONTEXT_NUM_VPP]);
-		context_setting->app_id = 0;
-		context_setting->usage = vsp_context_unused;
-		context_setting->state_buffer_size = 0;
-		context_setting->state_buffer_addr = 0;
-	 }
+
+		vsp_priv->context_vp8_num--;
+	}
 
 	vsp_priv->context_num--;
+
 	if (vsp_priv->context_num >= 1) {
 		return;
 	}
@@ -1146,15 +1115,11 @@ void vsp_rm_context(struct drm_device *dev, int ctx_type)
 	vsp_priv->ctrl->entry_kind = vsp_exit;
 
 	/* in case of power mode 0, HW always active,
-	 * set state to idle here for check idle func */
-	if (vsp_priv->fw_loaded_by_punit) {
-		vsp_priv->vsp_state = VSP_STATE_IDLE;
-		ospm_apm_power_down_vsp(dev);
-	} else {
-		ret = power_island_put(OSPM_VIDEO_VPP_ISLAND);
-	}
+	 * * in case got no response from FW, vsp_state=hang but could not be powered off,
+	 * * force state to down */
+	vsp_priv->vsp_state = VSP_STATE_DOWN;
+	ospm_apm_power_down_vsp(dev);
 
-	vsp_priv->current_sequence = 0;
 	vsp_priv->vsp_state = VSP_STATE_DOWN;
 
 	if (ret == false)
@@ -1199,8 +1164,8 @@ int psb_check_vsp_idle(struct drm_device *dev)
 {
 	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct vsp_private *vsp_priv = dev_priv->vsp_private;
-	int i;
 	int cmd_rd, cmd_wr;
+	unsigned int reg, mode;
 
 	if (vsp_priv->fw_loaded == 0 || vsp_priv->vsp_state == VSP_STATE_DOWN)
 		return 0;
@@ -1219,23 +1184,36 @@ int psb_check_vsp_idle(struct drm_device *dev)
 	 */
 	if (!vsp_is_idle(dev_priv, vsp_sp0)) {
 		PSB_DEBUG_PM("VSP: sp0 return busy!\n");
-		return -EBUSY;
+		goto out;
 	}
 	if (!vsp_is_idle(dev_priv, vsp_sp1)) {
 		PSB_DEBUG_PM("VSP: sp1 return busy!\n");
-		return -EBUSY;
+		goto out;
 	}
 
 	if (!vsp_is_idle(dev_priv, vsp_vp0)) {
 		PSB_DEBUG_PM("VSP: vp0 return busy!\n");
-		return -EBUSY;
+		goto out;
 	}
 	if (!vsp_is_idle(dev_priv, vsp_vp1)) {
 		PSB_DEBUG_PM("VSP: vp1 return busy!\n");
-		return -EBUSY;
+		goto out;
 	}
 
 	return 0;
+out:
+	/* For suspend_and_hw_idle power-mode, sometimes hw couldn't handle
+	 * the hw_idle signal correctly. So driver still need power off
+	 * the VSP with error log to trace this situation.
+	 */
+	CONFIG_REG_READ32(1, &reg);
+	mode = vsp_priv->ctrl->power_saving_mode;
+	if (reg == 1 &&
+	    mode == vsp_suspend_and_hw_idle_on_empty_queue) {
+		PSB_DEBUG_PM("VSP core is active, but config_reg_d1 is 1\n");
+		return 0;
+	} else
+		return -EBUSY;
 }
 
 /* The tasklet function to power down VSP */
@@ -1259,20 +1237,23 @@ void psb_powerdown_vsp(struct work_struct *work)
 }
 
 /* vsp irq tasklet function */
-void vsp_irq_task(unsigned long data)
+void vsp_irq_task(struct work_struct *work)
 {
-	struct drm_device *dev = (struct drm_device *)data;
-	struct drm_psb_private *dev_priv = dev->dev_private;
-	struct vsp_private *vsp_priv = dev_priv->vsp_private;
+	struct vsp_private *vsp_priv =
+		container_of(work, struct vsp_private, vsp_irq_wq.work);
+	struct drm_device *dev;
+	struct drm_psb_private *dev_priv;
 	uint32_t sequence;
 
 	if (!vsp_priv)
 		return;
 
+	dev = vsp_priv->dev;
+	dev_priv = dev->dev_private;
+
+	mutex_lock(&vsp_priv->vsp_mutex);
 	/* handle the response message */
-	spin_lock(&vsp_priv->lock);
 	sequence = vsp_handle_response(dev_priv);
-	spin_unlock(&vsp_priv->lock);
 
 	/* handle fence info */
 	if (sequence != vsp_priv->current_sequence) {
@@ -1283,9 +1264,18 @@ void vsp_irq_task(unsigned long data)
 			  sequence, vsp_priv->current_sequence);
 	}
 
-	if (vsp_priv->fw_loaded_by_punit &&
-	    vsp_priv->vsp_state == VSP_STATE_IDLE)
-		ospm_apm_power_down_vsp(dev);
+	if (vsp_priv->vsp_state == VSP_STATE_IDLE) {
+		if (vsp_priv->ctrl->cmd_rd == vsp_priv->ctrl->cmd_wr)
+			ospm_apm_power_down_vsp(dev);
+		else {
+			while (ospm_power_is_hw_on(OSPM_VIDEO_VPP_ISLAND))
+				ospm_apm_power_down_vsp(dev);
+			VSP_DEBUG("successfully power down VSP\n");
+			power_island_get(OSPM_VIDEO_VPP_ISLAND);
+			vsp_resume_function(dev_priv);
+		}
+	}
+	mutex_unlock(&vsp_priv->vsp_mutex);
 
 	return;
 }
@@ -1301,18 +1291,12 @@ int psb_vsp_dump_info(struct drm_psb_private *dev_priv)
 		VSP_DEBUG("partition1_config_reg_d%d=%x\n", i, reg);
 	}
 
-	/* firmware*/
-	if (!vsp_priv->fw_loaded_by_punit)
-		VSP_DEBUG("firmware addr:%x\n", vsp_priv->firmware->offset);
-
 	/* ma_header_reg */
 	MM_READ32(vsp_priv->boot_header.ma_header_reg, 0, &reg);
 	VSP_DEBUG("ma_header_reg:%x\n", reg);
 
 	/* The setting-struct */
 	VSP_DEBUG("setting addr:%x\n", vsp_priv->setting_bo->offset);
-	VSP_DEBUG("setting->max_contexts: %d\n",
-			vsp_priv->setting->max_contexts);
 	VSP_DEBUG("setting->command_queue_size:0x%x\n",
 			vsp_priv->setting->command_queue_size);
 	VSP_DEBUG("setting->command_queue_addr:%x\n",
@@ -1321,32 +1305,6 @@ int psb_vsp_dump_info(struct drm_psb_private *dev_priv)
 			vsp_priv->setting->response_queue_size);
 	VSP_DEBUG("setting->response_queue_addr:%x\n",
 			vsp_priv->setting->response_queue_addr);
-	VSP_DEBUG("setting->contexts_array_addr:%x\n",
-			vsp_priv->setting->contexts_array_addr);
-
-	/* The context_setting struct */
-	VSP_DEBUG("context_settings(addr):%x\n",
-			vsp_priv->context_setting_bo->offset);
-	VSP_DEBUG("context_settings.app_id:%d\n",
-			vsp_priv->context_setting[0].app_id);
-	VSP_DEBUG("context_setting->state_buffer_size:0x%x\n",
-			vsp_priv->context_setting[0].state_buffer_size);
-	VSP_DEBUG("context_setting->state_buffer_addr:%x\n",
-			vsp_priv->context_setting[0].state_buffer_addr);
-	VSP_DEBUG("context_settings.usage:%d\n",
-			vsp_priv->context_setting[0].usage);
-
-	VSP_DEBUG("context_settings(addr):%x\n",
-			vsp_priv->context_setting_bo->offset);
-	VSP_DEBUG("context_settings.app_id:%d\n",
-			vsp_priv->context_setting[1].app_id);
-	VSP_DEBUG("context_setting->state_buffer_size:0x%x\n",
-			vsp_priv->context_setting[1].state_buffer_size);
-	VSP_DEBUG("context_setting->state_buffer_addr:%x\n",
-			vsp_priv->context_setting[1].state_buffer_addr);
-	VSP_DEBUG("context_settings.usage:%d\n",
-			vsp_priv->context_setting[1].usage);
-
 
 	/* dump dma register */
 	VSP_DEBUG("partition1_dma_external_ch[0..23]_pending_req_cnt\n");

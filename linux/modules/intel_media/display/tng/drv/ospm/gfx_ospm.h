@@ -37,5 +37,7 @@
 
 void ospm_gfx_init(struct drm_device *dev,
 			struct ospm_power_island *p_island);
+void ospm_slc_init(struct drm_device *dev,
+			struct ospm_power_island *p_island);
 
 #endif	/* _TNG_GRAPHICS_OSPM_H_*/

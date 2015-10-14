@@ -22,10 +22,9 @@
 #define MRFLD_PMIC_VLDOCNT		0xaf
 #define MRFLD_PMIC_VLDOCNT_VSWITCH_BIT	0x02
 
-#endif
-
-
-int sdhci_pdata_set_quirks(unsigned int quirks);
+int sdhci_pdata_set_quirks(const unsigned int quirks);
 int sdhci_pdata_set_embedded_control(void (*fnp)
 			(void *dev_id, void (*virtual_cd)
 			(void *dev_id, int card_present)));
+#endif
+

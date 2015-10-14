@@ -17,8 +17,9 @@
 #include <linux/platform_device.h>
 #include <linux/mfd/intel_msic.h>
 #include <asm/intel-mid.h>
+#include <asm/intel_mid_gpadc.h>
 #include <asm/intel_mid_thermal.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include "platform_msic.h"
 #include "platform_msic_thermal.h"
 
@@ -60,53 +61,6 @@ static struct intel_mid_thermal_sensor ctp_sensors[] = {
 		.direct = false,
 	},
 
-};
-
-/* VB sensor list */
-static struct intel_mid_thermal_sensor vb_sensors[] = {
-	{
-		.name = "skin0",
-		.index = 0,
-		.slope = 631,
-		.intercept = 10445,
-		.adc_channel = 0x05 | CH_NEED_VREF | CH_NEED_VCALIB,
-		.temp_correlation = skin0_temp_correlation,
-		.direct = false,
-	},
-	{
-		.name = "skin1",
-		.index = 1,
-		.slope = 454,
-		.intercept = 15574,
-		.adc_channel = 0x04 | CH_NEED_VREF | CH_NEED_VCALIB,
-		.temp_correlation = skin0_temp_correlation,
-		.direct = false,
-	},
-	{
-		.name = MSIC_DIE_NAME,
-		.index = 2,
-		.slope = 368,
-		.intercept = 219560,
-		.adc_channel = 0x03 | CH_NEED_VCALIB,
-		.direct = true,
-	},
-	{
-		.name = BPTHERM_NAME,
-		.index = 3,
-		.slope = 1000,
-		.intercept = 0,
-		.adc_channel = 0x09 | CH_NEED_VREF | CH_NEED_VCALIB,
-		.temp_correlation = bptherm_temp_correlation,
-		.direct = false,
-        },
-	{
-		.name = "skin0_1",
-		.index = 4,
-		.slope = 709,
-		.intercept = 6708,
-		.adc_channel = 0x06 | CH_NEED_VREF | CH_NEED_VCALIB,
-		.direct = false,
-	},
 };
 
 /* mfld thermal sensor list */
@@ -192,22 +146,17 @@ static struct intel_mid_thermal_platform_data pdata[] = {
 	[mfld_thermal] = {
 		.num_sensors = 4,
 		.sensors = mfld_sensors,
-		.soc_cooling = false,
+		.gpu_cooling = false,
 	},
 	[ctp_thermal] = {
 		.num_sensors = 4,
 		.sensors = ctp_sensors,
-		.soc_cooling = true,
+		.gpu_cooling = true,
 	},
 	[lex_thermal] = {
 		.num_sensors = 4,
 		.sensors = lex_sensors,
-		.soc_cooling = false,
-	},
-	[vb_thermal] = {
-		.num_sensors = 5,
-		.sensors = vb_sensors,
-		.soc_cooling = true,
+		.gpu_cooling = false,
 	},
 };
 

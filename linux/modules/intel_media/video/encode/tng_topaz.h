@@ -199,10 +199,10 @@ struct tng_topaz_private {
 struct tng_topaz_cmd_header {
 	union {
 		struct {
-			unsigned long id:8;
-			unsigned long core:8;
-			unsigned long low_cmd_count:8;
-			unsigned long high_cmd_count:8;
+			uint32_t id:8;
+			uint32_t core:8;
+			uint32_t low_cmd_count:8;
+			uint32_t high_cmd_count:8;
 		};
 		uint32_t val;
 	};

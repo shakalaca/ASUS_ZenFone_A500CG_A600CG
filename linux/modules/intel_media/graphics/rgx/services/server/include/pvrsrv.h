@@ -146,6 +146,9 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVAcquireDeviceDataKM (IMG_UINT32			ui32DevIndex,
 													 PVRSRV_DEVICE_TYPE	eDeviceType,
 													 IMG_HANDLE			*phDevCookie);
 
+IMG_EXPORT
+PVRSRV_ERROR IMG_CALLCONV PVRSRVReleaseDeviceDataKM (IMG_HANDLE hDevCookie);
+
 PVRSRV_ERROR IMG_CALLCONV PVRSRVRegisterExtDevice(PVRSRV_DEVICE_NODE *psDeviceNode,
 													IMG_UINT32 *pui32DeviceIndex,
 													IMG_UINT32 ui32PhysHeapID);
@@ -278,6 +281,19 @@ IMG_VOID PVRSRVSystemWaitCycles(PVRSRV_DEVICE_CONFIG *psDevConfig, IMG_UINT32 ui
 IMG_VOID IMG_CALLCONV PVRSRVCheckStatus(PVRSRV_CMDCOMP_HANDLE hCmdCompCallerHandle);
 
 PVRSRV_ERROR IMG_CALLCONV PVRSRVKickDevicesKM(IMG_VOID);
+
+/*!
+*****************************************************************************
+ @Function	: PVRSRVResetHWRLogsKM
+
+ @Description	: Resets the HWR Logs buffer (the hardware recovery count is not reset)
+
+ @Input psDeviceNode	: Pointer to the device
+
+ @Return   PVRSRV_ERROR : PVRSRV_OK on success. Otherwise, a PVRSRV_ error code
+*****************************************************************************
+ */
+PVRSRV_ERROR PVRSRVResetHWRLogsKM(PVRSRV_DEVICE_NODE *psDeviceNode);
 
 /*!
 *****************************************************************************

@@ -432,7 +432,7 @@ int vtss_record_bts(struct vtss_transport_data* trnd, pid_t tid, int cpu, void* 
 #endif
 }
 
-int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long addr, unsigned long size, const char *pname, unsigned long pgoff, int is_safe)
+int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long addr, unsigned long size, const char *pname, unsigned long pgoff, long long cputsc, long long realtsc, int is_safe)
 {
 #ifdef VTSS_USE_UEC
     dlm_trace_record_t modrec;
@@ -440,8 +440,9 @@ int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long 
     modrec.flagword = UEC_LEAF1 | UECL1_USRLVLID | UECL1_CPUTSC | UECL1_REALTSC | UECL1_SYSTRACE;
     modrec.pid      = 0;
     modrec.tid      = 0;
-    vtss_time_get_sync(&modrec.cputsc, &modrec.realtsc);
-
+    //vtss_time_get_sync(&modrec.cputsc, &modrec.realtsc);
+    modrec.cputsc = cputsc;
+    modrec.realtsc = realtsc;
     modrec.start  = addr;
     modrec.end    = addr + size;
     modrec.offset = pgoff << PAGE_SHIFT;
@@ -485,7 +486,9 @@ int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long 
             modrec->flagword = UEC_LEAF1 | UECL1_USRLVLID | UECL1_CPUTSC | UECL1_REALTSC | UECL1_SYSTRACE;
             modrec->pid      = 0;
             modrec->tid      = 0;
-            vtss_time_get_sync(&modrec->cputsc, &modrec->realtsc);
+            //vtss_time_get_sync(&modrec->cputsc, &modrec->realtsc);
+            modrec->cputsc = cputsc;
+            modrec->realtsc = realtsc;
 
             modrec->start  = (unsigned int)addr;
             modrec->end    = (unsigned int)(addr + size);
@@ -505,7 +508,10 @@ int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long 
             modrec->flagword = UEC_LEAF1 | UECL1_USRLVLID | UECL1_CPUTSC | UECL1_REALTSC | UECL1_SYSTRACE;
             modrec->pid      = 0;
             modrec->tid      = 0;
-            vtss_time_get_sync(&modrec->cputsc, &modrec->realtsc);
+//            vtss_time_get_sync(&modrec->cputsc, &modrec->realtsc);
+
+            modrec->cputsc = cputsc;
+            modrec->realtsc = realtsc;
 
             modrec->start  = addr;
             modrec->end    = addr + size;
@@ -526,7 +532,10 @@ int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long 
         modrec->flagword = UEC_LEAF1 | UECL1_USRLVLID | UECL1_CPUTSC | UECL1_REALTSC | UECL1_SYSTRACE;
         modrec->pid      = 0;
         modrec->tid      = 0;
-        vtss_time_get_sync(&modrec->cputsc, &modrec->realtsc);
+  //      vtss_time_get_sync(&modrec->cputsc, &modrec->realtsc);
+        modrec->cputsc = cputsc;
+        modrec->realtsc = realtsc;
+
 
         modrec->start  = addr;
         modrec->end    = addr + size;

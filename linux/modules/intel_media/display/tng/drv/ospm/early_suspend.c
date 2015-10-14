@@ -29,9 +29,6 @@
 
 #include <linux/earlysuspend.h>
 #include <linux/mutex.h>
-#ifdef COFNIG_GFX_RTPM
-#include <linux/pm_runtime.h>
-#endif
 #include "psb_drv.h"
 #include "early_suspend.h"
 #include "android_hdmi.h"
@@ -46,7 +43,7 @@ static void gfx_early_suspend(struct early_suspend *h)
 	struct drm_encoder *encoder;
 	struct drm_encoder_helper_funcs *enc_funcs;
 
-	OSPM_DPF("%s\n", __func__);
+	PSB_DEBUG_PM("%s\n", __func__);
 
 	/* protect early_suspend with dpms and mode config */
 	mutex_lock(&dev->mode_config.mutex);
@@ -61,24 +58,28 @@ static void gfx_early_suspend(struct early_suspend *h)
 			enc_funcs->save(encoder);
 
 		if (encoder->encoder_type == DRM_MODE_ENCODER_TMDS) {
-			android_hdmi_suspend_display(dev);
+			DCLockMutex();
+			drm_handle_vblank(dev, 1);
 
 			/* Turn off vsync interrupt. */
 			drm_vblank_off(dev, 1);
 
 			/* Make the pending flip request as completed. */
 			DCUnAttachPipe(1);
+			DC_MRFLD_onPowerOff(1);
+			DCUnLockMutex();
 		}
 	}
+
+	/* Suspend hdmi
+	 * Note: hotplug detection is disabled if audio is not playing
+	 */
+	android_hdmi_suspend_display(dev);
 
 	ospm_power_suspend();
 	dev_priv->early_suspended = true;
 
 	mutex_unlock(&dev->mode_config.mutex);
-
-#ifdef CONFIG_GFX_RTPM
-	rtpm_allow(dev);
-#endif
 }
 
 static void gfx_late_resume(struct early_suspend *h)
@@ -88,7 +89,7 @@ static void gfx_late_resume(struct early_suspend *h)
 	struct drm_encoder *encoder;
 	struct drm_encoder_helper_funcs *enc_funcs;
 
-	OSPM_DPF("%s\n", __func__);
+	PSB_DEBUG_PM("%s\n", __func__);
 
 	/* protect early_suspend with dpms and mode config */
 	mutex_lock(&dev->mode_config.mutex);
@@ -104,25 +105,22 @@ static void gfx_late_resume(struct early_suspend *h)
 			continue;
 		if (enc_funcs && enc_funcs->save)
 			enc_funcs->restore(encoder);
+	}
 
-		if (encoder->encoder_type == DRM_MODE_ENCODER_TMDS) {
-			android_hdmi_resume_display(dev);
+	/* Resume HDMI */
+	android_hdmi_resume_display(dev);
 
-			DCAttachPipe(1);
-			/*
-			 * Devices connect status will be changed
-			 * when system suspend,re-detect once here.
-			 */
-			if (android_hdmi_is_connected(dev))
-				mid_hdmi_audio_resume(dev);
-		}
+	/*
+	 * Devices connect status will be changed
+	 * when system suspend,re-detect once here.
+	 */
+	if (android_hdmi_is_connected(dev)) {
+		DCAttachPipe(1);
+		DC_MRFLD_onPowerOn(1);
+		mid_hdmi_audio_resume(dev);
 	}
 
 	mutex_unlock(&dev->mode_config.mutex);
-
-#ifdef CONFIG_GFX_RTPM
-	rtpm_forbid(dev);
-#endif
 }
 
 static struct early_suspend intel_media_early_suspend = {

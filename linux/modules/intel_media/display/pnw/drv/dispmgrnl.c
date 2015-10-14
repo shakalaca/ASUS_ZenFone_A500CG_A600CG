@@ -196,7 +196,8 @@ static int dispmgr_nl_init(void)
 				      0, nl_recv_msg, NULL, THIS_MODULE);
 #else
         struct netlink_kernel_cfg cfg = {
-                .groups = 0
+                .groups = 0,
+				.input = nl_recv_msg,
         };
         nl_sk = netlink_kernel_create(&init_net, NETLINK_DISPMGR, &cfg);
 #endif

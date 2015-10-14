@@ -59,6 +59,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /* ourselves */
 #include "physmem_osmem.h"
 
+#if defined(PVR_RI_DEBUG)
+#include "ri_server.h"
+#endif
+
 #include <linux/slab.h>
 #include <linux/highmem.h>
 #include <linux/mm_types.h>
@@ -350,6 +354,14 @@ PhysmemNewTDMetaCodePMR(PVRSRV_DEVICE_NODE *psDevNode,
                            &hPDumpAllocInfo,
                            IMG_FALSE);
 	
+#if defined(PVR_RI_DEBUG)
+	{
+		RIWritePMREntryKM (*ppsPMRPtr,
+					   	   "TD META Code",
+						   (ui64NumPages * uiPageSize));
+	}
+#endif
+
 	/* this is needed when the allocation is finalized and we need to free it. */
 	psPageContainer->hPDumpAllocInfo = hPDumpAllocInfo;
 

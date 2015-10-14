@@ -990,6 +990,25 @@ static PVRSRV_ERROR DestroyHandleBase(HANDLE_IMPL_BASE *psBase)
 		PVR_DPF((PVR_DBG_WARNING, "%s: Handles still exist (%u found)", 
 			 __FUNCTION__, 
 			 psBase->ui32TotalHandCount - psBase->ui32TotalFreeHandCount));
+
+#if defined(DEBUG_HANDLEALLOC_INFO_KM)
+		{
+			IMG_UINT32 i;
+
+			for (i = 0; i < psBase->ui32TotalHandCount; i++)
+			{
+				HANDLE_IMPL_DATA *psHandleData = INDEX_TO_HANDLE_DATA(psBase, i);
+
+				if (psHandleData->pvData != IMG_NULL)
+				{
+					PVR_DPF((PVR_DBG_WARNING, "%d: handle[%p] data[%p] still allocated",
+							i, psHandleData->hHandle, psHandleData->pvData));
+
+				}
+			}
+		}
+#endif /* DEBUG_HANDLEALLOC_INFO_KM */
+
 	}
 
 	eError = ReallocHandleBlockArray(psBase, 0);

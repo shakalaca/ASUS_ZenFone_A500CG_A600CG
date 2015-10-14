@@ -18,8 +18,7 @@
 #include <linux/slab.h>
 #include <linux/virtio_ring.h>
 #include <linux/virtio_ids.h>
-
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 
 #include "intel_mid_rproc_core.h"
 #include "remoteproc_internal.h"
@@ -112,7 +111,7 @@ struct rproc_vdev *find_rvdev(struct rproc *rproc, int id)
 int find_vring_index(struct rproc *rproc, int vqid, int id)
 {
 	struct rproc_vdev *rvdev;
-	struct device *dev = rproc->dev;
+	struct device *dev = rproc->dev.parent;
 	int vring_idx = 0;
 
 	rvdev = find_rvdev(rproc, id);
@@ -142,7 +141,7 @@ void intel_mid_rproc_vring_init(struct rproc *rproc,
 	int align, len;
 	void *addr;
 	struct rproc_vdev *rvdev;
-	struct device *dev = rproc->dev;
+	struct device *dev = rproc->dev.parent;
 
 	rvdev = find_rvdev(rproc, VIRTIO_ID_RPMSG);
 	if (rvdev == NULL) {
@@ -164,7 +163,7 @@ void intel_mid_rproc_vring_init(struct rproc *rproc,
  */
 void intel_mid_rproc_vq_interrupt(struct rproc *rproc, int msg)
 {
-	struct device *dev = rproc->dev;
+	struct device *dev = rproc->dev.parent;
 
 	if (rproc_vq_interrupt(rproc, msg) == IRQ_NONE)
 		dev_err(dev, "no message was found in vqid %d\n", msg);

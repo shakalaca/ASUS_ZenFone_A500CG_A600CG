@@ -15,6 +15,8 @@ enum {
 	PM_QOS_CPU_DMA_LATENCY,
 	PM_QOS_NETWORK_LATENCY,
 	PM_QOS_NETWORK_THROUGHPUT,
+	PM_QOS_CPU_FREQ_MIN,
+	PM_QOS_CPU_FREQ_MAX,
 
 	/* insert new class ID */
 	PM_QOS_NUM_CLASSES,
@@ -33,6 +35,8 @@ enum pm_qos_flags_status {
 #define PM_QOS_NETWORK_LAT_DEFAULT_VALUE	(2000 * USEC_PER_SEC)
 #define PM_QOS_NETWORK_THROUGHPUT_DEFAULT_VALUE	0
 #define PM_QOS_DEV_LAT_DEFAULT_VALUE		0
+#define PM_QOS_CPU_FREQ_MIN_DEFAULT_VALUE	0
+#define PM_QOS_CPU_FREQ_MAX_DEFAULT_VALUE	LONG_MAX
 
 #define PM_QOS_FLAG_NO_POWER_OFF	(1 << 0)
 #define PM_QOS_FLAG_REMOTE_WAKEUP	(1 << 1)
@@ -102,7 +106,7 @@ enum pm_qos_req_action {
 
 static inline int dev_pm_qos_request_active(struct dev_pm_qos_request *req)
 {
-	return req->dev != 0;
+	return req->dev != NULL;
 }
 
 int pm_qos_update_target(struct pm_qos_constraints *c, struct plist_node *node,

@@ -19,7 +19,6 @@
 
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
-#include <linux/usb/otg.h>
 #include "usb.h"
 
 static inline const char *plural(int n)
@@ -47,6 +46,9 @@ int usb_choose_configuration(struct usb_device *udev)
 	int num_configs;
 	int insufficient_power = 0;
 	struct usb_host_config *c, *best;
+
+	if (usb_device_is_owned(udev))
+		return 0;
 
 	best = NULL;
 	c = udev->config;
@@ -98,7 +100,7 @@ int usb_choose_configuration(struct usb_device *udev)
 		 */
 
 		/* Rule out configs that draw too much bus current */
-		if (c->desc.bMaxPower * 2 > udev->bus_mA) {
+		if (usb_get_max_power(udev, c) > udev->bus_mA) {
 			insufficient_power++;
 			continue;
 		}
@@ -135,12 +137,10 @@ int usb_choose_configuration(struct usb_device *udev)
 			best = c;
 	}
 
-	if (insufficient_power > 0) {
+	if (insufficient_power > 0)
 		dev_info(&udev->dev, "rejected %d configuration%s "
 			"due to insufficient available bus power\n",
 			insufficient_power, plural(insufficient_power));
-		usb_notify_warning(udev, USB_WARNING_INSUFF_POWER);
-	}
 
 	if (best) {
 		i = best->desc.bConfigurationValue;
@@ -163,51 +163,13 @@ static int generic_probe(struct usb_device *udev)
 	/* Choose and set the configuration.  This registers the interfaces
 	 * with the driver core and lets interface drivers bind to them.
 	 */
-	if (usb_device_is_owned(udev))
-		;		/* Don't configure if the device is owned */
-	else if (udev->authorized == 0)
+	if (udev->authorized == 0)
 		dev_err(&udev->dev, "Device is not authorized for usage\n");
-#ifdef CONFIG_USB_OTG
-	else if (is_otg_testdev(udev)) {
-		struct usb_hcd	*hcd = bus_to_hcd(udev->bus);
-
-		/* According to USB OTG2.0 Spec Test mode support 6.4.2,
-		 * for A-device enumeration, set_configuration(1), and
-		 * set_configuration(0) for B-device enumeration.
-		 */
-
-		if (udev->bus->is_b_host)
-			c = 0;
-		else
-			c = 1;
-
-		err = usb_set_configuration(udev, c);
-		if (err)
-			dev_err(&udev->dev,
-				"can't set config #%d for test_dev, error %d\n",
-				err, (udev->bus->is_b_host ? 0 : 1));
-
-		dev_dbg(&udev->dev,
-			"OTG Test device detected, set config #%d\n", c);
-
-		/* Check which test mode it is, normal or vbusoff mode.
-		 * Then notify OTG transceiver to move to different OTG
-		 * state per different mode.
-		 */
-
-		if (hcd && hcd->otg_notify) {
-			if (is_otg_vbusoff_testdev(udev))
-				hcd->otg_notify(udev, USB_OTG_TESTDEV_VBUSOFF);
-			else
-				hcd->otg_notify(udev, USB_OTG_TESTDEV);
-		}
-	}
-#endif
 	else {
 		c = usb_choose_configuration(udev);
 		if (c >= 0) {
 			err = usb_set_configuration(udev, c);
-			if (err) {
+			if (err && err != -ENODEV) {
 				dev_err(&udev->dev, "can't set config #%d, error %d\n",
 					c, err);
 				/* This need not be fatal.  The user can try to
@@ -248,8 +210,11 @@ static int generic_suspend(struct usb_device *udev, pm_message_t msg)
 	/* Non-root devices don't need to do anything for FREEZE or PRETHAW */
 	else if (msg.event == PM_EVENT_FREEZE || msg.event == PM_EVENT_PRETHAW)
 		rc = 0;
-	else
+	else {
 		rc = usb_port_suspend(udev, msg);
+		if (rc == 0)
+			usb_notify_port_suspend(udev);
+	}
 
 	return rc;
 }
@@ -265,8 +230,11 @@ static int generic_resume(struct usb_device *udev, pm_message_t msg)
 	 */
 	if (!udev->parent)
 		rc = hcd_bus_resume(udev, msg);
-	else
+	else {
 		rc = usb_port_resume(udev, msg);
+		if (rc == 0)
+			usb_notify_port_resume(udev);
+	}
 	return rc;
 }
 

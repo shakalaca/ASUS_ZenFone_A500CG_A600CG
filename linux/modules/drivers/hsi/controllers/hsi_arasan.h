@@ -89,9 +89,9 @@
 #define ARASAN_RX_FIFO_THRES_V2          0x064
 #define ARASAN_RX_FIFO_THRES_STP_V2      8
 #define ARASAN_TX_DATA_V2                0x0a0
-#define ARASAN_TX_DATA_STP_V2            8
+#define ARASAN_TX_DATA_STP_V2            4
 #define ARASAN_RX_DATA_V2                0x0c0
-#define ARASAN_RX_DATA_STP_V2            8
+#define ARASAN_RX_DATA_STP_V2            4
 #define ARASAN_TX_CHAN_CURR_PTR_V2       0x0e0
 #define ARASAN_TX_CHAN_CURR_PTR_STP_V2   4
 #define ARASAN_RX_CHAN_CURR_PTR_V2       0x100

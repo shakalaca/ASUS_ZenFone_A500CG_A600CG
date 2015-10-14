@@ -27,7 +27,12 @@
  *
  **************************************************************************/
 
+#ifdef CONFIG_DRM_VXD_BYT
+#include "vxd_drv.h"
+#else
 #include "psb_drv.h"
+#endif
+
 #include "psb_msvdx.h"
 #include "psb_msvdx_msg.h"
 #include "psb_msvdx_reg.h"
@@ -93,7 +98,11 @@ void psb_msvdx_do_concealment(struct work_struct *work)
 	uint32_t cmd_space = 0;
 	int ret = 0;
 
+#ifdef CONFIG_VIDEO_MRFLD
+	if (!power_island_get(OSPM_VIDEO_DEC_ISLAND)) {
+#else
 	if (!ospm_power_using_video_begin(OSPM_VIDEO_DEC_ISLAND)) {
+#endif
 		printk(KERN_ERR, "MSVDX: fail to power on ved for ec\n");
 		return;
 	}
@@ -337,8 +346,12 @@ ec_done:
 		MSVDX_CMDS_END_SLICE_PICTURE_OFFSET,
 		1, cmd_space);
 
-	ospm_power_using_video_end(OSPM_VIDEO_DEC_ISLAND);
 
+#ifdef CONFIG_VIDEO_MRFLD
+	power_island_put(OSPM_VIDEO_DEC_ISLAND);
+#else
+	ospm_power_using_video_end(OSPM_VIDEO_DEC_ISLAND);
+#endif
 	fault_region->num_region = 0;
 
 	preempt_enable();
@@ -395,7 +408,9 @@ void psb_msvdx_update_frame_info(struct msvdx_private *msvdx_priv,
 
 	struct psb_msvdx_ec_ctx *ec_ctx;
 
-	PSB_DEBUG_MSVDX("update frame info for ved error concealment\n");
+	PSB_DEBUG_MSVDX(
+		"update frame info (handle 0x%08x) for error concealment\n",
+		buffer_handle);
 
 	ec_ctx = psb_msvdx_find_ec_ctx(msvdx_priv, tfile, cmd);
 
@@ -423,7 +438,8 @@ void psb_msvdx_update_frame_info(struct msvdx_private *msvdx_priv,
 
 	frame_info->fw_status = 0;
 	frame_info->handle = buffer_handle;
-	frame_info->fence = (deblock_msg->header.bits.msg_fence & 0xf);
+	frame_info->fence = (deblock_msg->header.bits.msg_fence & (~0xf));
+	frame_info->decode_status.num_region = 0;
 	ec_ctx->cur_frame_info = frame_info;
 }
 
@@ -436,6 +452,7 @@ void psb_msvdx_backup_cmd(struct msvdx_private *msvdx_priv,
 	struct fw_deblock_msg *deblock_msg = NULL;
 
 	struct psb_msvdx_ec_ctx *ec_ctx;
+	union msg_header *header;
 
 	PSB_DEBUG_MSVDX("backup cmd for ved error concealment\n");
 
@@ -460,10 +477,9 @@ void psb_msvdx_backup_cmd(struct msvdx_private *msvdx_priv,
 	ec_ctx->deblock_cmd_offset = deblock_cmd_offset;
 	memcpy(ec_ctx->unfenced_cmd, cmd, cmd_size);
 	ec_ctx->fence = PSB_MSVDX_INVALID_FENCE;
+	header = (union msg_header *)ec_ctx->unfenced_cmd;
 	if (cmd_size)
-		ec_ctx->fence =
-			MEMIO_READ_FIELD(ec_ctx->unfenced_cmd,
-					MTX_GENMSG_FENCE);
+		ec_ctx->fence = header->bits.msg_fence;
 	ec_ctx->fence &= (~0xf);
 	PSB_DEBUG_MSVDX("backup cmd for ved: fence 0x%08x, cmd_size %d\n",
 				ec_ctx->fence, cmd_size);

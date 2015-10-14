@@ -45,6 +45,7 @@
 #include <linux/seq_file.h>
 
 extern u8 tsb_otp_data[24];
+static int binning_sum;
 
 static enum atomisp_bayer_order tsb_bayer_order_mapping[] = {
 #if 0	// debug bayer 20140609
@@ -590,6 +591,10 @@ static long tsb_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	case ATOMISP_IOC_G_SENSOR_PRIV_INT_DATA:
 		return tsb_g_priv_int_data(sd, arg);
 #endif	// TSB 20140529
+    case ATOMISP_IOC_S_BINNING_SUM:
+        binning_sum = *(int*)arg;
+        printk("Set low-light mode %d\n", binning_sum);
+        return 0;
 	default:
 		return -EINVAL;
 	}
@@ -1553,6 +1558,11 @@ static int nearest_resolution_index(struct v4l2_subdev *sd, int w, int h)
 			}
 		}
 	}
+    if(binning_sum==1 && dev->curr_res_table[idx].width == dev->curr_res_table[idx+1].width && dev->curr_res_table[idx].height == dev->curr_res_table[idx+1].height){
+        if(dev->digital_gain>=512){
+            idx++;
+        }
+    }
     printk("%s, index = %d\n", __func__, idx);
 
 	return idx;
@@ -1653,7 +1663,7 @@ static int tsb_s_mbus_fmt(struct v4l2_subdev *sd,
 
 	mutex_lock(&dev->input_lock);
 
-	printk("%s, width=%d, height=%d\n", __func__, fmt->width, fmt->height);
+	printk("%s, match nearest resolution with width=%d, height=%d\n", __func__, fmt->width, fmt->height);
 	dev->fmt_idx = nearest_resolution_index(sd, fmt->width, fmt->height);
 	if (dev->fmt_idx == -1) {
 		ret = -EINVAL;

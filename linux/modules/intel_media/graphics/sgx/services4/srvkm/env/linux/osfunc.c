@@ -1818,9 +1818,9 @@ OSRegisterMem(IMG_CPU_PHYADDR BasePAddr,
 }
 
 
-PVRSRV_ERROR OSRegisterDiscontigMem(IMG_SYS_PHYADDR *pBasePAddr, IMG_VOID *pvCPUVAddr, IMG_SIZE_T uiBytes, IMG_UINT32 ui32MappingFlags, IMG_HANDLE *phOSMemHandle)
+PVRSRV_ERROR OSRegisterDiscontigMem(IMG_SYS_PHYADDR *pBasePAddr, IMG_VOID *pvCPUVAddr, IMG_SIZE_T uBytes, IMG_UINT32 ui32MappingFlags, IMG_HANDLE *phOSMemHandle)
 {
-    return RegisterExternalMem(pBasePAddr, pvCPUVAddr, uiBytes, IMG_FALSE, ui32MappingFlags, phOSMemHandle);
+    return RegisterExternalMem(pBasePAddr, pvCPUVAddr, uBytes, IMG_FALSE, ui32MappingFlags, phOSMemHandle);
 }
 
 
@@ -1871,9 +1871,9 @@ OSUnRegisterMem (IMG_VOID *pvCpuVAddr,
     return PVRSRV_OK;
 }
 
-PVRSRV_ERROR OSUnRegisterDiscontigMem(IMG_VOID *pvCpuVAddr, IMG_SIZE_T uiBytes, IMG_UINT32 ui32Flags, IMG_HANDLE hOSMemHandle)
+PVRSRV_ERROR OSUnRegisterDiscontigMem(IMG_VOID *pvCpuVAddr, IMG_SIZE_T uBytes, IMG_UINT32 ui32Flags, IMG_HANDLE hOSMemHandle)
 {
-    return OSUnRegisterMem(pvCpuVAddr, uiBytes, ui32Flags, hOSMemHandle);
+    return OSUnRegisterMem(pvCpuVAddr, uBytes, ui32Flags, hOSMemHandle);
 }
 
 /*!

@@ -52,8 +52,18 @@
 /* Merrifield */
 #define MRFL_SSP_DEVICE_ID      0x1193
 #define MRFL_LPE_DMA_DEVICE_ID  0x119B
+/* BayTrail, no PCI SSP, DMA only in ACPI */
 
-#ifdef __MRFL_SPECIFIC_TMP__
+/*
+ * available features of SSP IP or driver version
+ */
+#define FEAT_ACPI      0		/* using ACPI version of driver */
+#define FEAT_PCI       1		/* using PCI version of driver */
+#define FEAT_DIV_CTRL  2		/* DIV_CTRL register on SSP */
+#define FEAT_ISRX_IMRX 3		/* Need to clear IRQ */
+
+
+
 /* FIXME: use of MRFL_SSPx_REG_BASE_ADDRESS should be
  * avoided by PCI table reorganization which allow to
  * determine SSP # from PCI info */
@@ -66,7 +76,11 @@
  * take care to access LPE Shim registers */
 #define MRFL_LPE_SHIM_REG_BASE_ADDRESS	(0xff340000)
 #define MRFL_LPE_SHIM_REG_SIZE		(0xE8)
-#endif /* __MRFL_SPECIFIC_TMP__ */
+
+#define VLV2_LPE_SHIM_REG_BASE_ADDRESS	(0xdf540000)
+#define VLV2_LPE_SHIM_REG_SIZE		(0x100)
+
+
 
 /* SSP PCI device definitions */
 #define MRST_SSP_BAR	0
@@ -139,6 +153,18 @@ DEFINE_REG(LPE_IPCD, 0x40)	/* IPC SST-IA */
 DEFINE_REG(LPE_ISRD, 0x20)	/* dummy register for*/
 				/* shim workaround   */
 DEFINE_REG(LPE_CLKCTL, 0x78)
+/* BAYTRAIL */
+DEFINE_REG(LPE_SSP1_DIV_CTRL_L, 0xF0)
+DEFINE_REG(LPE_SSP1_DIV_CTRL_H, 0xF4)
+DEFINE_REG(LPE_SSP2_DIV_CTRL_L, 0xF8)
+DEFINE_REG(LPE_SSP2_DIV_CTRL_H, 0xFC)
+#define SSP19200MHZ_DIV_CTRL_L 0x0000007d
+#define SSP19200MHZ_DIV_CTRL_H 0x60000060
+#define SSP0_OFFSET 0xA0000
+#define SSP1_OFFSET 0xA1000
+#define SSP2_OFFSET 0xA2000
+#define LPESHIM_OFFSET 0x140000
+
 #ifdef __MRFL_SPECIFIC__
 DEFINE_REG(LPE_CHICKEN_BITS, 0x88)
 #endif /* __MRFL_SPECIFIC__ */
@@ -147,6 +173,11 @@ DEFINE_REG(LPE_CHICKEN_BITS, 0x88)
 DEFINE_FIELD(LPE_ISRX, IAPIS_SSP0, 0x01, 3);
 DEFINE_FIELD(LPE_ISRX, IAPIS_SSP1, 0x01, 4);
 DEFINE_FIELD(LPE_ISRX, IAPIS_SSP2, 0x01, 5);
+
+/* LPE IMRX fields definitions */
+DEFINE_FIELD(LPE_IMRX, IAPIS_SSP0, 0x01, 3);
+DEFINE_FIELD(LPE_IMRX, IAPIS_SSP1, 0x01, 4);
+DEFINE_FIELD(LPE_IMRX, IAPIS_SSP2, 0x01, 5);
 
 
 /*
@@ -452,7 +483,8 @@ enum i2s_flags {
 
 struct intel_mid_i2s_hdl {
 	/* Driver model hookup */
-	struct pci_dev *pdev;
+	/* replace pci_dev by device struct for acpi */
+	struct device *ssp_dev;
 	/* register addresses */
 	dma_addr_t paddr;
 	void __iomem *ioaddr;
@@ -465,7 +497,7 @@ struct intel_mid_i2s_hdl {
 
 	/* SSP Configuration */
 	/* DMA info */
-	struct pci_dev *dmac1;
+	struct device *dmacdev; /* dmacdev */
 
 	struct intel_mid_dma_slave dmas_tx;
 	struct intel_mid_dma_slave dmas_rx;
@@ -539,7 +571,8 @@ irqreturn_t i2s_irq_handle_TFS(struct intel_mid_i2s_hdl *drv_data, u32 sssr);
 static
 irqreturn_t i2s_irq_deferred(int irq, void *dev_id);
 
-static int check_device(struct device *device_ptr, void *data);
+static int check_device_pci(struct device *device_ptr, void *data);
+static int check_device_acpi(struct device *device_ptr, void *data);
 static void set_ssp_i2s_hw(struct intel_mid_i2s_hdl *drv_data,
 			const struct intel_mid_i2s_settings *ps_settings);
 
@@ -551,6 +584,9 @@ static int intel_mid_i2s_runtime_suspend(struct device *device_ptr);
 static int intel_mid_i2s_probe(struct pci_dev *pdev,
 		const struct pci_device_id *ent);
 static void intel_mid_i2s_remove(struct pci_dev *pdev);
+
+int i2s_acpi_probe(struct platform_device *platdev);
+int i2s_acpi_remove(struct platform_device *platdev);
 
 /*static int bt_pcm_dma_init(struct intel_mid_i2s_hdl *drv_data);*/
 
@@ -611,6 +647,17 @@ static int intel_mid_i2s_resume(struct device *dev);
 	write_SSCR1((read_SSCR1(reg_pointer)				  \
 	& (~((SSCR1_##regbit##_MASK << SSCR1_##regbit##_SHIFT)))),	  \
 	reg_pointer);
+
+#define clear_LPE_IMRX_reg(reg_pointer, regbit)				  \
+	write_LPE_IMRX((read_LPE_IMRX(reg_pointer)			  \
+	& (~((LPE_IMRX_##regbit##_MASK << LPE_IMRX_##regbit##_SHIFT)))),  \
+	reg_pointer);
+
+#define clear_LPE_ISRX_reg(reg_pointer, regbit)				  \
+	write_LPE_ISRX((read_LPE_ISRX(reg_pointer)			  \
+	& (~((LPE_ISRX_##regbit##_MASK << LPE_ISRX_##regbit##_SHIFT)))),  \
+	reg_pointer);
+
 
 /* RX FIFO level */
 #define GET_SSSR_val(x, regb)						  \

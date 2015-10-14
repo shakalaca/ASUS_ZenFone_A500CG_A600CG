@@ -29,17 +29,53 @@
 
 #include "platform_sdhci_pci.h"
 
-static int panic_mode_emmc0_power_up(void *data);
-static int mrfl_sd_setup(struct sdhci_pci_data *data);
-static void mrfl_sd_cleanup(struct sdhci_pci_data *data);
+#ifdef CONFIG_ATOM_SOC_POWER
+static int panic_mode_emmc0_power_up(void *data)
+{
+	int ret;
+	bool atomic_context;
+	/*
+	 * Since pmu_set_emmc_to_d0i0_atomic function can
+	 * only be used in atomic context, before call this
+	 * function, do a check first and make sure this function
+	 * is used in atomic context.
+	 */
+	atomic_context = (!preemptible() || in_atomic_preempt_off());
+
+	if (!atomic_context) {
+		pr_err("%s: not in atomic context!\n", __func__);
+		return -EPERM;
+	}
+
+	ret = pmu_set_emmc_to_d0i0_atomic();
+	if (ret) {
+		pr_err("%s: power up host failed with err %d\n",
+				__func__, ret);
+	}
+
+	return ret;
+}
+#else
+static int panic_mode_emmc0_power_up(void *data)
+{
+	return 0;
+}
+#endif
+
+static unsigned int sdhci_pdata_quirks =
+	SDHCI_QUIRK2_ENABLE_MMC_PM_IGNORE_PM_NOTIFY;
+
+int sdhci_pdata_set_quirks(const unsigned int quirks)
+{
+	sdhci_pdata_quirks = quirks;
+	return 0;
+}
+
 static int mrfl_sdio_setup(struct sdhci_pci_data *data);
 static void mrfl_sdio_cleanup(struct sdhci_pci_data *data);
-static int mrfl_flis_check(void *data, unsigned int clk);
 
 static void (*sdhci_embedded_control)(void *dev_id, void (*virtual_cd)
 					(void *dev_id, int card_present));
-
-static unsigned int sdhci_pdata_quirks;
 
 /*****************************************************************************\
  *                                                                           *
@@ -94,9 +130,9 @@ static int mfld_sdio_setup(struct sdhci_pci_data *data)
 	struct pci_dev *pdev = data->pdev;
 	/* Control card power through a regulator */
 	wlan_vmmc_supply.dev_name = dev_name(&pdev->dev);
-	vwlan.gpio = get_gpio_by_name("WLAN_EN");
+	vwlan.gpio = get_gpio_by_name("WLAN-enable");
 	if (vwlan.gpio < 0)
-		pr_err("%s: No WLAN_EN GPIO in SFI table\n",
+		pr_err("%s: No WLAN-enable GPIO in SFI table\n",
 	       __func__);
 	pr_info("vwlan gpio %d\n", vwlan.gpio);
 	/* add a regulator to control wlan enable gpio */
@@ -116,36 +152,25 @@ static struct sdhci_pci_data mfld_sdhci_pci_data[] = {
 			.slotno = 0,
 			.rst_n_gpio = -EINVAL,
 			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
 			.setup = 0,
 			.cleanup = 0,
 			.power_up = panic_mode_emmc0_power_up,
-			.flis_check = 0,
 	},
 	[EMMC1_INDEX] = {
 			.pdev = NULL,
 			.slotno = 0,
 			.rst_n_gpio = -EINVAL,
 			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
 			.setup = 0,
 			.cleanup = 0,
-			.power_up = 0,
-			.flis_check = 0,
 	},
 	[SD_INDEX] = {
 			.pdev = NULL,
 			.slotno = 0,
 			.rst_n_gpio = -EINVAL,
 			.cd_gpio = 69,
-			.quirks = 0,
-			.platform_quirks = 0,
 			.setup = 0,
 			.cleanup = 0,
-			.power_up = 0,
-			.flis_check = 0,
 	},
 	[SDIO_INDEX] = {
 			.pdev = NULL,
@@ -156,8 +181,6 @@ static struct sdhci_pci_data mfld_sdhci_pci_data[] = {
 			.platform_quirks = 0,
 			.setup = mfld_sdio_setup,
 			.cleanup = 0,
-			.power_up = 0,
-			.flis_check = 0,
 	},
 };
 
@@ -232,7 +255,6 @@ static int clv_sdio_setup(struct sdhci_pci_data *data)
 	return 0;
 }
 
-
 /* CLV platform data */
 static struct sdhci_pci_data clv_sdhci_pci_data[] = {
 	[EMMC0_INDEX] = {
@@ -240,36 +262,25 @@ static struct sdhci_pci_data clv_sdhci_pci_data[] = {
 			.slotno = 0,
 			.rst_n_gpio = -EINVAL,
 			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
 			.setup = 0,
 			.cleanup = 0,
 			.power_up = panic_mode_emmc0_power_up,
-			.flis_check = 0,
 	},
 	[EMMC1_INDEX] = {
 			.pdev = NULL,
 			.slotno = 0,
 			.rst_n_gpio = -EINVAL,
 			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
 			.setup = 0,
 			.cleanup = 0,
-			.power_up = 0,
-			.flis_check = 0,
 	},
 	[SD_INDEX] = {
 			.pdev = NULL,
 			.slotno = 0,
 			.rst_n_gpio = -EINVAL,
 			.cd_gpio = 69,
-			.quirks = 0,
-			.platform_quirks = 0,
 			.setup = clv_sd_setup,
 			.cleanup = 0,
-			.power_up = 0,
-			.flis_check = 0,
 	},
 	[SDIO_INDEX] = {
 			.pdev = NULL,
@@ -280,125 +291,77 @@ static struct sdhci_pci_data clv_sdhci_pci_data[] = {
 			.platform_quirks = 0,
 			.setup = clv_sdio_setup,
 			.cleanup = 0,
-			.power_up = 0,
-			.flis_check = 0,
 	},
 };
 
-static int panic_mode_emmc0_power_up(void *data)
-{
-	int ret;
-	bool atomic_context;
-	/*
-	 * Since pmu_set_emmc_to_d0i0_atomic function can
-	 * only be used in atomic context, before call this
-	 * function, do a check first and make sure this function
-	 * is used in atomic context.
-	 */
-	atomic_context = (!preemptible() || in_atomic_preempt_off());
+#define TNG_EMMC_0_FLIS_ADDR		0xff0c0900
+#define TNG_EMMC_FLIS_SLEW		0x00000400
+#define TNG_EMMC_0_CLK_PULLDOWN		0x00000200
 
-	if (!atomic_context) {
-		pr_err("%s: not in atomic context!\n", __func__);
-		return -EPERM;
+static int mrfl_flis_slew_change(void __iomem *flis_addr, int slew)
+{
+	unsigned int reg;
+	int i;
+
+	/*
+	 * Change TNG gpio FLIS settings for all eMMC0
+	 * CLK/CMD/DAT pins.
+	 * That is, including emmc_0_clk, emmc_0_cmd,
+	 * emmc_0_d_0, emmc_0_d_1, emmc_0_d_2, emmc_0_d_3,
+	 * emmc_0_d_4, emmc_0_d_5, emmc_0_d_6, emmc_0_d_7
+	 */
+	for (i = 0; i < 10; i++) {
+		reg = readl(flis_addr + (i * 4));
+		if (slew)
+			reg |= TNG_EMMC_FLIS_SLEW; /* SLEW B */
+		else
+			reg &= ~TNG_EMMC_FLIS_SLEW; /* SLEW A */
+		writel(reg, flis_addr + (i * 4));
 	}
 
-	ret = pmu_set_emmc_to_d0i0_atomic();
-	if (ret) {
-		pr_err("%s: power up host failed with err %d\n",
-				__func__, ret);
+	/* Disable PullDown for emmc_0_clk */
+	reg = readl(flis_addr);
+	reg &= ~TNG_EMMC_0_CLK_PULLDOWN;
+	writel(reg, flis_addr);
+
+	return 0;
+}
+
+static int mrfl_flis_check(void __iomem *addr,
+unsigned int host_clk, unsigned int clk)
+{
+	int ret = 0;
+
+	if (addr) {
+		if ((host_clk <= 52000000) && (clk > 52000000))
+			ret = mrfl_flis_slew_change(addr, 1);
+		else if ((host_clk > 52000000) && (clk <= 52000000))
+			ret = mrfl_flis_slew_change(addr, 0);
 	}
 
 	return ret;
 }
 
-#define TNG_EMMC_0_FLIS_ADDR		0xff0c0900
-#define TNG_EMMC_FLIS_SLEW		0x00000400
-#define TNG_EMMC_0_CLK_PULLDOWN		0x00000200
-static int mrfl_flis_slew_change(int slew)
+static int mrfl_flis_dump(void __iomem *addr)
 {
-	void __iomem *flis_addr;
-	unsigned int reg;
 	int i, ret = 0;
+	unsigned int reg;
 
-	flis_addr = ioremap_nocache(TNG_EMMC_0_FLIS_ADDR, 64);
-
-	if (!flis_addr) {
-		pr_err("flis_addr ioremap fail!\n");
-		ret = -ENOMEM;
-	} else {
-		pr_info("flis_addr mapped addr: %p\n", flis_addr);
+	if (addr) {
 		/*
-		 * Change TNG gpio FLIS settings for all eMMC0
+		 * Dump TNG gpio FLIS settings for all eMMC0
 		 * CLK/CMD/DAT pins.
 		 * That is, including emmc_0_clk, emmc_0_cmd,
 		 * emmc_0_d_0, emmc_0_d_1, emmc_0_d_2, emmc_0_d_3,
 		 * emmc_0_d_4, emmc_0_d_5, emmc_0_d_6, emmc_0_d_7
 		 */
 		for (i = 0; i < 10; i++) {
-			reg = readl(flis_addr + (i * 4));
-			if (slew)
-				reg |= TNG_EMMC_FLIS_SLEW; /* SLEW B */
-			else
-				reg &= ~TNG_EMMC_FLIS_SLEW; /* SLEW A */
-			writel(reg, flis_addr + (i * 4));
+			reg = readl(addr + (i * 4));
+			pr_err("emmc0 FLIS reg[%d] dump: 0x%08x\n", i, reg);
 		}
-
-		/* Disable PullDown for emmc_0_clk */
-		reg = readl(flis_addr);
-		reg &= ~TNG_EMMC_0_CLK_PULLDOWN;
-		writel(reg, flis_addr);
-
-		ret = 0;
 	}
 
-	if (flis_addr)
-		iounmap(flis_addr);
-
 	return ret;
-}
-
-static int mrfl_flis_check(void *data, unsigned int clk)
-{
-	struct sdhci_host *host = data;
-	int ret = 0;
-
-	if ((host->clock <= 52000000) && (clk > 52000000))
-		ret = mrfl_flis_slew_change(1);
-	else if ((host->clock > 52000000) && (clk <= 52000000))
-		ret = mrfl_flis_slew_change(0);
-
-	return ret;
-}
-
-/* Board specific cleanup related to SD goes here */
-static void mrfl_sd_cleanup(struct sdhci_pci_data *data)
-{
-}
-
-
-/* Board specific cleanup related to SDIO goes here */
-static void mrfl_sdio_cleanup(struct sdhci_pci_data *data)
-{
-}
-
-/* Board specific setup related to SDIO goes here */
-static int mrfl_sdio_setup(struct sdhci_pci_data *data)
-{
-	struct pci_dev *pdev = data->pdev;
-	/* Control card power through a regulator */
-	wlan_vmmc_supply.dev_name = dev_name(&pdev->dev);
-	vwlan.gpio = get_gpio_by_name("WLAN_EN");
-	if (vwlan.gpio < 0)
-		pr_err("%s: No WLAN_EN GPIO in SFI table\n",
-	       __func__);
-	pr_info("vwlan gpio %d\n", vwlan.gpio);
-	/* add a regulator to control wlan enable gpio */
-	if (platform_device_register(&vwlan_device))
-		pr_err("regulator register failed\n");
-	else
-		sdhci_pci_request_regulators();
-
-	return 0;
 }
 
 /* Board specific setup related to eMMC goes here */
@@ -407,63 +370,26 @@ static int mrfl_emmc_setup(struct sdhci_pci_data *data)
 	struct pci_dev *pdev = data->pdev;
 	int ret = 0;
 
-	if (pdev->revision == 0x01) /* TNB B0 stepping */
-		ret = mrfl_flis_slew_change(1); /* HS200 FLIS slew setting */
+	data->flis_addr = ioremap_nocache(TNG_EMMC_0_FLIS_ADDR, 64);
+	if (!data->flis_addr) {
+		pr_err("emmc0 FLIS addr ioremap failed!\n");
+		ret = -ENOMEM;
+	} else {
+		pr_info("emmc0 mapped FLIS addr: %p\n", data->flis_addr);
+		if (pdev->revision == 0x01) /* TNB B0 stepping */
+			/* HS200 FLIS slew setting */
+			ret = mrfl_flis_slew_change(data->flis_addr, 1);
+	}
 
 	return ret;
 }
 
-/* MRFL platform data */
-static struct sdhci_pci_data mrfl_sdhci_pci_data[] = {
-	[EMMC0_INDEX] = {
-			.pdev = NULL,
-			.slotno = 0,
-			.rst_n_gpio = -EINVAL,
-			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
-			.setup = mrfl_emmc_setup,
-			.cleanup = 0,
-			.power_up = panic_mode_emmc0_power_up,
-			.flis_check = 0,
-	},
-	[EMMC1_INDEX] = {
-			.pdev = NULL,
-			.slotno = 0,
-			.rst_n_gpio = 97,
-			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
-			.setup = 0,
-			.cleanup = 0,
-			.power_up = 0,
-			.flis_check = 0,
-	},
-	[SD_INDEX] = {
-			.pdev = NULL,
-			.slotno = 0,
-			.rst_n_gpio = -EINVAL,
-			.cd_gpio = 77,
-			.quirks = 0,
-			.platform_quirks = 0,
-			.setup = mrfl_sd_setup,
-			.cleanup = mrfl_sd_cleanup,
-			.power_up = 0,
-			.flis_check = 0,
-	},
-	[SDIO_INDEX] = {
-			.pdev = NULL,
-			.slotno = 0,
-			.rst_n_gpio = -EINVAL,
-			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
-			.setup = mrfl_sdio_setup,
-			.cleanup = mrfl_sdio_cleanup,
-			.power_up = 0,
-			.flis_check = 0,
-	},
-};
+/* Board specific cleanup related to eMMC goes here */
+static void mrfl_emmc_cleanup(struct sdhci_pci_data *data)
+{
+	if (data->flis_addr)
+		iounmap(data->flis_addr);
+}
 
 /* Board specific setup related to SD goes here */
 static int mrfl_sd_setup(struct sdhci_pci_data *data)
@@ -481,14 +407,14 @@ static int mrfl_sd_setup(struct sdhci_pci_data *data)
 
 	err = intel_scu_ipc_ioread8(MRFLD_PMIC_VLDOCNT, &vldocnt);
 	if (err) {
-		printk(KERN_ERR "PMIC vldocnt IPC read error: %d\n", err);
+		pr_err("PMIC vldocnt IPC read error: %d\n", err);
 		return err;
 	}
 
 	vldocnt |= MRFLD_PMIC_VLDOCNT_VSWITCH_BIT;
 	err = intel_scu_ipc_iowrite8(MRFLD_PMIC_VLDOCNT, vldocnt);
 	if (err) {
-		printk(KERN_ERR "PMIC vldocnt IPC write error: %d\n", err);
+		pr_err("PMIC vldocnt IPC write error: %d\n", err);
 		return err;
 	}
 	msleep(20);
@@ -496,68 +422,80 @@ static int mrfl_sd_setup(struct sdhci_pci_data *data)
 	return 0;
 }
 
-/* Moorefield platform data */
-static struct sdhci_pci_data moor_sdhci_pci_data[] = {
-	[EMMC0_INDEX] = {
-			.pdev = NULL,
-			.slotno = 0,
-			.rst_n_gpio = -EINVAL,
-			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
-			.setup = 0,
-			.cleanup = 0,
-			.power_up = panic_mode_emmc0_power_up,
-			.flis_check = 0,
-	},
-	[SD_INDEX] = {
-			.pdev = NULL,
-			.slotno = 0,
-			.rst_n_gpio = -EINVAL,
-			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
-			.setup = 0,
-			.cleanup = 0,
-			.power_up = 0,
-			.flis_check = 0,
-	},
-	[SDIO_INDEX] = {
-			.pdev = NULL,
-			.slotno = 0,
-			.rst_n_gpio = -EINVAL,
-			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
-			.setup = 0,
-			.cleanup = 0,
-			.power_up = 0,
-			.flis_check = 0,
-	},
-};
-
-static int byt_sd_setup(struct sdhci_pci_data *data)
+/* Board specific cleanup related to SD goes here */
+static void mrfl_sd_cleanup(struct sdhci_pci_data *data)
 {
-	u32 stepping;
-	stepping = intel_mid_soc_stepping();
-	if (stepping == 0x1 || stepping == 0x2)/* VLV2 A0 */
-		data->quirks |= SDHCI_QUIRK2_NO_1_8_V;
+}
+
+/* Board specific setup related to SDIO goes here */
+static int mrfl_sdio_setup(struct sdhci_pci_data *data)
+{
+	struct pci_dev *pdev = data->pdev;
+	/* Control card power through a regulator */
+	wlan_vmmc_supply.dev_name = dev_name(&pdev->dev);
+	vwlan.gpio = get_gpio_by_name("WLAN-enable");
+	if (vwlan.gpio < 0)
+		pr_err("%s: No WLAN-enable GPIO in SFI table\n",
+	       __func__);
+	pr_info("vwlan gpio %d\n", vwlan.gpio);
+	/* add a regulator to control wlan enable gpio */
+	if (platform_device_register(&vwlan_device))
+		pr_err("regulator register failed\n");
+	else
+		sdhci_pci_request_regulators();
+
 	return 0;
 }
 
+/* Board specific cleanup related to SDIO goes here */
+static void mrfl_sdio_cleanup(struct sdhci_pci_data *data)
+{
+}
 
+/* MRFL platform data */
+static struct sdhci_pci_data mrfl_sdhci_pci_data[] = {
+	[EMMC0_INDEX] = {
+			.pdev = NULL,
+			.slotno = EMMC0_INDEX,
+			.rst_n_gpio = -EINVAL,
+			.cd_gpio = -EINVAL,
+			.quirks = 0,
+			.platform_quirks = 0,
+			.setup = mrfl_emmc_setup,
+			.cleanup = mrfl_emmc_cleanup,
+			.power_up = panic_mode_emmc0_power_up,
+			.flis_dump = mrfl_flis_dump,
+	},
+	[SD_INDEX] = {
+			.pdev = NULL,
+			.slotno = SD_INDEX,
+			.rst_n_gpio = -EINVAL,
+			.cd_gpio = 77,
+			.quirks = 0,
+			.platform_quirks = 0,
+			.setup = mrfl_sd_setup,
+			.cleanup = mrfl_sd_cleanup,
+	},
+	[SDIO_INDEX] = {
+			.pdev = NULL,
+			.slotno = SDIO_INDEX,
+			.rst_n_gpio = -EINVAL,
+			.cd_gpio = -EINVAL,
+			.quirks = 0,
+			.platform_quirks = 0,
+			.setup = mrfl_sdio_setup,
+			.cleanup = mrfl_sdio_cleanup,
+	},
+};
+
+/* Board specific setup related to SDIO goes here */
 static int byt_sdio_setup(struct sdhci_pci_data *data)
 {
-	u32 stepping;
 	struct pci_dev *pdev = data->pdev;
 #ifdef CONFIG_ACPI
 	acpi_handle handle;
 	acpi_status status;
 #endif
-
-	stepping = intel_mid_soc_stepping();
-	if (stepping == 0x1 || stepping == 0x2)/* VLV2 A0 */
-		data->quirks |= SDHCI_QUIRK2_NO_1_8_V;
 
 	/* Control card power through a regulator */
 	wlan_vmmc_supply.dev_name = dev_name(&pdev->dev);
@@ -572,7 +510,8 @@ static int byt_sdio_setup(struct sdhci_pci_data *data)
 
 	if (vwlan.gpio < 0) {
 		pr_err("%s: No wlan-enable GPIO in SDHB ACPI block\n",
-	       __func__);
+		       __func__);
+
 		if (INTEL_MID_BOARD(2, TABLET, BYT, BLB, PRO) ||
 		    INTEL_MID_BOARD(2, TABLET, BYT, BLB, ENG))
 			vwlan.gpio = acpi_get_gpio("\\_SB.GPO2", 21);
@@ -601,29 +540,6 @@ static int byt_sdio_setup(struct sdhci_pci_data *data)
 
 /* BYT platform data */
 static struct sdhci_pci_data byt_sdhci_pci_data[] = {
-	[EMMC0_INDEX] = {
-			.pdev = NULL,
-			.slotno = 0,
-			.rst_n_gpio = -EINVAL,
-			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
-			.setup = 0,
-			.cleanup = 0,
-			.flis_check = 0,
-	},
-	[SD_INDEX] = {
-			.pdev = NULL,
-			.slotno = 0,
-			.rst_n_gpio = -EINVAL,
-			.cd_gpio = -EINVAL,
-			.quirks = 0,
-			.platform_quirks = 0,
-			.setup = byt_sd_setup,
-			.cleanup = NULL,
-			.power_up = 0,
-			.flis_check = 0,
-	},
 	[SDIO_INDEX] = {
 			.pdev = NULL,
 			.slotno = 0,
@@ -633,8 +549,43 @@ static struct sdhci_pci_data byt_sdhci_pci_data[] = {
 			.platform_quirks = 0,
 			.setup = byt_sdio_setup,
 			.cleanup = NULL,
+	},
+};
+
+/* Moorefield platform data */
+static struct sdhci_pci_data moor_sdhci_pci_data[] = {
+	[EMMC0_INDEX] = {
+			.pdev = NULL,
+			.slotno = 0,
+			.rst_n_gpio = -EINVAL,
+			.cd_gpio = -EINVAL,
+			.quirks = 0,
+			.platform_quirks = 0,
+			.setup = 0,
+			.cleanup = 0,
+			.power_up = panic_mode_emmc0_power_up,
+	},
+	[SD_INDEX] = {
+			.pdev = NULL,
+			.slotno = 0,
+			.rst_n_gpio = -EINVAL,
+			.cd_gpio = 77,
+			.quirks = 0,
+			.platform_quirks = 0,
+			.setup = mrfl_sd_setup,
+			.cleanup = 0,
 			.power_up = 0,
-			.flis_check = 0,
+	},
+	[SDIO_INDEX] = {
+			.pdev = NULL,
+			.slotno = 0,
+			.rst_n_gpio = -EINVAL,
+			.cd_gpio = -EINVAL,
+			.quirks = 0,
+			.platform_quirks = 0,
+			.setup = mrfl_sdio_setup,
+			.cleanup = mrfl_sdio_cleanup,
+			.power_up = 0,
 	},
 };
 
@@ -734,13 +685,6 @@ static struct sdhci_pci_data *get_sdhci_platform_data(struct pci_dev *pdev)
 			break;
 		}
 		break;
-	case PCI_DEVICE_ID_INTEL_BYT_MMC:
-	case PCI_DEVICE_ID_INTEL_BYT_MMC45:
-		pdata = &byt_sdhci_pci_data[EMMC0_INDEX];
-		break;
-	case PCI_DEVICE_ID_INTEL_BYT_SD:
-		pdata = &byt_sdhci_pci_data[SD_INDEX];
-		break;
 	case PCI_DEVICE_ID_INTEL_BYT_SDIO:
 		pr_err("setting quirks/embedded controls on SDIO");
 		pdata = &byt_sdhci_pci_data[SDIO_INDEX];
@@ -763,24 +707,15 @@ static struct sdhci_pci_data *get_sdhci_platform_data(struct pci_dev *pdev)
 		pdata = &moor_sdhci_pci_data[SDIO_INDEX];
 		if (intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_HVP)
 			pdata->platform_quirks |= PLFM_QUIRK_NO_HOST_CTRL_HW;
+		else if (intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_SLE)
+			pdata->platform_quirks |= PLFM_QUIRK_NO_HOST_CTRL_HW;
+		else
+			pdata->quirks = sdhci_pdata_quirks;
 		break;
 	default:
 		break;
 	}
 	return pdata;
-}
-
-static void __devinit mmc_sdhci_pci_early_quirks(struct pci_dev *pci_dev)
-{
-	pci_dev->dev.platform_data = get_sdhci_platform_data(pci_dev);
-}
-
-int sdhci_pdata_set_quirks(unsigned int quirks)
-{
-	/*Should not be set more than once*/
-	WARN_ON(sdhci_pdata_quirks);
-	sdhci_pdata_quirks = quirks;
-	return 0;
 }
 
 int sdhci_pdata_set_embedded_control(void (*fnp)
@@ -792,57 +727,17 @@ int sdhci_pdata_set_embedded_control(void (*fnp)
 	return 0;
 }
 
-/* MRST MMC PCI IDs */
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MRST_SD0,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MRST_SD1,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MRST_SD2,
-			mmc_sdhci_pci_early_quirks);
+struct sdhci_pci_data *mmc_sdhci_pci_get_data(struct pci_dev *pci_dev, int slotno)
+{
+	return get_sdhci_platform_data(pci_dev);
+}
 
-/* MFLD MMC PCI IDs */
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MFD_SD,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MFD_SDIO1,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MFD_SDIO2,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MFD_EMMC0,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MFD_EMMC1,
-			mmc_sdhci_pci_early_quirks);
+static int __init init_sdhci_get_data(void)
+{
+	sdhci_pci_get_data = mmc_sdhci_pci_get_data;
 
-/* CLV MMC PCI IDs */
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CLV_SDIO0,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CLV_SDIO1,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CLV_SDIO2,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CLV_EMMC0,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CLV_EMMC1,
-			mmc_sdhci_pci_early_quirks);
+	return 0;
+}
 
-/* MRFL MMC PCI IDs */
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MRFL_MMC,
-			mmc_sdhci_pci_early_quirks);
+arch_initcall(init_sdhci_get_data);
 
-/* BYT MMC/SD/SDIO PCI IDs */
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BYT_SD,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BYT_MMC,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BYT_MMC45,
-mmc_sdhci_pci_early_quirks);
-
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BYT_SDIO,
-			mmc_sdhci_pci_early_quirks);
-
-/* Moorefield MMC PCI IDs */
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MOOR_EMMC,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MOOR_SD,
-			mmc_sdhci_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MOOR_SDIO,
-			mmc_sdhci_pci_early_quirks);

@@ -52,7 +52,7 @@ void dx_sep_req_enable(struct sep_drvdata *drvdata);
  * dx_sep_req_init() - Initialize the sep request state
  * @drvdata: Driver private data
  */
-int __devinit dx_sep_req_init(struct sep_drvdata *drvdata);
+int dx_sep_req_init(struct sep_drvdata *drvdata);
 
 /**
  * dx_sep_req_fini() - Finalize the sep request state

@@ -36,6 +36,8 @@
 #define PMU_ENC			0x1
 #define PMU_DEC			0x1
 
+static bool  need_set_ved_freq = true;
+
 void ospm_vsp_init(struct drm_device *dev,
 			struct ospm_power_island *p_island);
 
@@ -44,5 +46,11 @@ void ospm_ved_init(struct drm_device *dev,
 
 void ospm_vec_init(struct drm_device *dev,
 			struct ospm_power_island *p_island);
+
+int psb_msvdx_get_ved_freq(u32 reg_freq);
+
+int psb_msvdx_set_ved_freq(u32 freq_code);
+
+void psb_set_freq_control_switch(bool config_value);
 
 #endif	/* _INTEL_MEDIA_VIDEO_OSPM_H_*/

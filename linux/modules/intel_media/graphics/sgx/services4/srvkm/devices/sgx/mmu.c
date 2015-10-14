@@ -352,7 +352,7 @@ static INLINE IMG_VOID CheckPT(MMU_PT_INFO *psPTInfoList)
 	it read/write when we alter it. This allows us
 	to check that our memory isn't being overwritten
 */
-#if defined(PVRSRV_MMU_MAKE_READWRITE_ON_DEMAND)
+#if defined(__linux__) && defined(PVRSRV_MMU_MAKE_READWRITE_ON_DEMAND)
 
 #include <linux/version.h>
 

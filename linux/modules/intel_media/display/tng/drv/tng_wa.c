@@ -30,7 +30,7 @@
 /* psb_intel_reg.h - for BIT* definitions */
 #include "psb_intel_reg.h"
 
-/* A0 Workarounds */
+/* TNG A0 Workarounds */
 
 static void apply_HSD_4568161_4582997(struct drm_device *dev)
 {
@@ -101,7 +101,7 @@ static void apply_HSD_4568473(struct drm_device *dev)
 	int GCLIP_CONTROL_DATA = WRAPPER_REG_READ(GCLIP_CONTROL_OFFSET);
 
 	GCLIP_CONTROL_DATA &= ~(BIT16);
-	GCLIP_CONTROL_DATA |= (BIT17 | BIT18 | BIT19 | BIT23);
+	GCLIP_CONTROL_DATA |= (BIT23 | BIT19 | BIT18 | BIT17);
 
 	WRAPPER_REG_WRITE(GCLIP_CONTROL_OFFSET, GCLIP_CONTROL_DATA);
 }
@@ -139,8 +139,8 @@ static void apply_NO_HSD_Workaround(struct drm_device *dev)
 }
 #endif
 
-/* Apply the A0 Workaround */
-void apply_A0_workarounds(int islands, int pre_po)
+/* Apply the TNG A0 Workaround */
+void apply_TNG_A0_workarounds(int islands, int pre_po)
 {
 	struct drm_device *dev = gpDrmDevice;
 
@@ -170,6 +170,63 @@ void apply_A0_workarounds(int islands, int pre_po)
 		/*  Before powering up VED for VP8 decode */
 		if (pre_po)
 			apply_HSD_3940227_4568479(dev);
+		break;
+
+	default:
+		break;
+	}
+}
+
+/* ANN A0 Workarounds */
+
+static void apply_HSD_4613012_5129793(struct drm_device *dev)
+{
+	/* HSD - 4613012: CLONE of TNG B0 4585013
+	   GCLIP_CONTROL is rest to incorrect default values
+	   HSD - 5129793: GFX wrapper RTL initializing PFI Credits
+	   to 16 instead of 25
+	   Workaround: program following bits when GFX is powerd on or
+	   coming out of reset:
+	   GCLIP_CONTROL[8] to 1'b1
+	   GCLIP_CONTROL[20:16] to 5'h19
+	   GCILP_CONTROL[23] to 1'b1
+	   (MMADDR offset 0x160020) */
+
+	int GCLIP_CONTROL_OFFSET = 0x160020 - GFX_WRAPPER_OFFSET;
+	int GCLIP_CONTROL_DATA = WRAPPER_REG_READ(GCLIP_CONTROL_OFFSET);
+
+	GCLIP_CONTROL_DATA &= ~(BIT18 | BIT17);
+	GCLIP_CONTROL_DATA |= (BIT23 | BIT20 | BIT19 | BIT16 | BIT8);
+
+	WRAPPER_REG_WRITE(GCLIP_CONTROL_OFFSET, GCLIP_CONTROL_DATA);
+}
+
+/* Apply the ANN A0 Workaround */
+void apply_ANN_A0_workarounds(int islands, int pre_po)
+{
+	struct drm_device *dev = gpDrmDevice;
+
+	if (!dev)
+		return;
+
+	/* Only apply workaround on power up. */
+
+	switch (islands) {
+	case OSPM_DISPLAY_ISLAND:
+		/*  When display is powered-on. */
+		break;
+
+	case OSPM_GRAPHICS_ISLAND:
+		/* Before GFX is powered-on. */
+		if (pre_po) {
+			apply_HSD_4613012_5129793(dev);
+		}
+		break;
+
+	case OSPM_VIDEO_ENC_ISLAND:
+	case OSPM_VIDEO_VPP_ISLAND:
+	case OSPM_VIDEO_DEC_ISLAND:
+		/*  Before powering up VED for VP8 decode */
 		break;
 
 	default:

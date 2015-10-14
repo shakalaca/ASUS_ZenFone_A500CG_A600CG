@@ -13,7 +13,7 @@ config VIDEO_ATOMISP
           module will be called atomisp
 
 config VIDEO_ATOMISP_TMP
-       tristate "temporary Kconfig variable for atomisp2 and atomisp3"
+       tristate "temporary Kconfig variable for atomisp2"
 
 
 

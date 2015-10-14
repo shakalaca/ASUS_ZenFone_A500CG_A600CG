@@ -31,6 +31,7 @@
 #define _LWPMUDRV_H_
 
 #include <linux/kernel.h>
+#include <linux/compat.h>
 #include "lwpmudrv_defines.h"
 #include "lwpmudrv_ecb.h"
 #include "lwpmudrv_types.h"
@@ -91,7 +92,7 @@ struct DISPATCH_NODE_S {
     VOID (*read_counts)(PVOID, U32);
     U64  (*check_overflow_gp_errata)(ECB,U64*);
     VOID (*read_ro)(PVOID, U32, U32);
-    U64  (*platform_info)(VOID);
+    VOID (*platform_info)(PVOID);
     VOID (*trigger_read)(VOID);    // Counter reads triggered/initiated by User mode timer
 };
 

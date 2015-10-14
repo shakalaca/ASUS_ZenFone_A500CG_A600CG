@@ -45,11 +45,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define SRVSRV_PDUMP_PHYSMEM_H
 
 #include "img_types.h"
-#include "pdumpdefs.h"
 #include "pvrsrv_error.h"
 #include "pmr.h"
 
-#include "pdump.h"
 
 typedef struct _PDUMP_PHYSMEM_INFO_T_ PDUMP_PHYSMEM_INFO_T;
 

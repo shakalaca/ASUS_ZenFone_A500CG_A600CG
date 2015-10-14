@@ -18,6 +18,10 @@
  *
  */
 
+#ifdef CONFIG_XEN
+#include <asm/hypervisor.h>
+#include <asm/xen/hypercall.h>
+#endif
 #include "intel_soc_pmu.h"
 
 
@@ -96,10 +100,18 @@ static void clv_pmu_remove(void)
 
 static void clv_pmu_wakeup(void)
 {
-
+#ifdef CONFIG_XEN
+	int cpu;
+	int self = smp_processor_id();
 	/* Wakeup allother CPU's */
 	if (mid_pmu_cxt->s0ix_entered)
+		for (cpu = 0; cpu < nr_cpu_ids; cpu++)
+			if (cpu != self)
+				smp_send_reschedule(cpu);
+#else
+	if (mid_pmu_cxt->s0ix_entered)
 		apic->send_IPI_allbutself(RESCHEDULE_VECTOR);
+#endif
 }
 
 static pci_power_t clv_pmu_choose_state(int device_lss)

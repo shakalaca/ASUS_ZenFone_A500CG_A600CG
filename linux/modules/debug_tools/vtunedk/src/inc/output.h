@@ -42,7 +42,7 @@
 extern  U32                   output_buffer_size;
 #define OUTPUT_BUFFER_SIZE    output_buffer_size
 #define OUTPUT_NUM_BUFFERS    2
-#if defined (DRV_ATOM_ONLY)
+#if defined (DRV_ANDROID)
 #define MODULE_BUFF_SIZE      1
 #else
 #define MODULE_BUFF_SIZE      2

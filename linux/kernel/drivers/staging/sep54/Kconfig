@@ -1,6 +1,6 @@
 config DX_SEP54
 	tristate "Discretix SEP driver (CC54)"
-	depends on PCI
+	depends on PCI && MMC
 	select CRYPTO_BLKCIPHER
 	help
 	  Discretix SEP driver for CC54; used for the security processor subsystem

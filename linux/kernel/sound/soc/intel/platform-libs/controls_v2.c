@@ -31,6 +31,7 @@
 #include "../sst_platform.h"
 #include "../sst_platform_pvt.h"
 #include "ipc_lib.h"
+#include "controls_v2.h"
 
 
 #define SST_ALGO_KCONTROL_INT(xname, xreg, xshift, xmax, xinvert,\
@@ -73,7 +74,7 @@ unsigned int sst_soc_read(struct snd_soc_platform *platform,
 {
 	struct sst_data *sst = snd_soc_platform_get_drvdata(platform);
 
-	pr_debug("%s for reg %d\n", __func__, reg);
+	pr_debug("%s for reg %d val=%d\n", __func__, reg, sst->widget[reg]);
 	BUG_ON(reg > (SST_NUM_WIDGETS - 1));
 	return sst->widget[reg];
 }
@@ -89,30 +90,59 @@ int sst_soc_write(struct snd_soc_platform *platform,
 	return 0;
 }
 
-static int sst_mix_put(struct snd_kcontrol *kcontrol,
+unsigned int sst_reg_read(struct sst_data *sst, unsigned int reg,
+			  unsigned int shift, unsigned int max)
+{
+	unsigned int mask = (1 << fls(max)) - 1;
+
+	return (sst->widget[reg] >> shift) & mask;
+}
+
+unsigned int sst_reg_write(struct sst_data *sst, unsigned int reg,
+			   unsigned int shift, unsigned int max, unsigned int val)
+{
+	unsigned int mask = (1 << fls(max)) - 1;
+
+	val &= mask;
+	val <<= shift;
+	sst->widget[reg] &= ~(mask << shift);
+	sst->widget[reg] |= val;
+	return val;
+}
+
+int sst_mix_put(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_dapm_widget_list *wlist = snd_kcontrol_chip(kcontrol);
-	struct snd_soc_dapm_widget *w = wlist->widgets[0];
+	struct snd_soc_dapm_widget *widget = wlist->widgets[0];
 	struct soc_mixer_control *mc =
 		(struct soc_mixer_control *)kcontrol->private_value;
-	struct sst_data *sst = snd_soc_platform_get_drvdata(w->platform);
+	struct sst_data *sst = snd_soc_platform_get_drvdata(widget->platform);
+	unsigned int mask = (1 << fls(mc->max)) - 1;
+	unsigned int val;
+	int connect;
+	struct snd_soc_dapm_update update;
 
 	pr_debug("%s called set %ld for %s\n", __func__,
-			ucontrol->value.integer.value[0], w->name);
+			ucontrol->value.integer.value[0], widget->name);
+	val = sst_reg_write(sst, mc->reg, mc->shift, mc->max, ucontrol->value.integer.value[0]);
+	connect = !!val;
 
-	if (ucontrol->value.integer.value[0]) {
-		sst->widget[mc->reg] |= ucontrol->value.integer.value[0] << mc->shift;
-		snd_soc_dapm_mixer_update_power(w, kcontrol, 1);
-	} else {
-		sst->widget[mc->reg] &= ~(0x1 << mc->shift);
-		snd_soc_dapm_mixer_update_power(w, kcontrol, 0);
-	}
+	widget->value = val;
+	update.kcontrol = kcontrol;
+	update.widget = widget;
+	update.reg = mc->reg;
+	update.mask = mask;
+	update.val = val;
+
+	widget->dapm->update = &update;
+	snd_soc_dapm_mixer_update_power(widget, kcontrol, connect);
+	widget->dapm->update = NULL;
 	return 0;
 }
 
-static int sst_mix_get(struct snd_kcontrol *kcontrol,
-	struct snd_ctl_elem_value *ucontrol)
+int sst_mix_get(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_dapm_widget_list *wlist = snd_kcontrol_chip(kcontrol);
 	struct snd_soc_dapm_widget *w = wlist->widgets[0];
@@ -121,10 +151,7 @@ static int sst_mix_get(struct snd_kcontrol *kcontrol,
 	struct sst_data *sst = snd_soc_platform_get_drvdata(w->platform);
 
 	pr_debug("%s called for %s\n", __func__, w->name);
-
-	pr_debug("Read: %x\n", sst->widget[mc->reg]);
-	ucontrol->value.integer.value[0] = (sst->widget[mc->reg]>>mc->shift) & 0x1;
-
+	ucontrol->value.integer.value[0] = !!sst_reg_read(sst, mc->reg, mc->shift, mc->max);
 	return 0;
 }
 
@@ -1492,18 +1519,16 @@ static const struct snd_soc_dapm_route intercon[] = {
 	{ "VAD OUT", NULL, "Out VAD Switch"},
 };
 
-static int sst_byte_control_get(struct snd_kcontrol *kcontrol,
-	struct snd_ctl_elem_value *ucontrol)
+int sst_byte_control_get(struct snd_kcontrol *kcontrol,
+			 struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_platform *platform = snd_kcontrol_chip(kcontrol);
 	struct sst_data *sst = snd_soc_platform_get_drvdata(platform);
 
 	pr_debug("in %s\n", __func__);
 	memcpy(ucontrol->value.bytes.data, sst->byte_stream, SST_MAX_BIN_BYTES);
-#ifdef DEBUG_HEX_DUMP_BYTES
 	print_hex_dump_bytes(__func__, DUMP_PREFIX_OFFSET,
-	  (const void *)sst->byte_stream, 32);
-#endif
+			     (const void *)sst->byte_stream, 32);
 	return 0;
 }
 
@@ -1531,22 +1556,22 @@ static int sst_check_binary_input(char *stream)
 	return 0;
 }
 
-static int sst_byte_control_set(struct snd_kcontrol *kcontrol,
-	struct snd_ctl_elem_value *ucontrol)
+int sst_byte_control_set(struct snd_kcontrol *kcontrol,
+			 struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_platform *platform = snd_kcontrol_chip(kcontrol);
 	struct sst_data *sst = snd_soc_platform_get_drvdata(platform);
 	int ret = 0;
 
 	pr_debug("in %s\n", __func__);
-	memcpy(sst->byte_stream, ucontrol->value.bytes.data, SST_MAX_BIN_BYTES);
-	if (0 != sst_check_binary_input(sst->byte_stream))
-		return -EINVAL;
-#ifdef DEBUG_HEX_DUMP_BYTES
-	print_hex_dump_bytes(__func__, DUMP_PREFIX_OFFSET,
-	  (const void *)sst->byte_stream, 32);
-#endif
 	mutex_lock(&sst->lock);
+	memcpy(sst->byte_stream, ucontrol->value.bytes.data, SST_MAX_BIN_BYTES);
+	if (0 != sst_check_binary_input(sst->byte_stream)) {
+		mutex_unlock(&sst->lock);
+		return -EINVAL;
+	}
+	print_hex_dump_bytes(__func__, DUMP_PREFIX_OFFSET,
+			     (const void *)sst->byte_stream, 32);
 	ret = sst_dsp->ops->set_generic_params(SST_SET_BYTE_STREAM, sst->byte_stream);
 	mutex_unlock(&sst->lock);
 
@@ -1702,7 +1727,7 @@ static struct attribute_group attr_group = {
 	.attrs = device_sysfs_attrs,
 };
 
-int __devinit sst_dsp_init(struct snd_soc_platform *platform)
+int sst_dsp_init(struct snd_soc_platform *platform)
 {
 	struct sst_data *sst = snd_soc_platform_get_drvdata(platform);
 	int error = 0;
@@ -1710,6 +1735,14 @@ int __devinit sst_dsp_init(struct snd_soc_platform *platform)
 	sst->byte_stream = devm_kzalloc(platform->dev,
 			SST_MAX_BIN_BYTES, GFP_KERNEL);
 	if (sst->byte_stream == NULL) {
+		pr_err("kzalloc failed\n");
+		return -ENOMEM;
+	}
+
+	sst->widget = devm_kzalloc(platform->dev,
+				   SST_NUM_WIDGETS * sizeof(*sst->widget),
+				   GFP_KERNEL);
+	if (sst->widget == NULL) {
 		pr_err("kzalloc failed\n");
 		return -ENOMEM;
 	}

@@ -559,8 +559,8 @@ void msvdx_write_mtx_core_reg(struct drm_psb_private *dev_priv,
 
 	psb_wait_for_register(dev_priv,
 			      MTX_REGISTER_READ_WRITE_REQUEST_OFFSET,
-			      MTX_REGISTER_READ_WRITE_REQUEST__MTX_DREADY_MASK,
-			      MTX_REGISTER_READ_WRITE_REQUEST__MTX_DREADY_MASK,
+			      MTX_REGISTER_READ_WRITE_REQUEST_MTX_DREADY_MASK,
+			      MTX_REGISTER_READ_WRITE_REQUEST_MTX_DREADY_MASK,
 			      2000000, 5);
 }
 
@@ -583,7 +583,7 @@ int psb_setup_fw(struct drm_device *dev)
 	psb_msvdx_mtx_set_clocks(dev_priv->dev, clk_enable_all);
 
 	/* Reset MTX */
-	PSB_WMSVDX32(MTX_SOFT_RESET__MTX_RESET_MASK,
+	PSB_WMSVDX32(MTX_SOFT_RESET_MTX_RESET_MASK,
 			MTX_SOFT_RESET_OFFSET);
 
 	PSB_WMSVDX32(FIRMWAREID, MSVDX_COMMS_FIRMWARE_ID);
@@ -601,7 +601,7 @@ int psb_setup_fw(struct drm_device *dev)
 #ifndef CONFIG_SLICE_HEADER_PARSING
 	PSB_WMSVDX32(DSIABLE_IDLE_GPIO_SIG
 		| DSIABLE_Auto_CLOCK_GATING
-		| RETURN_VDEB_DATA_IN_COMPLETION,
+		| RETURN_VDEB_DATA_IN_COMPLETION | NOT_ENABLE_ON_HOST_CONCEALMENT,
 			MSVDX_COMMS_OFFSET_FLAGS);
 #else
 	/* decode flag should be set as 0 according to IMG's said */
@@ -738,7 +738,7 @@ int psb_setup_fw(struct drm_device *dev)
 	msvdx_write_mtx_core_reg(dev_priv, MTX_PC, PC_START_ADDRESS);
 
 	/*	-- Turn on the thread	*/
-	PSB_WMSVDX32(MTX_ENABLE__MTX_ENABLE_MASK, MTX_ENABLE_OFFSET);
+	PSB_WMSVDX32(MTX_ENABLE_MTX_ENABLE_MASK, MTX_ENABLE_OFFSET);
 
 	/* Wait for the signature value to be written back */
 	ret = psb_wait_for_register(dev_priv, MSVDX_COMMS_SIGNATURE,

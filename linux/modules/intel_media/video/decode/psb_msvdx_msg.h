@@ -99,6 +99,15 @@ enum {
 
 #define FW_INVALIDATE_MMU		(0x0010)
 
+union msg_header {
+	struct {
+		uint32_t msg_size:8;
+		uint32_t msg_type:8;
+		uint32_t msg_fence:16;
+	} bits;
+	uint32_t value;
+};
+
 struct fw_init_msg {
 	union {
 		struct {
@@ -204,6 +213,17 @@ struct fw_padding_msg {
 	} header;
 };
 
+struct fw_msg_header {
+	union {
+		struct {
+			uint32_t msg_size:8;
+			uint32_t msg_type:8;
+			uint32_t msg_fence:16;
+		} bits;
+		uint32_t value;
+	} header;
+};
+
 struct fw_completed_msg {
 	union {
 		struct {
@@ -215,19 +235,13 @@ struct fw_completed_msg {
 	} header;
 	union {
 		struct {
-			uint32_t last_mb:16;
 			uint32_t start_mb:16;
+			uint32_t last_mb:16;
 		} bits;
 		uint32_t value;
 	} mb;
 	uint32_t flags;
 	uint32_t vdebcr;
-	uint32_t fe_begin_setup;
-	uint32_t fe_begin_decode;
-	uint32_t fe_end_decode;
-	uint32_t be_begin_setup;
-	uint32_t be_begin_decode;
-	uint32_t be_end_decode;
 };
 
 struct fw_deblock_required_msg {

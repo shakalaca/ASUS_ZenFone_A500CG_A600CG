@@ -163,7 +163,8 @@ typedef struct {
      * We're moving from bitwise OR to bitwise OR of (1 << switch) values.
      * Use the "POWER_XXX_MASK" masks to set/test switch residency.
      */
-    int collection_switches;
+    // int collection_switches;
+    u64 collection_switches;
     /*
      * Total time elapsed for
      * all collections.
@@ -188,6 +189,25 @@ typedef struct {
     struct list_head msr_list;
     int num_msrs;
     pw_msr_addr_t *msr_addrs;
+    /*
+     * Platform residency information.
+     */
+    struct {
+        /*
+         * IPC commands for platform residency
+         * Valid ONLY if 'collection_type' == 'PW_IO_IPC'
+         */
+        u32 ipc_start_command, ipc_start_sub_command; // START IPC command, sub-cmd
+        u32 ipc_stop_command, ipc_stop_sub_command; // STOP IPC command, sub-cmd
+        u32 ipc_dump_command, ipc_dump_sub_command; // DUMP IPC command, sub-cmd
+        u16 num_addrs; // The number of addresses encoded in the 'platform_res_addrs', 'platform_remapped_addrs' and 'init_platform_res_values' arrays, below
+        u8 collection_type; // One of 'pw_io_type_t'
+        u8 counter_size_in_bytes; // Usually either 4 (for 32b counters) or 8 (for 64b counters)
+        u64 *platform_res_addrs; // Addresses from which to read the various S0iX values; will be remapped (via 'ioremap_nocache()') into 'platform_remapped_addrs'
+        u64 *platform_remapped_addrs; // Required for MMIO-based access; remapped addresses -- use this to do the actual reads
+        u64 *init_platform_res_values; // Store the INITIAL values here
+        s_res_msg_t *platform_residency_msg; // Used to send messages back to Ring-3; 'platform_residency_msg->residencies' usually has 'num_addrs+2' entries (+1 for S0i0, +1 for S3)
+    };
 
     // Others...
 } internal_state_t;
@@ -222,7 +242,7 @@ static internal_state_t INTERNAL_STATE;
 typedef struct per_cpu_struct {
 	u32 was_timer_hrtimer_softirq; // 4 bytes
 	void *sched_timer_addr; // 4/8 bytes (arch dependent)
-}per_cpu_t;
+} per_cpu_t;
 
 /*
  * Per-cpu structure holding wakeup event causes, tscs

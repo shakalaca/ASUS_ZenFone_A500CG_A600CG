@@ -681,8 +681,10 @@ cmos_do_probe(struct device *dev, struct resource *ports, int rtc_irq)
 	hpet_set_periodic_freq(cmos_rtc.rtc->irq_freq);
 	CMOS_WRITE(RTC_REF_CLCK_32KHZ | 0x06, RTC_FREQ_SELECT);
 
+#ifndef CONFIG_RTC_DRV_CMOS_WAKEUP_FROM_LPSTATES
 	/* disable irqs */
 	cmos_irq_disable(&cmos_rtc, RTC_PIE | RTC_AIE | RTC_UIE);
+#endif
 
 	rtc_control = CMOS_READ(RTC_CONTROL);
 
@@ -706,7 +708,7 @@ cmos_do_probe(struct device *dev, struct resource *ports, int rtc_irq)
 			rtc_cmos_int_handler = hpet_rtc_interrupt;
 			err = hpet_register_irq_handler(cmos_interrupt);
 			if (err != 0) {
-				printk(KERN_WARNING "hpet_register_irq_handler "
+				dev_warn(dev, "hpet_register_irq_handler "
 						" failed in rtc_init().");
 				goto cleanup1;
 			}
@@ -731,8 +733,7 @@ cmos_do_probe(struct device *dev, struct resource *ports, int rtc_irq)
 		goto cleanup2;
 	}
 
-	pr_info("%s: %s%s, %zd bytes nvram%s\n",
-		dev_name(&cmos_rtc.rtc->dev),
+	dev_info(dev, "%s%s, %zd bytes nvram%s\n",
 		!is_valid_irq(rtc_irq) ? "no alarms" :
 			cmos_rtc.mon_alrm ? "alarms up to one year" :
 			cmos_rtc.day_alrm ? "alarms up to one month" :
@@ -805,9 +806,8 @@ static int cmos_suspend(struct device *dev)
 			mask = RTC_IRQMASK;
 		tmp &= ~mask;
 		CMOS_WRITE(tmp, RTC_CONTROL);
+		hpet_mask_rtc_irq_bit(mask);
 
-		/* shut down hpet emulation - we don't need it for alarm */
-		hpet_mask_rtc_irq_bit(RTC_PIE|RTC_AIE|RTC_UIE);
 		cmos_checkintr(cmos, tmp);
 	}
 	spin_unlock_irq(&rtc_lock);
@@ -820,8 +820,7 @@ static int cmos_suspend(struct device *dev)
 			enable_irq_wake(cmos->irq);
 	}
 
-	pr_debug("%s: suspend%s, ctrl %02x\n",
-			dev_name(&cmos_rtc.rtc->dev),
+	dev_dbg(dev, "suspend%s, ctrl %02x\n",
 			(tmp & RTC_AIE) ? ", alarm may wake" : "",
 			tmp);
 
@@ -857,6 +856,9 @@ static int cmos_resume(struct device *dev)
 		}
 
 		spin_lock_irq(&rtc_lock);
+		if (device_may_wakeup(dev))
+			hpet_rtc_timer_init();
+
 		do {
 			CMOS_WRITE(tmp, RTC_CONTROL);
 			hpet_set_rtc_irq_bit(tmp & RTC_IRQMASK);
@@ -876,9 +878,7 @@ static int cmos_resume(struct device *dev)
 		spin_unlock_irq(&rtc_lock);
 	}
 
-	pr_debug("%s: resume, ctrl %02x\n",
-			dev_name(&cmos_rtc.rtc->dev),
-			tmp);
+	dev_dbg(dev, "resume, ctrl %02x\n", tmp);
 
 	return 0;
 }
@@ -910,14 +910,17 @@ static inline int cmos_poweroff(struct device *dev)
 
 static u32 rtc_handler(void *context)
 {
+	struct device *dev = context;
+
+	pm_wakeup_event(dev, 0);
 	acpi_clear_event(ACPI_EVENT_RTC);
 	acpi_disable_event(ACPI_EVENT_RTC, 0);
 	return ACPI_INTERRUPT_HANDLED;
 }
 
-static inline void rtc_wake_setup(void)
+static inline void rtc_wake_setup(struct device *dev)
 {
-	acpi_install_fixed_event_handler(ACPI_EVENT_RTC, rtc_handler, NULL);
+	acpi_install_fixed_event_handler(ACPI_EVENT_RTC, rtc_handler, dev);
 	/*
 	 * After the RTC handler is installed, the Fixed_RTC event should
 	 * be disabled. Only when the RTC alarm is set will it be enabled.
@@ -944,13 +947,12 @@ static void rtc_wake_off(struct device *dev)
  */
 static struct cmos_rtc_board_info acpi_rtc_info;
 
-static void __devinit
-cmos_wake_setup(struct device *dev)
+static void cmos_wake_setup(struct device *dev)
 {
 	if (acpi_disabled)
 		return;
 
-	rtc_wake_setup();
+	rtc_wake_setup(dev);
 	acpi_rtc_info.wake_on = rtc_wake_on;
 	acpi_rtc_info.wake_off = rtc_wake_off;
 
@@ -975,20 +977,33 @@ cmos_wake_setup(struct device *dev)
 	device_init_wakeup(dev, 1);
 }
 
-#elif defined(CONFIG_X86_INTEL_MID)
+#elif defined(CONFIG_RTC_DRV_CMOS_WAKEUP_FROM_LPSTATES)
 
-static void __devinit
-cmos_wake_setup(struct device *dev)
+#ifdef	CONFIG_RTC_DRV_CMOS_DAYOFMONTH_ALARM
+static struct cmos_rtc_board_info cmos_wakeup_rtc_info;
+#endif
+
+static void cmos_wake_setup(struct device *dev)
 {
+#ifdef	CONFIG_RTC_DRV_CMOS_DAYOFMONTH_ALARM
+	/* add day of month capability for alarms */
+	cmos_wakeup_rtc_info.rtc_day_alarm = RTC_REG_D;
+	cmos_wakeup_rtc_info.rtc_mon_alarm = 0;
+	cmos_wakeup_rtc_info.rtc_century = 0;
+
+	cmos_wakeup_rtc_info.wake_on = NULL;
+	cmos_wakeup_rtc_info.wake_off = NULL;
+
+	dev->platform_data = &cmos_wakeup_rtc_info;
+#endif
+
 	/* RTC always wakes from S1/S2/S3, and often S4/STD */
-	/* on all Intel MID platforms using legacy RTC */
 	device_init_wakeup(dev, 1);
 }
 
 #else
 
-static void __devinit
-cmos_wake_setup(struct device *dev)
+static void cmos_wake_setup(struct device *dev)
 {
 }
 
@@ -998,8 +1013,7 @@ cmos_wake_setup(struct device *dev)
 
 #include <linux/pnp.h>
 
-static int __devinit
-cmos_pnp_probe(struct pnp_dev *pnp, const struct pnp_device_id *id)
+static int cmos_pnp_probe(struct pnp_dev *pnp, const struct pnp_device_id *id)
 {
 	cmos_wake_setup(&pnp->dev);
 
@@ -1108,7 +1122,6 @@ static __init void cmos_of_init(struct platform_device *pdev)
 }
 #else
 static inline void cmos_of_init(struct platform_device *pdev) {}
-#define of_cmos_match NULL
 #endif
 /*----------------------------------------------------------------*/
 
@@ -1133,10 +1146,12 @@ static int __exit cmos_platform_remove(struct platform_device *pdev)
 
 static void cmos_platform_shutdown(struct platform_device *pdev)
 {
+#ifndef CONFIG_RTC_DRV_CMOS_WAKEUP_FROM_LPSTATES
 	if (system_state == SYSTEM_POWER_OFF && !cmos_poweroff(&pdev->dev))
 		return;
 
 	cmos_do_shutdown();
+#endif
 }
 
 /* work with hotplug and coldplug */
@@ -1150,7 +1165,7 @@ static struct platform_driver cmos_platform_driver = {
 #ifdef CONFIG_PM
 		.pm		= &cmos_pm_ops,
 #endif
-		.of_match_table = of_cmos_match,
+		.of_match_table = of_match_ptr(of_cmos_match),
 	}
 };
 

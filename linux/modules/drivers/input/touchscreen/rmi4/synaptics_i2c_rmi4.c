@@ -39,6 +39,7 @@
 #include <linux/earlysuspend.h>
 #endif
 #include <linux/synaptics_i2c_rmi4.h>
+#include <linux/early_suspend_sysfs.h>
 #include "synaptics_i2c_rmi4.h"
 
 /* TODO: for multiple device support will need a per-device mutex */
@@ -1719,6 +1720,82 @@ static struct attribute_group rmi4_attr_dbg = {
 };
 #endif
 
+void rmi4_suspend(struct rmi4_data *pdata)
+{
+	int retval, i;
+	bool need_sync = false;
+	struct i2c_client *client = pdata->i2c_client;
+
+	dev_info(&client->dev, "Enter %s, touch counter=%ld, key counter=%ld",
+			__func__, pdata->touch_counter, pdata->key_counter);
+	disable_irq(pdata->irq);
+	retval = rmi4_i2c_set_bits(pdata,
+			pdata->fn01_ctrl_base_addr, F01_CTRL0_SLEEP);
+	if (retval < 0)
+		dev_err(&client->dev, "set F01_CTRL0_SLEEP failed\n");
+
+	if (pdata->regulator)
+		regulator_disable(pdata->regulator);
+
+	/* swipe all the touch points before suspend */
+	for (i = 0; i < MAX_FINGERS; i++) {
+		if (pdata->finger_status[i] == F11_PRESENT) {
+			need_sync = true;
+			input_mt_slot(pdata->input_ts_dev, i);
+			input_mt_report_slot_state(pdata->input_ts_dev,
+					MT_TOOL_FINGER, false);
+			pdata->finger_status[i] = F11_NO_FINGER;
+		}
+	}
+	if (need_sync)
+		input_sync(pdata->input_ts_dev);
+
+	pdata->touch_counter = 0;
+	pdata->key_counter = 0;
+}
+
+void rmi4_resume(struct rmi4_data *pdata)
+{
+	int retval;
+	struct i2c_client *client = pdata->i2c_client;
+	u8 intr_status[4];
+
+	dev_info(&client->dev, "Enter %s", __func__);
+
+	if (pdata->regulator) {
+		/*need wait to stable if regulator first output*/
+		int needwait = !regulator_is_enabled(pdata->regulator);
+		regulator_enable(pdata->regulator);
+		if (needwait)
+			msleep(50);
+	}
+	enable_irq(pdata->irq);
+	retval = rmi4_i2c_clear_bits(pdata,
+			pdata->fn01_ctrl_base_addr, F01_CTRL0_SLEEP);
+	if (retval < 0)
+		dev_err(&client->dev, "clear F01_CTRL0_SLEEP failed\n");
+
+	/* Clear interrupts */
+	rmi4_i2c_block_read(pdata,
+			pdata->fn01_data_base_addr + 1,
+			intr_status, pdata->number_of_interrupt_register);
+}
+
+static ssize_t early_suspend_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct rmi4_data *rmi4_data = dev_get_drvdata(dev);
+
+	if (!strncmp(buf, EARLY_SUSPEND_ON, EARLY_SUSPEND_STATUS_LEN))
+		rmi4_suspend(rmi4_data);
+	else if (!strncmp(buf, EARLY_SUSPEND_OFF, EARLY_SUSPEND_STATUS_LEN))
+		rmi4_resume(rmi4_data);
+
+	return count;
+}
+
+static DEVICE_EARLY_SUSPEND_ATTR(early_suspend_store);
+
 /**
  * rmi4_probe() - Initialze the i2c-client touchscreen driver
  * @client: i2c client structure pointer
@@ -1882,6 +1959,8 @@ static int rmi4_probe(struct i2c_client *client,
 		goto err_reg_input_key;
 	}
 
+	device_create_file(&client->dev, &dev_attr_early_suspend);
+
 #ifdef DEBUG
 	retval = sysfs_create_group(&client->dev.kobj, &rmi4_attr_dbg);
 	if (retval < 0) {
@@ -1896,6 +1975,9 @@ static int rmi4_probe(struct i2c_client *client,
 	rmi4_data->es.resume = rmi4_late_resume;
 	register_early_suspend(&rmi4_data->es);
 #endif
+
+	register_early_suspend_device(&client->dev);
+
 	return retval;
 
 #ifdef DEBUG
@@ -1946,6 +2028,9 @@ static int rmi4_remove(struct i2c_client *client)
 	free_irq(rmi4_data->irq, rmi4_data);
 	gpio_free(pdata->int_gpio_number);
 	gpio_free(pdata->rst_gpio_number);
+
+	device_remove_file(&client->dev, &dev_attr_early_suspend);
+
 #ifdef DEBUG
 	sysfs_remove_group(&client->dev.kobj, &rmi4_attr_dbg);
 #endif
@@ -1954,6 +2039,7 @@ static int rmi4_remove(struct i2c_client *client)
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	unregister_early_suspend(&rmi4_data->es);
 #endif
+	unregister_early_suspend_device(&client->dev);
 	if (rmi4_data->regulator) {
 		regulator_disable(rmi4_data->regulator);
 		regulator_put(rmi4_data->regulator);
@@ -1967,70 +2053,22 @@ static int rmi4_remove(struct i2c_client *client)
 #ifdef CONFIG_HAS_EARLYSUSPEND
 void rmi4_early_suspend(struct early_suspend *h)
 {
-	int retval, i;
-	bool need_sync = false;
 	struct rmi4_data *pdata  = container_of(h, struct rmi4_data, es);
-	struct i2c_client *client = pdata->i2c_client;
 
-	dev_info(&client->dev, "Enter %s, touch counter=%ld, key counter=%ld",
-			__func__, pdata->touch_counter, pdata->key_counter);
-	disable_irq(pdata->irq);
-	retval = rmi4_i2c_set_bits(pdata,
-			pdata->fn01_ctrl_base_addr, F01_CTRL0_SLEEP);
-	if (retval < 0)
-		dev_err(&client->dev, "set F01_CTRL0_SLEEP failed\n");
-
-	if (pdata->regulator)
-		regulator_disable(pdata->regulator);
-
-	/* swipe all the touch points before suspend */
-	for (i = 0; i < MAX_FINGERS; i++) {
-		if (pdata->finger_status[i] == F11_PRESENT) {
-			need_sync = true;
-			input_mt_slot(pdata->input_ts_dev, i);
-			input_mt_report_slot_state(pdata->input_ts_dev,
-					MT_TOOL_FINGER, false);
-			pdata->finger_status[i] = F11_NO_FINGER;
-		}
-	}
-	if (need_sync)
-		input_sync(pdata->input_ts_dev);
-
-	pdata->touch_counter = 0;
-	pdata->key_counter = 0;
+	rmi4_suspend(pdata);
 }
 
 void rmi4_late_resume(struct early_suspend *h)
 {
-	int retval;
 	struct rmi4_data *pdata  = container_of(h, struct rmi4_data, es);
-	struct i2c_client *client = pdata->i2c_client;
-	u8 intr_status[4];
 
-	dev_info(&client->dev, "Enter %s", __func__);
-
-	if (pdata->regulator) {
-		/*need wait to stable if regulator first output*/
-		int needwait = !regulator_is_enabled(pdata->regulator);
-		regulator_enable(pdata->regulator);
-		if (needwait)
-			msleep(50);
-	}
-	enable_irq(pdata->irq);
-	retval = rmi4_i2c_clear_bits(pdata,
-			pdata->fn01_ctrl_base_addr, F01_CTRL0_SLEEP);
-	if (retval < 0)
-		dev_err(&client->dev, "clear F01_CTRL0_SLEEP failed\n");
-
-	/* Clear interrupts */
-	rmi4_i2c_block_read(pdata,
-			pdata->fn01_data_base_addr + 1,
-			intr_status, pdata->number_of_interrupt_register);
+	rmi4_resume(pdata);
 }
 #endif
 
 static const struct i2c_device_id rmi4_id_table[] = {
 	{ S3202_DEV_ID, 0 },
+	{ S3402_DEV_ID, 0 },
 	{ S3400_CGS_DEV_ID, 0 },
 	{ S3400_IGZO_DEV_ID, 0 },
 	{ },

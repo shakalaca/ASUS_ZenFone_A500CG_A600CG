@@ -46,10 +46,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #if defined (PDUMP)
 
 #include "img_types.h"
-#include "pdump_km.h"
 #include "pdump_osfunc.h"
+#include "pdump_int.h"
 #include "osfunc.h"
-#include "pdump.h"
 #include "pvr_debug.h"
 #include "pvrsrv_error.h"
 
@@ -210,7 +209,7 @@ PVRSRV_ERROR PDumpMMUMalloc(const IMG_CHAR			*pszPDumpDevName,
 		goto ErrOut;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, ui32Flags);
 
 	/*
@@ -234,7 +233,7 @@ PVRSRV_ERROR PDumpMMUMalloc(const IMG_CHAR			*pszPDumpDevName,
 	PDumpOSWriteString2(hScript, ui32Flags);
 
 ErrUnlock:
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 ErrOut:
 	return eErr;
 }
@@ -275,7 +274,7 @@ PVRSRV_ERROR PDumpMMUFree(const IMG_CHAR				*pszPDumpDevName,
 		goto ErrOut;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, ui32Flags);
 
 	/*
@@ -296,7 +295,7 @@ PVRSRV_ERROR PDumpMMUFree(const IMG_CHAR				*pszPDumpDevName,
 	PDumpOSWriteString2(hScript, ui32Flags);
 
 ErrUnlock:
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 ErrOut:
 	return eErr;
 }
@@ -337,7 +336,7 @@ PVRSRV_ERROR PDumpMMUMalloc2(const IMG_CHAR			*pszPDumpDevName,
 		goto ErrOut;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, ui32Flags);
 
 	/*
@@ -356,7 +355,7 @@ PVRSRV_ERROR PDumpMMUMalloc2(const IMG_CHAR			*pszPDumpDevName,
 	PDumpOSWriteString2(hScript, ui32Flags);
 
 ErrUnlock:
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 ErrOut:
 	return eErr;
 }
@@ -390,7 +389,7 @@ PVRSRV_ERROR PDumpMMUFree2(const IMG_CHAR				*pszPDumpDevName,
 		goto ErrOut;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, ui32Flags);
 
 	/*
@@ -406,7 +405,7 @@ PVRSRV_ERROR PDumpMMUFree2(const IMG_CHAR				*pszPDumpDevName,
 	PDumpOSWriteString2(hScript, ui32Flags);
 
 ErrUnlock:
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 ErrOut:
 	return eErr;
 }
@@ -484,7 +483,7 @@ PVRSRV_ERROR PDumpMMUDumpPxEntries(MMU_LEVEL eMMULevel,
                pszPDumpDevName,
                ui64PxSymAddr);
 
-    PDUMP_LOCK();
+    PDumpOSLock();
 
 	/*
 		traverse PxEs, dumping entries
@@ -726,7 +725,7 @@ PVRSRV_ERROR PDumpMMUDumpPxEntries(MMU_LEVEL eMMULevel,
                           ui32Flags | PDUMP_FLAGS_CONTINUOUS);
 
 ErrUnlock:
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 ErrOut:
 	return eErr;
 }
@@ -833,9 +832,9 @@ PVRSRV_ERROR PDumpMMUAllocMMUContext(const IMG_CHAR *pszPDumpMemSpaceName,
 		goto ErrOut;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, PDUMP_FLAGS_CONTINUOUS);
-    PDUMP_UNLOCK();
+    PDumpOSUnlock();
 
 	/* return the MMU Context ID */
 	*pui32MMUContextID = ui32MMUContextID;
@@ -866,7 +865,7 @@ PVRSRV_ERROR PDumpMMUFreeMMUContext(const IMG_CHAR *pszPDumpMemSpaceName,
 		goto ErrOut;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, PDUMP_FLAGS_CONTINUOUS);
 
 	eErr = PDumpOSBufprintf(hScript,
@@ -889,7 +888,7 @@ PVRSRV_ERROR PDumpMMUFreeMMUContext(const IMG_CHAR *pszPDumpMemSpaceName,
 	}
 
 ErrUnlock:
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 ErrOut:
 	return eErr;
 }
@@ -933,7 +932,7 @@ PVRSRV_ERROR PDumpMMUActivateCatalog(const IMG_CHAR *pszPDumpRegSpaceName,
 		goto ErrOut;
 	}
 
-	PDUMP_LOCK();
+	PDumpOSLock();
 	PDumpOSWriteString2(hScript, ui32Flags);
 
     eErr = PDumpOSBufprintf(hScript,
@@ -951,7 +950,7 @@ PVRSRV_ERROR PDumpMMUActivateCatalog(const IMG_CHAR *pszPDumpRegSpaceName,
     PDumpOSWriteString2(hScript, ui32Flags | PDUMP_FLAGS_CONTINUOUS);
 
 ErrUnlock:
-	PDUMP_UNLOCK();
+	PDumpOSUnlock();
 ErrOut:
 	return eErr;
 }
@@ -999,9 +998,9 @@ PDumpMMUSAB(const IMG_CHAR *pszPDumpMemNamespace,
                               uiFileOffset,
                               pszFilename);
     PVR_ASSERT(eError == PVRSRV_OK);
-    PDUMP_LOCK();
+    PDumpOSLock();
     PDumpOSWriteString2(hScript, ui32PDumpFlags);
-    PDUMP_UNLOCK();
+    PDumpOSUnlock();
 
 ErrOut:
     return eError;

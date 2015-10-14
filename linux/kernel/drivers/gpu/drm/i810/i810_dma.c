@@ -30,9 +30,8 @@
  *
  */
 
-#include "drmP.h"
-#include "drm.h"
-#include "i810_drm.h"
+#include <drm/drmP.h>
+#include <drm/i810_drm.h>
 #include "i810_drv.h"
 #include <linux/interrupt.h>	/* For task queue support */
 #include <linux/delay.h>
@@ -98,7 +97,7 @@ static int i810_mmap_buffers(struct file *filp, struct vm_area_struct *vma)
 	buf = dev_priv->mmap_buffer;
 	buf_priv = buf->dev_private;
 
-	vma->vm_flags |= (VM_IO | VM_DONTCOPY);
+	vma->vm_flags |= VM_DONTCOPY;
 
 	buf_priv->currently_mapped = I810_BUF_MAPPED;
 
@@ -115,6 +114,9 @@ static const struct file_operations i810_buffer_fops = {
 	.unlocked_ioctl = drm_ioctl,
 	.mmap = i810_mmap_buffers,
 	.fasync = drm_fasync,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = drm_compat_ioctl,
+#endif
 	.llseek = noop_llseek,
 };
 

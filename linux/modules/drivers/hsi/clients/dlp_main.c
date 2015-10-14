@@ -33,7 +33,7 @@
 #include <linux/tty.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
-#include <linux/hsi/hsi.h>
+#include <linux/hsi/hsi_info_board.h>
 #include <linux/debugfs.h>
 #include <linux/reboot.h>
 
@@ -70,14 +70,14 @@ void dlp_dump_channel_state(struct dlp_channel *ch_ctx, struct seq_file *m)
 	int i;
 
 	seq_printf(m, "\nChannel: %d\n", ch_ctx->hsi_channel);
-	seq_printf(m, "-------------\n");
+	seq_puts(m, "-------------\n");
 	seq_printf(m, " state     : %d\n",
 			dlp_drv.channels_hsi[ch_ctx->hsi_channel].state);
 	seq_printf(m, " credits   : %d\n", ch_ctx->credits);
 	seq_printf(m, " flow ctrl : %d\n", ch_ctx->use_flow_ctrl);
 
 	/* Dump the RX context info */
-	seq_printf(m, "\n RX ctx:\n");
+	seq_puts(m, "\n RX ctx:\n");
 	read_lock_irqsave(&ch_ctx->rx.lock, flags);
 	seq_printf(m, "   link_state   : %d\n",
 			atomic_read(&ch_ctx->rx.link_state));
@@ -89,13 +89,13 @@ void dlp_dump_channel_state(struct dlp_channel *ch_ctx, struct seq_file *m)
 	seq_printf(m, "   ctrl_len: %d\n", ch_ctx->rx.ctrl_len);
 	seq_printf(m, "   wait_len: %d\n", ch_ctx->rx.wait_len);
 	seq_printf(m, "   pdu_size: %d\n", ch_ctx->rx.pdu_size);
-	seq_printf(m, "   Recycled PDUs:\n");
+	seq_puts(m, "   Recycled PDUs:\n");
 	i = 0;
 	list_for_each(curr, &ch_ctx->rx.recycled_pdus) {
 		pdu = list_entry(curr, struct hsi_msg, link);
 		seq_printf(m, "      %02d: 0x%p\n", ++i, pdu);
 	}
-	seq_printf(m, "   Waiting PDUs:\n");
+	seq_puts(m, "   Waiting PDUs:\n");
 	i = 0;
 	list_for_each(curr, &ch_ctx->rx.wait_pdus) {
 		pdu = list_entry(curr, struct hsi_msg, link);
@@ -104,7 +104,7 @@ void dlp_dump_channel_state(struct dlp_channel *ch_ctx, struct seq_file *m)
 	read_unlock_irqrestore(&ch_ctx->rx.lock, flags);
 
 	/* Dump the TX context info */
-	seq_printf(m, "\n TX ctx:\n");
+	seq_puts(m, "\n TX ctx:\n");
 	read_lock_irqsave(&ch_ctx->tx.lock, flags);
 	seq_printf(m, "   link_state   : %d\n",
 			atomic_read(&ch_ctx->tx.link_state));
@@ -116,13 +116,13 @@ void dlp_dump_channel_state(struct dlp_channel *ch_ctx, struct seq_file *m)
 	seq_printf(m, "   ctrl_len: %d\n", ch_ctx->tx.ctrl_len);
 	seq_printf(m, "   wait_len: %d\n", ch_ctx->tx.wait_len);
 	seq_printf(m, "   pdu_size: %d\n", ch_ctx->tx.pdu_size);
-	seq_printf(m, "   Recycled PDUs:\n");
+	seq_puts(m, "   Recycled PDUs:\n");
 	i = 0;
 	list_for_each(curr, &ch_ctx->tx.recycled_pdus) {
 		pdu = list_entry(curr, struct hsi_msg, link);
 		seq_printf(m, "      %02d: 0x%p\n", ++i, pdu);
 	}
-	seq_printf(m, "   Waiting PDUs:\n");
+	seq_puts(m, "   Waiting PDUs:\n");
 	i = 0;
 	list_for_each(curr, &ch_ctx->tx.wait_pdus) {
 		pdu = list_entry(curr, struct hsi_msg, link);
@@ -194,7 +194,56 @@ static void dlp_create_debug_fs(void)
 #else
 static void dlp_create_debug_fs(void) {}
 #endif /* DEBUG */
+/****************************************************************************
+ *
+ * Get system information
+ *
+ ***************************************************************************/
 
+/**
+ *  dlp_create_pdata - Create platform data
+ *
+ *  pdata is created base on information given by platform.
+ *  Data used is the modem type.
+ */
+struct hsi_client_base_info *dlp_get_dev_data(struct device *dev)
+{
+	struct hsi_platform_data *info;
+
+	info = (struct hsi_platform_data *) dev->platform_data;
+
+	pr_info(DRVNAME ": mdm: %d.", info->hsi_client_info.mdm_ver);
+	if (info->hsi_client_info.mdm_ver == MODEM_UNSUP) {
+		/* hsi dlp is disabled as some components */
+		/* of the platform are not supported */
+		return NULL;
+	}
+
+	return &(info->hsi_client_info);
+}
+
+/**
+ *  dlp_get_device_info - Create platform and modem data.
+ *  @drv: Reference to the driver structure
+ *
+ *  Platform are build from SFI table data.
+ */
+void dlp_get_device_info(struct dlp_driver *drv,
+			      struct device *dev)
+{
+	pr_info("%s: get device info for %s", __func__, dev->init_name);
+
+	drv->sys_info = dlp_get_dev_data(dev);
+
+	if (!drv->sys_info) {
+		/* action to be defined*/
+		drv->is_dlp_disabled = true;
+		pr_err(DRVNAME ": Disabling driver. No known device.");
+	}
+
+ out:
+	return;
+}
 
 /**
  * from_usecs - translating usecs to jiffies
@@ -1222,11 +1271,6 @@ int dlp_hsi_controller_push(struct dlp_xfer_ctx *xfer_ctx, struct hsi_msg *pdu)
 	if (pdu->ttype == HSI_MSG_WRITE) {
 		xfer_ctx->channel->credits--;
 		xfer_ctx->seq_num++;
-		if (EDLP_NET_TX_DATA_LEN_REPORT)
-			pr_err(DRVNAME ": CH%d (HSI CH%d) credits=%d, seq_num=%d",
-				ch_ctx->ch_id,
-				ch_ctx->hsi_channel,
-				xfer_ctx->channel->credits, xfer_ctx->seq_num);
 	}
 	spin_unlock_irqrestore(&ch_ctx->lock, flags);
 
@@ -1383,13 +1427,13 @@ void dlp_stop_tx(struct dlp_xfer_ctx *xfer_ctx)
 		/* Update the context state */
 		dlp_ctx_set_state(xfer_ctx, IDLE);
 
-                /* Stop the TX */
-                ret = hsi_stop_tx(dlp_drv.client);
-                if(ret) {
-                        pr_err(DRVNAME ": hsi_stop_tx failed (ch%d, err: %d)\n",
-                                ch_ctx->hsi_channel, ret);
-                        dlp_ctx_set_state(&ch_ctx->tx, READY);
-                }
+		/* Stop the TX */
+		ret = hsi_stop_tx(dlp_drv.client);
+		if (ret) {
+			pr_err(DRVNAME ": hsi_stop_tx failed (ch%d, err: %d)\n",
+				ch_ctx->hsi_channel, ret);
+			dlp_ctx_set_state(&ch_ctx->tx, READY);
+		}
 	}
 }
 
@@ -1780,6 +1824,13 @@ static int dlp_driver_probe(struct device *dev)
 	dlp_drv.controller = controller;
 	dlp_drv.client = client;
 	dlp_drv.is_dma_capable = is_device_dma_capable(controller);
+
+	dlp_get_device_info(&dlp_drv, dev);
+	if (dlp_drv.is_dlp_disabled) {
+		ret = -ENODEV;
+		return ret;
+	}
+
 	spin_lock_init(&dlp_drv.lock);
 
 	/* Register notifier for driver remove and resource conflicts*/

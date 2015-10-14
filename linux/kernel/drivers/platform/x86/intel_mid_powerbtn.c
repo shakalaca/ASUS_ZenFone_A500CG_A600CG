@@ -42,10 +42,6 @@ struct mid_pb_priv {
 	bool irq_ack;
 };
 
-static	bool is_enable;
-static	spinlock_t mPwnLock;
-static	int pwn_irq;
-
 static inline int pb_clear_bits(u16 addr, u8 mask)
 {
 	return intel_scu_ipc_update_register(addr, 0, mask);
@@ -80,28 +76,6 @@ static irqreturn_t mid_pb_threaded_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-
-bool pwn_enable(bool b)
-{
-	if(b==is_enable){
-		return is_enable;
-	}
-	else {
-		unsigned long flags;
-		spin_lock_irqsave(&mPwnLock, flags);
-		if (is_enable == false){
-			enable_irq(pwn_irq);
-			is_enable = true;
-		}
-		else{		
-			disable_irq(pwn_irq);
-			is_enable = false;
-		}
-		spin_unlock_irqrestore(&mPwnLock, flags);
-	}
-	return is_enable;
-}
-
 static int mid_pb_probe(struct platform_device *pdev)
 {
 	struct input_dev *input;
@@ -126,17 +100,17 @@ static int mid_pb_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	priv = kzalloc(sizeof(struct mid_pb_priv), GFP_KERNEL);
-	if (unlikely(!priv))
+	if (!priv)
 		return -ENOMEM;
 
 	input = input_allocate_device();
-	if (unlikely(!input)) {
+	if (!input) {
 		kfree(priv);
 		return -ENOMEM;
 	}
 
 	priv->input = input;
-	priv->irq = pwn_irq =irq;
+	priv->irq = irq;
 	platform_set_drvdata(pdev, priv);
 
 	input->name = pdev->name;
@@ -166,8 +140,6 @@ static int mid_pb_probe(struct platform_device *pdev)
 	if (pdata->irq_ack) {
 		pdata->irq_ack(pdata);
 		priv->irq_ack = true;
-	} else {
-		priv->irq_ack = false;
 	}
 
 	ret = request_threaded_irq(priv->irq, mid_pb_isr, mid_pb_threaded_isr,
@@ -186,7 +158,6 @@ static int mid_pb_probe(struct platform_device *pdev)
 	 * power button in kernel.
 	 */
 	pb_clear_bits(priv->irq_lvl1_mask, MSIC_PWRBTNM);
-	is_enable = true;
 
 	return 0;
 
@@ -299,11 +270,8 @@ static void __exit mid_pb_rpmsg_exit(void)
 	return unregister_rpmsg_driver(&mid_pb_rpmsg_driver);
 }
 
-#ifdef MODULE
-module_init(mid_pb_rpmsg_init);
-#else
-late_initcall_async(mid_pb_rpmsg_init);
-#endif
+late_initcall(mid_pb_rpmsg_init);
+
 module_exit(mid_pb_rpmsg_exit);
 
 MODULE_AUTHOR("Hong Liu <hong.liu@intel.com>");

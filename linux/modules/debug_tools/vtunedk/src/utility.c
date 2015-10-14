@@ -46,13 +46,16 @@
 #include "corei7_unc.h"
 #include "snbunc_cbo.h"
 #include "snbunc_imc.h"
+#if !defined (DRV_BIGCORE)
 #include "wsmexunc_imc.h"
 #include "wsmexunc_qpi.h"
 #include "wsmexunc_wbox.h"
 #include "jktunc_imc.h"
 #include "jktunc_qpill.h"
 #include "jaketown_ubox.h"
+#endif
 #include "haswellunc_ncu.h"
+#if !defined (DRV_BIGCORE)
 #include "ivtunc_cbo.h"
 #include "ivtunc_imc.h"
 #include "ivytown_pcu.h"
@@ -61,6 +64,7 @@
 #include "ivytown_r3qpi.h"
 #include "ivytown_ubox.h"
 #include "ivytown_r2pcie.h"
+#endif
 #endif
 #endif
 #if defined(DRV_IA64)
@@ -367,6 +371,7 @@ UTILITY_Configure_CPU (
             SEP_PRINT_DEBUG("Set up the SNB Cbo dispatch table\n");
             dispatch = &snbunc_cbo_dispatch;
             break;
+#if !defined (DRV_BIGCORE)
         case 210:
             SEP_PRINT_DEBUG("Set up the WSM-EX iMC dispatch table\n");
             dispatch = &wsmexunc_imc_dispatch;
@@ -391,10 +396,12 @@ UTILITY_Configure_CPU (
             SEP_PRINT_DEBUG("Set up the Jaketown UBOX dispatch table\n");
             dispatch = &jaketown_ubox_dispatch;
             break;
+#endif            
         case 500:
             SEP_PRINT_DEBUG("Set up the Haswell UNC NCU dispatch table\n");
             dispatch = &haswellunc_ncu_dispatch;
             break;
+#if !defined (DRV_BIGCORE)
         case 600:
             SEP_PRINT_DEBUG("Set up the IVT UNC CBO dispatch table\n");
             dispatch = &ivtunc_cbo_dispatch;
@@ -427,6 +434,7 @@ UTILITY_Configure_CPU (
             SEP_PRINT("Set up the Ivytown UNC R2PCIe dispatch table\n");
             dispatch = &ivytown_r2pcie_dispatch;
             break;
+#endif            
 #endif
 #endif
 #if defined(DRV_IA64)
@@ -483,8 +491,10 @@ UTILITY_Configure_Chipset (
 )
 {
     if (CHIPSET_CONFIG_gmch_chipset(pma)) {
+#if !defined (DRV_BIGCORE)
         cs_dispatch = &gmch_dispatch;
         SEP_PRINT_DEBUG("UTLITY_Configure_Chipset: using GMCH dispatch table!\n");
+#endif
     }
     else if (CHIPSET_CONFIG_mch_chipset(pma) || CHIPSET_CONFIG_ich_chipset(pma)) {
         cs_dispatch = &chap_dispatch;

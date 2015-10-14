@@ -1,7 +1,7 @@
 /*
  * platform_hsu.h: hsu platform data header file
  *
- * (C) Copyright 2008-2013 Intel Corporation
+ * (C) Copyright 2008 Intel Corporation
  * Author:
  *
  * This program is free software; you can redistribute it and/or

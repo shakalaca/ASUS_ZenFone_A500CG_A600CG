@@ -39,6 +39,8 @@
 #include <linux/fs.h>           /* for struct file_operations */
 #include <linux/namei.h>        /* for struct nameidata       */
 #include <linux/seq_file.h>
+#include <linux/slab.h>
+#include <linux/proc_fs.h>
 #include <asm/uaccess.h>
 
 #define VTSS_PROCFS_CTRL_NAME      ".control"
@@ -62,7 +64,9 @@
 extern int uid;
 extern int gid;
 extern int mode;
-
+extern unsigned int vtss_client_major_ver;
+extern unsigned int vtss_client_minor_ver;
+        
 struct vtss_procfs_ctrl_data
 {
     struct list_head list;
@@ -101,6 +105,31 @@ static ssize_t vtss_procfs_ctrl_write(struct file *file, const char __user * buf
         buf_size -= sizeof(char);
 
         switch (chr) {
+        case 'V': { /* VXXXXX.XXXXX client version */
+                int major = 1;
+//                return -EINVAL;
+                while (buf_size > 0) {
+                    if (get_user(chr, buf))
+                        return -EFAULT;
+                    if (chr >= '0' && chr <= '9') {
+                        buf += sizeof(char);
+                        buf_size -= sizeof(char);
+                        if (major) vtss_client_major_ver = vtss_client_major_ver * 10 + (chr - '0');
+                        else vtss_client_minor_ver = vtss_client_minor_ver * 10 + (chr - '0');
+                    } else{
+                        if (major && chr == '.'){
+                            major = 0;
+                            buf += sizeof(char);
+                            buf_size -= sizeof(char);
+                        }
+                        else {
+                            break;
+                        }
+                    }
+                }
+//                vtss_client_minor_ver = 0;
+                break;
+        }
         case 'T': { /* T<pid> - Set target PID */
                 unsigned long pid = 0;
 
@@ -139,7 +168,11 @@ static ssize_t vtss_procfs_ctrl_write(struct file *file, const char __user * buf
                     reqcfg.trace_cfg.trace_flags = flags;
                 }
                 TRACE("INIT: flags=0x%0lX (%lu)", flags, flags);
-                vtss_cmd_start();
+                if (vtss_cmd_start() !=0 )
+                {
+                    ERROR("ERROR: Unable to start collection. Initialization failed.");
+                    return VTSS_ERR_INIT_FAILED;
+                }
             }
             break;
         case 'E': { /* E<size>=... - configuration request */
@@ -344,12 +377,51 @@ int vtss_procfs_ctrl_wake_up(void *msg, size_t size)
     return 0;
 }
 
+int vtss_procfs_ctrl_wake_up_2(void *msg1, size_t size1, void *msg2, size_t size2)
+{
+    unsigned long flags;
+    struct vtss_procfs_ctrl_data *ctld1 = NULL;
+    struct vtss_procfs_ctrl_data *ctld2 = NULL;
+    ctld1 = (struct vtss_procfs_ctrl_data*)kmalloc(sizeof(struct vtss_procfs_ctrl_data)+size1, GFP_ATOMIC);
+    if (ctld1 == NULL ) {
+        ERROR("Unable to allocate memory for message");
+        return -ENOMEM;
+    }
+    ctld2 = (struct vtss_procfs_ctrl_data*)kmalloc(sizeof(struct vtss_procfs_ctrl_data)+size2, GFP_ATOMIC);
+    if (ctld2 == NULL ) {
+        ERROR("Unable to allocate memory for message");
+        return -ENOMEM;
+    }
+    if (size1) {
+        memcpy(ctld1->buf, msg1, size1);
+        TRACE("msg=['%s', %d]", (char*)msg1, (int)size1);
+    } else {
+        TRACE("[EOF]");
+    }
+    if (size2) {
+        memcpy(ctld2->buf, msg2, size2);
+        TRACE("msg=['%s', %d]", (char*)msg2, (int)size2);
+    } else {
+        TRACE("[EOF]");
+    }
+    ctld1->size = size1;
+    ctld2->size = size2;
+    spin_lock_irqsave(&vtss_procfs_ctrl_list_lock, flags);
+    list_add_tail(&ctld2->list, &vtss_procfs_ctrl_list);
+    list_add_tail(&ctld1->list, &vtss_procfs_ctrl_list);
+    spin_unlock_irqrestore(&vtss_procfs_ctrl_list_lock, flags);
+    if (waitqueue_active(&vtss_procfs_ctrl_waitq))
+    {
+        wake_up_interruptible(&vtss_procfs_ctrl_waitq);
+        wake_up_interruptible(&vtss_procfs_ctrl_waitq);
+    }
+    return 0;
+}
 void vtss_procfs_ctrl_flush(void)
 {
     unsigned long flags;
     struct list_head *p, *tmp;
     struct vtss_procfs_ctrl_data *ctld;
-
     spin_lock_irqsave(&vtss_procfs_ctrl_list_lock, flags);
     list_for_each_safe(p, tmp, &vtss_procfs_ctrl_list) {
         ctld = list_entry(p, struct vtss_procfs_ctrl_data, list);
@@ -811,12 +883,16 @@ static const struct file_operations vtss_procfs_timelimit_fops = {
 static void vtss_procfs_rmdir(void)
 {
     if (vtss_procfs_root != NULL) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
         if (atomic_read(&vtss_procfs_root->count) == 1) {
+#endif
             remove_proc_entry(THIS_MODULE->name, NULL);
             vtss_procfs_root = NULL;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
         } else {
             ERROR("Entry '%s' is busy", vtss_procfs_path());
         }
+#endif
     }
 }
 
@@ -825,6 +901,7 @@ static int vtss_procfs_mkdir(void)
     struct path path;
 
     if (vtss_procfs_root == NULL) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
         if (kern_path(vtss_procfs_path(), 0, &path)) {
             /* doesn't exist, so create it */
             vtss_procfs_root = proc_mkdir(THIS_MODULE->name, NULL);
@@ -833,13 +910,26 @@ static int vtss_procfs_mkdir(void)
             vtss_procfs_root = PDE(path.dentry->d_inode);
             path_put(&path);
         }
-
+#else
+        if (kern_path(vtss_procfs_path(), 0, &path) == 0) {
+            /* if exist, remove it */
+            remove_proc_entry(THIS_MODULE->name, NULL);
+         }
+        /* doesn't exist, so create it */
+        vtss_procfs_root = proc_mkdir(THIS_MODULE->name, NULL);
+#endif
         if (vtss_procfs_root != NULL) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 #ifdef VTSS_AUTOCONF_PROCFS_OWNER
             vtss_procfs_root->owner = THIS_MODULE;
 #endif
-            vtss_procfs_root->uid = uid;
-            vtss_procfs_root->gid = gid;
+#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+        vtss_procfs_root->uid = uid;
+        vtss_procfs_root->gid = gid;
+#else
+        proc_set_user(vtss_procfs_root, uid, gid);
+#endif
         }
     }
     return (vtss_procfs_root != NULL) ? 0 : -ENOENT;
@@ -865,19 +955,24 @@ void vtss_procfs_fini(void)
 
 static int vtss_procfs_create_entry(const char* name, const struct file_operations* fops)
 {
-    struct proc_dir_entry *pde = create_proc_entry(name, (mode_t)(mode ? (mode & 0666) : 0660), vtss_procfs_root);
+    struct proc_dir_entry *pde = proc_create(name, (mode_t)(mode ? (mode & 0666) : 0660), vtss_procfs_root, fops);
     if (pde == NULL) {
         ERROR("Could not create '%s/%s'", vtss_procfs_path(), name);
         vtss_procfs_fini();
         return -ENOENT;
     }
-    pde->proc_fops = fops;
-    pde->data = NULL;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
+// 3 lines below not supported anymore
 #ifdef VTSS_AUTOCONF_PROCFS_OWNER
     pde->owner = THIS_MODULE;
 #endif
+#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
     pde->uid = uid;
     pde->gid = gid;
+#else
+    proc_set_user(pde, uid, gid);
+#endif
     return 0;
 }
 

@@ -29,7 +29,7 @@
 
 int PVRCore_Init(void);
 void PVRCore_Cleanup(void);
-void PVRSRVRelease(struct drm_file *pFile);
+void PVRSRVRelease(void *pvPrivData);
 
 int PVRSRV_BridgeDispatchKM(struct drm_device *dev, void *arg, struct drm_file *pFile);
 
@@ -43,6 +43,8 @@ int dbgdrv_init(void);
 void dbgdrv_cleanup(void);
 int dbgdrv_ioctl(struct drm_device *dev, void *arg, struct drm_file *pFile);
 #endif
+
+#define PVR_DRM_FILE_FROM_FILE(pFile) (pFile->private_data)
 
 #endif	
 

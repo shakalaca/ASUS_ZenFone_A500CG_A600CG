@@ -33,7 +33,7 @@ static int get_bcu_config(struct ocd_bcove_config_data *ocd_smip_data)
 	bcu_smip_sram_addr = ioremap_nocache(MRFL_SMIP_SRAM_ADDR +
 					BCU_SMIP_OFFSET, NUM_SMIP_BYTES);
 
-	for (i = 0; i < NUM_SMIP_BYTES ; i++)
+	for (i = 0; i < NUM_SMIP_BYTES; i++)
 		*(plat_smip_data + i) = ioread8(bcu_smip_sram_addr + i);
 
 	return 0;

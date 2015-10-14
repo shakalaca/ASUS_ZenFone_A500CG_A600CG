@@ -674,15 +674,36 @@ silvermont_Read_Counts (
  * <I>Special Notes:</I>
  *              <NONE>
  */
-static U64
+static void
 silvermont_Platform_Info (
-    void
+    PVOID  data
 )
 {
+    U64                    index         = 0;
+    DRV_PLATFORM_INFO      platform_data = (DRV_PLATFORM_INFO)data;
+    U64                    value         = 0;
+    U64                    clock_value   = 0;
+ 
+    if (!platform_data) {
+        return;
+    }
+ 
 #define IA32_MSR_PLATFORM_INFO 0xCE
-    U64 value = SYS_Read_MSR(IA32_MSR_PLATFORM_INFO);
+    value = SYS_Read_MSR(IA32_MSR_PLATFORM_INFO);
+ 
+#define IA32_MSR_PSB_CLOCK_STS  0xCD
+#define FREQ_MASK_BITS          0x03
+ 
+    clock_value = SYS_Read_MSR(IA32_MSR_PSB_CLOCK_STS);
+    index = clock_value & FREQ_MASK_BITS;
+    DRV_PLATFORM_INFO_info(platform_data)           = value;
+    DRV_PLATFORM_INFO_ddr_freq_index(platform_data) = index;
+ 
+#undef IA32_MSR_PLATFORM_INFO
+#undef IA32_MSR_PSB_CLOCK_STS
+#undef FREQ_MASK_BITS
 
-    return value;
+    return;
 }
 
 

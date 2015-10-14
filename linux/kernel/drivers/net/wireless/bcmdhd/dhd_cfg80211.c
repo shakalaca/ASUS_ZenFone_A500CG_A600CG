@@ -292,7 +292,7 @@ static bool btcoex_is_sco_active(struct net_device *dev)
 			break;
 		}
 
-		msleep(5);
+		OSL_SLEEP(5);
 	}
 
 	return res;
@@ -582,18 +582,6 @@ int wl_cfg80211_set_btcoex_dhcp(struct net_device *dev, char *command)
 		WL_TRACE_HW4(("DHCP session starts\n"));
 
 #if defined(DHCP_SCAN_SUPPRESS)
-{
-	int ret;
-	dhd_pub_t *dhd =  (dhd_pub_t *)(wl->pub);
-        uint32 mpc = 0;
-	char iovbuf[28];
-
-        bcm_mkiovar("mpc", (char *)&mpc, 4, iovbuf, sizeof(iovbuf));
-        if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0)) < 0) 
-        {
-                WL_ERR(("%s DHCP_SCAN_SUPPRESS: set mpc=0 failed: %d\n", __FUNCTION__,ret));
-        }
-}
 		/* Suppress scan during the DHCP */
 		wl_cfg80211_scan_suppress(dev, 1);
 #endif /* OEM_ANDROID */
@@ -651,18 +639,6 @@ int wl_cfg80211_set_btcoex_dhcp(struct net_device *dev, char *command)
 
 
 #if defined(DHCP_SCAN_SUPPRESS)
-{
-	int ret;
-	dhd_pub_t *dhd =  (dhd_pub_t *)(wl->pub);
-        uint32 mpc = 1;
-	char iovbuf[28];
-
-        bcm_mkiovar("mpc", (char *)&mpc, 4, iovbuf, sizeof(iovbuf));
-        if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0)) < 0) 
-        {
-               WL_ERR(("%s DHCP_SCAN_SUPPRESS: set mpc=1 failed: %d\n", __FUNCTION__,ret));
-        }
-}
 		/* Since DHCP is complete, enable the scan back */
 		wl_cfg80211_scan_suppress(dev, 0);
 #endif /* OEM_ANDROID */
@@ -672,57 +648,13 @@ int wl_cfg80211_set_btcoex_dhcp(struct net_device *dev, char *command)
 		WL_TRACE_HW4(("DHCP is complete \n"));
 
 		/* Enable packet filtering */
-		if (dhd->early_suspended) 
-		{
+		if (dhd->early_suspended) {
 			WL_TRACE_HW4(("DHCP is complete , enable packet filter!!!\n"));
 			dhd_enable_packet_filter(1, dhd);
 		}
 #endif /* PKT_FILTER_SUPPORT */
 
 		/* Restoring PM mode */
-
-		if(wl->vsdb_mode) {
-			int ret;
-			dhd_pub_t *dhd =  (dhd_pub_t *)(wl->pub);
-			char iovbuf[28];
-		
-			uint mchan_algo = 0;
-			uint mchan_bw = 70;
-			uint pspoll_prd = 10;
-			uint mchan_p2p_blocking = 0;
-			uint cwval = 0;
-			
-			mchan_algo = 1;
-			WL_DBG(("%s WLAN0 VSDB Mode -> Enable \n",__FUNCTION__));
-			bcm_mkiovar("mchan_algo", (char *)&mchan_algo, 4, iovbuf, sizeof(iovbuf));
-			if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0)) < 0) 
-				WL_DBG(("%s MCHAN ALGO %d setting fail %d\n", __FUNCTION__,mchan_algo,ret));
-			
-			mchan_bw = 32;
-			bcm_mkiovar("mchan_bw", (char *)&mchan_bw, 4, iovbuf, sizeof(iovbuf));
-			if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0)) < 0) 
-				WL_DBG(("%s VSDB MCHAN Bandwidth %d settinf fail %d\n", __FUNCTION__,mchan_bw,ret));
-			
-			pspoll_prd = 20;
-			bcm_mkiovar("pspoll_prd", (char *)&pspoll_prd, 4, iovbuf, sizeof(iovbuf));
-			if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0)) < 0) 
-				WL_DBG(("%s VSDB PSPoll Prd %d settinf fail %d\n", __FUNCTION__,pspoll_prd,ret));
-			
-			mchan_p2p_blocking = 0;
-			bcm_mkiovar("mchan_p2p_blocking", (char *)&mchan_p2p_blocking, 4, iovbuf, sizeof(iovbuf));
-			if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_VAR, iovbuf, sizeof(iovbuf), TRUE, 0)) < 0) 
-				WL_DBG(("%s MCHAN P2P_BLOCKING %d setting fail %d\n", __FUNCTION__,mchan_p2p_blocking,ret));
-			
-			/* Contention Window Setting */
-			cwval = 255;
-			if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_CWMAX, (char *)&cwval, sizeof(cwval), TRUE, 0)) < 0) 
-				WL_DBG(("%s wl cwmax %d setting fail, ret = %d\n", __FUNCTION__,cwval,ret));
-			
-			cwval = 1;
-			if ((ret = dhd_wl_ioctl_cmd(dhd, WLC_SET_CWMIN, (char *)&cwval, sizeof(cwval), TRUE, 0)) < 0) 
-				WL_DBG(("%s wl cwmin %d setting fail, ret = %d\n", __FUNCTION__,cwval,ret));
-				
-		} 
 
 #ifdef COEX_DHCP
 		/* Stop any bt timer because DHCP session is done */

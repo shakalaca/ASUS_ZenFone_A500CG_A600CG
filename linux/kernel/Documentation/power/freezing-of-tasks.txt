@@ -227,4 +227,4 @@ mutex_[un]lock(&pm_mutex). That would prevent freezing failures.
 V. Miscellaneous
 /sys/power/pm_freeze_timeout controls how long it will cost at most to freeze
 all user space processes or all freezable kernel threads, in unit of millisecond.
-The default value is 20000ms, with range 0 ~ 2^32ms.
+The default value is 20000, with range of unsigned integer.

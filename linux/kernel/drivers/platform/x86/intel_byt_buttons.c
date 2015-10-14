@@ -28,10 +28,11 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/delay.h>
-#include <linux/platform_device.h>
 #include <linux/input.h>
 #include <linux/notifier.h>
+#include <linux/platform_device.h>
 #include <asm/intel_byt_ec.h>
+#include <asm/intel_byt_buttons.h>
 #include <acpi/acpi_bus.h>
 #include <acpi/acpi_drivers.h>
 
@@ -41,59 +42,6 @@
 #define VOLUP_BTN_STAT_MASK	(1 << 1)
 #define VOLDOWN_BTN_STAT_MASK	(1 << 2)
 #define HOME_BTN_STAT_MASK	(1 << 3)
-
-struct byt_keys_button {
-	unsigned int code;	/* input event code */
-	unsigned int type;	/* input event type */
-	const char *desc;
-	int active_low;
-	int wakeup;
-};
-
-struct byt_keys_platform_data {
-	struct byt_keys_button *buttons;
-	int nbuttons;
-	unsigned int rep:1;	/* enable/disable auto repeat */
-};
-
-static struct byt_keys_button byt_m_nrpt_buttons[] = {
-	{ KEY_POWER,		EV_KEY,	"Power_btn", 1 },
-	{ },
-};
-
-static struct byt_keys_button byt_m_rpt_buttons[] = {
-	{ KEY_VOLUMEUP,		EV_KEY,	"Volume_up", 1 },
-	{ KEY_VOLUMEDOWN,	EV_KEY,	"Volume_down", 1 },
-	{ KEY_HOME,		EV_KEY,	"Home_btn", 1 },
-};
-
-static struct byt_keys_platform_data byt_key_pdata[2] = {
-	{
-		.buttons = byt_m_nrpt_buttons,
-		.nbuttons = 1,
-		.rep = 0,
-	}, {
-		.buttons = byt_m_rpt_buttons,
-		.nbuttons = 3,
-		.rep = 1,
-	},
-};
-
-static struct platform_device byt_m_btn_device[2] = {
-	{
-		.name = "byt_m_nrpt_btns",
-		.id = -1,
-		.dev = {
-			.platform_data = &byt_key_pdata[0],
-		},
-	}, {
-		.name = "byt_m_rpt_btns",
-		.id = -1,
-		.dev = {
-			.platform_data = &byt_key_pdata[1],
-		},
-	},
-};
 
 struct byt_buttons_priv {
 	struct input_dev *input;
@@ -255,18 +203,6 @@ static struct platform_driver byt_buttons_driver = {
 
 static int __init byt_buttons_module_init(void)
 {
-	int i;
-	int ret;
-
-	for (i = 0; i < 2; i++) {
-		ret = platform_device_register(&byt_m_btn_device[i]);
-		if (ret) {
-			pr_err("register platform device %s failed\n",
-				byt_m_btn_device[i].name);
-			return ret;
-		}
-	}
-
 	return platform_driver_register(&byt_buttons_driver);
 }
 

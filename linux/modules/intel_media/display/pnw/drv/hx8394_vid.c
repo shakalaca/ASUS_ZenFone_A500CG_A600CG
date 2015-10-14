@@ -328,6 +328,7 @@ static int send_mipi_cmd_gen(struct mdfld_dsi_pkg_sender * sender,
 				struct mipi_dsi_cmd *cmd) {
 	int err = 0;
 
+	sender->status = MDFLD_DSI_PKG_SENDER_FREE;
 	switch(cmd->len) {
 		case 1:
 			err = mdfld_dsi_send_gen_short_lp(sender,
@@ -367,6 +368,7 @@ static int send_mipi_cmd_mcs(struct mdfld_dsi_pkg_sender * sender,
 				struct mipi_dsi_cmd *cmd) {
 	int err = 0;
 
+	sender->status = MDFLD_DSI_PKG_SENDER_FREE;
 	switch(cmd->len) {
 		case 1:
 			err = mdfld_dsi_send_mcs_short_lp(sender,
@@ -631,6 +633,7 @@ static int hx8394_vid_detect(struct mdfld_dsi_config *dsi_config)
 
 		dpll_val = REG_READ(regs->dpll_reg);
 		device_ready_val = REG_READ(regs->device_ready_reg);
+/* NOTE:temporary to skip IFWI display settings */
 		if ((device_ready_val & DSI_DEVICE_READY) &&
 		    (dpll_val & DPLL_VCO_ENABLE)) {
 			dsi_config->dsi_hw_context.panel_on = true;
@@ -710,6 +713,7 @@ static int hx8394_vid_power_off(struct mdfld_dsi_config *dsi_config)
 	}
 
 	/* Send power off command*/
+	sender->status = MDFLD_DSI_PKG_SENDER_FREE;
 	mdfld_dsi_send_mcs_short_lp(sender, 0x28, 0x00, 0, 0);
 	mdfld_dsi_send_mcs_short_lp(sender, 0x10, 0x00, 0, 0);
 	if (sender->status == MDFLD_DSI_CONTROL_ABNORMAL) {
@@ -958,11 +962,7 @@ void hx8394_vid_init(struct drm_device *dev, struct panel_funcs *p_funcs)
 	p_funcs->set_brightness = hx8394_vid_set_brightness;
 
 	/* Get HW version ID */
-#ifdef PANEL_HX8394_EVB
-	board_hw_id = HW_ID_EVB;
-#else
 	board_hw_id = Read_HW_ID();
-#endif
 	printk("[DISP] board_hw_id : %d\n", board_hw_id);
 
 	ret = hx8394_vid_gpio_init();
@@ -984,9 +984,10 @@ static int hx8394_vid_shutdown(struct platform_device *pdev)
 	struct hx8394_vid_data *pdata = &gpio_settings_data;
 	printk("[DISP] %s\n", __func__);
 
-	intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0);
-	hx8394_vid_set_brightness(hx8394_dsi_config, 0);
-	hx8394_vid_power_off(hx8394_dsi_config);
+	mdfld_dsi_dpi_set_power(encoder_lcd, 0);
+//	intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0);
+//	hx8394_vid_set_brightness(hx8394_dsi_config, 0);
+//	hx8394_vid_power_off(hx8394_dsi_config);
 	usleep_range(50000, 55000);
 	gpio_direction_output(pdata->gpio_lcd_rst, 0);
 	usleep_range(120000, 121000);

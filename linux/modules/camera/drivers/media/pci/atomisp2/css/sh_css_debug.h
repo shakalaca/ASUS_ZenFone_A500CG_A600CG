@@ -63,7 +63,7 @@ extern unsigned int sh_css_trace_level;
 	do {                                           \
 		if (sh_css_trace_level >= level)   {    \
 			pr_debug("sh_css: " format, ##args);	\
-			printk(format, ## args); \
+			trace_printk(format, ## args); \
 		}	\
 	} while (0)
 #if 0

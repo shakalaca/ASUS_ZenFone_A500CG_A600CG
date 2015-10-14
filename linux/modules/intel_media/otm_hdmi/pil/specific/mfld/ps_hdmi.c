@@ -262,6 +262,11 @@ bool ps_hdmi_power_rails_off(void)
 	return true;
 }
 
+/* enable/disable HPD */
+bool ps_hdmi_enable_hpd(bool enable)
+{
+}
+
 bool ps_hdmi_power_islands_on()
 {
 	/*

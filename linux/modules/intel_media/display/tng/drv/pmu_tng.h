@@ -157,6 +157,7 @@
 #define IP_FREQ_533_33 0x05        /* 0b00101 533.33 */
 #define IP_FREQ_640_00 0x04        /* 0b00100 640.00 */
 #define IP_FREQ_800_00 0x03        /* 0b00011 800.00 */
+#define IP_FREQ_RESUME_SET 0x64
 
 /*  Tangier power states for each island */
 #define TNG_SSC_I0    (0b00)    /* i0 - power on, no clock or p[ower gating */

@@ -267,17 +267,52 @@ typedef struct
 #define RGXFW_BOOTLDR_CONF_OFFSET	(0x80)
 
 /************************************************************************
+* RGX META Stack
+************************************************************************/
+#define RGX_META_STACK_SIZE  (0xC00)
+
+/************************************************************************
 * RGX META Core memory
 ************************************************************************/
-#define RGX_META_COREMEM_ADDR   (0x80000000)
-#define RGX_META_IS_COREMEM(A)  (((A) >= RGX_META_COREMEM_ADDR) && ((A) < (RGX_META_COREMEM_ADDR + RGX_META_COREMEM_SIZE)))
+#define RGX_META_COREMEM_BSS_SIZE    (0x800)
+#define RGX_META_COREMEM_DATA_SIZE   (RGX_META_COREMEM_BSS_SIZE + RGX_META_STACK_SIZE)
+#define RGX_META_COREMEM_CODE_SIZE   (RGX_META_COREMEM_SIZE - RGX_META_COREMEM_DATA_SIZE)
+/* code and data both map to the same physical memory */
+#define RGX_META_COREMEM_CODE_ADDR   (0x80000000)
+#define RGX_META_COREMEM_DATA_ADDR   (0x82000000)
+#define RGX_META_COREMEM_STACK_ADDR  (RGX_META_COREMEM_DATA_ADDR)
+#define RGX_META_COREMEM_BSS_ADDR    (RGX_META_COREMEM_STACK_ADDR + RGX_META_STACK_SIZE)
+/* because data and code share the same memory, base address for code is offset by the data */
+#define RGX_META_COREMEM_CODE_BADDR  (RGX_META_COREMEM_CODE_ADDR + RGX_META_COREMEM_DATA_SIZE)
 
+#define RGX_META_IS_COREMEM_CODE(A)  (((A) >= RGX_META_COREMEM_CODE_BADDR) && ((A) < (RGX_META_COREMEM_CODE_ADDR + RGX_META_COREMEM_SIZE)))
+#define RGX_META_IS_COREMEM_DATA(A)  (((A) >= RGX_META_COREMEM_DATA_ADDR) && ((A) < (RGX_META_COREMEM_DATA_ADDR + RGX_META_COREMEM_DATA_SIZE)))
 
 /************************************************************************
 * 2nd thread
 ************************************************************************/
 #define RGXFW_THR1_PC		(0x18930000)
 #define RGXFW_THR1_SP		(0x78890000)
+
+/************************************************************************
+* META compatibility
+************************************************************************/
+
+#define META_CR_CORE_ID			(0x04831000)
+#define META_CR_CORE_ID_VER_SHIFT	(16U)
+#define META_CR_CORE_ID_VER_CLRMSK	(0XFF00FFFFU)
+
+#if (RGX_FEATURE_META == MTP218)
+#define RGX_CR_META_CORE_ID_VALUE 0x19
+#elif (RGX_FEATURE_META == MTP219)
+#define RGX_CR_META_CORE_ID_VALUE 0x1E
+#elif (RGX_FEATURE_META == LTP218)
+#define RGX_CR_META_CORE_ID_VALUE 0x1C
+#elif (RGX_FEATURE_META == LTP217)
+#define RGX_CR_META_CORE_ID_VALUE 0x1F
+#else
+#error "Unknown META ID"
+#endif
 
 #endif /*  __RGX_META_H__ */
 

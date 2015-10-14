@@ -85,13 +85,13 @@ typedef enum _RGXFWIF_DM_
 	RGXFWIF_DM_TA			= 2,
 	RGXFWIF_DM_3D			= 3,
 	RGXFWIF_DM_CDM			= 4,
+#if defined(RGX_FEATURE_RAY_TRACING)
 	RGXFWIF_DM_RTU			= 5,
 	RGXFWIF_DM_SHG			= 6,
-
+#endif
 	RGXFWIF_DM_LAST,
 
-	RGXFWIF_DM_FORCE_I32  = -1,
-
+	RGXFWIF_DM_FORCE_I32  = 0x7fffffff   /*!< Force enum to be at least 32-bits wide */
 } RGXFWIF_DM;
 
 #if defined(RGX_FEATURE_RAY_TRACING)

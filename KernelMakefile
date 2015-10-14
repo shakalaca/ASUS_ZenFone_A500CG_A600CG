@@ -8,6 +8,6 @@ TARGET_CC := prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.7/bin/x86_64-lin
 PATH := $(shell pwd)/prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.7/bin:$(PATH)
 MINIGZIP := out/host/linux-x86/bin/minigzip
 
-include linux/kernel/AndroidKernel.mk
+include device/intel/common/AndroidKernel.mk
 
 openssl: out/host/linux-x86/bin/openssl

@@ -17,11 +17,13 @@
 #include <linux/lnw_gpio.h>
 #include <linux/power_supply.h>
 #include <linux/power/battery_id.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
+#include <linux/acpi.h>
+#include <linux/acpi_gpio.h>
 #include <asm/intel-mid.h>
 #include <asm/spid.h>
 #include <asm/intel_mid_gpadc.h>
 #include <asm/intel_scu_ipc.h>
-#include <asm/intel_mid_remoteproc.h>
 #include "platform_bq24192.h"
 #include <linux/usb/otg.h>
 
@@ -36,11 +38,6 @@ static struct power_supply_throttle bq24192_throttle_states[] = {
 	{
 		.throttle_action = PSY_THROTTLE_CC_LIMIT,
 		.throttle_val = BQ24192_CHRG_CUR_NOLIMIT,
-
-	},
-	{
-		.throttle_action = PSY_THROTTLE_CC_LIMIT,
-		.throttle_val = BQ24192_CHRG_CUR_HIGH,
 
 	},
 	{
@@ -91,6 +88,10 @@ static int const bptherm_curve_data[BPTHERM_CURVE_MAX_SAMPLES]
 	{100, 90, 140, 107},
 };
 
+static int platform_read_adc_temp(int *temp,
+	const int bptherm_curve_data[][BPTHERM_CURVE_MAX_VALUES]);
+
+#ifndef CONFIG_ACPI
 static bool msic_battery_check(void)
 {
 	if (get_oem0_table() == NULL) {
@@ -112,6 +113,46 @@ void *platform_init_battery_adc(int num_sensors, int chan_number, int flag)
 				  chan_number | flag));
 }
 
+/* returns the battery pack temperature read from adc */
+int platform_get_battery_pack_temp(int *temp)
+{
+	pr_debug("%s\n", __func__);
+	return platform_read_adc_temp(temp, bptherm_curve_data);
+}
+EXPORT_SYMBOL(platform_get_battery_pack_temp);
+
+static void platform_free_data(void)
+{
+	pr_debug("%s\n", __func__);
+	if (chgr_gpadc_handle)
+		intel_mid_gpadc_free(chgr_gpadc_handle);
+
+	kfree(ps_batt_chrg_prof);
+	kfree(ps_pse_mod_prof);
+}
+#else
+static bool msic_battery_check(void)
+{
+	return false;
+}
+
+void *platform_init_battery_adc(int num_sensors, int chan_number, int flag)
+{
+	return NULL;
+}
+
+/* returns the battery pack temperature read from adc */
+int platform_get_battery_pack_temp(int *temp)
+{
+	return 0;
+}
+EXPORT_SYMBOL(platform_get_battery_pack_temp);
+
+static void platform_free_data(void)
+{
+}
+#endif
+
 static void dump_batt_chrg_profile(struct ps_pse_mod_prof *bcprof,
 				struct platform_batt_profile *batt_prof)
 {
@@ -121,7 +162,7 @@ static void dump_batt_chrg_profile(struct ps_pse_mod_prof *bcprof,
 	pr_info("ChrgProf: battery_type:%u\n", bcprof->battery_type);
 	pr_info("ChrgProf: capacity:%u\n", bcprof->capacity);
 	pr_info("ChrgProf: voltage_max:%u\n", bcprof->voltage_max);
-	pr_info("ChrgProf: chrg_term_mA:%u\n", bcprof->chrg_term_mA);
+	pr_info("ChrgProf: chrg_term_mA:%u\n", bcprof->chrg_term_ma);
 	pr_info("ChrgProf: low_batt_mV:%u\n", bcprof->low_batt_mV);
 	pr_info("ChrgProf: disch_tmp_ul:%d\n", bcprof->disch_tmp_ul);
 	pr_info("ChrgProf: disch_tmp_ll:%d\n", bcprof->disch_tmp_ll);
@@ -207,7 +248,7 @@ static void platform_get_sfi_batt_table(void *table, bool fpo_override_bit)
 
 	ps_pse_mod_prof->battery_type = *bprof_ptr;
 	ps_pse_mod_prof->temp_mon_ranges = *++bprof_ptr;
-	ps_pse_mod_prof->chrg_term_mA = 128;
+	ps_pse_mod_prof->chrg_term_ma = 128;
 	ps_pse_mod_prof->low_batt_mV = 3400;
 	ps_pse_mod_prof->disch_tmp_ul = 60;
 	ps_pse_mod_prof->disch_tmp_ll = 0;
@@ -305,7 +346,7 @@ static void platform_init_battery_threshold(u8 total_temp_range,
 	 struct platform_batt_profile *batt_profile)
 {
 	int ret;
-	u8 validate_smip_data[4];
+	u8 validate_smip_data[4] = {0};
 	bool fpo_override_bit = false;
 
 	pr_debug("%s:%d:\n", __func__, __LINE__);
@@ -569,52 +610,183 @@ read_adc_exit:
 	return ret;
 }
 
-/* returns the battery pack temperature read from adc */
-int platform_get_battery_pack_temp(int *temp)
+/**************************************************/
+/* baytrail/cherrytrail platform init starts here */
+/**************************************************/
+#ifdef CONFIG_POWER_SUPPLY_CHARGER
+#define BYTCR_CHRG_CUR_NOLIMIT		1800
+#define BYTCR_CHRG_CUR_MEDIUM		1400
+#define BYTCR_CHRG_CUR_LOW		1000
+
+static struct ps_batt_chg_prof byt_ps_batt_chrg_prof;
+static struct ps_pse_mod_prof byt_batt_chg_profile;
+static struct power_supply_throttle byt_throttle_states[] = {
+	{
+		.throttle_action = PSY_THROTTLE_CC_LIMIT,
+		.throttle_val = BYTCR_CHRG_CUR_NOLIMIT,
+	},
+	{
+		.throttle_action = PSY_THROTTLE_CC_LIMIT,
+		.throttle_val = BYTCR_CHRG_CUR_MEDIUM,
+	},
+	{
+		.throttle_action = PSY_THROTTLE_CC_LIMIT,
+		.throttle_val = BYTCR_CHRG_CUR_LOW,
+	},
+	{
+		.throttle_action = PSY_THROTTLE_DISABLE_CHARGING,
+	},
+};
+
+static void *platform_byt_get_batt_charge_profile(void)
 {
-	pr_debug("%s\n", __func__);
-	return platform_read_adc_temp(temp, bptherm_curve_data);
+	struct ps_temp_chg_table temp_mon_range[BATT_TEMP_NR_RNG];
+
+	char batt_str[] = "INTN0001";
+
+	/*
+	 * WA: hard coding the profile
+	 * till we get OEM0 table from FW.
+	 */
+	memcpy(byt_batt_chg_profile.batt_id, batt_str, strlen(batt_str));
+
+	byt_batt_chg_profile.battery_type = 0x2;
+	byt_batt_chg_profile.capacity = 0x2C52;
+	byt_batt_chg_profile.voltage_max = 4350;
+	byt_batt_chg_profile.chrg_term_ma = 300;
+	byt_batt_chg_profile.low_batt_mV = 3400;
+	byt_batt_chg_profile.disch_tmp_ul = 55;
+	byt_batt_chg_profile.disch_tmp_ll = 0;
+	byt_batt_chg_profile.temp_mon_ranges = 5;
+
+	temp_mon_range[0].temp_up_lim = 55;
+	temp_mon_range[0].full_chrg_vol = 4100;
+	temp_mon_range[0].full_chrg_cur = 1800;
+	temp_mon_range[0].maint_chrg_vol_ll = 4050;
+	temp_mon_range[0].maint_chrg_vol_ul = 4100;
+	temp_mon_range[0].maint_chrg_cur = 1800;
+
+	temp_mon_range[1].temp_up_lim = 45;
+	temp_mon_range[1].full_chrg_vol = 4350;
+	temp_mon_range[1].full_chrg_cur = 1800;
+	temp_mon_range[1].maint_chrg_vol_ll = 4300;
+	temp_mon_range[1].maint_chrg_vol_ul = 4350;
+	temp_mon_range[1].maint_chrg_cur = 1800;
+
+	temp_mon_range[2].temp_up_lim = 23;
+	temp_mon_range[2].full_chrg_vol = 4350;
+	temp_mon_range[2].full_chrg_cur = 1400;
+	temp_mon_range[2].maint_chrg_vol_ll = 4300;
+	temp_mon_range[2].maint_chrg_vol_ul = 4350;
+	temp_mon_range[2].maint_chrg_cur = 1400;
+
+	temp_mon_range[3].temp_up_lim = 10;
+	temp_mon_range[3].full_chrg_vol = 4350;
+	temp_mon_range[3].full_chrg_cur = 1000;
+	temp_mon_range[3].maint_chrg_vol_ll = 4300;
+	temp_mon_range[3].maint_chrg_vol_ul = 4350;
+	temp_mon_range[3].maint_chrg_cur = 1000;
+
+	temp_mon_range[4].temp_up_lim = 0;
+	temp_mon_range[4].full_chrg_vol = 0;
+	temp_mon_range[4].full_chrg_cur = 0;
+	temp_mon_range[4].maint_chrg_vol_ll = 0;
+	temp_mon_range[4].maint_chrg_vol_ul = 0;
+	temp_mon_range[4].maint_chrg_vol_ul = 0;
+	temp_mon_range[4].maint_chrg_cur = 0;
+
+	memcpy(byt_batt_chg_profile.temp_mon_range,
+		temp_mon_range,
+		BATT_TEMP_NR_RNG * sizeof(struct ps_temp_chg_table));
+
+	byt_batt_chg_profile.temp_low_lim = 0;
+
+	byt_ps_batt_chrg_prof.chrg_prof_type = PSE_MOD_CHRG_PROF;
+	byt_ps_batt_chrg_prof.batt_prof = &byt_batt_chg_profile;
+	battery_prop_changed(POWER_SUPPLY_BATTERY_INSERTED,
+					&byt_ps_batt_chrg_prof);
+	return &byt_ps_batt_chrg_prof;
 }
-EXPORT_SYMBOL(platform_get_battery_pack_temp);
 
-static void platform_free_data(void)
+static void platform_byt_init_chrg_params(
+	struct bq24192_platform_data *pdata)
 {
-	pr_debug("%s\n", __func__);
-	if (chgr_gpadc_handle)
-		intel_mid_gpadc_free(chgr_gpadc_handle);
+	pdata->throttle_states = byt_throttle_states;
+	pdata->supplied_to = bq24192_supplied_to;
+	pdata->num_throttle_states = ARRAY_SIZE(byt_throttle_states);
+	pdata->num_supplicants = ARRAY_SIZE(bq24192_supplied_to);
+	pdata->supported_cables = POWER_SUPPLY_CHARGER_TYPE_USB;
+	pdata->chg_profile = (struct ps_batt_chg_prof *)
+			platform_byt_get_batt_charge_profile();
+	pdata->sfi_tabl_present = true;
 
-	kfree(ps_batt_chrg_prof);
-	kfree(ps_pse_mod_prof);
+	pdata->max_cc = 1800;	/* 1800 mA */
+	pdata->max_cv = 4350;	/* 4350 mV */
+	pdata->max_temp = 55;	/* 55 DegC */
+	pdata->min_temp = 0;	/* 0 DegC */
 }
-
-void *bq24192_platform_data(void *info)
+#else
+static void platform_byt_init_chrg_params(
+	struct bq24192_platform_data *pdata)
 {
-	static struct bq24192_platform_data platform_data;
+}
+static void *platform_byt_get_batt_charge_profile(void)
+{
+}
+#endif
 
-	pr_debug("%s:\n", __func__);
+/**************************************************/
+/* baytrail/cherrytrail platform init ends here  */
+/**************************************************/
+
+static void platform_clvp_init_chrg_params(
+		struct bq24192_platform_data *pdata)
+{
 	if (msic_battery_check())
-		platform_data.sfi_tabl_present = true;
+		pdata->sfi_tabl_present = true;
 	else
-		platform_data.sfi_tabl_present = false;
+		pdata->sfi_tabl_present = false;
 
-	platform_data.throttle_states = bq24192_throttle_states;
-	platform_data.supplied_to = bq24192_supplied_to;
-	platform_data.num_throttle_states = ARRAY_SIZE(bq24192_throttle_states);
-	platform_data.num_supplicants = ARRAY_SIZE(bq24192_supplied_to);
-	platform_data.supported_cables = POWER_SUPPLY_CHARGER_TYPE_USB;
-	platform_data.init_platform_data = initialize_platform_data;
-	platform_data.get_irq_number = platform_get_irq_number;
-	platform_data.drive_vbus = platform_drive_vbus;
-	platform_data.get_battery_pack_temp = NULL;
-	platform_data.query_otg = NULL;
-	platform_data.free_platform_data = platform_free_data;
-	platform_data.slave_mode = 0;
+	pdata->throttle_states = bq24192_throttle_states;
+	pdata->supplied_to = bq24192_supplied_to;
+	pdata->num_throttle_states = ARRAY_SIZE(bq24192_throttle_states);
+	pdata->num_supplicants = ARRAY_SIZE(bq24192_supplied_to);
+	pdata->supported_cables = POWER_SUPPLY_CHARGER_TYPE_USB;
+	pdata->init_platform_data = initialize_platform_data;
+	pdata->get_irq_number = platform_get_irq_number;
+	pdata->drive_vbus = platform_drive_vbus;
+	pdata->get_battery_pack_temp = NULL;
+	pdata->query_otg = NULL;
+	pdata->free_platform_data = platform_free_data;
+	pdata->slave_mode = 0;
+	pdata->max_cc = 1216;	/* 1216 mA */
+	pdata->max_cv = 4200;	/* 4200 mV */
+	pdata->max_temp = 60;	/* 60 DegC */
+	pdata->min_temp = 0;	/* 0 DegC */
 
+#ifndef CONFIG_ACPI
 	register_rpmsg_service("rpmsg_bq24192", RPROC_SCU,
 				RP_BQ24192);
 	/* WA for pmic rpmsg service registration
 	   for power source detection driver */
 	register_rpmsg_service("rpmsg_pmic_charger", RPROC_SCU,
 				RP_PMIC_CHARGER);
+#endif
+}
+
+
+void *bq24192_platform_data(void *info)
+{
+	static struct bq24192_platform_data platform_data;
+
+	pr_debug("%s:\n", __func__);
+
+	if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, CRV2) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, CRV2)) {
+		platform_byt_init_chrg_params(&platform_data);
+	} else {
+		platform_clvp_init_chrg_params(&platform_data);
+	}
+
 	return &platform_data;
 }

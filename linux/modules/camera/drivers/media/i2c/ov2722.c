@@ -910,16 +910,16 @@ static int ov2722_s_mbus_fmt(struct v4l2_subdev *sd,
 		return -EINVAL;
 	}
 
-	ret = ov2722_get_intg_factor(client, ov2722_info,
-					&ov2722_res[dev->fmt_idx]);
+	ret = startup(sd);
 	if (ret) {
-		dev_err(&client->dev, "failed to get integration_factor\n");
+		dev_err(&client->dev, "ov2722 startup err\n");
 		goto err;
 	}
 
-	ret = startup(sd);
+	ret = ov2722_get_intg_factor(client, ov2722_info,
+					&ov2722_res[dev->fmt_idx]);
 	if (ret)
-		dev_err(&client->dev, "ov2722 startup err\n");
+		dev_err(&client->dev, "failed to get integration_factor\n");
 
 err:
 	mutex_unlock(&dev->input_lock);

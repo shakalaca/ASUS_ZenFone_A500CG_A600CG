@@ -1,4 +1,4 @@
-/* Release Version: ci_master_byt_20130823_2200 */
+/* Release Version: ci_master_byt_20130905_2200 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  *
@@ -50,11 +50,11 @@ extern void init_sp2host_queues(void);
 /*! The Host puts the buffer at the tail of the queue
 
  \param	pipe_num[in]			the pipe number
- \param stage_num[in]			the stage number
- \param	ERROR frame_id[in]			the frame type
- \param	ERROR frame_data[in]			the frame that will be enqueued
+ \param	stage_num[in]			the stage number
+ \param	index[in]			the queue to enqueue to
+ \param	buffer_ptr[in]			the buffer that will be enqueued
 
- \return !isFull(host2sp_queue[pipe_num][stage_num][frame_id])
+ \return !isFull(host2sp_queue[pipe_num][stage_num][index])
  */
 extern bool host2sp_enqueue_buffer(
 	unsigned int pipe_num,
@@ -62,23 +62,43 @@ extern bool host2sp_enqueue_buffer(
 	enum sh_css_buffer_queue_id index,
 	uint32_t buffer_ptr);
 
+/*! The Host gets the buffer at the head of the queue
+
+ \param	thread_id[in]			the thread_id
+ \param	stage_num[in]			the stage number
+ \param	index[in]			the queue to dequeue from
+ \param	buffer_ptr[out]			the buffer address to which will be dequeued
+
+ \return !isFull(host2sp_queue[thread_id][stage_num][index])
+ */
 extern bool host2sp_dequeue_buffer(
 	unsigned int thread_id,
 	unsigned int stage_num,
 	enum sh_css_buffer_queue_id index,
 	uint32_t *buffer_ptr);
 
+/*! The numer of empty slots in a queue
+
+ \param	pipe_num[in]			the pipe number
+ \param	index[in]			the queue to enqueue to
+
+ \return the number of empty slots in the queue
+ */
+uint32_t host2sp_empty_slots(
+	unsigned int pipe_num,
+	enum sh_css_buffer_queue_id index);
+
 /************************************************************
  *
  * Buffer queues (the SP -> the host).
  *
  ************************************************************/
-/*! The Host gets the buffer at the head of the queue
+/*! The sp gets the buffer at the head of the queue
 
  \param	pipe_num[in]			the pipe number
- \param stage_num[in]			the stage number
- \param	ERROR frame_id[in]			the frame type
- \param	ERROR frame_data[out]			the frame that will be dequeued
+ \param	stage_num[in]			the stage number
+ \param	index[in]			the queue to dequeue from
+ \param	buffer_ptr[out]			the buffer address to which will be dequeued
 
  \return !isEmpty(sp2host_queue[frame_id])
  */
@@ -117,4 +137,3 @@ extern bool sp2host_dequeue_irq_event(
 	uint32_t *event);
 
 #endif /* __QUEUE_PUBLIC_H_INCLUDED__ */
-

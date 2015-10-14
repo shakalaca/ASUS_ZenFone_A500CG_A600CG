@@ -854,6 +854,7 @@ int psb_cmdbuf_ioctl(struct drm_device *dev, void *data,
 	struct psb_video_ctx *pos = NULL;
 	struct psb_video_ctx *n = NULL;
 	struct psb_video_ctx *msvdx_ctx = NULL;
+	unsigned long irq_flags;
 	if (dev_priv == NULL)
 		return -EINVAL;
 	msvdx_priv = dev_priv->msvdx_private;
@@ -916,29 +917,14 @@ int psb_cmdbuf_ioctl(struct drm_device *dev, void *data,
 #endif
 	} else if (arg->engine == VSP_ENGINE_VPP) {
 #ifdef SUPPORT_VSP
-		if (vsp_priv->fw_loaded_by_punit) {
-			if (unlikely(vsp_priv->fw_loaded == 0)) {
-				ret = vsp_init_fw(dev);
-				if (ret != 0) {
-					DRM_ERROR("VSP: failed to init"
-						  "firmware\n");
-					goto out_err0;
-				}
+		if (unlikely(vsp_priv->fw_loaded == 0)) {
+			ret = vsp_init_fw(dev);
+			if (ret != 0) {
+				DRM_ERROR("VSP: failed to init firmware\n");
+				goto out_err1;
 			}
 		}
 
-		if (vsp_priv->fw_loaded_by_punit &&
-		    vsp_priv->vsp_state == VSP_STATE_IDLE)
-			ospm_apm_power_down_vsp(dev);
-
-		if (power_island_get(OSPM_VIDEO_VPP_ISLAND) == false) {
-			ret = -EBUSY;
-			goto out_err0;
-		}
-
-		ret = mutex_lock_interruptible(&vsp_priv->vsp_mutex);
-		if (unlikely(ret != 0))
-			goto out_err0;
 		context = &dev_priv->vsp_context;
 #endif
 	} else {
@@ -950,16 +936,6 @@ int psb_cmdbuf_ioctl(struct drm_device *dev, void *data,
 		ret = -EINVAL;
 		goto out_err0;
 	}
-
-#if defined(MERRIFIELD)
-	{
-		PSB_WVDC32(0x103, 0x2850);
-		PSB_WVDC32(0xffffffff, 0x2884);
-		PSB_WVDC32(0xffffffff, 0x288c);
-		PSB_WVDC32(0xffffffff, 0x2894);
-		PSB_WVDC32(0xffffffff, 0x2898);
-	}
-#endif
 
 	context->used_buffers = 0;
 	context->fence_types = 0;
@@ -1014,7 +990,7 @@ int psb_cmdbuf_ioctl(struct drm_device *dev, void *data,
 		goto out_err4;
 	}
 
-	mutex_lock(&dev_priv->video_ctx_mutex);
+	spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 	list_for_each_entry_safe(pos, n, &dev_priv->video_ctx, head) {
 		if (pos->filp == file_priv->filp) {
 			int entrypoint = pos->ctx_type & 0xff;
@@ -1036,7 +1012,8 @@ int psb_cmdbuf_ioctl(struct drm_device *dev, void *data,
 			break;
 		}
 	}
-	mutex_unlock(&dev_priv->video_ctx_mutex);
+	spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
+
 	if (!found) {
 		PSB_DEBUG_WARN("WARN: video ctx is not found.\n");
 		goto out_err4;
@@ -1106,10 +1083,6 @@ out_err1:
 		mutex_unlock(&msvdx_priv->msvdx_mutex);
 	if (arg->engine == LNC_ENGINE_ENCODE)
 		mutex_unlock(&dev_priv->cmdbuf_mutex);
-	if (arg->engine == VSP_ENGINE_VPP)
-#ifdef SUPPORT_VSP
-		mutex_unlock(&vsp_priv->vsp_mutex);
-#endif
 out_err0:
 	ttm_read_unlock(&dev_priv->ttm_lock);
 #ifndef MERRIFIELD
@@ -1121,11 +1094,6 @@ out_err0:
 	if (arg->engine == LNC_ENGINE_ENCODE)
 		ospm_power_using_video_end(OSPM_VIDEO_ENC_ISLAND);
 #endif
-#endif
-
-#ifdef SUPPORT_VSP
-	if (arg->engine == VSP_ENGINE_VPP)
-		power_island_put(OSPM_VIDEO_VPP_ISLAND);
 #endif
 	return ret;
 }

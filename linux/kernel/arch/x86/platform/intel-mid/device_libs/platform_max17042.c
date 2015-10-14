@@ -30,6 +30,7 @@
 #include <linux/acpi_gpio.h>
 #include "platform_max17042.h"
 #include "platform_bq24192.h"
+#include "platform_smb347.h"
 
 #define MRFL_SMIP_SRAM_ADDR		0xFFFCE000
 #define MRFL_PLATFORM_CONFIG_OFFSET	0x3B3
@@ -67,8 +68,11 @@ static bool msic_battery_check(struct max17042_platform_data *pdata)
 {
 	struct sfi_table_simple *sb;
 	char *mrfl_batt_str = "INTN0001";
-
+#ifdef CONFIG_SFI
 	sb = (struct sfi_table_simple *)get_oem0_table();
+#else
+	sb = NULL;
+#endif
 	if (sb == NULL) {
 		pr_info("invalid battery detected\n");
 		snprintf(pdata->battid, BATTID_LEN + 1, "UNKNOWNB");
@@ -89,7 +93,7 @@ static bool msic_battery_check(struct max17042_platform_data *pdata)
 					"PG000001", (BATTID_LEN)) == 0) {
 					snprintf(pdata->battid,
 						(BATTID_LEN + 1),
-							"%s", mrfl_batt_str);
+						"%s", mrfl_batt_str);
 				} else {
 					snprintf(pdata->battid,
 						(BATTID_LEN + 1),
@@ -142,12 +146,13 @@ static bool msic_battery_check(struct max17042_platform_data *pdata)
  */
 int mfld_fg_restore_config_data(const char *name, void *data, int len)
 {
-	int mip_offset, ret;
-
+	int ret = 0;
+#ifdef CONFIG_X86_MDFLD
+	int mip_offset;
 	/* Read the fuel gauge config data from umip */
 	mip_offset = UMIP_REF_FG_TBL + BATT_FG_TBL_BODY;
 	ret = intel_scu_ipc_read_mip((u8 *)data, len, mip_offset, 0);
-
+#endif
 	return ret;
 }
 EXPORT_SYMBOL(mfld_fg_restore_config_data);
@@ -161,12 +166,13 @@ EXPORT_SYMBOL(mfld_fg_restore_config_data);
  */
 int mfld_fg_save_config_data(const char *name, void *data, int len)
 {
-	int mip_offset, ret;
-
+	int ret = 0;
+#ifdef CONFIG_X86_MDFLD
+	int mip_offset;
 	/* write the fuel gauge config data to umip */
 	mip_offset = UMIP_REF_FG_TBL + BATT_FG_TBL_BODY;
 	ret = intel_scu_ipc_write_umip((u8 *)data, len, mip_offset);
-
+#endif
 	return ret;
 }
 EXPORT_SYMBOL(mfld_fg_save_config_data);
@@ -238,7 +244,7 @@ static int ctp_get_battery_temp(int *temp)
 	return platform_get_battery_pack_temp(temp);
 }
 
-int mrfl_get_bat_health(void)
+static int mrfl_get_bat_health(void)
 {
 
 	int pbat_health = -ENODEV;
@@ -268,8 +274,8 @@ int mrfl_get_bat_health(void)
 		return bqbat_health;
 }
 
-#define DEFAULT_VMIN	3400000
-int mrfl_get_vsys_min(void)
+#define DEFAULT_VMIN	3400000		/* 3400mV */
+static int mrfl_get_vsys_min(void)
 {
 	struct ps_batt_chg_prof batt_profile;
 	int ret;
@@ -279,29 +285,38 @@ int mrfl_get_vsys_min(void)
 					->low_batt_mV * 1000;
 	return DEFAULT_VMIN;
 }
-#define DEFAULT_VMAX_LIM	4200
-int mrfl_get_volt_max(void)
+#define DEFAULT_VMAX_LIM	4200000		/* 4200mV */
+static int mrfl_get_volt_max(void)
 {
 	struct ps_batt_chg_prof batt_profile;
 	int ret;
 	ret = get_batt_prop(&batt_profile);
 	if (!ret)
 		return ((struct ps_pse_mod_prof *)batt_profile.batt_prof)
-					->voltage_max;
+					->voltage_max * 1000;
 	return DEFAULT_VMAX_LIM;
 }
 
-int byt_get_vsys_min(void)
+static int byt_get_vsys_min(void)
 {
 	return DEFAULT_VMIN;
 }
+
+#define BYT_BATT_MAX_VOLT	4350000		/* 4350mV */
+static int byt_get_vbatt_max(void)
+{
+	return BYT_BATT_MAX_VOLT;
+}
+
 
 static bool is_mapped;
 static void __iomem *smip;
 int get_smip_plat_config(int offset)
 {
 	if (INTEL_MID_BOARD(1, PHONE, MRFL) ||
-		INTEL_MID_BOARD(1, TABLET, MRFL)) {
+		INTEL_MID_BOARD(1, TABLET, MRFL) ||
+		INTEL_MID_BOARD(1, PHONE, MOFD) ||
+		INTEL_MID_BOARD(1, TABLET, MOFD)) {
 		if (!is_mapped) {
 			smip = ioremap_nocache(MRFL_SMIP_SRAM_ADDR +
 				MRFL_PLATFORM_CONFIG_OFFSET, 8);
@@ -315,12 +330,25 @@ int get_smip_plat_config(int offset)
 static void init_tgain_toff(struct max17042_platform_data *pdata)
 {
 	if (INTEL_MID_BOARD(2, TABLET, MFLD, SLP, ENG) ||
-		INTEL_MID_BOARD(2, TABLET, MFLD, SLP, PRO) ||
-		INTEL_MID_BOARD(1, PHONE, MRFL) ||
-			INTEL_MID_BOARD(1, TABLET, MRFL) ||
-			INTEL_MID_BOARD(1, TABLET, BYT)) {
+		INTEL_MID_BOARD(2, TABLET, MFLD, SLP, PRO)) {
 		pdata->tgain = NTC_10K_B3435K_TDK_TGAIN;
 		pdata->toff = NTC_10K_B3435K_TDK_TOFF;
+	} else if (INTEL_MID_BOARD(1, PHONE, MRFL) ||
+		INTEL_MID_BOARD(1, TABLET, MRFL) ||
+		INTEL_MID_BOARD(1, PHONE, MOFD) ||
+		INTEL_MID_BOARD(1, TABLET, MOFD)) {
+		pdata->tgain = NTC_10K_MURATA_TGAIN;
+		pdata->toff = NTC_10K_MURATA_TOFF;
+	} else if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR0) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR0) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR1) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR1)) {
+		pdata->tgain = NTC_10K_NCP15X_TGAIN;
+		pdata->toff = NTC_10K_NCP15X_TOFF;
+	} else if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, CRV2) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, CRV2)) {
+		pdata->tgain = NTC_47K_TH05_TGAIN;
+		pdata->toff = NTC_47K_TH05_TOFF;
 	} else {
 		pdata->tgain = NTC_47K_TGAIN;
 		pdata->toff = NTC_47K_TOFF;
@@ -368,16 +396,18 @@ static void init_callbacks(struct max17042_platform_data *pdata)
 		pdata->battery_pack_temp = ctp_get_battery_temp;
 		pdata->is_volt_shutdown_enabled = ctp_is_volt_shutdown_enabled;
 	} else if (INTEL_MID_BOARD(1, PHONE, MRFL)
-			|| INTEL_MID_BOARD(1, TABLET, MRFL)) {
+			|| INTEL_MID_BOARD(1, TABLET, MRFL)
+			|| INTEL_MID_BOARD(1, PHONE, MOFD)
+			|| INTEL_MID_BOARD(1, TABLET, MOFD)) {
 		/* MRFL Phones and tablets*/
 		pdata->battery_health = mrfl_get_bat_health;
 		pdata->battery_pack_temp = pmic_get_battery_pack_temp;
 		pdata->get_vmin_threshold = mrfl_get_vsys_min;
 		pdata->get_vmax_threshold = mrfl_get_volt_max;
-	} else if (intel_mid_identify_cpu() ==
-				INTEL_MID_CPU_CHIP_VALLEYVIEW2) {
-		pdata->battery_status = smb347_get_charging_status;
+	} else if (INTEL_MID_BOARD(1, TABLET, BYT)) {
 		pdata->get_vmin_threshold = byt_get_vsys_min;
+		pdata->get_vmax_threshold = byt_get_vbatt_max;
+		pdata->is_volt_shutdown = 1;
 		pdata->reset_chip = true;
 		pdata->temp_min_lim = 0;
 		pdata->temp_max_lim = 55;
@@ -386,6 +416,17 @@ static void init_callbacks(struct max17042_platform_data *pdata)
 	}
 
 	pdata->reset_i2c_lines = max17042_i2c_reset_workaround;
+}
+
+static bool max17042_is_valid_batid(void)
+{
+	bool ret = true;
+#ifdef CONFIG_CHARGER_SMB347
+	 if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR1) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR1))
+		ret = smb347_is_valid_batid();
+#endif
+	return ret;
 }
 
 static void init_platform_params(struct max17042_platform_data *pdata)
@@ -400,9 +441,11 @@ static void init_platform_params(struct max17042_platform_data *pdata)
 		if (msic_battery_check(pdata)) {
 			pdata->enable_current_sense = true;
 			pdata->technology = POWER_SUPPLY_TECHNOLOGY_LION;
+			pdata->valid_battery = true;
 		} else {
 			pdata->enable_current_sense = false;
 			pdata->technology = POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
+			pdata->valid_battery = false;
 		}
 	} else if (INTEL_MID_BOARD(2, TABLET, MFLD, YKB, ENG) ||
 		INTEL_MID_BOARD(2, TABLET, MFLD, YKB, PRO)) {
@@ -410,9 +453,11 @@ static void init_platform_params(struct max17042_platform_data *pdata)
 		if (msic_battery_check(pdata)) {
 			pdata->enable_current_sense = true;
 			pdata->technology = POWER_SUPPLY_TECHNOLOGY_LION;
+			pdata->valid_battery = true;
 		} else {
 			pdata->enable_current_sense = false;
 			pdata->technology = POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
+			pdata->valid_battery = false;
 		}
 	} else if (INTEL_MID_BOARD(2, TABLET, MFLD, RR, ENG) ||
 			INTEL_MID_BOARD(2, TABLET, MFLD, RR, PRO) ||
@@ -421,6 +466,7 @@ static void init_platform_params(struct max17042_platform_data *pdata)
 		/* MFLD  Redridge and Salitpa Tablets */
 		pdata->enable_current_sense = true;
 		pdata->technology = POWER_SUPPLY_TECHNOLOGY_LION;
+		pdata->valid_battery = true;
 	} else if (INTEL_MID_BOARD(1, PHONE, CLVTP) ||
 				INTEL_MID_BOARD(1, TABLET, CLVT)) {
 		if (msic_battery_check(pdata)) {
@@ -428,24 +474,36 @@ static void init_platform_params(struct max17042_platform_data *pdata)
 			pdata->technology = POWER_SUPPLY_TECHNOLOGY_LION;
 			pdata->file_sys_storage_enabled = 1;
 			pdata->soc_intr_mode_enabled = true;
+			pdata->valid_battery = true;
 		}
 	} else if (INTEL_MID_BOARD(1, PHONE, MRFL) ||
-				INTEL_MID_BOARD(1, TABLET, MRFL)) {
+				INTEL_MID_BOARD(1, TABLET, MRFL) ||
+				INTEL_MID_BOARD(1, PHONE, MOFD) ||
+				INTEL_MID_BOARD(1, TABLET, MOFD)) {
 		if (msic_battery_check(pdata)) {
 			pdata->enable_current_sense = true;
 			pdata->technology = POWER_SUPPLY_TECHNOLOGY_LION;
 			pdata->file_sys_storage_enabled = 1;
 			pdata->soc_intr_mode_enabled = true;
+			pdata->valid_battery = true;
 		}
-	} else if (intel_mid_identify_cpu() ==
-				INTEL_MID_CPU_CHIP_VALLEYVIEW2) {
-		char byt_t_ffrd8_batt_str[] = "INTN0001";
-		pdata->enable_current_sense = true;
-		pdata->technology = POWER_SUPPLY_TECHNOLOGY_LION;
+	} else if (INTEL_MID_BOARD(1, TABLET, BYT)) {
+		if (max17042_is_valid_batid()) {
+			snprintf(pdata->battid, (BATTID_LEN + 1),
+						"%s", "INTN0001");
+			pdata->technology = POWER_SUPPLY_TECHNOLOGY_LION;
+			pdata->enable_current_sense = true;
+			pdata->valid_battery = true;
+		} else {
+			snprintf(pdata->battid, (BATTID_LEN + 1),
+						"%s", "UNKNOWNB");
+			pdata->technology = POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
+			pdata->enable_current_sense = false;
+			pdata->valid_battery = false;
+		}
+		pdata->en_vmax_intr = true;
 		pdata->file_sys_storage_enabled = 1;
 		pdata->soc_intr_mode_enabled = true;
-		snprintf(pdata->battid, (BATTID_LEN + 1),
-					"%s", byt_t_ffrd8_batt_str);
 		snprintf(pdata->model_name, (MODEL_NAME_LEN + 1),
 					"%s", pdata->battid);
 		snprintf(pdata->serial_num, (SERIAL_NUM_LEN + 1), "%s",
@@ -471,7 +529,9 @@ static void init_platform_thresholds(struct max17042_platform_data *pdata)
 		pdata->volt_min_lim = 3200;
 		pdata->volt_max_lim = 4350;
 	} else if (INTEL_MID_BOARD(1, PHONE, MRFL) ||
-			INTEL_MID_BOARD(1, TABLET, MRFL)) {
+			INTEL_MID_BOARD(1, TABLET, MRFL) ||
+			INTEL_MID_BOARD(1, PHONE, MOFD) ||
+			INTEL_MID_BOARD(1, TABLET, MOFD)) {
 		/* Bit 1 of shutdown method determines if voltage based
 		 * shutdown in enabled.
 		 * Bit 3 specifies if capacity for NFC should be reserved.
@@ -496,14 +556,8 @@ void *max17042_platform_data(void *info)
 	struct i2c_board_info *i2c_info = (struct i2c_board_info *)info;
 	int intr = get_gpio_by_name("max_fg_alert");
 
-	i2c_info->irq = intr + INTEL_MID_IRQ_OFFSET;
-
-	if (intel_mid_identify_cpu() ==
-				INTEL_MID_CPU_CHIP_VALLEYVIEW2) {
-		intr = acpi_get_gpio("\\_SB.GPO2", 0x12);
-		intr =  148; /* GPIO_S5_18  = SUS0_18. SUS0_0 = 130 */
-		i2c_info->irq = gpio_to_irq(intr);
-	}
+	if (!INTEL_MID_BOARD(1, TABLET, BYT))
+		i2c_info->irq = intr + INTEL_MID_IRQ_OFFSET;
 
 	init_tgain_toff(&platform_data);
 	init_callbacks(&platform_data);

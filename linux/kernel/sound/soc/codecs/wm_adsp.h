@@ -40,6 +40,9 @@ struct wm_adsp {
 	struct regmap *regmap;
 
 	int base;
+	int sysclk_reg;
+	int sysclk_mask;
+	int sysclk_shift;
 
 	struct list_head alg_regions;
 
@@ -64,8 +67,10 @@ struct wm_adsp {
 	.shift = num, .event = wm_adsp2_event, \
 	.event_flags = SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD }
 
-extern const struct snd_kcontrol_new wm_adsp_fw_controls[];
+extern const struct snd_kcontrol_new wm_adsp1_fw_controls[];
+extern const struct snd_kcontrol_new wm_adsp2_fw_controls[];
 
+int wm_adsp1_init(struct wm_adsp *adsp);
 int wm_adsp2_init(struct wm_adsp *adsp, bool dvfs);
 int wm_adsp1_event(struct snd_soc_dapm_widget *w,
 		   struct snd_kcontrol *kcontrol, int event);

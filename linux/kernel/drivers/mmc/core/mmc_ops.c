@@ -21,6 +21,8 @@
 #include "core.h"
 #include "mmc_ops.h"
 
+#define MMC_OPS_TIMEOUT_MS	(10 * 60 * 1000) /* 10 minute timeout */
+
 static int _mmc_select_card(struct mmc_host *host, struct mmc_card *card)
 {
 	int err;
@@ -61,13 +63,11 @@ int mmc_card_sleepawake(struct mmc_host *host, int sleep)
 {
 	struct mmc_command cmd = {0};
 	struct mmc_card *card = host->card;
-	int err = 0;
-	unsigned long timeout;
+	int err;
 
 	if (sleep)
 		mmc_deselect_cards(host);
 
-#if 0
 	cmd.opcode = MMC_SLEEP_AWAKE;
 	cmd.arg = card->rca << 16;
 	if (sleep)
@@ -84,21 +84,9 @@ int mmc_card_sleepawake(struct mmc_host *host, int sleep)
 	 * SEND_STATUS command to poll the status because that command (and most
 	 * others) is invalid while the card sleeps.
 	 */
-	if (!(host->caps & MMC_CAP_WAIT_WHILE_BUSY)) {
-        /* longest waiting time in ms */
-        timeout = DIV_ROUND_UP(card->ext_csd.sa_timeout, 10000);
-        if (host->ops->mmc_poll_busy) {
-            timeout = jiffies + msecs_to_jiffies(timeout);
-            do {
-                mmc_delay(1);
-                if (!(host->ops->mmc_poll_busy)(host))
-                    break;
-            } while(time_before(jiffies, timeout));
-        }
-        else
-            mmc_delay(timeout);
-    }
-#endif
+	if (!(host->caps & MMC_CAP_WAIT_WHILE_BUSY))
+		mmc_delay(DIV_ROUND_UP(card->ext_csd.sa_timeout, 10000));
+
 	if (!sleep)
 		err = mmc_select_card(card);
 
@@ -109,6 +97,8 @@ int mmc_go_idle(struct mmc_host *host)
 {
 	int err;
 	struct mmc_command cmd = {0};
+
+        pr_debug("enter %s %d\n", __func__, __LINE__);
 
 	/*
 	 * Non-SPI hosts need to prevent chipselect going active during
@@ -153,7 +143,7 @@ int mmc_send_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 	cmd.arg = mmc_host_is_spi(host) ? 0 : ocr;
 	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R3 | MMC_CMD_BCR;
 
-	for (i = 1000; i; i--) {
+	for (i = 200; i; i--) {
 		err = mmc_wait_for_cmd(host, &cmd, 0);
 		if (err)
 			break;
@@ -173,7 +163,7 @@ int mmc_send_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 
 		err = -ETIMEDOUT;
 
-		usleep_range(1000, 1000);
+		usleep_range(5000, 5500);
 	}
 
 	if (rocr && !mmc_host_is_spi(host))
@@ -244,6 +234,10 @@ mmc_send_cxd_native(struct mmc_host *host, u32 arg, u32 *cxd, int opcode)
 	return 0;
 }
 
+/*
+ * NOTE: void *buf, caller for the buf is required to use DMA-capable
+ * buffer or on-stack buffer (with some overhead in callee).
+ */
 static int
 mmc_send_cxd_data(struct mmc_card *card, struct mmc_host *host,
 		u32 opcode, void *buf, unsigned len)
@@ -253,13 +247,19 @@ mmc_send_cxd_data(struct mmc_card *card, struct mmc_host *host,
 	struct mmc_data data = {0};
 	struct scatterlist sg;
 	void *data_buf;
+	int is_on_stack;
 
-	/* dma onto stack is unsafe/nonportable, but callers to this
-	 * routine normally provide temporary on-stack buffers ...
-	 */
-	data_buf = kmalloc(len, GFP_KERNEL);
-	if (data_buf == NULL)
-		return -ENOMEM;
+	is_on_stack = object_is_on_stack(buf);
+	if (is_on_stack) {
+		/*
+		 * dma onto stack is unsafe/nonportable, but callers to this
+		 * routine normally provide temporary on-stack buffers ...
+		 */
+		data_buf = kmalloc(len, GFP_KERNEL);
+		if (!data_buf)
+			return -ENOMEM;
+	} else
+		data_buf = buf;
 
 	mrq.cmd = &cmd;
 	mrq.data = &data;
@@ -294,8 +294,10 @@ mmc_send_cxd_data(struct mmc_card *card, struct mmc_host *host,
 
 	mmc_wait_for_req(host, &mrq);
 
-	memcpy(buf, data_buf, len);
-	kfree(data_buf);
+	if (is_on_stack) {
+		memcpy(buf, data_buf, len);
+		kfree(data_buf);
+	}
 
 	if (cmd.error)
 		return cmd.error;
@@ -308,24 +310,32 @@ mmc_send_cxd_data(struct mmc_card *card, struct mmc_host *host,
 int mmc_send_csd(struct mmc_card *card, u32 *csd)
 {
 	int ret, i;
+	u32 *csd_tmp;
 
 	if (!mmc_host_is_spi(card->host))
 		return mmc_send_cxd_native(card->host, card->rca << 16,
 				csd, MMC_SEND_CSD);
 
-	ret = mmc_send_cxd_data(card, card->host, MMC_SEND_CSD, csd, 16);
+	csd_tmp = kmalloc(16, GFP_KERNEL);
+	if (!csd_tmp)
+		return -ENOMEM;
+
+	ret = mmc_send_cxd_data(card, card->host, MMC_SEND_CSD, csd_tmp, 16);
 	if (ret)
-		return ret;
+		goto err;
 
 	for (i = 0;i < 4;i++)
-		csd[i] = be32_to_cpu(csd[i]);
+		csd[i] = be32_to_cpu(csd_tmp[i]);
 
-	return 0;
+err:
+	kfree(csd_tmp);
+	return ret;
 }
 
 int mmc_send_cid(struct mmc_host *host, u32 *cid)
 {
 	int ret, i;
+	u32 *cid_tmp;
 
 	if (!mmc_host_is_spi(host)) {
 		if (!host->card)
@@ -334,14 +344,20 @@ int mmc_send_cid(struct mmc_host *host, u32 *cid)
 				cid, MMC_SEND_CID);
 	}
 
-	ret = mmc_send_cxd_data(NULL, host, MMC_SEND_CID, cid, 16);
+	cid_tmp = kmalloc(16, GFP_KERNEL);
+	if (!cid_tmp)
+		return -ENOMEM;
+
+	ret = mmc_send_cxd_data(NULL, host, MMC_SEND_CID, cid_tmp, 16);
 	if (ret)
-		return ret;
+		goto err;
 
 	for (i = 0;i < 4;i++)
-		cid[i] = be32_to_cpu(cid[i]);
+		cid[i] = be32_to_cpu(cid_tmp[i]);
 
-	return 0;
+err:
+	kfree(cid_tmp);
+	return ret;
 }
 
 int mmc_send_ext_csd(struct mmc_card *card, u8 *ext_csd)
@@ -349,6 +365,7 @@ int mmc_send_ext_csd(struct mmc_card *card, u8 *ext_csd)
 	return mmc_send_cxd_data(card, card->host, MMC_SEND_EXT_CSD,
 			ext_csd, 512);
 }
+EXPORT_SYMBOL_GPL(mmc_send_ext_csd);
 
 int mmc_spi_read_ocr(struct mmc_host *host, int highcap, u32 *ocrp)
 {
@@ -381,26 +398,23 @@ int mmc_spi_set_crc(struct mmc_host *host, int use_crc)
 }
 
 /**
- *	mmc_switch - modify EXT_CSD register
+ *	__mmc_switch - modify EXT_CSD register
  *	@card: the MMC card associated with the data transfer
  *	@set: cmd set values
  *	@index: EXT_CSD register index
  *	@value: value to program into EXT_CSD register
  *	@timeout_ms: timeout (ms) for operation performed by register write,
  *                   timeout of zero implies maximum possible timeout
- *	@check_busy: Set the 'R1B' flag or not. Some operations, such as
- *                   Sanitize, may need long time to finish. And some
- *                   host controller, such as the SDHCI host controller,
- *                   only allows limited max timeout value. So, introduce
- *                   this to skip the busy check for those operations.
+ *	@use_busy_signal: use the busy signal as response type
  *
  *	Modifies the EXT_CSD register for selected card.
  */
-int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
-	       unsigned int timeout_ms, bool check_busy)
+int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
+	       unsigned int timeout_ms, bool use_busy_signal)
 {
 	int err;
 	struct mmc_command cmd = {0};
+	unsigned long timeout;
 	u32 status;
 
 	BUG_ON(!card);
@@ -411,17 +425,25 @@ int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 		  (index << 16) |
 		  (value << 8) |
 		  set;
-	if (check_busy)
-		cmd.flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
+	cmd.flags = MMC_CMD_AC;
+	if (use_busy_signal)
+		cmd.flags |= MMC_RSP_SPI_R1B | MMC_RSP_R1B;
 	else
-		cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
+		cmd.flags |= MMC_RSP_SPI_R1 | MMC_RSP_R1;
+
+
 	cmd.cmd_timeout_ms = timeout_ms;
 
 	err = mmc_wait_for_cmd(card->host, &cmd, MMC_CMD_RETRIES);
 	if (err)
 		return err;
 
+	/* No need to check card status in case of unblocking command */
+	if (!use_busy_signal)
+		return 0;
+
 	/* Must check status to be sure of no errors */
+	timeout = jiffies + msecs_to_jiffies(MMC_OPS_TIMEOUT_MS);
 	do {
 		err = mmc_send_status(card, &status);
 		if (err) {
@@ -438,6 +460,13 @@ int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 			break;
 		if (mmc_host_is_spi(card->host))
 			break;
+
+		/* Timeout if the device never leaves the program state. */
+		if (time_after(jiffies, timeout)) {
+			pr_err("%s: Card stuck in programming state! %s\n",
+				mmc_hostname(card->host), __func__);
+			return -ETIMEDOUT;
+		}
 	} while (R1_CURRENT_STATE(status) == R1_STATE_PRG);
 
 	if (mmc_host_is_spi(card->host)) {
@@ -452,6 +481,13 @@ int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 	}
 
 	return 0;
+}
+EXPORT_SYMBOL_GPL(__mmc_switch);
+
+int mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
+		unsigned int timeout_ms)
+{
+	return __mmc_switch(card, set, index, value, timeout_ms, true);
 }
 EXPORT_SYMBOL_GPL(mmc_switch);
 
@@ -601,7 +637,6 @@ int mmc_send_hpi_cmd(struct mmc_card *card, u32 *status)
 
 	cmd.opcode = opcode;
 	cmd.arg = card->rca << 16 | 1;
-	cmd.cmd_timeout_ms = card->ext_csd.out_of_int_time;
 
 	err = mmc_wait_for_cmd(card->host, &cmd, 0);
 	if (err) {
@@ -681,25 +716,31 @@ static int mmc_rpmb_send_command(struct mmc_card *card, u8 *buf, __u16 blks,
 void mmc_rpmb_post_frame(struct mmc_core_rpmb_req *rpmb_req)
 {
 	int i;
-	struct mmc_ioc_rpmb_req *p_req = rpmb_req->req;
-	__u8 *buf_frame = rpmb_req->frame;
+	struct mmc_ioc_rpmb_req *p_req;
+	__u8 *buf_frame;
 
-	if (!rpmb_req->ready || !buf_frame)
+	if (!rpmb_req || !rpmb_req->ready)
+		return;
+
+	p_req = rpmb_req->req;
+	buf_frame = rpmb_req->frame;
+
+	if (!p_req || !buf_frame)
 		return;
 	/*
 	 * Regarding to the check rules, here is the post
 	 * rules
 	 * All will return result.
 	 * GET_WRITE_COUNTER:
-	 *		must: write counter, nonce
-	 *		optional: MAC
+	 *              must: write counter, nonce
+	 *              optional: MAC
 	 * WRITE_DATA:
-	 *		must: MAC, write counter
+	 *              must: MAC, write counter
 	 * READ_DATA:
-	 *		must: nonce, data
-	 *		optional: MAC
+	 *              must: nonce, data
+	 *              optional: MAC
 	 * PROGRAM_KEY:
-	 *		must: Nothing
+	 *              must: Nothing
 	 *
 	 * Except READ_DATA, all of these operations only need to parse
 	 * one frame. READ_DATA needs blks frames to get DATA
@@ -758,15 +799,15 @@ static int mmc_rpmb_request_check(struct mmc_card *card,
 	 *
 	 * All operations will need result.
 	 * GET_WRITE_COUNTER:
-	 *		must: write counter, nonce
-	 *		optional: MAC
+	 *              must: write counter, nonce
+	 *              optional: MAC
 	 * WRITE_DATA:
-	 *		must: MAC, data, write counter
+	 *              must: MAC, data, write counter
 	 * READ_DATA:
-	 *		must: nonce, data
-	 *		optional: MAC
+	 *              must: nonce, data
+	 *              optional: MAC
 	 * PROGRAM_KEY:
-	 *		must: MAC
+	 *              must: MAC
 	 *
 	 * So here, we only check the 'must' paramters
 	 */
@@ -790,8 +831,7 @@ static int mmc_rpmb_request_check(struct mmc_card *card,
 			p_req->type == RPMB_READ_DATA) {
 		if ((__u32)(p_req->addr + p_req->blk_cnt) >
 				card->ext_csd.rpmb_size) {
-			pr_err("%s Type %d: beyond the RPMB partition rang "
-					"addr %d, blk_cnt %d, rpmb_size %d\n",
+			pr_err("%s Type %d: beyond the RPMB partition rang addr %d, blk_cnt %d, rpmb_size %d\n",
 					mmc_hostname(card->host),
 					p_req->type,
 					p_req->addr,
@@ -807,6 +847,12 @@ static int mmc_rpmb_request_check(struct mmc_card *card,
 					mmc_hostname(card->host),
 					p_req->blk_cnt);
 			return -EINVAL;
+		} else if (p_req->blk_cnt > card->rpmb_max_req) {
+			pr_err("%s: Type %d has invalid block count, cannot large than %d\n",
+					mmc_hostname(card->host),
+					p_req->blk_cnt,
+					card->rpmb_max_req);
+			return -EINVAL;
 		}
 		if (!p_req->data) {
 			pr_err("%s: Type %d has NULL pointer for data\n",
@@ -815,34 +861,16 @@ static int mmc_rpmb_request_check(struct mmc_card *card,
 		}
 		if (p_req->type == RPMB_WRITE_DATA) {
 			if (!p_req->wc || !p_req->mac) {
-				pr_err("%s: Type %d has NULL pointer for"
-						" write counter/MAC\n",
+				pr_err("%s: Type %d has NULL pointer for write counter/MAC\n",
 						mmc_hostname(card->host),
 						p_req->type);
-				return -EINVAL;
-			}
-			if (p_req->blk_cnt > card->rpmb_max_w_blks) {
-				pr_err("%s: Type %d: invalid blkcnt %d max %d\n",
-						mmc_hostname(card->host),
-						p_req->type,
-						p_req->blk_cnt,
-						card->rpmb_max_w_blks);
 				return -EINVAL;
 			}
 		} else {
 			if (!p_req->nonce) {
-				pr_err("%s: Type %d has NULL pointer for"
-						" nonce\n",
+				pr_err("%s: Type %d has NULL pointer for nonce\n",
 						mmc_hostname(card->host),
 						p_req->type);
-				return -EINVAL;
-			}
-			if (p_req->blk_cnt > card->rpmb_max_r_blks) {
-				pr_err("%s: Type %d: invalid blkcnt %d max %d\n",
-						mmc_hostname(card->host),
-						p_req->type,
-						p_req->blk_cnt,
-						card->rpmb_max_r_blks);
 				return -EINVAL;
 			}
 		}
@@ -862,11 +890,15 @@ int mmc_rpmb_pre_frame(struct mmc_core_rpmb_req *rpmb_req,
 		struct mmc_card *card)
 {
 	int i, ret;
-	struct mmc_ioc_rpmb_req *p_req = rpmb_req->req;
+	struct mmc_ioc_rpmb_req *p_req;
 	__u8 *buf_frame;
 	__u16 blk_cnt, addr, type;
 	__u32 w_counter;
 
+	if (!rpmb_req || !card)
+		return -EINVAL;
+
+	p_req = rpmb_req->req;
 	if (!p_req) {
 		pr_err("%s: mmc_ioc_rpmb_req is NULL. Wrong parameter\n",
 				mmc_hostname(card->host));
@@ -946,9 +978,15 @@ int mmc_rpmb_partition_ops(struct mmc_core_rpmb_req *rpmb_req,
 		struct mmc_card *card)
 {
 	int err = 0;
-	struct mmc_ioc_rpmb_req *p_req = rpmb_req->req;
+	struct mmc_ioc_rpmb_req *p_req;
 	__u16 type, blks;
-	__u8 *buf_frame = rpmb_req->frame;
+	__u8 *buf_frame;
+
+	if (!rpmb_req || !card)
+		return -EINVAL;
+
+	p_req = rpmb_req->req;
+	buf_frame = rpmb_req->frame;
 
 	if (!p_req || !rpmb_req->ready || !buf_frame) {
 		pr_err("%s: mmc_ioc_rpmb_req is not prepared\n",
@@ -970,7 +1008,7 @@ int mmc_rpmb_partition_ops(struct mmc_core_rpmb_req *rpmb_req,
 
 	if (err) {
 		pr_err("%s: request write counter failed (%d)\n",
-			mmc_hostname(card->host), err);
+				mmc_hostname(card->host), err);
 		goto out;
 	}
 
@@ -985,7 +1023,7 @@ int mmc_rpmb_partition_ops(struct mmc_core_rpmb_req *rpmb_req,
 				RPMB_RESULT_READ, RPMB_REQ);
 		if (err) {
 			pr_err("%s: request write counter failed (%d)\n",
-				mmc_hostname(card->host), err);
+					mmc_hostname(card->host), err);
 			goto out;
 		}
 	}
@@ -1002,7 +1040,7 @@ int mmc_rpmb_partition_ops(struct mmc_core_rpmb_req *rpmb_req,
 				1, type, RPMB_RESP);
 	if (err) {
 		pr_err("%s: response write counter failed (%d)\n",
-			mmc_hostname(card->host), err);
+				mmc_hostname(card->host), err);
 	}
 out:
 	return err;
@@ -1014,8 +1052,8 @@ static int mmc_switch_part(struct mmc_card *card, u8 part)
 	int ret;
 
 	ret = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
-			 EXT_CSD_PART_CONFIG, part,
-			 card->ext_csd.part_time, true);
+			EXT_CSD_PART_CONFIG, part,
+			card->ext_csd.part_time);
 	if (ret)
 		pr_err("%s: switch failed with %d, part %d\n",
 				__func__, ret, part);
@@ -1073,18 +1111,18 @@ int mmc_wp_status(struct mmc_card *card, unsigned int part,
 	if (err) {
 		mmc_release_host(card->host);
 		dev_err(mmc_dev(card->host), "%s: swith error %d\n",
-						__func__, err);
+				__func__, err);
 		goto out;
 	}
 
 	mmc_wait_for_req(card->host, &mrq);
 	if (cmd.error) {
 		dev_err(mmc_dev(card->host), "%s: cmd error %d\n",
-						__func__, cmd.error);
+				__func__, cmd.error);
 	}
 	if (data.error) {
 		dev_err(mmc_dev(card->host), "%s: data error %d\n",
-						__func__, data.error);
+				__func__, data.error);
 	}
 
 	/* Must check status to be sure of no errors */
@@ -1145,24 +1183,24 @@ out:
 EXPORT_SYMBOL_GPL(mmc_wp_status);
 
 /**
- *	mmc_switch_bits - modify EXT_CSD register
- *	@card: the MMC card associated with the data transfer
- *	@set: cmd set values
- *	@index: EXT_CSD register index
- *	@value: value to program into EXT_CSD register
- *	@timeout_ms: timeout (ms) for operation performed by register write,
+ *     mmc_switch_bits - modify EXT_CSD register
+ *     @card: the MMC card associated with the data transfer
+ *     @set: cmd set values
+ *     @index: EXT_CSD register index
+ *     @value: value to program into EXT_CSD register
+ *     @timeout_ms: timeout (ms) for operation performed by register write,
  *                   timeout of zero implies maximum possible timeout
- *	@check_busy: Set the 'R1B' flag or not. Some operations, such as
+ *     @check_busy: Set the 'R1B' flag or not. Some operations, such as
  *                   Sanitize, may need long time to finish. And some
  *                   host controller, such as the SDHCI host controller,
  *                   only allows limited max timeout value. So, introduce
  *                   this to skip the busy check for those operations.
- *	@set: true when want to set value; false when want to clear value
+ *     @set: true when want to set value; false when want to clear value
  *
- *	Modifies the EXT_CSD register for selected card.
+ *     Modifies the EXT_CSD register for selected card.
  */
 static int mmc_switch_bits(struct mmc_card *card, u8 cmdset, u8 index, u8 value,
-	       unsigned int timeout_ms, int check_busy, bool set)
+		unsigned int timeout_ms, int check_busy, bool set)
 {
 	int err;
 	struct mmc_command cmd = {0};
@@ -1175,9 +1213,9 @@ static int mmc_switch_bits(struct mmc_card *card, u8 cmdset, u8 index, u8 value,
 
 	cmd.opcode = MMC_SWITCH;
 	cmd.arg = (access << 24) |
-		  (index << 16) |
-		  (value << 8) |
-		  cmdset;
+		(index << 16) |
+		(value << 8) |
+		cmdset;
 	if (check_busy)
 		cmd.flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
 	else

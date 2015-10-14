@@ -25,6 +25,10 @@
 #include <linux/intel_mid_i2s_common.h>
 #include <linux/intel_mid_dma.h>
 
+#ifdef CONFIG_SND_INTEL_MID_I2S_ENABLE_LLI
+#define _LLI_ENABLED_
+#endif /* CONFIG_SND_INTEL_MID_I2S_ENABLE_LLI */
+
 enum intel_mid_i2s_ssp_usage {
 	SSP_USAGE_UNASSIGNED = 0x00,
 	SSP_USAGE_BLUETOOTH_FM = 0x01,
@@ -43,8 +47,14 @@ enum intel_mid_i2s_ssp_cmd {
 	SSP_CMD_ALLOC_RX = 0x06,
 	SSP_CMD_FREE_RX = 0x07,
 	SSP_CMD_ABORT = 0x08,
+#ifdef _LLI_ENABLED_
+	SSP_CMD_ENABLE_DMA_RX_INTR = 0x09,
+	SSP_CMD_ENABLE_DMA_TX_INTR = 0x0A,
+	SSP_CMD_DISABLE_DMA_RX_INTR = 0x0B,
+	SSP_CMD_DISABLE_DMA_TX_INTR = 0x0C,
+#endif /* _LLI_ENABLED_ */
 
-	SSP_CMD_COUNT = 0x09
+	SSP_CMD_COUNT = 0x0D
 };
 
 struct intel_mid_i2s_lli {

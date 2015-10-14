@@ -18,16 +18,22 @@
 #include <linux/sfi.h>
 #include <linux/panel_psb_drv.h>
 
+int PanelID = GCT_DETECT;
+EXPORT_SYMBOL(PanelID);
+
 void panel_handler(struct sfi_device_table_entry *pentry,
 				struct devs_id *dev) {
-	void *pdata = NULL;
+	int i;
 
-	pr_info("Panel name = %16.16s\n", pentry->name);
-
-	if (!strcmp(pentry->name, "PANEL_CMI_CMD"))
-		PanelID = CMI_CMD;
-	else if (!strcmp(pentry->name, "PANEL_JDI_VID"))
-		PanelID = JDI_VID;
-	else if (!strcmp(pentry->name, "PANEL_JDI_CMD"))
-		PanelID = JDI_CMD;
+	/* JDI_7x12_CMD will be used as default panel */
+	PanelID = JDI_7x12_CMD;
+	for (i = 0; i < NUM_SUPPORT_PANELS; i++)
+		if (strncmp(pentry->name, support_panel_list[i].name,
+						SFI_NAME_LEN) == 0) {
+			PanelID = support_panel_list[i].panel_id;
+			break;
+		}
+	if (i == NUM_SUPPORT_PANELS)
+		pr_err("Could not detected this panel, set to default panel\n");
+	pr_info("Panel name = %16.16s PanelID = %d\n", pentry->name, PanelID);
 }

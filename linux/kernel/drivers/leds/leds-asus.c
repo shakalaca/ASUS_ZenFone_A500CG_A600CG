@@ -273,7 +273,7 @@ static int asus_led_probe(struct platform_device *pdev)
 	struct led_info_priv *priv;
 	int i, ret = 0;
 
-	LED_info("%s\n", __func__);
+	LED_info("%s start\n", __func__);
 
 	if (pdata && pdata->num_leds) {
 		priv = kzalloc(sizeof_led_info_priv(pdata->num_leds),
@@ -318,6 +318,7 @@ static int asus_led_probe(struct platform_device *pdev)
 		LED_err("request GREEN LED(%d) fail, ret=%d\n", GREEN_LED_GPIO, ret);
 	}
 
+	LED_info("%s end\n", __func__);
 	return 0;
 }
 

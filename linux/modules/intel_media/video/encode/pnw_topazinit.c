@@ -1630,17 +1630,18 @@ int pnw_topaz_restore_mtx_state(struct drm_device *dev)
 	int i, need_restore = 0;
 	struct pnw_topaz_private *topaz_priv = dev_priv->topaz_private;
 	struct psb_video_ctx *pos, *n;
+	unsigned long irq_flags;
 
 	if (!topaz_priv->topaz_mtx_saved)
 		return -1;
 
-	mutex_lock(&dev_priv->video_ctx_mutex);
+	spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 	list_for_each_entry_safe(pos, n, &dev_priv->video_ctx, head) {
 		if ((pos->ctx_type & 0xff) == VAEntrypointEncSlice ||
 			(pos->ctx_type & 0xff) == VAEntrypointEncPicture)
 			need_restore = 1;
 	}
-	mutex_unlock(&dev_priv->video_ctx_mutex);
+	spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 
 	if (0 == need_restore) {
 		topaz_priv->topaz_mtx_saved = 0;
@@ -1868,6 +1869,7 @@ int pnw_topaz_save_mtx_state(struct drm_device *dev)
 	struct pnw_topaz_codec_fw *cur_codec_fw;
 	struct pnw_topaz_private *topaz_priv = dev_priv->topaz_private;
 	struct psb_video_ctx *pos, *n;
+	unsigned long irq_flags;
 
 	topaz_priv->topaz_mtx_saved = 0;
 
@@ -1877,13 +1879,13 @@ int pnw_topaz_save_mtx_state(struct drm_device *dev)
 		return 0;
 	}
 
-	mutex_lock(&dev_priv->video_ctx_mutex);
+	spin_lock_irqsave(&dev_priv->video_ctx_lock, irq_flags);
 	list_for_each_entry_safe(pos, n, &dev_priv->video_ctx, head) {
 		if ((pos->ctx_type & 0xff) == VAEntrypointEncSlice ||
 			(pos->ctx_type & 0xff) == VAEntrypointEncPicture)
 			need_save = 1;
 	}
-	mutex_unlock(&dev_priv->video_ctx_mutex);
+	spin_unlock_irqrestore(&dev_priv->video_ctx_lock, irq_flags);
 
 	if (0 == need_save) {
 		PSB_DEBUG_TOPAZ("TOPAZ: vec context not found. No need"

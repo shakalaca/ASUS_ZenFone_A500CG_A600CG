@@ -1,4 +1,4 @@
-/* Release Version: ci_master_byt_20130823_2200 */
+/* Release Version: ci_master_byt_20130916_2228 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  *
@@ -43,14 +43,16 @@ generate_dvs_6axis_table(const struct ia_css_resolution	*frame_res, const struct
 	enum ia_css_err err = IA_CSS_SUCCESS;	
 	struct ia_css_dvs_6axis_config  *dvs_config = NULL;
 
-	assert_exit_code(frame_res != NULL, NULL);
-	assert_exit_code(dvs_offset != NULL, NULL);
+	assert(frame_res != NULL);
+	assert(dvs_offset != NULL);
 	
 	dvs_config = (struct ia_css_dvs_6axis_config *)sh_css_malloc(sizeof(struct ia_css_dvs_6axis_config));
 	if(dvs_config == NULL)
 	{
 		sh_css_dtrace(SH_DBG_TRACE, "out of memory\n");
-		err = IA_CSS_ERR_CANNOT_ALLOCATE_MEMORY;
+		// we do not reference err later and do not return error so the next line is pointless
+		// left it here in case we want this function to return errors
+		//err = IA_CSS_ERR_CANNOT_ALLOCATE_MEMORY;
 	}
 	else
 	{	/*Initialize new struct with latest config settings*/	
@@ -58,6 +60,7 @@ generate_dvs_6axis_table(const struct ia_css_resolution	*frame_res, const struct
 		dvs_config->height_y = height_y = DVS_TABLE_IN_BLOCKDIM_Y_LUMA(frame_res->height);
 		dvs_config->width_uv = width_uv = DVS_TABLE_IN_BLOCKDIM_X_CHROMA(frame_res->width / 2); /* UV = Y/2, depens on colour format YUV 4.2.0*/
 		dvs_config->height_uv = height_uv = DVS_TABLE_IN_BLOCKDIM_Y_CHROMA(frame_res->height / 2);/* UV = Y/2, depens on colour format YUV 4.2.0*/
+		dvs_config->exp_id = 0;
 
 		sh_css_dtrace(SH_DBG_TRACE, "generate_dvs_6axis_table: Env_X %d Env_Y %d\n",dvs_offset->width,dvs_offset->height);
 		sh_css_dtrace(SH_DBG_TRACE, "generate_dvs_6axis_table Y: W %d H %d\n",width_y,height_y);
@@ -179,12 +182,12 @@ generate_dvs_6axis_table(const struct ia_css_resolution	*frame_res, const struct
 void
 free_dvs_6axis_table(struct ia_css_dvs_6axis_config  **dvs_6axis_config)
 {
-	assert_exit(dvs_6axis_config != NULL);
-	assert_exit(*dvs_6axis_config != NULL);
+	assert(dvs_6axis_config != NULL);
+	assert(*dvs_6axis_config != NULL);
 
 	if( (dvs_6axis_config != NULL) && (*dvs_6axis_config != NULL) ) 
 	{
-		sh_css_dtrace(SH_DBG_TRACE, "-> free_dvs_6axis_table dvs_6axis_config %p\n",(*dvs_6axis_config));
+		sh_css_dtrace(SH_DBG_TRACE, "free_dvs_6axis_table() enter: dvs_6axis_config: %p\n", *dvs_6axis_config);
 		if((*dvs_6axis_config)->xcoords_y != NULL)
 		{
 			 sh_css_free((*dvs_6axis_config)->xcoords_y);
@@ -211,9 +214,9 @@ free_dvs_6axis_table(struct ia_css_dvs_6axis_config  **dvs_6axis_config)
 		}
 		
 		sh_css_free(*dvs_6axis_config);
+		sh_css_dtrace(SH_DBG_TRACE, "free_dvs_6axis_table() leave: dvs_6axis_config: %p\n", *dvs_6axis_config);
 		*dvs_6axis_config = NULL;
 	}
-	sh_css_dtrace(SH_DBG_TRACE, "<- free_dvs_6axis_table dvs_6axis_config %p\n",(*dvs_6axis_config));
 }
 
 void copy_dvs_6axis_table(struct ia_css_dvs_6axis_config *dvs_config_dst,
@@ -224,14 +227,20 @@ void copy_dvs_6axis_table(struct ia_css_dvs_6axis_config *dvs_config_dst,
 	unsigned int width_uv;
 	unsigned int height_uv;
 
-	assert_exit(dvs_config_dst != NULL);
-	assert_exit(dvs_config_src!= NULL);
+	assert(dvs_config_dst != NULL);
+	assert(dvs_config_src != NULL);
 
 	width_y = dvs_config_src->width_y;
 	height_y =  dvs_config_src->height_y;
 	width_uv = dvs_config_src->width_uv; /* = Y/2, depens on colour format YUV 4.2.0*/
 	height_uv = dvs_config_src->height_uv;
 		
+	/* dvs_config_dst must have the same width and height fields as dvs_config_src
+	 * Otherwise the coords arrays will also have the wrong size and memcpy may overflow.
+	 * The size constraint is not checked here; it is the responsibility of the caller to make sure that
+	 * this is the case.
+	 */
+	dvs_config_dst->exp_id = dvs_config_src->exp_id;
 	memcpy(dvs_config_dst->xcoords_y,dvs_config_src->xcoords_y, (width_y * height_y * sizeof(uint32_t)));
 	memcpy(dvs_config_dst->ycoords_y,dvs_config_src->ycoords_y, (width_y * height_y * sizeof(uint32_t)));
 

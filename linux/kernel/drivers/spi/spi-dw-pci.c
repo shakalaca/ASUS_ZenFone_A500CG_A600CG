@@ -33,7 +33,7 @@ struct dw_spi_pci {
 	struct dw_spi	dws;
 };
 
-static int __devinit spi_pci_probe(struct pci_dev *pdev,
+static int spi_pci_probe(struct pci_dev *pdev,
 	const struct pci_device_id *ent)
 {
 	struct dw_spi_pci *dwpci;
@@ -109,7 +109,7 @@ err_disable:
 	return ret;
 }
 
-static void __devexit spi_pci_remove(struct pci_dev *pdev)
+static void spi_pci_remove(struct pci_dev *pdev)
 {
 	struct dw_spi_pci *dwpci = pci_get_drvdata(pdev);
 
@@ -198,7 +198,7 @@ static int spi_dw_pci_runtime_idle(struct device *dev)
 #define spi_dw_pci_runtime_idle NULL
 #endif
 
-static const struct pci_device_id pci_ids[] __devinitdata = {
+static DEFINE_PCI_DEVICE_TABLE(pci_ids) = {
 	/* Intel Medfield platform SPI controller 1 */
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, 0x0800), .driver_data = 0 },
 	/* Intel Cloverview platform SPI controller 1 */
@@ -221,7 +221,7 @@ static struct pci_driver dw_spi_driver = {
 	.name =		DRIVER_NAME,
 	.id_table =	pci_ids,
 	.probe =	spi_pci_probe,
-	.remove =	__devexit_p(spi_pci_remove),
+	.remove =	spi_pci_remove,
 	.driver =	{
 		.pm	= &dw_spi_pm_ops,
 	},

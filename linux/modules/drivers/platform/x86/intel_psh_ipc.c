@@ -282,6 +282,18 @@ void intel_psh_ipc_unbind(int ch)
 }
 EXPORT_SYMBOL(intel_psh_ipc_unbind);
 
+void intel_psh_ipc_disable_irq(void)
+{
+	disable_irq(ipc_ctrl.pdev->irq);
+}
+EXPORT_SYMBOL(intel_psh_ipc_disable_irq);
+
+void intel_psh_ipc_enable_irq(void)
+{
+	enable_irq(ipc_ctrl.pdev->irq);
+}
+EXPORT_SYMBOL(intel_psh_ipc_enable_irq);
+
 static void psh_recv_handle(int i)
 {
 	int msg, param;
@@ -548,6 +560,8 @@ static int psh_ipc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err1;
 
 	ipc_ctrl.stepping = intel_mid_soc_stepping();
+	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)
+		ipc_ctrl.stepping = 1;
 
 	if (ipc_ctrl.stepping != 0x0 && ipc_ctrl.stepping != 0x1) {
 		ret = -EINVAL;

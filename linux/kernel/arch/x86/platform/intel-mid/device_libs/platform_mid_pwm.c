@@ -121,9 +121,6 @@ static int __init intel_mid_pwm_init(void)
 		return -1;
 	}
 
-	register_rpmsg_service("rpmsg_mid_pwm", RPROC_SCU,
-				RP_MSIC_PWM);
-
 	return 0;
 }
 

@@ -61,7 +61,6 @@
 #include <asm/intel_scu_ipcutil.h>
 #include <asm/apb_timer.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
 #include <asm/intel-mid.h>
 
 #include "intel_scu_watchdog.h"
@@ -89,7 +88,7 @@
 #define STRING_COLD_BOOT "COLD_BOOT"
 
 #ifdef CONFIG_DEBUG_FS
-#define SECURITY_WATCHDOG_ADDR  0xFFD04100
+#define SECURITY_WATCHDOG_ADDR  0xFF222230
 #define STRING_NONE "NONE"
 #endif
 
@@ -218,10 +217,6 @@ static void dump_softlock_debug(unsigned long data)
 
 	if (reboot) {
 		panic_timeout = 10;
-		/* Let's shut up the registered consoles to avoid deadlock */
-		pr_warn("Consoles shut up in %s !\n", __func__);
-		console_silent();
-
 		trigger_all_cpu_backtrace();
 		panic("Soft lock on CPUs\n");
 	}
@@ -271,18 +266,6 @@ static int watchdog_set_appropriate_timeouts(void)
 	pr_debug(PFX "Setting shutdown timeouts\n");
 	return watchdog_set_timeouts(timer_timeout, pre_timeout, timeout);
 }
-
-#ifndef CONFIG_CRASH_DUMP
-int kexec_crash_reset_timeouts(int reset_timeout)
-{
-	if (disable_kernel_watchdog != 1)
-		return watchdog_set_timeouts(timer_timeout,
-			pre_timeout, reset_timeout);
-
-	pr_warn(PFX "Kernel watchdog disabled. No timeout reset\n");
-	return 0;
-}
-#endif
 
 /* Keep alive  */
 static int watchdog_keepalive(void)
@@ -390,13 +373,6 @@ static irqreturn_t watchdog_timer_interrupt(int irq, void *dev_id)
 static irqreturn_t watchdog_warning_interrupt(int irq, void *dev_id)
 {
 	pr_warn("[SHTDWN] %s, WATCHDOG TIMEOUT!\n", __func__);
-
-	/* Let's shut up the registered consoles to avoid deadlock
-	 * in NMI context when printing.
-	 * Only the consoles with IGNORE_LOGLEVEL flag
-	 * will go on outputing logs */
-	pr_warn("Consoles shut up in %s !\n", __func__);
-	console_silent();
 
 	/* Let's reset the platform after dumping some data */
 	trigger_all_cpu_backtrace();
@@ -663,9 +639,9 @@ static int watchdog_set_reset_type(int reset_type)
 	int ret;
 
 	ret = rpmsg_send_command(watchdog_instance,
-				 IPC_SET_WATCHDOG_TIMER,
-				 reset_type,
-				 NULL, NULL, 0, 0);
+				  IPC_SET_WATCHDOG_TIMER,
+				  reset_type,
+				  NULL, NULL, 0, 0);
 
 	if (ret) {
 		pr_crit(PFX "Error setting watchdog action: %d\n", ret);
@@ -729,7 +705,7 @@ static int reboot_notifier(struct notifier_block *this,
 
 #ifdef CONFIG_DEBUG_FS
 /* This code triggers a Security Watchdog */
-int open_security(struct inode *i, struct file *f)
+int write_security(struct inode *i, struct file *f)
 {
 	int ret = 0;
 	u64 *ptr;
@@ -752,17 +728,23 @@ error:
 }
 
 static const struct file_operations security_watchdog_fops = {
-	.open = open_security,
+	.open = nonseekable_open,
+	.write = write_security,
+	.llseek = no_llseek,
 };
 
-static int kwd_trigger_open(struct inode *inode, struct file *file)
+static int kwd_trigger_write(struct file *file, const char __user *buff,
+			     size_t count, loff_t *ppos)
 {
+	pr_debug("kwd_trigger_write\n");
 	BUG();
 	return 0;
 }
 
 static const struct file_operations kwd_trigger_fops = {
-	.open		= kwd_trigger_open,
+	.open = nonseekable_open,
+	.write = kwd_trigger_write,
+	.llseek = no_llseek,
 };
 
 static int kwd_reset_type_release(struct inode *inode, struct file *file)
@@ -771,7 +753,7 @@ static int kwd_reset_type_release(struct inode *inode, struct file *file)
 }
 
 static ssize_t kwd_reset_type_read(struct file *file, char __user *buff,
-				   size_t count, loff_t *ppos)
+				size_t count, loff_t *ppos)
 {
 	ssize_t len;
 	int ret;
@@ -787,11 +769,10 @@ static ssize_t kwd_reset_type_read(struct file *file, char __user *buff,
 	if (ret)
 		return -EINVAL;
 	else {
-		for (len = 0 ; len < (STRING_RESET_TYPE_MAX_LEN - 1)
+		for (len = 0; len < (STRING_RESET_TYPE_MAX_LEN - 1)
 			     && str[len] != '\0'; len++)
 			;
 		str[len++] = '\n';
-		str[len] = '\0';
 		ret = copy_to_user(buff, str, len);
 	}
 
@@ -919,7 +900,7 @@ static int create_debugfs_entries(void)
 
 	/* /sys/kernel/debug/watchdog/security_watchdog/trigger */
 	dev->dfs_secwd_trigger = debugfs_create_file("trigger",
-				    S_IFREG | S_IRUGO | S_IWUSR | S_IWGRP,
+				    S_IFREG | S_IWUSR | S_IWGRP,
 				    dev->dfs_secwd, NULL,
 				    &security_watchdog_fops);
 
@@ -937,7 +918,7 @@ static int create_debugfs_entries(void)
 
 	/* /sys/kernel/debug/watchdog/kernel_watchdog/trigger */
 	dev->dfs_kwd_trigger = debugfs_create_file("trigger",
-				    S_IFREG | S_IRUGO | S_IWUSR | S_IWGRP,
+				    S_IFREG | S_IWUSR | S_IWGRP,
 				    dev->dfs_kwd, NULL,
 				    &kwd_trigger_fops);
 
@@ -948,7 +929,7 @@ static int create_debugfs_entries(void)
 	}
 
 	/* /sys/kernel/debug/watchdog/kernel_watchdog/reset_type */
-	dev->dfs_kwd_trigger = debugfs_create_file("reset_type",
+	dev->dfs_kwd_reset_type = debugfs_create_file("reset_type",
 				    S_IFREG | S_IRUGO | S_IWUSR | S_IWGRP,
 				    dev->dfs_kwd, NULL,
 				    &kwd_reset_type_fops);
@@ -1236,9 +1217,9 @@ static DEVICE_ATTR(reboot_config, S_IWUSR | S_IRUGO,
 	reboot_config_show, reboot_config_store);
 static DEVICE_ATTR(shutdown_config, S_IWUSR | S_IRUGO,
 	shutdown_config_show, shutdown_config_store);
-static DEVICE_ATTR(reboot_ongoing, S_IWUSR | S_IRUGO,
+static DEVICE_ATTR(reboot_ongoing, S_IWUSR,
 	NULL, reboot_ongoing_store);
-static DEVICE_ATTR(shutdown_ongoing, S_IWUSR | S_IRUGO,
+static DEVICE_ATTR(shutdown_ongoing, S_IWUSR,
 	NULL, shutdown_ongoing_store);
 
 /* Reset counter watchdog entry */
@@ -1359,8 +1340,9 @@ static int intel_scu_watchdog_init(void)
 		return -ENODEV;
 	}
 	if (watchdog_device.timer7_tbl_ptr->phys_addr == 0) {
-		pr_debug(PFX "Watchdog timer - Intel SCU watchdog - timer %d does"
-		  " not have valid physical memory\n", sfi_mtimer_num);
+		pr_debug(PFX "Watchdog timer - Intel SCU watchdog - "
+			"timer %d does not have valid physical memory\n",
+			sfi_mtimer_num);
 		return -ENODEV;
 	}
 	if (watchdog_device.timer7_tbl_ptr->irq == 0) {

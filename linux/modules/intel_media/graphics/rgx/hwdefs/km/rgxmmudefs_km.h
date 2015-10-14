@@ -69,6 +69,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define RGX_BIF_DM_ENCODING_HOST                          (0x00000008U)
 #define RGX_BIF_DM_ENCODING_PM_ALIST                      (0x00000009U)
 
+
 /*
 
 		Labelling of fields within virtual address
@@ -90,12 +91,14 @@ Page Table entry #
 #define RGX_MMUCTRL_VADDR_PT_INDEX_SHIFT                  (12U)
 #define RGX_MMUCTRL_VADDR_PT_INDEX_CLRMSK                 (IMG_UINT64_C(0XFFFFFFFFFFE00FFF))
 
+
 /*
 
 		Number of entries in a PC
 	
 */
 #define RGX_MMUCTRL_ENTRIES_PC_VALUE                      (0x00000400U)
+
 
 /*
 
@@ -104,12 +107,14 @@ Page Table entry #
 */
 #define RGX_MMUCTRL_ENTRIES_PD_VALUE                      (0x00000200U)
 
+
 /*
 
 		Number of entries in a PT
 	
 */
 #define RGX_MMUCTRL_ENTRIES_PT_VALUE                      (0x00000200U)
+
 
 /*
 
@@ -118,6 +123,7 @@ Page Table entry #
 */
 #define RGX_MMUCTRL_ENTRY_SIZE_PC_VALUE                   (0x00000020U)
 
+
 /*
 
 		Size in bits of the PD entries in memory
@@ -125,12 +131,14 @@ Page Table entry #
 */
 #define RGX_MMUCTRL_ENTRY_SIZE_PD_VALUE                   (0x00000040U)
 
+
 /*
 
 		Size in bits of the PT entries in memory
 	
 */
 #define RGX_MMUCTRL_ENTRY_SIZE_PT_VALUE                   (0x00000040U)
+
 
 /*
 
@@ -145,6 +153,7 @@ Page Table entry #
 #define RGX_MMUCTRL_PAGE_SIZE_1MB                         (0x00000004U)
 #define RGX_MMUCTRL_PAGE_SIZE_2MB                         (0x00000005U)
 
+
 /*
 
 		Range of bits used for 4KB Physical Page
@@ -152,6 +161,7 @@ Page Table entry #
 */
 #define RGX_MMUCTRL_PAGE_4KB_RANGE_SHIFT                  (12U)
 #define RGX_MMUCTRL_PAGE_4KB_RANGE_CLRMSK                 (IMG_UINT64_C(0XFFFFFF0000000FFF))
+
 
 /*
 
@@ -161,6 +171,7 @@ Page Table entry #
 #define RGX_MMUCTRL_PAGE_16KB_RANGE_SHIFT                 (14U)
 #define RGX_MMUCTRL_PAGE_16KB_RANGE_CLRMSK                (IMG_UINT64_C(0XFFFFFF0000003FFF))
 
+
 /*
 
 		Range of bits used for 64KB Physical Page
@@ -168,6 +179,7 @@ Page Table entry #
 */
 #define RGX_MMUCTRL_PAGE_64KB_RANGE_SHIFT                 (16U)
 #define RGX_MMUCTRL_PAGE_64KB_RANGE_CLRMSK                (IMG_UINT64_C(0XFFFFFF000000FFFF))
+
 
 /*
 
@@ -177,6 +189,7 @@ Page Table entry #
 #define RGX_MMUCTRL_PAGE_256KB_RANGE_SHIFT                (18U)
 #define RGX_MMUCTRL_PAGE_256KB_RANGE_CLRMSK               (IMG_UINT64_C(0XFFFFFF000003FFFF))
 
+
 /*
 
 		Range of bits used for 1MB Physical Page
@@ -184,6 +197,7 @@ Page Table entry #
 */
 #define RGX_MMUCTRL_PAGE_1MB_RANGE_SHIFT                  (20U)
 #define RGX_MMUCTRL_PAGE_1MB_RANGE_CLRMSK                 (IMG_UINT64_C(0XFFFFFF00000FFFFF))
+
 
 /*
 
@@ -193,6 +207,7 @@ Page Table entry #
 #define RGX_MMUCTRL_PAGE_2MB_RANGE_SHIFT                  (21U)
 #define RGX_MMUCTRL_PAGE_2MB_RANGE_CLRMSK                 (IMG_UINT64_C(0XFFFFFF00001FFFFF))
 
+
 /*
 
 		Range of bits used for PT Base Address for 4KB Physical Page
@@ -200,6 +215,7 @@ Page Table entry #
 */
 #define RGX_MMUCTRL_PT_BASE_4KB_RANGE_SHIFT               (12U)
 #define RGX_MMUCTRL_PT_BASE_4KB_RANGE_CLRMSK              (IMG_UINT64_C(0XFFFFFF0000000FFF))
+
 
 /*
 
@@ -209,6 +225,7 @@ Page Table entry #
 #define RGX_MMUCTRL_PT_BASE_16KB_RANGE_SHIFT              (10U)
 #define RGX_MMUCTRL_PT_BASE_16KB_RANGE_CLRMSK             (IMG_UINT64_C(0XFFFFFF00000003FF))
 
+
 /*
 
 		Range of bits used for PT Base Address for 64KB Physical Page
@@ -216,6 +233,7 @@ Page Table entry #
 */
 #define RGX_MMUCTRL_PT_BASE_64KB_RANGE_SHIFT              (8U)
 #define RGX_MMUCTRL_PT_BASE_64KB_RANGE_CLRMSK             (IMG_UINT64_C(0XFFFFFF00000000FF))
+
 
 /*
 
@@ -225,6 +243,7 @@ Page Table entry #
 #define RGX_MMUCTRL_PT_BASE_256KB_RANGE_SHIFT             (6U)
 #define RGX_MMUCTRL_PT_BASE_256KB_RANGE_CLRMSK            (IMG_UINT64_C(0XFFFFFF000000003F))
 
+
 /*
 
 		Range of bits used for PT Base Address for 1MB Physical Page
@@ -233,6 +252,7 @@ Page Table entry #
 #define RGX_MMUCTRL_PT_BASE_1MB_RANGE_SHIFT               (5U)
 #define RGX_MMUCTRL_PT_BASE_1MB_RANGE_CLRMSK              (IMG_UINT64_C(0XFFFFFF000000001F))
 
+
 /*
 
 		Range of bits used for PT Base Address for 2MB Physical Page
@@ -240,6 +260,7 @@ Page Table entry #
 */
 #define RGX_MMUCTRL_PT_BASE_2MB_RANGE_SHIFT               (5U)
 #define RGX_MMUCTRL_PT_BASE_2MB_RANGE_CLRMSK              (IMG_UINT64_C(0XFFFFFF000000001F))
+
 
 /*
 
@@ -304,6 +325,7 @@ Entry valid
 #define RGX_MMUCTRL_PT_DATA_VALID_CLRMSK                  (IMG_UINT64_C(0XFFFFFFFFFFFFFFFE))
 #define RGX_MMUCTRL_PT_DATA_VALID_EN                      (IMG_UINT64_C(0X0000000000000001))
 
+
 /*
 
 		Format of Page Directory data
@@ -338,6 +360,7 @@ Entry valid
 #define RGX_MMUCTRL_PD_DATA_VALID_CLRMSK                  (IMG_UINT64_C(0XFFFFFFFFFFFFFFFE))
 #define RGX_MMUCTRL_PD_DATA_VALID_EN                      (IMG_UINT64_C(0X0000000000000001))
 
+
 /*
 
 		Format of Page Catalogue data
@@ -362,6 +385,7 @@ Entry valid
 #define RGX_MMUCTRL_PC_DATA_VALID_SHIFT                   (0U)
 #define RGX_MMUCTRL_PC_DATA_VALID_CLRMSK                  (0XFFFFFFFEU)
 #define RGX_MMUCTRL_PC_DATA_VALID_EN                      (0X00000001U)
+
 
 #endif /* _RGXMMUDEFS_KM_H_ */
 

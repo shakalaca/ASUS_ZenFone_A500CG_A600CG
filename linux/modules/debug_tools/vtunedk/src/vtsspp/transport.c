@@ -44,6 +44,7 @@
 #include <linux/namei.h>        /* for struct nameidata       */
 #include <linux/spinlock.h>
 #include <asm/uaccess.h>
+#include <linux/slab.h>
 
 #include "vtsstrace.h"
 
@@ -54,7 +55,7 @@
 /* Define this to wake up transport by timeout */
 /* transprot timer interval in jiffies  (default 10ms) */
 #define VTSS_TRANSPORT_TIMER_INTERVAL   (10 * HZ / 1000)
-#define VTSS_TRANSPORT_COMPLETE_TIMEOUT 500 /*< wait count about 50sec */
+#define VTSS_TRANSPORT_COMPLETE_TIMEOUT 5000 /*< wait count about 50sec */
 
 #ifndef VTSS_USE_UEC
 
@@ -113,7 +114,7 @@ struct vtss_transport_data
     struct list_head    list;
     struct file*        file;
     wait_queue_head_t   waitq;
-    char                name[32];    /* enough for "%d-%d.%d" */
+    char                name[36];    /* enough for "%d-%d.%d.aux" */
 
     atomic_t            refcount;
     atomic_t            loscount;
@@ -131,6 +132,7 @@ struct vtss_transport_data
     atomic_t            seqnum;
     int                 is_abort;
 #endif
+//    int reserved;
 };
 
 void vtss_transport_addref(struct vtss_transport_data* trnd)
@@ -151,6 +153,10 @@ char *vtss_transport_get_filename(struct vtss_transport_data* trnd)
 int vtss_transport_is_overflowing(struct vtss_transport_data* trnd)
 {
     return atomic_read(&trnd->is_overflow);
+}
+int vtss_transport_is_attached(struct vtss_transport_data* trnd)
+{
+    return atomic_read(&trnd->is_attached);
 }
 
 #ifdef VTSS_USE_UEC
@@ -179,7 +185,7 @@ void vtss_transport_callback(uec_t* uec, int reason, void *context)
 
 #define VTSS_TRANSPORT_IS_EMPTY(trnd)   (UEC_FILLED_SIZE(trnd->uec) == 0)
 #define VTSS_TRANSPORT_DATA_READY(trnd) (UEC_FILLED_SIZE(trnd->uec) != 0)
-
+ 
 int vtss_transport_record_write(struct vtss_transport_data* trnd, void* part0, size_t size0, void* part1, size_t size1, int is_safe)
 {
     int rc = 0;
@@ -246,7 +252,8 @@ void* vtss_transport_record_reserve(struct vtss_transport_data* trnd, void** ent
         if (unlikely(event == NULL)) {
             atomic_inc(&trnd->loscount);
             atomic_inc(&trnd->is_overflow);
-            TRACE("'%s' ring_buffer_lock_reserve failed", trnd->name);
+            TRACE("'%s' ring_buffer_lock_reserve failed 1, size = %d", trnd->name, (int)(size + sizeof(struct vtss_transport_entry)));
+//            ERROR("'%s' ring_buffer_lock_reserve failed 1, size = %d, reserved = %d, seqnum=%d", trnd->name, (int)(size + sizeof(struct vtss_transport_entry)), trnd->reserved, (int)atomic_read(&trnd->seqnum));
             return NULL;
         }
         *entry = (void*)event;
@@ -260,12 +267,14 @@ void* vtss_transport_record_reserve(struct vtss_transport_data* trnd, void** ent
 
         if (atomic_read(&vtss_transport_npages) > VTSS_MERGE_MEM_LIMIT/2) {
             TRACE("'%s' memory limit for blob %zu bytes", trnd->name, size);
+//            ERROR("'%s' memory limit for blob %zu bytes", trnd->name, size);
             atomic_inc(&trnd->loscount);
             return NULL;
         }
         blob = (struct vtss_transport_temp*)__get_free_pages((GFP_NOWAIT | __GFP_NORETRY | __GFP_NOWARN), order);
         if (unlikely(blob == NULL)) {
             TRACE("'%s' no memory for blob %zu bytes", trnd->name, size);
+//            ERROR("'%s' no memory for blob %zu bytes", trnd->name, size);
             atomic_inc(&trnd->loscount);
             return NULL;
         }
@@ -282,7 +291,8 @@ void* vtss_transport_record_reserve(struct vtss_transport_data* trnd, void** ent
             atomic_sub(1<<order, &vtss_transport_npages);
             atomic_inc(&trnd->loscount);
             atomic_inc(&trnd->is_overflow);
-            TRACE("'%s' ring_buffer_lock_reserve failed", trnd->name);
+            TRACE("'%s' ring_buffer_lock_reserve failed overflow", trnd->name);
+//            ERROR("'%s' ring_buffer_lock_reserve failed overflow", trnd->name);
             return NULL;
         }
         *entry = (void*)event;
@@ -313,9 +323,10 @@ int vtss_transport_record_commit(struct vtss_transport_data* trnd, void* entry, 
         ERROR("'%s' commit error: seq=%lu, size=%u", trnd->name, data->seqnum, data->size);
     }
     if (unlikely(is_safe && VTSS_TRANSPORT_DATA_READY(trnd))) {
-        TRACE("WAKE UP");
         if (waitqueue_active(&trnd->waitq))
+        {
             wake_up_interruptible(&trnd->waitq);
+        }
     }
     return rc;
 }
@@ -464,7 +475,6 @@ static int vtss_transport_temp_store_data(struct vtss_transport_data* trnd, unsi
     struct vtss_transport_temp* temp;
     struct vtss_transport_temp** pstore = &(trnd->head);
     unsigned int order = get_order(size + sizeof(struct vtss_transport_temp));
-
     while (((temp = vtss_transport_temp_merge(trnd, pstore)) != NULL) && (seqnum != temp->seq_end)) {
         pstore = (seqnum < temp->seq_begin) ? &(temp->prev) : &(temp->next);
     }
@@ -689,7 +699,6 @@ static ssize_t vtss_transport_read(struct file *file, char __user* buf, size_t s
 
     if (unlikely(trnd == NULL || buf == NULL))
         return -EINVAL;
-
     while (!atomic_read(&trnd->is_complete) && !VTSS_TRANSPORT_DATA_READY(trnd)) {
         if (file->f_flags & O_NONBLOCK)
             return -EAGAIN;
@@ -884,7 +893,7 @@ static unsigned int vtss_transport_poll(struct file *file, poll_table* poll_tabl
 {
     unsigned int rc = 0;
     struct vtss_transport_data* trnd = (struct vtss_transport_data*)file->private_data;
-
+    
     if (trnd == NULL)
         return (POLLERR | POLLNVAL);
     poll_wait(file, &trnd->waitq, poll_table);
@@ -899,8 +908,11 @@ static unsigned int vtss_transport_poll(struct file *file, poll_table* poll_tabl
 static int vtss_transport_open(struct inode *inode, struct file *file)
 {
     int rc;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
     struct vtss_transport_data *trnd = (struct vtss_transport_data *)PDE(inode)->data;
-
+#else
+    struct vtss_transport_data *trnd = (struct vtss_transport_data *)PDE_DATA(inode);
+#endif
     TRACE("inode=0x%p, file=0x%p, trnd=0x%p", inode, file, trnd);
     if (trnd == NULL)
         return -ENOENT;
@@ -925,8 +937,11 @@ static int vtss_transport_open(struct inode *inode, struct file *file)
 
 static int vtss_transport_close(struct inode *inode, struct file *file)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
     struct vtss_transport_data *trnd = (struct vtss_transport_data*)PDE(inode)->data;
-
+#else
+    struct vtss_transport_data *trnd = (struct vtss_transport_data*)PDE_DATA(inode);
+#endif
     file->private_data = NULL;
     /* Restore default priority for trace reader */
     set_user_nice(current, 0);
@@ -961,24 +976,12 @@ static void vtss_transport_remove(struct vtss_transport_data* trnd)
     }
 }
 
-struct vtss_transport_data* vtss_transport_create(pid_t ppid, pid_t pid, uid_t cuid, gid_t cgid)
+struct vtss_transport_data* vtss_transport_create_trnd(void)
 {
-    int seq = -1;
-    int rb_size = (num_present_cpus() > 32) ? 16 : 32;
-    unsigned long flags;
-    struct proc_dir_entry* pde;
-    struct proc_dir_entry* procfs_root = vtss_procfs_get_root();
+    int rb_size = (num_present_cpus() > 32) ? 32 : 64;
     struct vtss_transport_data* trnd = (struct vtss_transport_data*)kmalloc(sizeof(struct vtss_transport_data), GFP_KERNEL);
-    struct path path;
-    char buf[MODULE_NAME_LEN + sizeof(trnd->name) + 8 /* strlen("/proc/<MODULE_NAME>/%d-%d.%d") */ ];
-
     if (trnd == NULL) {
         ERROR("Not enough memory for transport data");
-        return NULL;
-    }
-    if (procfs_root == NULL) {
-        ERROR("Unable to get PROCFS root");
-        kfree(trnd);
         return NULL;
     }
     memset(trnd, 0, sizeof(struct vtss_transport_data));
@@ -1022,6 +1025,27 @@ struct vtss_transport_data* vtss_transport_create(pid_t ppid, pid_t pid, uid_t c
         return NULL;
     }
 #endif
+    return trnd;
+}
+
+static void vtss_transport_destroy_trnd(struct vtss_transport_data* trnd)
+{
+#ifdef VTSS_USE_UEC
+        destroy_uec(trnd->uec);
+        kfree(trnd->uec);
+#else
+	printk("buffer deallocated %d \n", num_present_cpus());
+        ring_buffer_free(trnd->buffer);
+#endif
+        kfree(trnd);
+}
+
+static void vtss_transport_create_trnd_name(struct vtss_transport_data* trnd, pid_t ppid, pid_t pid, uid_t cuid, gid_t cgid)
+{
+    int seq = -1;
+    struct path path;
+    char buf[MODULE_NAME_LEN + sizeof(trnd->name) + 8 /* strlen("/proc/<MODULE_NAME>/%d-%d.%d") */];
+
     do { /* Find out free name */
         if (++seq > 0) path_put(&path);
         snprintf(trnd->name, sizeof(trnd->name)-1, "%d-%d.%d", ppid, pid, seq);
@@ -1029,29 +1053,79 @@ struct vtss_transport_data* vtss_transport_create(pid_t ppid, pid_t pid, uid_t c
         TRACE("lookup '%s'", buf);
     } while (!kern_path(buf, 0, &path));
     /* Doesn't exist, so create it */
-    pde = create_proc_entry(trnd->name, (mode_t)(mode ? (mode & 0444) : 0440), procfs_root);
+    return;
+
+}
+
+int vtss_transport_create_pde (struct vtss_transport_data* trnd, uid_t cuid, gid_t cgid)
+{
+    unsigned long flags;
+    struct proc_dir_entry* pde;
+    struct proc_dir_entry* procfs_root = vtss_procfs_get_root();
+
+    if (procfs_root == NULL) {
+        ERROR("Unable to get PROCFS root");
+        return 1;
+    }
+//    vtss_transport_create_pde(trnd)
+    pde = proc_create_data(trnd->name, (mode_t)(mode ? (mode & 0444) : 0440), procfs_root, &vtss_transport_fops, trnd);
+
     if (pde == NULL) {
         ERROR("Could not create '%s/%s'", vtss_procfs_path(), trnd->name);
-#ifdef VTSS_USE_UEC
-        destroy_uec(trnd->uec);
-        kfree(trnd->uec);
-#else
-        ring_buffer_free(trnd->buffer);
-#endif
-        kfree(trnd);
-        return NULL;
+        vtss_transport_destroy_trnd(trnd);
+        return 1;
     }
-    pde->data = trnd;
-    pde->proc_fops = &vtss_transport_fops;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
 #ifdef VTSS_AUTOCONF_PROCFS_OWNER
     pde->owner = THIS_MODULE;
 #endif
+#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0)
     pde->uid = cuid ? cuid : uid;
     pde->gid = cgid ? cgid : gid;
+#else
+    proc_set_user(pde, cuid ? cuid : uid, cgid ? cgid : gid);
+#endif
     spin_lock_irqsave(&vtss_transport_list_lock, flags);
     list_add_tail(&trnd->list, &vtss_transport_list);
     spin_unlock_irqrestore(&vtss_transport_list_lock, flags);
     TRACE("trnd=0x%p => '%s' done", trnd, trnd->name);
+    return 0;
+}
+struct vtss_transport_data* vtss_transport_create(pid_t ppid, pid_t pid, uid_t cuid, gid_t cgid)
+{
+    struct vtss_transport_data* trnd = vtss_transport_create_trnd();
+
+    if (trnd == NULL) {
+        ERROR("Not enough memory for transport data");
+        return NULL;
+    }
+    vtss_transport_create_trnd_name(trnd, ppid, pid, cuid, cgid);
+    /* Doesn't exist, so create it */
+    if (vtss_transport_create_pde(trnd, cuid, cgid)){
+        ERROR("Could not create '%s/%s'", vtss_procfs_path(), trnd->name);
+        vtss_transport_destroy_trnd(trnd);
+        return NULL;
+    }
+    return trnd;
+}
+struct vtss_transport_data* vtss_transport_create_aux(struct vtss_transport_data* main_trnd, uid_t cuid, gid_t cgid)
+{
+    char* main_trnd_name = main_trnd->name;
+    struct vtss_transport_data* trnd = vtss_transport_create_trnd();
+
+    if (trnd == NULL) {
+        ERROR("Not enough memory for transport data");
+        return NULL;
+    }
+    memcpy((void*)trnd->name, (void*)main_trnd_name, strlen(main_trnd_name));
+    memcpy((void*)trnd->name+strlen(main_trnd_name),(void*)".aux", 5);
+    /* Doesn't exist, so create it */
+    if (vtss_transport_create_pde(trnd, cuid, cgid)){
+        ERROR("Could not create '%s/%s'", vtss_procfs_path(), trnd->name);
+        vtss_transport_destroy_trnd(trnd);
+        return NULL;
+    }
     return trnd;
 }
 
@@ -1062,10 +1136,10 @@ int vtss_transport_complete(struct vtss_transport_data* trnd)
     if (atomic_read(&trnd->refcount)) {
         ERROR("'%s' refcount=%d != 0", trnd->name, atomic_read(&trnd->refcount));
     }
-    atomic_inc(&trnd->is_complete);
     if (waitqueue_active(&trnd->waitq)) {
         wake_up_interruptible(&trnd->waitq);
     }
+    atomic_inc(&trnd->is_complete);
     return 0;
 }
 
@@ -1181,6 +1255,7 @@ again:
         vtss_transport_remove(trnd);
         if (atomic_read(&trnd->loscount)) {
             ERROR("'%s' lost %d events", trnd->name, atomic_read(&trnd->loscount));
+//            ERROR("'%s' lost %d events", trnd->name, atomic_read(&trnd->loscount));
         }
 #ifdef VTSS_USE_UEC
         destroy_uec(trnd->uec);

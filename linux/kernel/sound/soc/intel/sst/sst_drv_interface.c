@@ -55,7 +55,6 @@ void sst_restore_fw_context(void)
 	struct snd_sst_ctxt_params fw_context;
 	struct ipc_post *msg = NULL;
 	int retval = 0;
-	unsigned long irq_flags;
 	struct sst_block *block;
 
 	/* Skip the context restore, when fw_clear_context is set */
@@ -88,10 +87,7 @@ void sst_restore_fw_context(void)
 	memcpy(msg->mailbox_data, &msg->header, sizeof(u32));
 	memcpy(msg->mailbox_data + sizeof(u32),
 				&fw_context, sizeof(fw_context));
-	spin_lock_irqsave(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-	list_add_tail(&msg->node, &sst_drv_ctx->ipc_dispatch_list);
-	spin_unlock_irqrestore(&sst_drv_ctx->ipc_spin_lock, irq_flags);
-	sst_drv_ctx->ops->post_message(&sst_drv_ctx->ipc_post_msg_wq);
+	sst_add_to_dispatch_list_and_post(sst_drv_ctx, msg);
 	retval = sst_wait_timeout(sst_drv_ctx, block);
 	sst_free_block(sst_drv_ctx, block);
 	if (retval)
@@ -111,7 +107,7 @@ int sst_download_fw(void)
 	retval = sst_load_fw();
 	if (retval)
 		return retval;
-	pr_debug("fw loaded successful!!!\n");
+	pr_info("fw loaded successful!!!\n");
 
 	if (sst_drv_ctx->ops->restore_dsp_context)
 		sst_drv_ctx->ops->restore_dsp_context();
@@ -119,15 +115,20 @@ int sst_download_fw(void)
 	return retval;
 }
 
-void free_stream_context(unsigned int str_id)
+int free_stream_context(unsigned int str_id)
 {
 	struct stream_info *stream;
+	int ret = 0;
+
 	stream = get_stream_info(str_id);
 	if (stream) {
 		/* str_id is valid, so stream is alloacted */
-		if (sst_free_stream(str_id))
+		ret = sst_free_stream(str_id);
+		if (ret)
 			sst_clean_stream(&sst_drv_ctx->streams[str_id]);
+		return ret;
 	}
+	return ret;
 }
 
 /*
@@ -159,7 +160,8 @@ static int sst_send_algo_param(struct snd_ppp_params *algo_params)
 	offset += header_size;
 	memcpy(msg->mailbox_data + offset , algo_params->params,
 			algo_params->size);
-	return sst_send_ipc_msg_nowait(&msg);
+	sst_add_to_dispatch_list_and_post(sst_drv_ctx, msg);
+	return 0;
 }
 
 static int sst_send_lpe_mixer_algo_params(void)
@@ -312,22 +314,6 @@ int sst_get_num_channel(struct snd_sst_params *str_param)
 	}
 }
 
-int sst_get_wdsize(struct snd_sst_params *str_param)
-{
-	switch (str_param->codec) {
-	case SST_CODEC_TYPE_PCM:
-		return str_param->sparams.uc.pcm_params.pcm_wd_sz;
-	case SST_CODEC_TYPE_MP3:
-		return str_param->sparams.uc.mp3_params.pcm_wd_sz;
-	case SST_CODEC_TYPE_AAC:
-		return str_param->sparams.uc.aac_params.pcm_wd_sz;
-	case SST_CODEC_TYPE_WMA9:
-		return str_param->sparams.uc.wma_params.pcm_wd_sz;
-	default:
-		return -EINVAL;
-	}
-}
-
 /*
  * sst_get_stream - this function prepares for stream allocation
  *
@@ -463,7 +449,7 @@ static int sst_open_pcm_stream(struct snd_sst_params *str_param)
 	if (!str_param)
 		return -EINVAL;
 
-	pr_debug("open_pcm, doing rtpm_get\n");
+	pr_debug("%s: doing rtpm_get\n", __func__);
 
 	retval = intel_sst_check_device();
 
@@ -483,6 +469,8 @@ static int sst_cdev_open(struct snd_sst_params *str_params,
 	int str_id, retval;
 	struct stream_info *stream;
 
+	pr_debug("%s: doing rtpm_get\n", __func__);
+
 	retval = intel_sst_check_device();
 	if (retval)
 		return retval;
@@ -493,6 +481,8 @@ static int sst_cdev_open(struct snd_sst_params *str_params,
 		stream = &sst_drv_ctx->streams[str_id];
 		stream->compr_cb = cb->compr_cb;
 		stream->compr_cb_param = cb->param;
+		stream->drain_notify = cb->drain_notify;
+		stream->drain_cb_param = cb->drain_cb_param;
 	} else {
 		pr_err("stream encountered error during alloc %d\n", str_id);
 		str_id = -EINVAL;
@@ -505,13 +495,20 @@ static int sst_cdev_close(unsigned int str_id)
 {
 	int retval;
 	struct stream_info *stream;
+
+	pr_debug("%s: doing rtpm_put\n", __func__);
 	stream = get_stream_info(str_id);
 	if (!stream)
 		return -EINVAL;
 	retval = sst_free_stream(str_id);
 	stream->compr_cb_param = NULL;
 	stream->compr_cb = NULL;
-	sst_pm_runtime_put(sst_drv_ctx);
+
+	/* If stream free returns error, put already done in open so skip */
+	/* Do put only in valid free stream case */
+	if (!retval)
+		sst_pm_runtime_put(sst_drv_ctx);
+
 	return retval;
 
 }
@@ -614,10 +611,13 @@ static int sst_cdev_control(unsigned int cmd, unsigned int str_id)
 		return sst_drop_stream(str_id);
 	case SND_COMPR_TRIGGER_DRAIN:
 		return sst_drain_stream(str_id, false);
+	case SND_COMPR_TRIGGER_NEXT_TRACK:
+		return sst_next_track();
 	case SND_COMPR_TRIGGER_PARTIAL_DRAIN:
 		return sst_drain_stream(str_id, true);
+	default:
+		return -EINVAL;
 	}
-	return -EINVAL;
 }
 
 static int sst_cdev_tstamp(unsigned int str_id, struct snd_compr_tstamp *tstamp)
@@ -640,10 +640,10 @@ static int sst_cdev_tstamp(unsigned int str_id, struct snd_compr_tstamp *tstamp)
 	tstamp->pcm_io_frames = div_u64(fw_tstamp.hardware_counter,
 			(u64)((stream->num_ch) * SST_GET_BYTES_PER_SAMPLE(24)));
 	tstamp->sampling_rate = fw_tstamp.sampling_frequency;
-	pr_debug("PCM  = %lu\n", tstamp->pcm_io_frames);
-	pr_debug("Pointer Query on strid = %d  copied_total %d, decodec %ld\n",
+	pr_debug("PCM  = %u\n", tstamp->pcm_io_frames);
+	pr_debug("Pointer Query on strid = %d  copied_total %d, decodec %d\n",
 		str_id, tstamp->copied_total, tstamp->pcm_frames);
-	pr_debug("rendered %ld\n", tstamp->pcm_io_frames);
+	pr_debug("rendered %d\n", tstamp->pcm_io_frames);
 	return 0;
 }
 
@@ -712,18 +712,23 @@ void sst_cdev_fragment_elapsed(int str_id)
 static int sst_close_pcm_stream(unsigned int str_id)
 {
 	struct stream_info *stream;
+	int retval = 0;
 
-	pr_debug("stream free called\n");
+	pr_debug("%s: doing rtpm_put\n", __func__);
 	stream = get_stream_info(str_id);
 	if (!stream)
 		return -EINVAL;
-	free_stream_context(str_id);
+	retval = free_stream_context(str_id);
 	stream->pcm_substream = NULL;
 	stream->status = STREAM_UN_INIT;
 	stream->period_elapsed = NULL;
 	sst_drv_ctx->stream_cnt--;
-	pr_debug("will call runtime put now\n");
-	sst_pm_runtime_put(sst_drv_ctx);
+
+	/* If stream free returns error, put already done in open so skip */
+	/* Do put only in valid free stream case */
+	if (!retval)
+		sst_pm_runtime_put(sst_drv_ctx);
+
 	return 0;
 }
 
@@ -737,28 +742,13 @@ int sst_send_sync_msg(int ipc, int str_id)
 	return sst_drv_ctx->ops->sync_post_message(msg);
 }
 
-static inline int sst_calc_mfld_tstamp(struct pcm_stream_info *info,
-		int ops, struct snd_sst_tstamp_mfld *fw_tstamp)
-{
-	if (ops == STREAM_OPS_PLAYBACK)
-		info->buffer_ptr = fw_tstamp->samples_rendered;
-	else
-		info->buffer_ptr = fw_tstamp->samples_processed;
-	info->pcm_delay = fw_tstamp->pcm_delay;
-
-	pr_debug("Samples rendered = %llu, buffer ptr %llu\n",
-			fw_tstamp->samples_rendered, info->buffer_ptr);
-	pr_debug("pcm delay %llu\n", info->pcm_delay);
-	return 0;
-}
-
 static inline int sst_calc_tstamp(struct pcm_stream_info *info,
 		struct snd_pcm_substream *substream,
 		struct snd_sst_tstamp *fw_tstamp)
 {
 	size_t delay_bytes, delay_frames;
 	size_t buffer_sz;
-	size_t pointer_bytes, pointer_samples;
+	u32 pointer_bytes, pointer_samples;
 
 	pr_debug("mrfld ring_buffer_counter %llu in bytes\n",
 			fw_tstamp->ring_buffer_counter);
@@ -789,6 +779,7 @@ static int sst_read_timestamp(struct pcm_stream_info *info)
 {
 	struct stream_info *stream;
 	struct snd_pcm_substream *substream;
+	struct snd_sst_tstamp fw_tstamp;
 	unsigned int str_id;
 
 	str_id = info->str_id;
@@ -800,23 +791,11 @@ static int sst_read_timestamp(struct pcm_stream_info *info)
 		return -EINVAL;
 	substream = stream->pcm_substream;
 
-	if (sst_drv_ctx->pci_id == SST_MFLD_PCI_ID) {
-		struct snd_sst_tstamp_mfld fw_tstamp_mfld;
-
-		memcpy_fromio(&fw_tstamp_mfld,
-			((void *)(sst_drv_ctx->mailbox + sst_drv_ctx->tstamp)
-				+ (str_id * sizeof(fw_tstamp_mfld))),
-			sizeof(fw_tstamp_mfld));
-		return sst_calc_mfld_tstamp(info, stream->ops, &fw_tstamp_mfld);
-	} else {
-		struct snd_sst_tstamp fw_tstamp;
-
-		memcpy_fromio(&fw_tstamp,
-			((void *)(sst_drv_ctx->mailbox + sst_drv_ctx->tstamp)
-				+ (str_id * sizeof(fw_tstamp))),
-			sizeof(fw_tstamp));
-		return sst_calc_tstamp(info, substream, &fw_tstamp);
-	}
+	memcpy_fromio(&fw_tstamp,
+		((void *)(sst_drv_ctx->mailbox + sst_drv_ctx->tstamp)
+			+ (str_id * sizeof(fw_tstamp))),
+		sizeof(fw_tstamp));
+	return sst_calc_tstamp(info, substream, &fw_tstamp);
 }
 
 /*
@@ -858,11 +837,7 @@ static int sst_device_control(int cmd, void *arg)
 		ipc = IPC_IA_START_STREAM;
 		str_info->prev = str_info->status;
 		str_info->status = STREAM_RUNNING;
-		if (sst_drv_ctx->pci_id != SST_MFLD_PCI_ID)
-			sst_start_stream(str_id);
-		else
-			retval = sst_send_sync_msg(ipc, str_id);
-
+		sst_start_stream(str_id);
 		break;
 	}
 	case SST_SND_DROP: {
@@ -985,12 +960,11 @@ static int sst_set_generic_params(enum sst_controls cmd, void *arg)
 		break;
 	}
 	case SST_SET_BYTE_STREAM: {
-		struct snd_sst_bytes *sst_bytes = (struct snd_sst_bytes *)arg;
 		ret_val = intel_sst_check_device();
 		if (ret_val)
 			return ret_val;
 
-		ret_val = sst_send_byte_stream_mrfld(sst_bytes);
+		ret_val = sst_send_byte_stream_mrfld(arg);
 		sst_pm_runtime_put(sst_drv_ctx);
 		break;
 	}

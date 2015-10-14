@@ -17,50 +17,31 @@
 #include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <asm/spid.h>
+#include <asm/intel_mid_pcihelpers.h>
 
-/*
- * Access to message bus through three registers
- * in CUNIT(0:0:0) PCI configuration space.
- * MSGBUS_CTRL_REG(0xD0):
- *   31:24	= message bus opcode
- *   23:16	= message bus port
- *   15:8	= message bus address, low 8 bits.
- *   7:4	= message bus byte enables
- * MSGBUS_CTRL_EXT_REG(0xD8):
- *   31:8	= message bus address, high 24 bits.
- * MSGBUS_DATA_REG(0xD4):
- *   hold the data for write or read
- */
-#define PCI_ROOT_MSGBUS_CTRL_REG	0xD0
-#define PCI_ROOT_MSGBUS_DATA_REG	0xD4
-#define PCI_ROOT_MSGBUS_CTRL_EXT_REG	0xD8
-#define PCI_ROOT_MSGBUS_READ		0x10
-#define PCI_ROOT_MSGBUS_WRITE		0x11
-#define PCI_ROOT_MSGBUS_DWORD_ENABLE	0xf0
-
-#define INTEL_MID_SSN_SIZE	32
-
-extern struct soft_platform_id spid;
-extern char intel_mid_ssn[INTEL_MID_SSN_SIZE + 1];
-extern int intel_mid_pci_init(void);
+#ifdef CONFIG_SFI
 extern int get_gpio_by_name(const char *name);
+extern void install_irq_resource(struct platform_device *pdev, int irq);
+#else
+static inline int get_gpio_by_name(const char *name) { return -ENODEV; }
+/* Dummy function to prevent compilation error in byt */
+static inline void install_irq_resource(struct platform_device *pdev, int irq)
+{};
+#endif
+
+extern int intel_mid_pci_init(void);
 extern void *get_oem0_table(void);
 extern void intel_delayed_device_register(void *dev,
 			void (*delayed_callback)(void *dev_desc));
-extern void install_irq_resource(struct platform_device *pdev, int irq);
 extern void intel_scu_device_register(struct platform_device *pdev);
 extern struct devs_id *get_device_id(u8 type, char *name);
 extern int __init sfi_parse_mrtc(struct sfi_table_header *table);
+extern int __init sfi_parse_mtmr(struct sfi_table_header *table);
 extern int sfi_mrtc_num;
 extern struct sfi_rtc_table_entry sfi_mrtc_array[];
-extern u32 intel_mid_msgbus_read32_raw(u32 cmd);
-extern void intel_mid_msgbus_write32_raw(u32 cmd, u32 data);
-extern u32 intel_mid_msgbus_read32(u8 port, u32 addr);
-extern void intel_mid_msgbus_write32(u8 port, u32 addr, u32 data);
+extern void *get_oem0_table(void);
 extern void register_rpmsg_service(char *name, int id, u32 addr);
 extern int sdhci_pci_request_regulators(void);
-extern u32 intel_mid_soc_stepping(void);
-
 
 /* OEMB table */
 struct sfi_table_oemb {
@@ -78,7 +59,7 @@ struct sfi_table_oemb {
 	u8 ifwi_major_version;
 	u8 ifwi_minor_version;
 	struct soft_platform_id spid;
-	u8 ssn[INTEL_MID_SSN_SIZE];
+	u8 ssn[INTEL_PLATFORM_SSN_SIZE];
 } __packed;
 
 /*
@@ -124,12 +105,14 @@ struct sd_board_info {
  * identified via MSRs.
  */
 enum intel_mid_cpu_type {
-	INTEL_MID_CPU_CHIP_LINCROFT = 1,
-	INTEL_MID_CPU_CHIP_PENWELL,
+	INTEL_CPU_CHIP_NOTMID = 0,
+	/* 1 was Moorestown */
+	INTEL_MID_CPU_CHIP_PENWELL = 2,
 	INTEL_MID_CPU_CHIP_CLOVERVIEW,
 	INTEL_MID_CPU_CHIP_TANGIER,
 	INTEL_MID_CPU_CHIP_VALLEYVIEW2,
 	INTEL_MID_CPU_CHIP_ANNIEDALE,
+	INTEL_MID_CPU_CHIP_CARBONCANYON,
 };
 
 extern enum intel_mid_cpu_type __intel_mid_cpu_chip;
@@ -137,7 +120,7 @@ extern enum intel_mid_cpu_type __intel_mid_cpu_chip;
 /**
  * struct intel_mid_ops - Interface between intel-mid & sub archs
  * @arch_setup: arch_setup function to re-initialize platform
- *		structures (x86_init, x86_platform_init)
+ *             structures (x86_init, x86_platform_init)
  *
  * This structure can be extended if any new interface is required
  * between intel-mid & its sub arch files.
@@ -147,7 +130,7 @@ struct intel_mid_ops {
 };
 
 /* Helper API's for INTEL_MID_OPS_INIT */
-#define DECLARE_INTEL_MID_OPS_INIT(cpuname, cpuid) [cpuid] = \
+#define DECLARE_INTEL_MID_OPS_INIT(cpuname, cpuid)[cpuid] = \
 		get_##cpuname##_ops,
 
 /* Maximum number of CPU ops */
@@ -158,27 +141,22 @@ struct intel_mid_ops {
  * declared in arch/x86/platform/intel_mid/intel_mid_weak_decls.h.
  */
 #define INTEL_MID_OPS_INIT {\
-	DECLARE_INTEL_MID_OPS_INIT(lincroft, INTEL_MID_CPU_CHIP_LINCROFT) \
 	DECLARE_INTEL_MID_OPS_INIT(penwell, INTEL_MID_CPU_CHIP_PENWELL) \
 	DECLARE_INTEL_MID_OPS_INIT(cloverview, INTEL_MID_CPU_CHIP_CLOVERVIEW) \
 	DECLARE_INTEL_MID_OPS_INIT(tangier, INTEL_MID_CPU_CHIP_TANGIER) \
-	DECLARE_INTEL_MID_OPS_INIT(valleyview2, \
-		INTEL_MID_CPU_CHIP_VALLEYVIEW2) \
 	DECLARE_INTEL_MID_OPS_INIT(anniedale, INTEL_MID_CPU_CHIP_ANNIEDALE) \
+	DECLARE_INTEL_MID_OPS_INIT(carboncanyon, \
+		INTEL_MID_CPU_CHIP_CARBONCANYON) \
 };
-
-#ifdef CONFIG_X86_INTEL_MID
 
 static inline enum intel_mid_cpu_type intel_mid_identify_cpu(void)
 {
+#ifdef CONFIG_X86_INTEL_MID
 	return __intel_mid_cpu_chip;
+#else
+	return INTEL_CPU_CHIP_NOTMID;
+#endif
 }
-
-#else /* !CONFIG_X86_INTEL_MID */
-
-#define intel_mid_identify_cpu()    (0)
-
-#endif /* !CONFIG_X86_INTEL_MID */
 
 enum intel_mid_timer_options {
 	INTEL_MID_TIMER_DEFAULT,
@@ -188,19 +166,9 @@ enum intel_mid_timer_options {
 
 extern enum intel_mid_timer_options intel_mid_timer_options;
 
-#define spid_attr(_name) \
-static struct kobj_attribute _name##_attr = {	\
-	.attr   = {				\
-		.name = __stringify(_name),	\
-		.mode = 0444,			\
-	},					\
-	.show   = _name##_show,			\
-}
-
 /*
  * Penwell uses spread spectrum clock, so the freq number is not exactly
  * the same as reported by MSR based on SDM.
- * CLVP A0 has 100MHz FSB and CLVP B0 has 133MHz FSB.
  */
 #define FSB_FREQ_83SKU	83200
 #define FSB_FREQ_100SKU	99840
@@ -228,7 +196,7 @@ extern struct console early_mrfld_console;
 extern void mrfld_early_console_init(void);
 
 extern struct console early_hsu_console;
-extern void hsu_early_console_init(const char *s);
+extern void hsu_early_console_init(const char *);
 
 extern struct console early_pti_console;
 
@@ -236,17 +204,12 @@ extern void intel_scu_devices_create(void);
 extern void intel_scu_devices_destroy(void);
 extern void intel_psh_devices_create(void);
 extern void intel_psh_devices_destroy(void);
-extern void *cloverview_usb_otg_get_pdata(void);
 
 /* VRTC timer */
 #define MRST_VRTC_MAP_SZ	(1024)
 /*#define MRST_VRTC_PGOFFSET	(0xc00) */
 
 extern void intel_mid_rtc_init(void);
-
-extern int get_force_shutdown_occured(void);
-
-extern const struct atomisp_platform_data *intel_get_v4l2_subdev_table(void);
 
 enum intel_mid_sim_type {
 	INTEL_MID_CPU_SIMULATION_NONE = 0,
@@ -257,15 +220,15 @@ enum intel_mid_sim_type {
 extern enum intel_mid_sim_type __intel_mid_sim_platform;
 static inline enum intel_mid_sim_type intel_mid_identify_sim(void)
 {
+#ifdef CONFIG_X86_INTEL_MID
 	return __intel_mid_sim_platform;
+#else
+	return INTEL_MID_CPU_SIMULATION_NONE;
+#endif
 }
 
 #define INTEL_MID_IRQ_OFFSET 0x100
 
-#ifdef CONFIG_INTEL_MID_RAM_CONSOLE
-extern void ram_console_reserve_memory(void);
-#else
-static inline void ram_console_reserve_memory(void){ }
-#endif/* !CONFIG_INTEL_MID_RAM_CONSOLE*/
+extern void pstore_ram_reserve_memory(void);
 
 #endif /* _ASM_X86_INTEL_MID_H */

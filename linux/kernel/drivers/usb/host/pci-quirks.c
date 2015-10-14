@@ -18,7 +18,7 @@
 #include <linux/acpi.h>
 #include <linux/dmi.h>
 #include "pci-quirks.h"
-#include "xhci-ext-caps.h"
+#include "xhci.h"
 
 
 #define UHCI_USBLEGSUP		0xc0		/* legacy support */
@@ -314,6 +314,36 @@ void usb_amd_quirk_pll_disable(void)
 }
 EXPORT_SYMBOL_GPL(usb_amd_quirk_pll_disable);
 
+/* usb_quirk_ignore_comp_plc - If ignore PLC event for
+ * compliance/loopback mode transition.
+ * @ptr: base address of PORTSC egisters to be read.
+ * @ports: number of ports.
+ *
+ * Some xHC controller will generate PLC event when link transfer to
+ * compliance/loopback mode. By design, driver will trigger warm reset
+ * for this case which will interrupt USB3 electronic compliance test.
+ * So if want to avoid it, need to set XHCI_COMP_PLC_QUIRK during driver
+ * initialization.
+ **/
+int usb_quirk_ignore_comp_plc(void __iomem *ptr, int ports)
+{
+	int i;
+	u32 val;
+	__le32 __iomem *addr;
+
+	addr = ptr;
+	for (i = 0; i < ports; i++) {
+		val = readl(addr);
+		if (((val & PORT_PLC) && (val & PORT_PLS_MASK) == XDEV_COMP) ||
+			((val & PORT_PLC) && (val & PORT_PLS_MASK) == XDEV_LOOPBACK))
+			return 1;
+		addr += NUM_PORT_REGS;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(usb_quirk_ignore_comp_plc);
+
 void usb_amd_quirk_pll_enable(void)
 {
 	usb_amd_quirk_pll(0);
@@ -443,7 +473,7 @@ static inline int io_type_enabled(struct pci_dev *pdev, unsigned int mask)
 #define pio_enabled(dev) io_type_enabled(dev, PCI_COMMAND_IO)
 #define mmio_enabled(dev) io_type_enabled(dev, PCI_COMMAND_MEMORY)
 
-static void __devinit quirk_usb_handoff_uhci(struct pci_dev *pdev)
+static void quirk_usb_handoff_uhci(struct pci_dev *pdev)
 {
 	unsigned long base = 0;
 	int i;
@@ -461,12 +491,12 @@ static void __devinit quirk_usb_handoff_uhci(struct pci_dev *pdev)
 		uhci_check_and_reset_hc(pdev, base);
 }
 
-static int __devinit mmio_resource_enabled(struct pci_dev *pdev, int idx)
+static int mmio_resource_enabled(struct pci_dev *pdev, int idx)
 {
 	return pci_resource_start(pdev, idx) && mmio_enabled(pdev);
 }
 
-static void __devinit quirk_usb_handoff_ohci(struct pci_dev *pdev)
+static void quirk_usb_handoff_ohci(struct pci_dev *pdev)
 {
 	void __iomem *base;
 	u32 control;
@@ -533,7 +563,7 @@ static void __devinit quirk_usb_handoff_ohci(struct pci_dev *pdev)
 	iounmap(base);
 }
 
-static const struct dmi_system_id __devinitconst ehci_dmi_nohandoff_table[] = {
+static const struct dmi_system_id ehci_dmi_nohandoff_table[] = {
 	{
 		/*  Pegatron Lucid (ExoPC) */
 		.matches = {
@@ -558,7 +588,7 @@ static const struct dmi_system_id __devinitconst ehci_dmi_nohandoff_table[] = {
 	{ }
 };
 
-static void __devinit ehci_bios_handoff(struct pci_dev *pdev,
+static void ehci_bios_handoff(struct pci_dev *pdev,
 					void __iomem *op_reg_base,
 					u32 cap, u8 offset)
 {
@@ -626,7 +656,7 @@ static void __devinit ehci_bios_handoff(struct pci_dev *pdev,
 		writel(0, op_reg_base + EHCI_CONFIGFLAG);
 }
 
-static void __devinit quirk_usb_disable_ehci(struct pci_dev *pdev)
+static void quirk_usb_disable_ehci(struct pci_dev *pdev)
 {
 	void __iomem *base, *op_reg_base;
 	u32	hcc_params, cap, val;
@@ -639,8 +669,6 @@ static void __devinit quirk_usb_disable_ehci(struct pci_dev *pdev)
 	base = pci_ioremap_bar(pdev, 0);
 	if (base == NULL)
 		return;
-
-	pci_set_power_state(pdev, PCI_D0);
 
 	cap_length = readb(base);
 	op_reg_base = base + cap_length;
@@ -693,9 +721,6 @@ static void __devinit quirk_usb_disable_ehci(struct pci_dev *pdev)
 	writel(0x3f, op_reg_base + EHCI_USBSTS);
 
 	iounmap(base);
-
-	/* after disable ehci, put it back to correct power state */
-	pci_set_power_state(pdev, pci_choose_state(pdev, PMSG_SUSPEND));
 }
 
 /*
@@ -849,7 +874,7 @@ EXPORT_SYMBOL_GPL(usb_disable_xhci_ports);
  * and then waits 5 seconds for the BIOS to hand over control.
  * If we timeout, assume the BIOS is broken and take control anyway.
  */
-static void __devinit quirk_usb_handoff_xhci(struct pci_dev *pdev)
+static void quirk_usb_handoff_xhci(struct pci_dev *pdev)
 {
 	void __iomem *base;
 	int ext_cap_offset;
@@ -949,18 +974,13 @@ hc_init:
 	iounmap(base);
 }
 
-static void __devinit quirk_usb_early_handoff(struct pci_dev *pdev)
+static void quirk_usb_early_handoff(struct pci_dev *pdev)
 {
 	/* Skip Netlogic mips SoC's internal PCI USB controller.
 	 * This device does not need/support EHCI/OHCI handoff
 	 */
 	if (pdev->vendor == 0x184e)	/* vendor Netlogic */
 		return;
-
-	/* Skip Intel Medfield SOC */
-	if (pdev->vendor == 0x8086 && pdev->device == 0x0829)
-		return;
-
 	if (pdev->class != PCI_CLASS_SERIAL_USB_UHCI &&
 			pdev->class != PCI_CLASS_SERIAL_USB_OHCI &&
 			pdev->class != PCI_CLASS_SERIAL_USB_EHCI &&
@@ -984,24 +1004,3 @@ static void __devinit quirk_usb_early_handoff(struct pci_dev *pdev)
 }
 DECLARE_PCI_FIXUP_CLASS_FINAL(PCI_ANY_ID, PCI_ANY_ID,
 			PCI_CLASS_SERIAL_USB, 8, quirk_usb_early_handoff);
-
-/**
- * This quirk is a hardware workaround. On Intel Medfield platform,
- * EHCI hardware update FRINDEX register before update completed
- * QH's active flag. This behavior cause EHCI driver can't find the
- * completed QH which need to handle.
- *
- * Let EHCI driver to roll back 160 uframes to check the completed QH.
- */
-void quirk_usb_periodic_hw_bug_workaround(int *next_uframe, int periodic_size)
-{
-#ifdef CONFIG_USB_PENWELL_OTG
-#define ROLLBACK_UFRAME 160
-	if (*next_uframe < ROLLBACK_UFRAME)
-		*next_uframe = (periodic_size << 3)
-			- (ROLLBACK_UFRAME - *next_uframe);
-	else
-		*next_uframe -= ROLLBACK_UFRAME;
-#endif
-}
-EXPORT_SYMBOL_GPL(quirk_usb_periodic_hw_bug_workaround);

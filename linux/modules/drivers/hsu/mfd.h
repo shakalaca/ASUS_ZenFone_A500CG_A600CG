@@ -1,6 +1,14 @@
 #ifndef _MFD_H
 #define _MFD_H
 
+#include <linux/serial_core.h>
+#include <linux/serial_reg.h>
+#include <linux/serial_mfd.h>
+#include <linux/intel_mid_dma.h>
+#include <linux/intel_mid_pm.h>
+#include <linux/dma-direction.h>
+#include <asm/intel_mid_hsu.h>
+
 #define HSU_PORT_MAX		8
 #define HSU_DMA_BUF_SIZE	2048
 #define HSU_Q_MAX		4096
@@ -38,6 +46,7 @@ enum {
 	qcmd_cl,
 	qcmd_port_irq,
 	qcmd_dma_irq,
+	qcmd_enable_irq,
 	qcmd_cmd_off,
 	qcmd_max,
 };
@@ -63,11 +72,6 @@ struct hsu_dma_chan {
 	u32	dcr;
 	u32	sar;
 	u32	tsr;
-};
-
-enum hsu_type {
-	HSU_INTEL,
-	HSU_DW,
 };
 
 struct dw_dma_priv {
@@ -164,8 +168,13 @@ struct uart_hsu_port {
 	unsigned int		port_irq_pio_rx_avb;
 	unsigned int		port_irq_pio_rx_err;
 	unsigned int		port_irq_pio_rx_timeout;
+	unsigned int		cts_status;
 	unsigned int		dma_irq_num;
+	unsigned int		dma_invalid_irq_num;
 	unsigned int		dma_irq_cmddone;
+	unsigned int		dma_tx_irq_cmddone;
+	unsigned int		dma_rx_irq_cmddone;
+	unsigned int		dma_rx_tmt_irq_cmddone;
 	unsigned int		tasklet_done;
 	unsigned int		workq_done;
 	unsigned int		in_workq;
@@ -173,23 +182,25 @@ struct uart_hsu_port {
 
 	unsigned int		byte_delay;
 
-	void (*hw_reset)(struct uart_hsu_port *up);
-
 	int			use_dma;	/* flag for DMA/PIO */
+	unsigned int		dma_irq;
+	unsigned int		port_dma_sts;
+
 	void			*dma_priv;
 	struct hsu_dma_ops	*dma_ops;
+	struct pm_qos_request   qos;
 	int			dma_inited;
 };
 
 struct hsu_port {
 	int dma_irq;
-	int int_sts;
 	int port_num;
 	int irq_port_and_dma;
 	struct hsu_port_cfg	*configs[HSU_PORT_MAX];
 	void __iomem	*reg;
 	struct uart_hsu_port	port[HSU_PORT_MAX];
 	struct hsu_dma_chan	chans[HSU_PORT_MAX * 2];
+	spinlock_t		dma_lock;
 	struct dentry *debugfs;
 };
 
@@ -203,7 +214,7 @@ static inline unsigned int serial_in(struct uart_hsu_port *up, int offset)
 {
 	unsigned int val;
 
-	if (offset > UART_MSR || up->hw_type == HSU_DW) {
+	if (offset > UART_MSR || up->hw_type == hsu_dw) {
 		offset <<= 2;
 		val = readl(up->port.membase + offset);
 	} else
@@ -214,7 +225,7 @@ static inline unsigned int serial_in(struct uart_hsu_port *up, int offset)
 
 static inline void serial_out(struct uart_hsu_port *up, int offset, int value)
 {
-	if (offset > UART_MSR || up->hw_type == HSU_DW) {
+	if (offset > UART_MSR || up->hw_type == hsu_dw) {
 		offset <<= 2;
 		writel(value, up->port.membase + offset);
 	} else {
@@ -223,7 +234,19 @@ static inline void serial_out(struct uart_hsu_port *up, int offset, int value)
 	}
 }
 void serial_sched_cmd(struct uart_hsu_port *up, char cmd);
-extern struct hsu_dma_ops dw_dma_ops;
+extern struct hsu_dma_ops *pdw_dma_ops;
 extern struct hsu_dma_ops intel_dma_ops;
 
+struct uart_hsu_port *serial_hsu_port_setup(struct device *pdev, int port,
+	resource_size_t start, resource_size_t len, int irq);
+void serial_hsu_port_free(struct uart_hsu_port *up);
+void serial_hsu_port_shutdown(struct uart_hsu_port *up);
+int serial_hsu_dma_setup(struct device *pdev,
+	resource_size_t start, resource_size_t len, unsigned int irq, int share);
+void serial_hsu_dma_free(void);
+int serial_hsu_do_suspend(struct uart_hsu_port *up);
+int serial_hsu_do_resume(struct uart_hsu_port *up);
+int serial_hsu_do_runtime_idle(struct uart_hsu_port *up);
+
+#include "mfd_trace.h"
 #endif

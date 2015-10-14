@@ -42,6 +42,9 @@
 #include <linux/mutex.h>
 #include <linux/wait.h>
 #include <linux/delay.h>
+#ifdef CONFIG_HAS_WAKELOCK
+#include <linux/wakelock.h>
+#endif
 #include <linux/mdm_ctrl.h>
 #include <asm/intel-mid.h>
 #include <asm/intel_scu_pmic.h>
@@ -91,25 +94,21 @@ struct mdm_ctrl {
 	bool polled_state_reached;
 
 	/* modem status */
-	int rst_ongoing;
+	atomic_t rst_ongoing;
 	int hangup_causes;
 
 	struct mutex lock;
-	int modem_state;
-	struct list_head next_state_link;
+	atomic_t modem_state;
+#ifdef CONFIG_HAS_WAKELOCK
+	struct wake_lock	 stay_awake;
+#endif
 
-	spinlock_t state_lck;
-
-	struct workqueue_struct *change_state_wq;
 	struct work_struct change_state_work;
 
 	struct workqueue_struct *hu_wq;
 	struct work_struct hangup_work;
 
 	struct timer_list flashing_timer;
-
-	/* Wait queue for WAIT_FOR_STATE ioctl */
-	wait_queue_head_t event;
 
 	bool is_mdm_ctrl_disabled;
 
@@ -136,8 +135,7 @@ void mdm_ctrl_launch_timer(struct timer_list *timer, int delay,
 inline void mdm_ctrl_set_reset_ongoing(struct mdm_ctrl *drv, int ongoing);
 inline int mdm_ctrl_get_reset_ongoing(struct mdm_ctrl *drv);
 
-inline void mdm_ctrl_launch_work(struct mdm_ctrl *drv, int state);
-inline void mdm_ctrl_set_state(struct work_struct *work);
+inline void mdm_ctrl_set_state(struct mdm_ctrl *drv, int state);
 inline int mdm_ctrl_get_state(struct mdm_ctrl *drv);
 
 void mdm_ctrl_get_device_info(struct mdm_ctrl *drv,

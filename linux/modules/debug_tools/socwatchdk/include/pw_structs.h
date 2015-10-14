@@ -162,7 +162,7 @@
 /*
  * MAX size of each irq name (bytes).
  */
-#define PW_IRQ_DEV_NAME_LEN	100
+#define PW_IRQ_DEV_NAME_LEN 100
 /*
  * MAX size of each proc name.
  */
@@ -244,13 +244,17 @@
  */
 #define PW_MAX_NUM_PROC_MAPPINGS_PER_BLOCK 32
 /*
- * MAX length of polling data component names; used for fixed-length samples only!
+ * MAX length of metadata names;
  */
-#define PW_MAX_POLLING_COMP_NAME 80
+#define PW_MAX_METADATA_NAME 80
 /*
  * MAX number of GPU frequencies coded per *meta-data* sample; used for fixed-length samples only!
  */
-#define PW_MAX_GPU_FREQ_PER_SAMPLE 40
+#define PW_MAX_FREQS_PER_META_SAMPLE 54
+/*
+ * MAX number of C-state MSRs per C multi-msg
+ */
+#define PW_MAX_C_STATE_MSRS_PER_MESSAGE 6
 
 /*
  * MSR counter stuff.
@@ -326,6 +330,8 @@ typedef enum {
     DRAM_SELF_REFRESH = 43, /* Used for DRAM Self Refresh residency */
     DRAM_SELF_REFRESH_COMP = 44, /* Used for DRAM Self Refresh residency metadata for fixed-length samples only */
     S_RESIDENCY_STATES = 45, /* Used for S residency metadata for fixed-length samples only */
+    MATRIX_MSG = 46, /* Used for Matrix messages */
+    BANDWIDTH_ALL_APPROX = 47, /* Used for T-unit B/W messages */
     SAMPLE_TYPE_END
 } sample_type_t;
 #define FOR_EACH_SAMPLE_TYPE(idx) for ( idx = C_STATE; idx < SAMPLE_TYPE_END; ++idx )
@@ -342,7 +348,7 @@ typedef enum{
     PW_BREAK_TYPE_S = 2, // sched-switch
     PW_BREAK_TYPE_IPI = 3, // (LOC, RES, CALL, TLB)
     PW_BREAK_TYPE_W = 4, // workqueue
-    PW_BREAK_TYPE_B = 5, // begin
+    PW_BREAK_TYPE_B = 5, // boundary
     PW_BREAK_TYPE_N = 6, // Not-a-break: used exclusively for CLTP support: DEBUGGING ONLY!
     PW_BREAK_TYPE_A = 7, // Abort
     PW_BREAK_TYPE_U = 8,  // unknown
@@ -449,10 +455,17 @@ typedef struct c_msg {
 } c_msg_t;
 #endif
 typedef struct c_msg {
-    pw_msr_val_t cx_msr_val;
-    u64 mperf;
-    u64 wakeup_tsc; // The TSC when the wakeup event was handled.
-    u64 wakeup_data; // Domain-specific wakeup data. Corresponds to "c_data" under old scheme.
+    pw_msr_val_t cx_msr_val; // The value read from the C-state MSR at the wakeup point.
+    u64 mperf;               // The value read from the C0 MSR 
+    u64 wakeup_tsc;          // The TSC when the wakeup event was handled.
+    /*
+     * Domain-specific wakeup data. Corresponds to "c_data" under c_message_t fixed-length scheme.
+     * Meaning is as follows for the following wakeup_types:
+     *    PW_BREAK_TYPE_I: IRQ number (used as index to get IRQ name using i_message_t)
+     *    PW_BREAK_TYPE_T: System call CPU TSC 
+     *    All other types: field is ignored.
+     */
+    u64 wakeup_data;
     /*
      * 's32' for wakeup_{pid,tid} is overkill: '/proc/sys/kernel/pid_max' is almost always
      * 32768, which will fit in 's16'. However, it IS user-configurable, so we must 
@@ -460,15 +473,15 @@ typedef struct c_msg {
      */
     s32 wakeup_pid;
     s32 wakeup_tid;
-    u32 tps_epoch;
+    u32 tps_epoch; // Only used before post-processing
     /*
      * In cases of timer-related wakeups, encode the CPU on which the timer was
      * initialized (and whose init TSC is encoded in the 'wakeup_data' field).
      */
-    s16 timer_init_cpu;
+    s16 timer_init_cpu; // Only used before post-processing
     // pw_msr_identifier_t act_state_id;
     u8 wakeup_type; // instance of 'c_break_type_t'
-    u8 req_state; // State requested by OS: "HINT" parameter passed to TPS probe
+    u8 req_state; // State requested by OS: "HINT" parameter passed to TPS probe. Only used before post-processing
     // u8 act_state; // State granted by hardware: the MSR that counted, and whose residency is encoded in the 'cx_res' field
 } c_msg_t;
 
@@ -508,16 +521,23 @@ typedef struct p_msg {
      */
     u16 perf_status_val;
     /*
-     * We encode the frequency at the start
-     * and end of a collection in 'boundary'
-     * messages. This flag is set for such
-     * messages.
+     * We encode the frequency at the start and end of a collection in 'boundary'
+     * messages. This flag is set for such messages. Only used before post-processing..
      */
-    u16 is_boundary_sample;
-    /*
-     * The APERF and MPERF values.
-     */
-    u64 unhalted_core_value, unhalted_ref_value;
+    u16 is_boundary_sample;      // Only lsb is used for the flag, which when true indicates a 
+                                 // begin or end boundary sample for the collection. These are generated
+                                 // during post-processing.
+    union {
+        u64 unhalted_core_value; // The APERF value. Used only before post-processing.
+        u32 frequency;           // The actual measured frequency in KHz. 
+                                 // Used only for post-processed samples.
+    };
+    union {
+        u64 unhalted_ref_value;  // The MPERF value. Used only before post-processing..
+        u32 cx_time_rate;        // The fraction of time since the previous p_msg sample spent in a non-C0 state.
+                                 // This value ranges from 0 (0% Cx time) to 1e9 (100% Cx time).
+                                 // Used only for post-processed samples.
+    };
 } p_msg_t;
 
 /*
@@ -564,7 +584,7 @@ typedef struct event_sample {
  * 'd_residency_sample'.
  */
 typedef enum {
-    PW_NORTH_COMPLEX = 0, // North complex
+    PW_NORTH_COMPLEX = 0,  // North complex
     PW_SOUTH_COMPLEX = 1,  // South complex
     PW_NOT_APPLICABLE = 2  // Not applicable
 } device_type_t;
@@ -586,7 +606,7 @@ struct pw_string_type {
  */
 typedef struct s_res_meta_data s_res_meta_data_t;
 struct s_res_meta_data {
-    u8 num_states;            // The number of states available including S3.
+    u8 num_states;           // The number of states available including S3.
     pw_string_type_t *names; // The list of state names e.g. S0i0, S0i1, S0i2, S0i3, S3 ...
                              // The order must be same as the order of values stored in residencies
 };
@@ -598,8 +618,9 @@ struct s_res_meta_data {
 typedef struct s_res_msg {
     u64 *residencies;  // Residencies in time (in unit of TSC ticks) for each state
                        // Array size is determined by num_states (defined in metadata)
+                       // MUST be last entry in struct!
 } s_res_msg_t;
-
+#define S_RES_MSG_HEADER_SIZE (sizeof(s_res_msg_t) - sizeof(u64 *))
 
 /*
  * Meta data used to describe D-state sample or residency
@@ -628,7 +649,7 @@ struct dev_map_msg {
 
 typedef struct dev_map_meta_data dev_map_meta_data_t;
 struct dev_map_meta_data {
-    u16 num_devices; // The number of 'dev_map_msg_t' instances in the 'device_mappings' array, below
+    u16 num_devices;                // The number of 'dev_map_msg_t' instances in the 'device_mappings' array, below
     dev_map_msg_t *device_mappings; // A mapping of dev num <-> dev names; size is governed by 'num_devices'
 };
 #define DEV_MAP_MSG_META_MSG_HEADER_SIZE (sizeof(dev_map_meta_data_t) - sizeof(dev_map_msg_t *))
@@ -690,13 +711,13 @@ struct gpufreq_meta_data {
     u16 *available_freqs;    // List of all available frequncies. Max Length will be equal to the num_available_freq.
                              // The unit of frequency here is Mhz.
 };
-
 #define GPUFREQ_META_MSG_HEADER_SIZE (sizeof(gpufreq_meta_data_t) - sizeof(u16 *))
+
 /*
  * GPU Frequency state sample
  */
 typedef struct gpufreq_msg {
-    u16 gpufrequencies; // GPU frequency is stored here. Unit is MHz
+    u16 gpufrequency; // GPU frequency is stored here. Unit is MHz
 } gpufreq_msg_t;
 
 /*
@@ -813,6 +834,10 @@ typedef struct u_wakelock_msg {
     u32 constant_pool_index;
 } u_wakelock_msg_t;
 
+typedef struct i_sample i_msg_t;
+
+typedef struct r_sample r_msg_t;
+
 /*
  * TSC_POSIX_MONO_SYNC
  * TSC <-> Posix clock_gettime() sync messages.
@@ -834,6 +859,33 @@ typedef struct tmp_c_state_msr_set_sample {
     u16 num_msrs;
     pw_msr_val_t msr_vals[11]; // Each 'pw_msr_val_t' instance is 10 bytes wide.
 } tmp_c_state_msr_set_sample_t;
+
+/*
+ * Information on the specific TYPE of a matrix message.
+ */
+typedef enum pw_mt_msg_type {
+    PW_MG_MSG_NONE=0,
+    PW_MT_MSG_INIT=1,
+    PW_MT_MSG_POLL=2,
+    PW_MT_MSG_TERM=3,
+    PW_MT_MSG_END=4
+} pw_mt_msg_type_t;
+/*
+ * Debugging: names for the above msg types.
+ */
+static const char *s_pw_mt_msg_type_names[] = {"NONE", "INIT", "POLL", "TERM", "END"};
+/*
+ * Encode information returned by the matrix driver.
+ * Msg type == 'MATRIX_MSG'
+ */
+typedef struct pw_mt_msg pw_mt_msg_t;
+struct pw_mt_msg {
+    u16 data_type; // One of 'pw_mt_msg_type_t'
+    u16 data_len;
+    u64 timestamp;
+    u64 p_data;
+};
+#define PW_MT_MSG_HEADER_SIZE() ( sizeof(pw_mt_msg_t) - sizeof(u64) )
 
 /*
  * Summary structs: structs used for summary and trace timeline information.
@@ -1041,13 +1093,16 @@ struct pw_c_state_msr_meta_data {
  */
 typedef struct c_meta_data c_meta_data_t;
 struct c_meta_data {
-    /*
-    u16 data_len; // The length of the "data" array below, in bytes.
-    */
+    /* 
+     * GEH: Could we add an enum for processing unit (GPU, CPU, etc.) and add a field here to reference? Something like this:
+     * proc_unit_t proc_unit; 
+     */
     u16 num_c_states; // The number of 'pw_c_state_msr_meta_data' instances encoded in the 'data' field below.
                       // GU: Changed from u8 --> u16 for alignment
-    // char data[1]; // An array of 'pw_c_state_msr_meta_data' instances, one per C-state
-    pw_c_state_msr_meta_data_t *data;
+    pw_c_state_msr_meta_data_t *data; // An array of 'pw_c_state_msr_meta_data' instances, one per C-state
+                                      // Length of the array is given by num_c_states.
+                                      // For SW1 file, this array is contiguous in memory to the c_meta_data_t struct (inline):
+                                      // e.g. pw_c_state_msr_meta_data_t data[num_c_state];
 };
 #define C_META_MSG_HEADER_SIZE (sizeof(c_meta_data_t) - sizeof(pw_c_state_msr_meta_data_t *))
 
@@ -1056,9 +1111,15 @@ struct c_meta_data {
  */
 typedef struct p_meta_data p_meta_data_t;
 struct p_meta_data {
+    /* 
+     * GEH: Could we add an enum for processing unit (GPU, CPU, etc.) and add a field here to reference? Something like this:
+     * proc_unit_t proc_unit; 
+     */
     u16 num_available_freqs; // The # of frequencies in the 'data' field below; 256 freqs should be enough for anybody!
-    // u8 available_freqs[1]; // A (variable-length) array of 16bit frequencies, in MHz. Length of array is given by 'num_available_freqs'
-    u16 *available_freqs; // A (variable-length) array of 16bit frequencies, in MHz. Length of array is given by 'num_available_freqs'
+    u16 *available_freqs; // A (variable-length) array of 16bit frequencies, in MHz. 
+                          // Length of array is given by 'num_available_freqs'
+                          // For SW1 file, this array is contiguous in memory to the p_meta_data_t structure (inline):
+                          // e.g. u16 available_freqs[num_available_freqs];
 };
 #define P_META_MSG_HEADER_SIZE (sizeof(p_meta_data_t) - sizeof(u16 *))
 
@@ -1146,7 +1207,7 @@ struct system_meta_data {
     u8 driver_version_major, driver_version_minor, driver_version_other;          // Driver version
     u8 collector_version_major, collector_version_minor, collector_version_other; // Collector version
     u8 format_version_major, format_version_minor;                                // File format version
-    u8 bound;                                                                   // 1 for bound and 0 for unbound
+    u8 bound;                                                                     // 1 for bound and 0 for unbound
     /*
      * --------------------------------------------------------------------------------------------------------------------------------
      *  WARNING: REMOVE THIS COMMENT BEFORE DISTRIBUTING CODE EXTERNALLY!!!
@@ -1169,20 +1230,17 @@ struct system_meta_data {
     pw_string_type_t cpu_brand;
     pw_string_type_t cpu_topology;
     pw_string_type_t profiled_app_name;
-    /*
-     * Do we even need a "descendent_pids_list" anymore???
-     */
-    // descendent_pids_list; // ???
 };
 #define SYSTEM_META_MSG_HEADER_SIZE (sizeof(system_meta_data) -  (8 * sizeof(pw_string_type_t))) /* 8 because we have 8 pw_string_type_t instances in this class */
 
 typedef struct meta_data_msg meta_data_msg_t;
 struct meta_data_msg {
-    u16 data_len; // Probably not required: this value can be derived from the "data_len" field of the PWCollector_msg struct!
-    u16 data_type; // The type of payload encoded in 'data': one of 'sample_type_t'
+    u16 data_len;  // Probably not required: this value can be derived from the "data_len" field of the PWCollector_msg struct!
+    u16 data_type; // The type of payload encoded by 'data': one of 'sample_type_t'
                    // GU: Changed from u8 --> u16 for alignment
-    // u8 data[1]; // Domain-specific meta data
-    void *data;
+
+    void *data;    // For SW1 file, this is the payload:  one of *_meta_data_t corresponding to data_type (inline memory).
+                   // For internal data, this is a pointer to the payload memory (not inline).
 };
 #define PW_META_MSG_HEADER_SIZE sizeof(meta_data_msg_t) - sizeof(void *)
 
@@ -1199,12 +1257,16 @@ struct meta_data_msg {
  */
 typedef struct PWCollector_msg PWCollector_msg_t; 
 struct PWCollector_msg {
-    u64 tsc;
-    u16 data_len;
-    u16 cpuidx;
-    u8 data_type;
-    u8 padding; // The compiler would have inserted it anyway!
-    u64 p_data; // GU: changed from "u8[1]" to "u64" to get the driver to compile
+    u64 tsc;      // TSC of message. 
+                  // GEH: Is this equal to wakeup TSC for c_msg_t samples?
+    u16 data_len; // length of payload message in bytes (not including this header) represented by p_data.
+    u16 cpuidx;   // GEH: Need to define what this is for post-processed samples
+    u8 data_type; // The type of payload encoded by 'p_data': one of 'sample_type_t'
+    u8 padding;   // The compiler would have inserted it anyway!
+
+    u64 p_data;   // For SW1 file, this is the payload: one of *_msg_t corresponding to data_type (inline memory).
+                  // For internal data, this field is a pointer to the non-contiguous payload memory (not inline).
+                  // GU: changed from "u8[1]" to "u64" to get the driver to compile
 };
 #define PW_MSG_HEADER_SIZE ( sizeof(PWCollector_msg_t) - sizeof(u64) )
 
@@ -1487,12 +1549,12 @@ typedef bw_msg_t bw_sample_t;
  * HACK! (GEH)
  * Temporary fixed-length Structure used to describe a single Thermal component.
  * (Plan to switch to variable length samples for everything later.)
- * Multiple fixed-length samples may be chained to increase the available frequencies beyond PW_MAX_GPU_FREQ_SAMPLE
+ * Multiple fixed-length samples may be chained to increase the available frequencies beyond PW_MAX_FREQS_PER_META_SAMPLE
  * In this case, sample order determines frequency order for visualization.
  */
 typedef struct gpu_freq_sample {
     u16 num_available_freqs; // Number of available gpu frequencies given in this sample.
-    u16 available_freqs[PW_MAX_GPU_FREQ_PER_SAMPLE];    // List of all available frequencies.
+    u16 available_freqs[PW_MAX_FREQS_PER_META_SAMPLE];    // List of all available frequencies.
                              // The unit of frequency here is Mhz.
 } gpu_freq_sample_t;
 
@@ -1504,7 +1566,7 @@ typedef struct gpu_freq_sample {
 typedef struct thermal_comp_sample {
     u16 thermal_comp_num;         // index used for matching thermal component index in thermal_sample
     thermal_unit_t thermal_unit;  // 0 is Fahrenheit and 1 is Celcius.
-    char thermal_comp_name[PW_MAX_POLLING_COMP_NAME];  // Name of component like Core, Skin, MSIC Die, SOC, ...
+    char thermal_comp_name[PW_MAX_METADATA_NAME];  // Name of component like Core, Skin, MSIC Die, SOC, ...
 } thermal_comp_sample_t;
 
 /*
@@ -1514,13 +1576,13 @@ typedef struct thermal_comp_sample {
  */
 typedef struct bw_comp_sample {
     u16 bw_comp_num;                        // Index used for matching bandwidth component index in bw_sample
-    char bw_comp_name[PW_MAX_POLLING_COMP_NAME]; // Names of component/pathway like Core to DDR0, Core to DDR1, ISP, GFX, IO, DISPLAY ...
+    char bw_comp_name[PW_MAX_METADATA_NAME]; // Names of component/pathway like Core to DDR0, Core to DDR1, ISP, GFX, IO, DISPLAY ...
 } bw_comp_sample_t;
 
 typedef struct dram_srr_comp_sample dram_srr_comp_sample_t;
 struct dram_srr_comp_sample {
     u16 comp_idx;                             // Index used for matching bandwidth component index in bw_sample
-    char comp_name[PW_MAX_POLLING_COMP_NAME]; // Names of components like DUNIT0, DUNIT1...
+    char comp_name[PW_MAX_METADATA_NAME]; // Names of components like DUNIT0, DUNIT1...
 };
 
 typedef struct dram_srr_sample {
@@ -1635,39 +1697,49 @@ typedef enum power_data {
     PW_BANDWIDTH_CORE_MODULE1 = 27, /* DD should collect Core on Module 1 to DDR bandwidth samples */
     PW_BANDWIDTH_CORE_32BYTE = 28, /* DD should collect Core to DDR 32bytes bandwidth samples */
     PW_BANDWIDTH_CORE_64BYTE = 29, /* DD should collect Core to DDR 64bytes bandwidth samples */
+    PW_BANDWIDTH_SRR_CH0 = 30, /* DD should collect Channel 0 DRAM Self Refresh residency samples */
+    PW_BANDWIDTH_SRR_CH1 = 31, /* DD should collect Channel 1 DRAM Self Refresh residency samples */
+    PW_BANDWIDTH_TUNIT = 32, /* DD should collect T-Unit bandwidth samples */
     PW_MAX_POWER_DATA_MASK /* Marker used to indicate MAX valid 'power_data_t' enum value -- NOT used by DD */
 } power_data_t;
 
-#define POWER_SLEEP_MASK (1 << PW_SLEEP)
-#define POWER_KTIMER_MASK (1 << PW_KTIMER)
-#define POWER_FREQ_MASK (1 << PW_FREQ)
-#define POWER_S_RESIDENCY_MASK (1 << PW_PLATFORM_RESIDENCY)
-#define POWER_S_STATE_MASK (1 << PW_PLATFORM_STATE)
-#define POWER_D_SC_RESIDENCY_MASK (1 << PW_DEVICE_SC_RESIDENCY)
-#define POWER_D_SC_STATE_MASK (1 << PW_DEVICE_SC_STATE)
-#define POWER_D_NC_STATE_MASK (1 << PW_DEVICE_NC_STATE)
-#define POWER_WAKELOCK_MASK (1 << PW_WAKELOCK_STATE)
-#define POWER_C_STATE_MASK ( 1 << PW_POWER_C_STATE )
-#define POWER_THERMAL_CORE_MASK (1 << PW_THERMAL_CORE)
-#define POWER_THERMAL_SOC_DTS_MASK (1 << PW_THERMAL_SOC_DTS)
-#define POWER_THERMAL_SKIN_MASK (1 << PW_THERMAL_SKIN)
-#define POWER_THERMAL_MSIC_MASK (1 << PW_THERMAL_MSIC)
-#define POWER_GPU_FREQ_MASK (1 << PW_GPU_FREQ)
-#define POWER_BANDWIDTH_DRAM_MASK (1 << PW_BANDWIDTH_DRAM )
-#define POWER_BANDWIDTH_CORE_MASK (1 << PW_BANDWIDTH_CORE )
-#define POWER_BANDWIDTH_GPU_MASK (1 << PW_BANDWIDTH_GPU )
-#define POWER_BANDWIDTH_DISP_MASK (1 << PW_BANDWIDTH_DISP )
-#define POWER_BANDWIDTH_ISP_MASK (1 << PW_BANDWIDTH_ISP )
-#define POWER_BANDWIDTH_IO_MASK (1 << PW_BANDWIDTH_IO )
-#define POWER_BANDWIDTH_SRR_MASK (1 << PW_BANDWIDTH_SRR )
-#define POWER_GPU_C_STATE_MASK (1 << PW_GPU_C_STATE )
-#define POWER_FPS_MASK (1 << PW_FPS )
-#define POWER_ACPI_S3_STATE_MASK (1 << PW_ACPI_S3_STATE )
-#define POWER_SNAPSHOT_C_STATE_MASK (1 << PW_POWER_SNAPSHOT_C_STATE )
+#define POWER_SLEEP_MASK (1ULL << PW_SLEEP)
+#define POWER_KTIMER_MASK (1ULL << PW_KTIMER)
+#define POWER_FREQ_MASK (1ULL << PW_FREQ)
+#define POWER_S_RESIDENCY_MASK (1ULL << PW_PLATFORM_RESIDENCY)
+#define POWER_S_STATE_MASK (1ULL << PW_PLATFORM_STATE)
+#define POWER_D_SC_RESIDENCY_MASK (1ULL << PW_DEVICE_SC_RESIDENCY)
+#define POWER_D_SC_STATE_MASK (1ULL << PW_DEVICE_SC_STATE)
+#define POWER_D_NC_STATE_MASK (1ULL << PW_DEVICE_NC_STATE)
+#define POWER_WAKELOCK_MASK (1ULL << PW_WAKELOCK_STATE)
+#define POWER_C_STATE_MASK ( 1ULL << PW_POWER_C_STATE )
+#define POWER_THERMAL_CORE_MASK (1ULL << PW_THERMAL_CORE)
+#define POWER_THERMAL_SOC_DTS_MASK (1ULL << PW_THERMAL_SOC_DTS)
+#define POWER_THERMAL_SKIN_MASK (1ULL << PW_THERMAL_SKIN)
+#define POWER_THERMAL_MSIC_MASK (1ULL << PW_THERMAL_MSIC)
+#define POWER_GPU_FREQ_MASK (1ULL << PW_GPU_FREQ)
+#define POWER_BANDWIDTH_DRAM_MASK (1ULL << PW_BANDWIDTH_DRAM )
+#define POWER_BANDWIDTH_CORE_MASK (1ULL << PW_BANDWIDTH_CORE )
+#define POWER_BANDWIDTH_GPU_MASK (1ULL << PW_BANDWIDTH_GPU )
+#define POWER_BANDWIDTH_DISP_MASK (1ULL << PW_BANDWIDTH_DISP )
+#define POWER_BANDWIDTH_ISP_MASK (1ULL << PW_BANDWIDTH_ISP )
+#define POWER_BANDWIDTH_IO_MASK (1ULL << PW_BANDWIDTH_IO )
+#define POWER_BANDWIDTH_SRR_MASK (1ULL << PW_BANDWIDTH_SRR )
+#define POWER_GPU_C_STATE_MASK (1ULL << PW_GPU_C_STATE )
+#define POWER_FPS_MASK (1ULL << PW_FPS )
+#define POWER_ACPI_S3_STATE_MASK (1ULL << PW_ACPI_S3_STATE )
+#define POWER_SNAPSHOT_C_STATE_MASK (1ULL << PW_POWER_SNAPSHOT_C_STATE )
+#define POWER_BANDWIDTH_CORE_MODULE0_MASK (1ULL << PW_BANDWIDTH_CORE_MODULE0 )
+#define POWER_BANDWIDTH_CORE_MODULE1ULL_MASK (1ULL << PW_BANDWIDTH_CORE_MODULE1)
+#define POWER_BANDWIDTH_CORE_32BYTE_MASK (1ULL << PW_BANDWIDTH_CORE_32BYTE )
+#define POWER_BANDWIDTH_CORE_64BYTE_MASK (1ULL << PW_BANDWIDTH_CORE_64BYTE )
+#define POWER_BANDWIDTH_SRR_CH0_MASK (1ULL << PW_BANDWIDTH_SRR_CH0 )
+#define POWER_BANDWIDTH_SRR_CH1ULL_MASK (1ULL << PW_BANDWIDTH_SRR_CH1)
+#define POWER_BANDWIDTH_TUNIT_MASK (1ULL << PW_BANDWIDTH_TUNIT )
 
-#define SET_COLLECTION_SWITCH(m,s) ( (m) |= (1 << (s) ) )
-#define RESET_COLLECTION_SWITCH(m,s) ( (m) &= ~(1 << (s) ) )
-#define WAS_COLLECTION_SWITCH_SET(m, s) ( (m) & (1 << (s) ) )
+#define SET_COLLECTION_SWITCH(m,s) ( (m) |= (1ULL << (s) ) )
+#define RESET_COLLECTION_SWITCH(m,s) ( (m) &= ~(1ULL << (s) ) )
+#define WAS_COLLECTION_SWITCH_SET(m, s) ( (m) & (1ULL << (s) ) )
 
 /*
  * Platform-specific config struct.
@@ -1685,7 +1757,8 @@ typedef struct platform_info {
  * stuff and power switches.
  */
 struct PWCollector_config {
-    int data;
+    // int data;
+    u64 data; // collection switches.
     u32 d_state_sample_interval;  // This is the knob to control the frequency of D-state data sampling 
     // to adjust their collection overhead in the unit of msec.
     platform_info_t info;
@@ -1849,6 +1922,34 @@ struct PWCollector_available_frequencies {
      */
     u32 frequencies[PW_MAX_NUM_AVAILABLE_FREQUENCIES];
 };
+
+/*
+ * Different IO mechanism types.
+ */
+typedef enum {
+    PW_IO_MSR=0,
+    PW_IO_IPC=1,
+    PW_IO_MMIO=2,
+    PW_IO_PCI=3,
+    PW_IO_MAX=4
+} pw_io_type_t;
+
+typedef struct PWCollector_platform_res_info PWCollector_platform_res_info_t;
+struct PWCollector_platform_res_info {
+    /*
+     * IPC commands for platform residency
+     * Valid ONLY if 'collection_type' == 'PW_IO_IPC'
+     * ('u32' is probably overkill for these, 'u16' should work just fine)
+     */
+    u32 ipc_start_command, ipc_start_sub_command; // START IPC command, sub-cmd
+    u32 ipc_stop_command, ipc_stop_sub_command; // STOP IPC command, sub-cmd
+    u32 ipc_dump_command, ipc_dump_sub_command; // DUMP IPC command, sub-cmd
+    u16 num_addrs; // Number of 64b addresses encoded in the 'addrs' array, below
+    u8 collection_type; // One of 'pw_io_type_t'
+    u8 counter_size_in_bytes; // Usually either 4 (for 32b counters) or 8 (for 64b counters)
+    char addrs[1]; // Array of 64bit addresses; size of array == 'num_addrs'
+};
+#define PW_PLATFORM_RES_INFO_HEADER_SIZE() (sizeof(PWCollector_platform_res_info_t) - sizeof(char[1]))
 
 /*
  * Wrapper for ioctl arguments.

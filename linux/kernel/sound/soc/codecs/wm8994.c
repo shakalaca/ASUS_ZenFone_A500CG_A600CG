@@ -1,7 +1,7 @@
 /*
  * wm8994.c  --  WM8994 ALSA SoC Audio driver
  *
- * Copyright 2009 Wolfson Microelectronics plc
+ * Copyright 2009-12 Wolfson Microelectronics plc
  *
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
  *
@@ -94,9 +94,9 @@ static int wm8994_retune_mobile_base[] = {
 
 static const struct wm8958_micd_rate micdet_rates[] = {
 	{ 32768,       true,  1, 4 },
-	{ 32768,       false, 1, 1 },
+	{ 32768,       false, 1, 0 },
 	{ 44100 * 256, true,  7, 10 },
-	{ 44100 * 256, false, 7, 10 },
+	{ 44100 * 256, false, 7, 9 },
 };
 
 static const struct wm8958_micd_rate jackdet_rates[] = {
@@ -109,6 +109,7 @@ static const struct wm8958_micd_rate jackdet_rates[] = {
 static void wm8958_micd_set_rate(struct snd_soc_codec *codec)
 {
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
+	struct wm8994 *control = wm8994->wm8994;
 	int best, i, sysclk, val;
 	bool idle;
 	const struct wm8958_micd_rate *rates;
@@ -122,9 +123,9 @@ static void wm8958_micd_set_rate(struct snd_soc_codec *codec)
 	else
 		sysclk = wm8994->aifclk[0];
 
-	if (wm8994->pdata && wm8994->pdata->micd_rates) {
-		rates = wm8994->pdata->micd_rates;
-		num_rates = wm8994->pdata->num_micd_rates;
+	if (control->pdata.micd_rates) {
+		rates = control->pdata.micd_rates;
+		num_rates = control->pdata.num_micd_rates;
 	} else if (wm8994->jackdet) {
 		rates = jackdet_rates;
 		num_rates = ARRAY_SIZE(jackdet_rates);
@@ -321,7 +322,8 @@ static int wm8994_put_drc_sw(struct snd_kcontrol *kcontrol,
 static void wm8994_set_drc(struct snd_soc_codec *codec, int drc)
 {
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
-	struct wm8994_pdata *pdata = wm8994->pdata;
+	struct wm8994 *control = wm8994->wm8994;
+	struct wm8994_pdata *pdata = &control->pdata;
 	int base = wm8994_drc_base[drc];
 	int cfg = wm8994->drc_cfg[drc];
 	int save, i;
@@ -357,7 +359,8 @@ static int wm8994_put_drc_enum(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
-	struct wm8994_pdata *pdata = wm8994->pdata;
+	struct wm8994 *control = wm8994->wm8994;
+	struct wm8994_pdata *pdata = &control->pdata;
 	int drc = wm8994_get_drc(kcontrol->id.name);
 	int value = ucontrol->value.integer.value[0];
 
@@ -391,7 +394,8 @@ static int wm8994_get_drc_enum(struct snd_kcontrol *kcontrol,
 static void wm8994_set_retune_mobile(struct snd_soc_codec *codec, int block)
 {
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
-	struct wm8994_pdata *pdata = wm8994->pdata;
+	struct wm8994 *control = wm8994->wm8994;
+	struct wm8994_pdata *pdata = &control->pdata;
 	int base = wm8994_retune_mobile_base[block];
 	int iface, best, best_val, save, i, cfg;
 
@@ -462,7 +466,8 @@ static int wm8994_put_retune_mobile_enum(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
-	struct wm8994_pdata *pdata = wm8994->pdata;
+	struct wm8994 *control = wm8994->wm8994;
+	struct wm8994_pdata *pdata = &control->pdata;
 	int block = wm8994_get_retune_mobile_block(kcontrol->id.name);
 	int value = ucontrol->value.integer.value[0];
 
@@ -535,13 +540,13 @@ static const struct soc_enum adc_osr =
 static const struct snd_kcontrol_new wm8994_snd_controls[] = {
 SOC_DOUBLE_R_TLV("AIF1ADC1 Volume", WM8994_AIF1_ADC1_LEFT_VOLUME,
 		 WM8994_AIF1_ADC1_RIGHT_VOLUME,
-		 1, 119, 0, digital_tlv),
+		 1, 120, 0, digital_tlv),
 SOC_DOUBLE_R_TLV("AIF1ADC2 Volume", WM8994_AIF1_ADC2_LEFT_VOLUME,
 		 WM8994_AIF1_ADC2_RIGHT_VOLUME,
-		 1, 119, 0, digital_tlv),
+		 1, 120, 0, digital_tlv),
 SOC_DOUBLE_R_TLV("AIF2ADC Volume", WM8994_AIF2_ADC_LEFT_VOLUME,
 		 WM8994_AIF2_ADC_RIGHT_VOLUME,
-		 1, 119, 0, digital_tlv),
+		 1, 120, 0, digital_tlv),
 
 SOC_ENUM("AIF1ADCL Source", aif1adcl_src),
 SOC_ENUM("AIF1ADCR Source", aif1adcr_src),
@@ -603,12 +608,12 @@ SOC_ENUM("ADC OSR", adc_osr),
 SOC_ENUM("DAC OSR", dac_osr),
 
 SOC_DOUBLE_R_TLV("DAC1 Volume", WM8994_DAC1_LEFT_VOLUME,
-		 WM8994_DAC1_RIGHT_VOLUME, 1, 96, 0, digital_tlv),
+		 WM8994_DAC1_RIGHT_VOLUME, 1, 112, 0, digital_tlv),
 SOC_DOUBLE_R("DAC1 Switch", WM8994_DAC1_LEFT_VOLUME,
 	     WM8994_DAC1_RIGHT_VOLUME, 9, 1, 1),
 
 SOC_DOUBLE_R_TLV("DAC2 Volume", WM8994_DAC2_LEFT_VOLUME,
-		 WM8994_DAC2_RIGHT_VOLUME, 1, 96, 0, digital_tlv),
+		 WM8994_DAC2_RIGHT_VOLUME, 1, 112, 0, digital_tlv),
 SOC_DOUBLE_R("DAC2 Switch", WM8994_DAC2_LEFT_VOLUME,
 	     WM8994_DAC2_RIGHT_VOLUME, 9, 1, 1),
 
@@ -634,6 +639,11 @@ SOC_SINGLE_TLV("AIF2DAC 3D Stereo Volume", WM8994_AIF2_DAC_FILTERS_2,
 	       10, 15, 0, wm8994_3d_tlv),
 SOC_SINGLE("AIF2DAC 3D Stereo Switch", WM8994_AIF2_DAC_FILTERS_2,
 	   8, 1, 0),
+
+SOC_SINGLE_TLV("MIXINL MIXOUTL Volume", WM8994_INPUT_MIXER_3, 0, 7, 0,
+	       mixin_boost_tlv),
+SOC_SINGLE_TLV("MIXINR MIXOUTR Volume", WM8994_INPUT_MIXER_4, 0, 7, 0,
+	       mixin_boost_tlv),
 };
 
 static const struct snd_kcontrol_new wm8994_eq_controls[] = {
@@ -862,7 +872,7 @@ static void vmid_reference(struct snd_soc_codec *codec)
 					    WM8994_BIAS_SRC |
 					    WM8994_STARTUP_BIAS_ENA |
 					    WM8994_VMID_BUF_ENA |
-					    (0x3 << WM8994_VMID_RAMP_SHIFT));
+					    (0x2 << WM8994_VMID_RAMP_SHIFT));
 
 			/* Main bias enable, VMID=2x40k */
 			snd_soc_update_bits(codec, WM8994_POWER_MANAGEMENT_1,
@@ -870,7 +880,7 @@ static void vmid_reference(struct snd_soc_codec *codec)
 					    WM8994_VMID_SEL_MASK,
 					    WM8994_BIAS_ENA | 0x2);
 
-			msleep(50);
+			msleep(300);
 
 			snd_soc_update_bits(codec, WM8994_ANTIPOP_2,
 					    WM8994_VMID_RAMP_MASK |
@@ -939,16 +949,10 @@ static void vmid_dereference(struct snd_soc_codec *codec)
 				    WM8994_BIAS_SRC |
 				    WM8994_VMID_DISCH);
 
-		switch (wm8994->vmid_mode) {
-		case WM8994_VMID_FORCE:
-			msleep(350);
-			break;
-		default:
-			break;
-		}
+		snd_soc_update_bits(codec, WM8994_POWER_MANAGEMENT_1,
+				    WM8994_VMID_SEL_MASK, 0);
 
-		snd_soc_update_bits(codec, WM8994_ADDITIONAL_CONTROL,
-				    WM8994_VROI, WM8994_VROI);
+		msleep(400);
 
 		/* Active discharge */
 		snd_soc_update_bits(codec, WM8994_ANTIPOP_1,
@@ -957,16 +961,11 @@ static void vmid_dereference(struct snd_soc_codec *codec)
 				    WM8994_LINEOUT1_DISCH |
 				    WM8994_LINEOUT2_DISCH);
 
-		msleep(150);
-
 		snd_soc_update_bits(codec, WM8994_POWER_MANAGEMENT_3,
 				    WM8994_LINEOUT1N_ENA |
 				    WM8994_LINEOUT1P_ENA |
 				    WM8994_LINEOUT2N_ENA |
 				    WM8994_LINEOUT2P_ENA, 0);
-
-		snd_soc_update_bits(codec, WM8994_ADDITIONAL_CONTROL,
-				    WM8994_VROI, 0);
 
 		/* Switch off startup biases */
 		snd_soc_update_bits(codec, WM8994_ANTIPOP_2,
@@ -977,9 +976,6 @@ static void vmid_dereference(struct snd_soc_codec *codec)
 
 		snd_soc_update_bits(codec, WM8994_POWER_MANAGEMENT_1,
 				    WM8994_BIAS_ENA | WM8994_VMID_SEL_MASK, 0);
-
-		snd_soc_update_bits(codec, WM8994_ANTIPOP_2,
-				    WM8994_VMID_RAMP_MASK, 0);
 	}
 
 	pm_runtime_put(codec->dev);
@@ -1528,6 +1524,24 @@ static const char *aif1dac_text[] = {
 	"AIF1DACDAT", "AIF3DACDAT",
 };
 
+static const char *loopback_text[] = {
+	"None", "ADCDAT",
+};
+
+static const struct soc_enum aif1_loopback_enum =
+	SOC_ENUM_SINGLE(WM8994_AIF1_CONTROL_2, WM8994_AIF1_LOOPBACK_SHIFT, 2,
+			loopback_text);
+
+static const struct snd_kcontrol_new aif1_loopback =
+	SOC_DAPM_ENUM("AIF1 Loopback", aif1_loopback_enum);
+
+static const struct soc_enum aif2_loopback_enum =
+	SOC_ENUM_SINGLE(WM8994_AIF2_CONTROL_2, WM8994_AIF2_LOOPBACK_SHIFT, 2,
+			loopback_text);
+
+static const struct snd_kcontrol_new aif2_loopback =
+	SOC_DAPM_ENUM("AIF2 Loopback", aif2_loopback_enum);
+
 static const struct soc_enum aif1dac_enum =
 	SOC_ENUM_SINGLE(WM8994_POWER_MANAGEMENT_6, 0, 2, aif1dac_text);
 
@@ -1667,15 +1681,15 @@ SND_SOC_DAPM_DAC("DAC1R", NULL, WM8994_POWER_MANAGEMENT_5, 0, 0),
 };
 
 static const struct snd_soc_dapm_widget wm8994_adc_revd_widgets[] = {
-SND_SOC_DAPM_VIRT_MUX_E("ADCL Mux", WM8994_POWER_MANAGEMENT_4, 1, 0, &adcl_mux,
+SND_SOC_DAPM_VIRT_MUX_E("ADCL Mux", SND_SOC_NOPM, 1, 0, &adcl_mux,
 			adc_mux_ev, SND_SOC_DAPM_PRE_PMU),
-SND_SOC_DAPM_VIRT_MUX_E("ADCR Mux", WM8994_POWER_MANAGEMENT_4, 0, 0, &adcr_mux,
+SND_SOC_DAPM_VIRT_MUX_E("ADCR Mux", SND_SOC_NOPM, 0, 0, &adcr_mux,
 			adc_mux_ev, SND_SOC_DAPM_PRE_PMU),
 };
 
 static const struct snd_soc_dapm_widget wm8994_adc_widgets[] = {
-SND_SOC_DAPM_VIRT_MUX("ADCL Mux", WM8994_POWER_MANAGEMENT_4, 1, 0, &adcl_mux),
-SND_SOC_DAPM_VIRT_MUX("ADCR Mux", WM8994_POWER_MANAGEMENT_4, 0, 0, &adcr_mux),
+SND_SOC_DAPM_VIRT_MUX("ADCL Mux", SND_SOC_NOPM, 1, 0, &adcl_mux),
+SND_SOC_DAPM_VIRT_MUX("ADCR Mux", SND_SOC_NOPM, 0, 0, &adcr_mux),
 };
 
 static const struct snd_soc_dapm_widget wm8994_dapm_widgets[] = {
@@ -1771,12 +1785,11 @@ SND_SOC_DAPM_ADC("DMIC2R", NULL, WM8994_POWER_MANAGEMENT_4, 4, 0),
 SND_SOC_DAPM_ADC("DMIC1L", NULL, WM8994_POWER_MANAGEMENT_4, 3, 0),
 SND_SOC_DAPM_ADC("DMIC1R", NULL, WM8994_POWER_MANAGEMENT_4, 2, 0),
 
-/* Power is done with the muxes since the ADC power also controls the
- * downsampling chain, the chip will automatically manage the analogue
- * specific portions.
- */
-SND_SOC_DAPM_ADC("ADCL", NULL, SND_SOC_NOPM, 1, 0),
-SND_SOC_DAPM_ADC("ADCR", NULL, SND_SOC_NOPM, 0, 0),
+SND_SOC_DAPM_ADC("ADCL", NULL, WM8994_POWER_MANAGEMENT_4, 1, 0),
+SND_SOC_DAPM_ADC("ADCR", NULL, WM8994_POWER_MANAGEMENT_4, 0, 0),
+
+SND_SOC_DAPM_MUX("AIF1 Loopback", SND_SOC_NOPM, 0, 0, &aif1_loopback),
+SND_SOC_DAPM_MUX("AIF2 Loopback", SND_SOC_NOPM, 0, 0, &aif2_loopback),
 
 SND_SOC_DAPM_POST("Debug log", post_ev),
 };
@@ -1909,9 +1922,9 @@ static const struct snd_soc_dapm_route intercon[] = {
 	{ "AIF1DAC2L", NULL, "AIF1DAC Mux" },
 	{ "AIF1DAC2R", NULL, "AIF1DAC Mux" },
 
-	{ "AIF1DAC Mux", "AIF1DACDAT", "AIF1DACDAT" },
+	{ "AIF1DAC Mux", "AIF1DACDAT", "AIF1 Loopback" },
 	{ "AIF1DAC Mux", "AIF3DACDAT", "AIF3DACDAT" },
-	{ "AIF2DAC Mux", "AIF2DACDAT", "AIF2DACDAT" },
+	{ "AIF2DAC Mux", "AIF2DACDAT", "AIF2 Loopback" },
 	{ "AIF2DAC Mux", "AIF3DACDAT", "AIF3DACDAT" },
 	{ "AIF2ADC Mux", "AIF2ADCDAT", "AIF2ADCL" },
 	{ "AIF2ADC Mux", "AIF2ADCDAT", "AIF2ADCR" },
@@ -1961,6 +1974,12 @@ static const struct snd_soc_dapm_route intercon[] = {
 	{ "AIF3ADCDAT", "AIF2ADCDAT", "AIF2ADCR" },
 	{ "AIF3ADCDAT", "AIF2DACDAT", "AIF2DACL" },
 	{ "AIF3ADCDAT", "AIF2DACDAT", "AIF2DACR" },
+
+	/* Loopback */
+	{ "AIF1 Loopback", "ADCDAT", "AIF1ADCDAT" },
+	{ "AIF1 Loopback", "None", "AIF1DACDAT" },
+	{ "AIF2 Loopback", "ADCDAT", "AIF2ADCDAT" },
+	{ "AIF2 Loopback", "None", "AIF2DACDAT" },
 
 	/* Sidetone */
 	{ "Left Sidetone", "ADC/DMIC1", "ADCL Mux" },
@@ -2116,15 +2135,17 @@ static int wm8994_get_fll_config(struct wm8994 *control, struct fll_div *fll,
 
 		/* Move down to proper range now rounding is done */
 		fll->k = K / 10;
+		fll->lambda = 0;
 
 		pr_debug("N=%x K=%x\n", fll->n, fll->k);
+		break;
 
 	default:
 		gcd_fll = gcd(freq_out, freq_in);
 
 		fll->k = (freq_out - (freq_in * fll->n)) / gcd_fll;
 		fll->lambda = freq_in / gcd_fll;
-
+		
 	}
 
 	return 0;
@@ -2270,7 +2291,7 @@ static int _wm8994_set_fll(struct snd_soc_codec *codec, int id, int src,
 				vmid_reference(codec);
 				break;
 			case WM8958:
-				if (wm8994->revision < 1)
+				if (control->revision < 1)
 					vmid_reference(codec);
 				break;
 			default:
@@ -2305,7 +2326,7 @@ static int _wm8994_set_fll(struct snd_soc_codec *codec, int id, int src,
 				vmid_dereference(codec);
 				break;
 			case WM8958:
-				if (wm8994->revision < 1)
+				if (control->revision < 1)
 					vmid_dereference(codec);
 				break;
 			default:
@@ -2322,6 +2343,35 @@ out:
 	wm8994->fll[id].src = src;
 
 	configure_clock(codec);
+
+	/*
+	 * If SYSCLK will be less than 50kHz adjust AIFnCLK dividers
+	 * for detection.
+	 */
+	if (max(wm8994->aifclk[0], wm8994->aifclk[1]) < 50000 &&
+		!wm8994->aifdiv[0]) {
+		dev_dbg(codec->dev, "Configuring AIFs for 128fs\n");
+
+		wm8994->aifdiv[0] = snd_soc_read(codec, WM8994_AIF1_RATE)
+			& WM8994_AIF1CLK_RATE_MASK;
+		wm8994->aifdiv[1] = snd_soc_read(codec, WM8994_AIF2_RATE)
+			& WM8994_AIF1CLK_RATE_MASK;
+
+		snd_soc_update_bits(codec, WM8994_AIF1_RATE,
+				    WM8994_AIF1CLK_RATE_MASK, 0x1);
+		snd_soc_update_bits(codec, WM8994_AIF2_RATE,
+				    WM8994_AIF2CLK_RATE_MASK, 0x1);
+	} else if (wm8994->aifdiv[0]) {
+		snd_soc_update_bits(codec, WM8994_AIF1_RATE,
+				    WM8994_AIF1CLK_RATE_MASK,
+				    wm8994->aifdiv[0]);
+		snd_soc_update_bits(codec, WM8994_AIF2_RATE,
+				    WM8994_AIF2CLK_RATE_MASK,
+				    wm8994->aifdiv[1]);
+
+		wm8994->aifdiv[0] = 0;
+		wm8994->aifdiv[1] = 0;
+	}
 
 	return 0;
 }
@@ -2415,8 +2465,7 @@ static int wm8994_set_dai_sysclk(struct snd_soc_dai *dai,
 	 * If SYSCLK will be less than 50kHz adjust AIFnCLK dividers
 	 * for detection.
 	 */
-	if (max(wm8994->aifclk[0], wm8994->aifclk[1]) < 50000 &&
-	    !wm8994->aifdiv[0]) {
+	if (max(wm8994->aifclk[0], wm8994->aifclk[1]) < 50000) {
 		dev_dbg(codec->dev, "Configuring AIFs for 128fs\n");
 
 		wm8994->aifdiv[0] = snd_soc_read(codec, WM8994_AIF1_RATE)
@@ -2428,8 +2477,7 @@ static int wm8994_set_dai_sysclk(struct snd_soc_dai *dai,
 				    WM8994_AIF1CLK_RATE_MASK, 0x1);
 		snd_soc_update_bits(codec, WM8994_AIF2_RATE,
 				    WM8994_AIF2CLK_RATE_MASK, 0x1);
-	} else if (max(wm8994->aifclk[0], wm8994->aifclk[1]) >= 50000 &&
-		   wm8994->aifdiv[0]) {
+	} else if (wm8994->aifdiv[0]) {
 		snd_soc_update_bits(codec, WM8994_AIF1_RATE,
 				    WM8994_AIF1CLK_RATE_MASK,
 				    wm8994->aifdiv[0]);
@@ -2478,7 +2526,7 @@ static int wm8994_set_bias_level(struct snd_soc_codec *codec,
 		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF) {
 			switch (control->type) {
 			case WM8958:
-				if (wm8994->revision == 0) {
+				if (control->revision == 0) {
 					/* Optimise performance for rev A */
 					snd_soc_update_bits(codec,
 							    WM8958_CHARGE_PUMP_2,
@@ -2737,6 +2785,8 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_codec *codec = dai->codec;
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
+	struct wm8994 *control = wm8994->wm8994;
+	struct wm8994_pdata *pdata = &control->pdata;
 	int aif1_reg;
 	int aif2_reg;
 	int bclk_reg;
@@ -2748,10 +2798,39 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 	int lrclk = 0;
 	int rate_val = 0;
 	int id = dai->id - 1;
-	int format_bits = 0;
-	int rate = params_rate(params);
+	struct snd_pcm_hw_params hw_params;
 
 	int i, cur_val, best_val, bclk_rate, best;
+
+	if (params)
+		memcpy(&hw_params, params, sizeof(*params));
+	else
+		return -EINVAL;
+
+	/* If custom params are there, override to custom params */
+	if (pdata->custom_cfg) {
+
+		dev_dbg(codec->dev, "%s: Overriding to custom params....\n",
+							__func__);
+
+		snd_mask_none(hw_param_mask(&hw_params,
+					SNDRV_PCM_HW_PARAM_FORMAT));
+		snd_mask_set(hw_param_mask(&hw_params,
+					SNDRV_PCM_HW_PARAM_FORMAT),
+					pdata->custom_cfg->format);
+
+		hw_param_interval(&hw_params, SNDRV_PCM_HW_PARAM_RATE)->min =
+						pdata->custom_cfg->rate;
+		hw_param_interval(&hw_params, SNDRV_PCM_HW_PARAM_RATE)->max =
+						pdata->custom_cfg->rate;
+
+		hw_param_interval(&hw_params,
+					SNDRV_PCM_HW_PARAM_CHANNELS)->min =
+						pdata->custom_cfg->channels;
+		hw_param_interval(&hw_params,
+					SNDRV_PCM_HW_PARAM_CHANNELS)->max =
+						pdata->custom_cfg->channels;
+	}
 
 	switch (dai->id) {
 	case 1:
@@ -2784,18 +2863,9 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	/* Is there a rate override for this AIF? */
-	if (wm8994->pdata->override_rates[dai->id - 1])
-			rate = wm8994->pdata->override_rates[dai->id - 1];
+	bclk_rate = params_rate(&hw_params);
 
-	bclk_rate = rate;
-
-	if (wm8994->format_bits)
-		format_bits = wm8994->format_bits;
-	else
-		format_bits = params_format(params);
-
-	switch (format_bits) {
+	switch (params_format(&hw_params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
 		bclk_rate *= 16;
 		break;
@@ -2815,7 +2885,15 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	switch (params_channels(params)) {
+	wm8994->channels[id] = params_channels(&hw_params);
+	if (pdata->max_channels_clocked[id] &&
+	    wm8994->channels[id] > pdata->max_channels_clocked[id]) {
+		dev_dbg(dai->dev, "Constraining channels to %d from %d\n",
+			pdata->max_channels_clocked[id], wm8994->channels[id]);
+		wm8994->channels[id] = pdata->max_channels_clocked[id];
+	}
+
+	switch (wm8994->channels[id]) {
 	case 1:
 	case 2:
 		bclk_rate *= 2;
@@ -2827,7 +2905,7 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 
 	/* Try to find an appropriate sample rate; look for an exact match. */
 	for (i = 0; i < ARRAY_SIZE(srs); i++)
-		if (srs[i].rate == rate)
+		if (srs[i].rate == params_rate(&hw_params))
 			break;
 	if (i == ARRAY_SIZE(srs))
 		return -EINVAL;
@@ -2837,7 +2915,7 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 	dev_dbg(dai->dev, "AIF%dCLK is %dHz, target BCLK %dHz\n",
 		dai->id, wm8994->aifclk[id], bclk_rate);
 
-	if (params_channels(params) == 1 &&
+	if (wm8994->channels[id] == 1 &&
 	    (snd_soc_read(codec, aif1_reg) & 0x18) == 0x18)
 		aif2 |= WM8994_AIF1_MONO;
 
@@ -2848,10 +2926,10 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 
 	/* AIFCLK/fs ratio; look for a close match in either direction */
 	best = 0;
-	best_val = abs((fs_ratios[0] * rate)
+	best_val = abs((fs_ratios[0] * params_rate(&hw_params))
 		       - wm8994->aifclk[id]);
 	for (i = 1; i < ARRAY_SIZE(fs_ratios); i++) {
-		cur_val = abs((fs_ratios[i] * rate)
+		cur_val = abs((fs_ratios[i] * params_rate(&hw_params))
 			      - wm8994->aifclk[id]);
 		if (cur_val >= best_val)
 			continue;
@@ -2879,7 +2957,7 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 		bclk_divs[best], bclk_rate);
 	bclk |= best << WM8994_AIF1_BCLK_DIV_SHIFT;
 
-	lrclk = bclk_rate / rate;
+	lrclk = bclk_rate / params_rate(&hw_params);
 	if (!lrclk) {
 		dev_err(dai->dev, "Unable to generate LRCLK from %dHz BCLK\n",
 			bclk_rate);
@@ -2899,12 +2977,12 @@ static int wm8994_hw_params(struct snd_pcm_substream *substream,
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		switch (dai->id) {
 		case 1:
-			wm8994->dac_rates[0] = rate;
+			wm8994->dac_rates[0] = params_rate(&hw_params);
 			wm8994_set_retune_mobile(codec, 0);
 			wm8994_set_retune_mobile(codec, 1);
 			break;
 		case 2:
-			wm8994->dac_rates[1] = rate;
+			wm8994->dac_rates[1] = params_rate(&hw_params);
 			wm8994_set_retune_mobile(codec, 2);
 			break;
 		}
@@ -2933,6 +3011,7 @@ static int wm8994_aif3_hw_params(struct snd_pcm_substream *substream,
 		default:
 			return 0;
 		}
+		break;
 	default:
 		return 0;
 	}
@@ -2956,7 +3035,8 @@ static int wm8994_aif3_hw_params(struct snd_pcm_substream *substream,
 	return snd_soc_update_bits(codec, aif1_reg, WM8994_AIF1_WL_MASK, aif1);
 }
 
-#if IS_ENABLED(CONFIG_SND_MRFLD_MACHINE)
+#if IS_ENABLED(CONFIG_SND_MRFLD_MACHINE) || \
+	IS_ENABLED(CONFIG_SND_MOOR_MACHINE)
 static int wm8994_aif_mute(struct snd_soc_dai *codec_dai, int mute)
 {
 	return 0;
@@ -3026,7 +3106,6 @@ static int wm8994_set_tdm_slots(struct snd_soc_dai *dai,
 	switch (control->type) {
 	case WM8958:
 		wm8994->slots = slots;
-		wm8994->format_bits = slot_width;
 		break;
 	default:
 		pr_err("we dont support tdm for non 8958!");
@@ -3150,22 +3229,7 @@ static struct snd_soc_dai_driver wm8994_dai[] = {
 static int wm8994_codec_suspend(struct snd_soc_codec *codec)
 {
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
-	struct wm8994 *control = wm8994->wm8994;
 	int i, ret;
-
-	switch (control->type) {
-	case WM8994:
-		snd_soc_update_bits(codec, WM8994_MICBIAS, WM8994_MICD_ENA, 0);
-		break;
-	case WM1811:
-		snd_soc_update_bits(codec, WM8994_ANTIPOP_2,
-				    WM1811_JACKDET_MODE_MASK, 0);
-		/* Fall through */
-	case WM8958:
-		snd_soc_update_bits(codec, WM8958_MIC_DETECT_1,
-				    WM8958_MICD_ENA, 0);
-		break;
-	}
 
 	for (i = 0; i < ARRAY_SIZE(wm8994->fll); i++) {
 		memcpy(&wm8994->fll_suspend[i], &wm8994->fll[i],
@@ -3184,24 +3248,7 @@ static int wm8994_codec_suspend(struct snd_soc_codec *codec)
 static int wm8994_codec_resume(struct snd_soc_codec *codec)
 {
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
-	struct wm8994 *control = wm8994->wm8994;
 	int i, ret;
-	unsigned int val, mask;
-
-	if (wm8994->revision < 4) {
-		/* force a HW read */
-		ret = regmap_read(control->regmap,
-				  WM8994_POWER_MANAGEMENT_5, &val);
-
-		/* modify the cache only */
-		codec->cache_only = 1;
-		mask =  WM8994_DAC1R_ENA | WM8994_DAC1L_ENA |
-			WM8994_DAC2R_ENA | WM8994_DAC2L_ENA;
-		val &= mask;
-		snd_soc_update_bits(codec, WM8994_POWER_MANAGEMENT_5,
-				    mask, val);
-		codec->cache_only = 0;
-	}
 
 	for (i = 0; i < ARRAY_SIZE(wm8994->fll); i++) {
 		if (!wm8994->fll_suspend[i].out)
@@ -3226,7 +3273,8 @@ static int wm8994_codec_resume(struct snd_soc_codec *codec)
 static void wm8994_handle_retune_mobile_pdata(struct wm8994_priv *wm8994)
 {
 	struct snd_soc_codec *codec = wm8994->hubs.codec;
-	struct wm8994_pdata *pdata = wm8994->pdata;
+	struct wm8994 *control = wm8994->wm8994;
+	struct wm8994_pdata *pdata = &control->pdata;
 	struct snd_kcontrol_new controls[] = {
 		SOC_ENUM_EXT("AIF1.1 EQ Mode",
 			     wm8994->retune_mobile_enum,
@@ -3293,7 +3341,8 @@ static void wm8994_handle_retune_mobile_pdata(struct wm8994_priv *wm8994)
 static void wm8994_handle_pdata(struct wm8994_priv *wm8994)
 {
 	struct snd_soc_codec *codec = wm8994->hubs.codec;
-	struct wm8994_pdata *pdata = wm8994->pdata;
+	struct wm8994 *control = wm8994->wm8994;
+	struct wm8994_pdata *pdata = &control->pdata;
 	int ret, i;
 
 	if (!pdata)
@@ -3305,6 +3354,8 @@ static void wm8994_handle_pdata(struct wm8994_priv *wm8994)
 				      pdata->lineout2fb,
 				      pdata->jd_scthr,
 				      pdata->jd_thr,
+				      pdata->micb1_delay,
+				      pdata->micb2_delay,
 				      pdata->micbias1_lvl,
 				      pdata->micbias2_lvl);
 
@@ -3546,7 +3597,7 @@ static void wm1811_micd_stop(struct snd_soc_codec *codec)
 
 	mutex_unlock(&wm8994->accdet_lock);
 
-	if (wm8994->pdata->jd_ext_cap)
+	if (wm8994->wm8994->pdata.jd_ext_cap)
 		snd_soc_dapm_disable_pin(&codec->dapm,
 					 "MICBIAS2");
 }
@@ -3613,6 +3664,7 @@ static void wm8958_mic_id(void *data, u16 status)
 	if (!(status & WM8958_MICD_STS)) {
 		/* If nothing present then clear our statuses */
 		dev_dbg(codec->dev, "Detected open circuit\n");
+
 		schedule_delayed_work(&wm8994->open_circuit_work,
 				      msecs_to_jiffies(2500));
 		return;
@@ -3640,9 +3692,6 @@ static void wm8958_mic_id(void *data, u16 status)
 
 		wm8958_micd_set_rate(codec);
 
-		snd_soc_jack_report(wm8994->micdet[0].jack, SND_JACK_HEADPHONE,
-				    SND_JACK_HEADSET);
-
 		/* If we have jackdet that will detect removal */
 		wm1811_micd_stop(codec);
 
@@ -3656,18 +3705,17 @@ static void wm1811_mic_work(struct work_struct *work)
 {
 	struct wm8994_priv *wm8994 = container_of(work, struct wm8994_priv,
 						  mic_work.work);
+	struct wm8994 *control = wm8994->wm8994;
 	struct snd_soc_codec *codec = wm8994->hubs.codec;
 
 	pm_runtime_get_sync(codec->dev);
 
-	mutex_lock(&codec->mutex);
 	/* If required for an external cap force MICBIAS on */
-	if (wm8994->pdata->jd_ext_cap) {
+	if (control->pdata.jd_ext_cap) {
 		snd_soc_dapm_force_enable_pin(&codec->dapm,
 					      "MICBIAS2");
 		snd_soc_dapm_sync(&codec->dapm);
 	}
-	mutex_unlock(&codec->mutex);
 
 	mutex_lock(&wm8994->accdet_lock);
 
@@ -3698,6 +3746,7 @@ static void wm1811_mic_work(struct work_struct *work)
 static irqreturn_t wm1811_jackdet_irq(int irq, void *data)
 {
 	struct wm8994_priv *wm8994 = data;
+	struct wm8994 *control = wm8994->wm8994;
 	struct snd_soc_codec *codec = wm8994->hubs.codec;
 	int reg, delay;
 	bool present;
@@ -3734,7 +3783,7 @@ static irqreturn_t wm1811_jackdet_irq(int irq, void *data)
 		snd_soc_update_bits(codec, WM1811_JACKDET_CTRL,
 				    WM1811_JACKDET_DB, 0);
 
-		delay = wm8994->pdata->micdet_delay;
+		delay = control->pdata.micdet_delay;
 		schedule_delayed_work(&wm8994->mic_work,
 				      msecs_to_jiffies(delay));
 	} else {
@@ -3747,7 +3796,7 @@ static irqreturn_t wm1811_jackdet_irq(int irq, void *data)
 		snd_soc_update_bits(codec, WM1811_JACKDET_CTRL,
 				    WM1811_JACKDET_DB, WM1811_JACKDET_DB);
 
-		wm8994->mic_detecting = true;
+		wm8994->mic_detecting = false;
 		wm8994->jack_mic = false;
 		snd_soc_update_bits(codec, WM8958_MIC_DETECT_1,
 				    WM8958_MICD_ENA, 0);
@@ -3756,11 +3805,9 @@ static irqreturn_t wm1811_jackdet_irq(int irq, void *data)
 
 	mutex_unlock(&wm8994->accdet_lock);
 
-	mutex_lock(&codec->mutex);
 	/* Turn off MICBIAS if it was on for an external cap */
-	if (wm8994->pdata->jd_ext_cap && !present)
+	if (control->pdata.jd_ext_cap && !present)
 		snd_soc_dapm_disable_pin(&codec->dapm, "MICBIAS2");
-	mutex_unlock(&codec->mutex);
 
 	if (present)
 		snd_soc_jack_report(wm8994->micdet[0].jack,
@@ -3843,8 +3890,8 @@ int wm8958_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 		wm8958_micd_set_rate(codec);
 
 		/* Detect microphones and short circuits by default */
-		if (wm8994->pdata->micd_lvl_sel)
-			micd_lvl_sel = wm8994->pdata->micd_lvl_sel;
+		if (control->pdata.micd_lvl_sel)
+			micd_lvl_sel = control->pdata.micd_lvl_sel;
 		else
 			micd_lvl_sel = 0x41;
 
@@ -3890,6 +3937,21 @@ int wm8958_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 }
 EXPORT_SYMBOL_GPL(wm8958_mic_detect);
 
+int wm8958_micd_set_custom_rate(struct snd_soc_codec *codec,
+		wm8958_micd_set_custom_rate_cb micd_custom_rate_cb,
+		void *micd_custom_rate_cb_data)
+{
+	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
+
+	if (micd_custom_rate_cb) {
+		wm8994->micd_custom_rate_cb = micd_custom_rate_cb;
+		wm8994->micd_custom_rate_cb_data = micd_custom_rate_cb_data;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(wm8958_micd_set_custom_rate);
+
 static void wm8958_mic_work(struct work_struct *work)
 {
 	struct wm8994_priv *wm8994 = container_of(work,
@@ -3912,10 +3974,32 @@ static void wm8958_mic_work(struct work_struct *work)
 	dev_crit(codec->dev, "MIC WORK %x DONE\n", wm8994->mic_status);
 }
 
+static void wm8958_micd_set_custom_rate_work(struct work_struct *work)
+{
+	struct wm8994_priv *wm8994 = container_of(work,
+						  struct wm8994_priv,
+						  micd_set_custom_rate_work.work);
+	struct snd_soc_codec *codec = wm8994->hubs.codec;
+
+	dev_dbg(codec->dev, "%s: Set custom rates\n", __func__);
+
+	pm_runtime_get_sync(codec->dev);
+
+	mutex_lock(&wm8994->accdet_lock);
+
+	wm8994->micd_custom_rate_cb(wm8994->micd_custom_rate_cb_data);
+
+	mutex_unlock(&wm8994->accdet_lock);
+
+	pm_runtime_put(codec->dev);
+
+}
+
 static irqreturn_t wm8958_mic_irq(int irq, void *data)
 {
 	struct wm8994_priv *wm8994 = data;
 	struct snd_soc_codec *codec = wm8994->hubs.codec;
+	struct wm8994 *control = wm8994->wm8994;
 	int reg, count, ret, id_delay;
 
 	/*
@@ -3957,7 +4041,7 @@ static irqreturn_t wm8958_mic_irq(int irq, void *data)
 	} while (count--);
 
 	if (count == 0)
-		dev_warn(codec->dev, "No impedence range reported for jack\n");
+		dev_warn(codec->dev, "No impedance range reported for jack\n");
 
 #ifndef CONFIG_SND_SOC_WM8994_MODULE
 	trace_snd_soc_jack_irq(dev_name(codec->dev));
@@ -3982,16 +4066,23 @@ static irqreturn_t wm8958_mic_irq(int irq, void *data)
 	}
 
 	wm8994->mic_status = reg;
-	if (wm8994->pdata)
-		id_delay = wm8994->pdata->mic_id_delay;
-	else
-		id_delay = 0;
+	id_delay = wm8994->wm8994->pdata.mic_id_delay;
 
-	if (wm8994->mic_detecting)
+	if (wm8994->mic_detecting) {
+		if (control->type == WM8958) {
+			/* Set mic-bias high during detection phase (micb_en_delay) */
+			/* 0 == Continuous */
+			dev_dbg(codec->dev, "Set MICBIAS High, for micb_en_delay time\n");
+			snd_soc_update_bits(codec, WM8958_MIC_DETECT_1,
+				    WM8958_MICD_BIAS_STARTTIME_MASK |
+				    WM8958_MICD_RATE_MASK, 0);
+		}
+
 		schedule_delayed_work(&wm8994->mic_complete_work,
 				      msecs_to_jiffies(id_delay));
-	else
+	} else {
 		wm8958_button_det(codec, reg);
+	}
 
 out:
 	pm_runtime_put(codec->dev);
@@ -4030,6 +4121,7 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 	struct wm8994 *control = dev_get_drvdata(codec->dev->parent);
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
 	struct snd_soc_dapm_context *dapm = &codec->dapm;
+	unsigned int dcs_done_irq;
 	unsigned int reg;
 	int ret, i;
 
@@ -4051,6 +4143,10 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 	case WM1811:
 		INIT_DELAYED_WORK(&wm8994->mic_work, wm1811_mic_work);
 		break;
+	case WM8958:
+		INIT_DELAYED_WORK(&wm8994->micd_set_custom_rate_work,
+					wm8958_micd_set_custom_rate_work);
+		break;
 	default:
 		break;
 	}
@@ -4060,11 +4156,7 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 	for (i = 0; i < ARRAY_SIZE(wm8994->fll_locked); i++)
 		init_completion(&wm8994->fll_locked[i]);
 
-	if (wm8994->pdata && wm8994->pdata->micdet_irq)
-		wm8994->micdet_irq = wm8994->pdata->micdet_irq;
-	else if (wm8994->pdata && wm8994->pdata->irq_base)
-		wm8994->micdet_irq = wm8994->pdata->irq_base +
-				     WM8994_IRQ_MIC1_DET;
+	wm8994->micdet_irq = control->pdata.micdet_irq;
 
 	pm_runtime_enable(codec->dev);
 	pm_runtime_idle(codec->dev);
@@ -4073,15 +4165,14 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 	codec->dapm.idle_bias_off = 1;
 
 	/* Set revision-specific configuration */
-	wm8994->revision = snd_soc_read(codec, WM8994_CHIP_REVISION);
 	switch (control->type) {
 	case WM8994:
 		/* Single ended line outputs should have VMID on. */
-		if (wm8994->pdata && (!wm8994->pdata->lineout1_diff ||
-		    !wm8994->pdata->lineout2_diff))
+		if (!control->pdata.lineout1_diff ||
+		    !control->pdata.lineout2_diff)
 			codec->dapm.idle_bias_off = 0;
 
-		switch (wm8994->revision) {
+		switch (control->revision) {
 		case 2:
 		case 3:
 			wm8994->hubs.dcs_codes_l = -5;
@@ -4100,7 +4191,7 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 		wm8994->hubs.dcs_readback_mode = 1;
 		wm8994->hubs.hp_startup_mode = 1;
 
-		switch (wm8994->revision) {
+		switch (control->revision) {
 		case 0:
 			break;
 		default:
@@ -4115,6 +4206,7 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 		wm8994->hubs.hp_startup_mode = 1;
 		wm8994->hubs.no_cache_dac_hp_direct = true;
 		wm8994->fll_byp = true;
+
 		wm8994->hubs.dcs_codes_l = -9;
 		wm8994->hubs.dcs_codes_r = -7;
 
@@ -4133,6 +4225,9 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 	wm8994_request_irq(wm8994->wm8994, WM8994_IRQ_TEMP_SHUT,
 			   wm8994_temp_shut, "Thermal shutdown", codec);
 
+	dcs_done_irq = regmap_irq_get_virq(wm8994->wm8994->irq_data,
+					   WM8994_IRQ_DCS_DONE);
+	irq_set_status_flags(dcs_done_irq, IRQ_NOAUTOEN);
 	ret = wm8994_request_irq(wm8994->wm8994, WM8994_IRQ_DCS_DONE,
 				 wm_hubs_dcs_done, "DC servo done",
 				 &wm8994->hubs);
@@ -4193,12 +4288,16 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 				dev_warn(codec->dev,
 					 "Failed to request Mic detect IRQ: %d\n",
 					 ret);
+		} else {
+			wm8994_request_irq(wm8994->wm8994, WM8994_IRQ_MIC1_DET,
+					   wm8958_mic_irq, "Mic detect",
+					   wm8994);
 		}
 	}
 
 	switch (control->type) {
 	case WM1811:
-		if (control->cust_id > 1 || wm8994->revision > 1) {
+		if (control->cust_id > 1 || control->revision > 1) {
 			ret = wm8994_request_irq(wm8994->wm8994,
 						 WM8994_IRQ_GPIO(6),
 						 wm1811_jackdet_irq, "JACKDET",
@@ -4235,7 +4334,6 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 	}
 	if ((reg & WM8994_GPN_FN_MASK) != WM8994_GP_FN_PIN_SPECIFIC) {
 		wm8994->lrclk_shared[0] = 1;
-		wm8994_dai[0].symmetric_rates = 1;
 	} else {
 		wm8994->lrclk_shared[0] = 0;
 	}
@@ -4312,7 +4410,7 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 	case WM8994:
 		snd_soc_dapm_new_controls(dapm, wm8994_specific_dapm_widgets,
 					  ARRAY_SIZE(wm8994_specific_dapm_widgets));
-		if (wm8994->revision < 4) {
+		if (control->revision < 4) {
 			snd_soc_dapm_new_controls(dapm, wm8994_lateclk_revd_widgets,
 						  ARRAY_SIZE(wm8994_lateclk_revd_widgets));
 			snd_soc_dapm_new_controls(dapm, wm8994_adc_revd_widgets,
@@ -4333,7 +4431,7 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 				     ARRAY_SIZE(wm8958_snd_controls));
 		snd_soc_dapm_new_controls(dapm, wm8958_dapm_widgets,
 					  ARRAY_SIZE(wm8958_dapm_widgets));
-		if (wm8994->revision < 1) {
+		if (control->revision < 1) {
 			snd_soc_dapm_new_controls(dapm, wm8994_lateclk_revd_widgets,
 						  ARRAY_SIZE(wm8994_lateclk_revd_widgets));
 			snd_soc_dapm_new_controls(dapm, wm8994_adc_revd_widgets,
@@ -4365,6 +4463,7 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 	}
 
 	wm_hubs_add_analogue_routes(codec, 0, 0);
+	enable_irq(dcs_done_irq);
 	snd_soc_dapm_add_routes(dapm, intercon, ARRAY_SIZE(intercon));
 
 	switch (control->type) {
@@ -4372,7 +4471,7 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 		snd_soc_dapm_add_routes(dapm, wm8994_intercon,
 					ARRAY_SIZE(wm8994_intercon));
 
-		if (wm8994->revision < 4) {
+		if (control->revision < 4) {
 			snd_soc_dapm_add_routes(dapm, wm8994_revd_intercon,
 						ARRAY_SIZE(wm8994_revd_intercon));
 			snd_soc_dapm_add_routes(dapm, wm8994_lateclk_revd_intercon,
@@ -4383,7 +4482,7 @@ static int wm8994_codec_probe(struct snd_soc_codec *codec)
 		}
 		break;
 	case WM8958:
-		if (wm8994->revision < 1) {
+		if (control->revision < 1) {
 			snd_soc_dapm_add_routes(dapm, wm8994_intercon,
 						ARRAY_SIZE(wm8994_intercon));
 			snd_soc_dapm_add_routes(dapm, wm8994_revd_intercon,
@@ -4490,7 +4589,7 @@ static struct snd_soc_codec_driver soc_codec_dev_wm8994 = {
 	.set_bias_level = wm8994_set_bias_level,
 };
 
-static int __devinit wm8994_probe(struct platform_device *pdev)
+static int wm8994_probe(struct platform_device *pdev)
 {
 	struct wm8994_priv *wm8994;
 
@@ -4501,13 +4600,12 @@ static int __devinit wm8994_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, wm8994);
 
 	wm8994->wm8994 = dev_get_drvdata(pdev->dev.parent);
-	wm8994->pdata = dev_get_platdata(pdev->dev.parent);
 
 	return snd_soc_register_codec(&pdev->dev, &soc_codec_dev_wm8994,
 			wm8994_dai, ARRAY_SIZE(wm8994_dai));
 }
 
-static int __devexit wm8994_remove(struct platform_device *pdev)
+static int wm8994_remove(struct platform_device *pdev)
 {
 	snd_soc_unregister_codec(&pdev->dev);
 	return 0;
@@ -4517,6 +4615,11 @@ static int __devexit wm8994_remove(struct platform_device *pdev)
 static int wm8994_suspend(struct device *dev)
 {
 	struct wm8994_priv *wm8994 = dev_get_drvdata(dev);
+	struct wm8994 *control = wm8994->wm8994;
+	struct snd_soc_codec *codec = wm8994->hubs.codec;
+	unsigned int reg;
+	int ret;
+
 
 	/* Drop down to power saving mode when system is suspended */
 	if (wm8994->jackdet && !wm8994->active_refcount)
@@ -4524,17 +4627,54 @@ static int wm8994_suspend(struct device *dev)
 				   WM1811_JACKDET_MODE_MASK,
 				   wm8994->jackdet_mode);
 
+	/* Disable the MIC Detection when suspended */
+	if ((control->type == WM8958) && wm8994->mic_id_cb) {
+
+		reg = snd_soc_read(codec, WM8958_MIC_DETECT_3);
+
+		dev_dbg(codec->dev, "%s: WM8958_MIC_DETECT_3 0x%x\n", __func__, reg);
+
+		if ((reg & WM8958_MICD_VALID) &&  !(reg & WM8958_MICD_STS)) {
+
+			ret = regcache_sync_region(wm8994->wm8994->regmap,
+					WM8994_INTERRUPT_CONTROL,
+					WM8994_INTERRUPT_CONTROL);
+			if (ret != 0)
+				dev_err(dev, "Failed to sync register: %d\n", ret);
+			synchronize_irq(control->irq);
+
+			dev_dbg(codec->dev, "Disable MIC Detection!!!\n");
+			snd_soc_update_bits(codec, WM8958_MIC_DETECT_1,
+						WM8958_MICD_ENA, 0);
+
+			snd_soc_dapm_disable_pin(&codec->dapm, "CLK_SYS");
+			snd_soc_dapm_sync(&codec->dapm);
+		}
+	}
+
 	return 0;
 }
 
 static int wm8994_resume(struct device *dev)
 {
 	struct wm8994_priv *wm8994 = dev_get_drvdata(dev);
+	struct wm8994 *control = wm8994->wm8994;
+	struct snd_soc_codec *codec = wm8994->hubs.codec;
 
 	if (wm8994->jackdet && wm8994->jackdet_mode)
 		regmap_update_bits(wm8994->wm8994->regmap, WM8994_ANTIPOP_2,
 				   WM1811_JACKDET_MODE_MASK,
 				   WM1811_JACKDET_MODE_AUDIO);
+
+	/* Enable the MIC Detection when resumed */
+	if ((control->type == WM8958) && wm8994->mic_id_cb) {
+		dev_dbg(codec->dev, "Enable MIC Detection!!!\n");
+		snd_soc_dapm_force_enable_pin(&codec->dapm, "CLK_SYS");
+		snd_soc_dapm_sync(&codec->dapm);
+
+		snd_soc_update_bits(codec, WM8958_MIC_DETECT_1,
+					WM8958_MICD_ENA, WM8958_MICD_ENA);
+	}
 
 	return 0;
 }
@@ -4551,7 +4691,7 @@ static struct platform_driver wm8994_codec_driver = {
 		.pm = &wm8994_pm_ops,
 	},
 	.probe = wm8994_probe,
-	.remove = __devexit_p(wm8994_remove),
+	.remove = wm8994_remove,
 };
 
 module_platform_driver(wm8994_codec_driver);

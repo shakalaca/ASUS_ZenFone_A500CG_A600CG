@@ -148,7 +148,7 @@ void SystraceCreateFS(void)
 	struct dentry *capture_sgx_hwperfdata_ret;
 	
 	pvrdir_ret = debugfs_create_dir("pvr", NULL);
-	capture_sgx_hwperfdata_ret = debugfs_create_bool("capture_hwperfdata", 0666, pvrdir_ret, &capture_hwperfdata);
+	capture_sgx_hwperfdata_ret = debugfs_create_bool("gpu_tracing_on", S_IFREG | S_IRUGO | S_IWUSR, pvrdir_ret, &capture_hwperfdata);
 }
 
 void SystraceDestroyFS(void) 

@@ -25,7 +25,7 @@
 #include <media/v4l2-subdev.h>
 
 #define LM3559_NAME    "lm3559"
-#define LM3559_ID      3559
+#define LM3560_NAME    "lm3560"
 
 #define	v4l2_queryctrl_entry_integer(_id, _name,\
 		_minimum, _maximum, _step, \

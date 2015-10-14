@@ -238,10 +238,12 @@ typedef struct _ION_IMPORT_DATA_
 	/* Array of physical addresses represented by these buffers */
 	IMG_SYS_PHYADDR *psSysPhysAddr;
 
+#if defined(PDUMP)
 	/* If ui32NumBuffers is 1 and ion_map_kernel() is implemented by the
 	 * allocator, this may be non-NULL. Otherwise it will be NULL.
 	 */
 	IMG_PVOID pvKernAddr0;
+#endif /* defined(PDUMP) */
 }
 ION_IMPORT_DATA;
 
@@ -396,6 +398,7 @@ PVRSRV_ERROR IonImportBufferAndAcquirePhysAddr(IMG_HANDLE hIonDev,
 	*pui32PageCount = ui32PageCount;
 	*ppsSysPhysAddr = psImportData->psSysPhysAddr;
 
+#if defined(PDUMP)
 	if(ui32NumFDs == 1)
 	{
 		IMG_PVOID pvKernAddr0;
@@ -410,6 +413,7 @@ PVRSRV_ERROR IonImportBufferAndAcquirePhysAddr(IMG_HANDLE hIonDev,
 		*ppvKernAddr0 = pvKernAddr0;
 	}
 	else
+#endif /* defined(PDUMP) */
 	{
 		*ppvKernAddr0 = NULL;
 	}
@@ -434,10 +438,12 @@ IMG_VOID IonUnimportBufferAndReleasePhysAddr(IMG_HANDLE hPriv)
 	ION_IMPORT_DATA *psImportData = hPriv;
 	IMG_UINT32 i;
 
+#if defined(PDUMP)
 	if (psImportData->pvKernAddr0)
 	{
 		ion_unmap_kernel(psImportData->psIonClient, psImportData->apsIonHandle[0]);
 	}
+#endif /* defined(PDUMP) */
 
 	for(i = 0; i < psImportData->ui32NumIonHandles; i++)
 	{

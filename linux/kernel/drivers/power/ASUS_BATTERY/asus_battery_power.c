@@ -19,10 +19,10 @@
 #include "asus_battery.h"
 #include "asus_battery_proc_fs.h"
 #include "smb347_external_include.h"
-//#include <linux/HWVersion.h>
+#include <linux/HWVersion.h>
 #include <linux/wakelock.h>
 #include <linux/usb/penwell_otg.h>
-#include "../intel_mdf_charger.h"
+#include "intel_mdf_charger.h"
 #include <asm/intel_scu_pmic.h>
 #include <asm/intel_mid_gpadc.h>
 
@@ -35,6 +35,7 @@ module_param(battery_current , uint, 0644);
 module_param(battery_remaining_capacity , uint, 0644);
 
 //extern int Read_HW_ID(void);
+extern int Read_PROJ_ID(void);
 extern int entry_mode;
 
 //struct delayed_work battery_low_init_work;		//battery low init
@@ -47,6 +48,10 @@ struct wake_lock wakelock;
 struct wake_lock wakelock_t;    // for wake_lokc_timout() useage
 
 static int temp_status=1; // 0:<0, 1: 0-45, 2:45-60, 3:>60
+unsigned int temp_status_502=2; // 0:<0, 1: 0-10, 2: 10-45, 3:45-60, 4:>60
+EXPORT_SYMBOL(temp_status_502);
+static int high_temp_status_502=0;  // 0: 4.35V, 1:4.11V
+static int cable_status_old=0;
 
 DEFINE_MUTEX(batt_info_mutex);
 
@@ -162,22 +167,30 @@ ipcread_err:
 }
 
 #ifdef CONFIG_ASUS_FACTORY_MODE
-int asus_charging_toggle_read(char *page, char **start, off_t off, int count, int *eof, void *date)
+int asus_charging_toggle_read(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
-    struct battery_info_reply tmp_batt_info;
-    int len = 0;
+	struct battery_info_reply tmp_batt_info;
+	int len = 0;
+	ssize_t ret = 0;
+	char *buff;
 
-    mutex_lock(&batt_info_mutex);
-    tmp_batt_info = batt_info;
-    mutex_unlock(&batt_info_mutex);
+	buff = kmalloc(100,GFP_KERNEL);
+  	if(!buff)
+		return -ENOMEM;
 
-    BAT_DBG("%s:\n", __func__);
+	mutex_lock(&batt_info_mutex);
+	tmp_batt_info = batt_info;
+	mutex_unlock(&batt_info_mutex);
 
-    len = sprintf(page, "%d\n", tmp_batt_info.eng_charging_limit);
-    return len;
+	BAT_DBG("%s:\n", __func__);
+
+	len += sprintf(buff + len, "%d\n", tmp_batt_info.eng_charging_limit);
+	ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+  	kfree(buff);
+  	return ret;
 }
 
-int asus_charging_toggle_write(struct file *file, const char *buffer, unsigned long count, void *data)
+int asus_charging_toggle_write(struct file *filp, const char __user *buffer, size_t count, loff_t *ppos)
 {
     struct battery_info_reply tmp_batt_info;
     bool eng_charging_limit = true;
@@ -210,7 +223,7 @@ int asus_charging_toggle_write(struct file *file, const char *buffer, unsigned l
     return count;
 }
 
-int asus_charging_for_gague_toggle_read(char *page, char **start, off_t off, int count, int *eof, void *date)
+int asus_charging_for_gague_toggle_read(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
     int len = 0;
 
@@ -218,7 +231,7 @@ int asus_charging_for_gague_toggle_read(char *page, char **start, off_t off, int
     return len;
 }
 
-int asus_charging_for_gague_toggle_write(struct file *file, const char *buffer, unsigned long count, void *data)
+int asus_charging_for_gague_toggle_write(struct file *filp, const char __user *buffer, size_t count, loff_t *ppos)
 {
     struct battery_info_reply tmp_batt_info;
     //bool eng_charging_limit = true;
@@ -255,32 +268,38 @@ int asus_charging_for_gague_toggle_write(struct file *file, const char *buffer, 
 
 int init_asus_for_gague_charging_toggle(void)
 {
-    struct proc_dir_entry *entry=NULL;
+	struct proc_dir_entry *entry=NULL;
+	int ent=0;
 
-    entry = create_proc_entry("asus_eng_for_gague_charging_limit", 0666, NULL);
-    if (!entry) {
-        BAT_DBG_E("Unable to create asus_charging_toggle\n");
-        return -EINVAL;
-    }
-    entry->read_proc = asus_charging_for_gague_toggle_read;
-    entry->write_proc = asus_charging_for_gague_toggle_write;
+	static struct file_operations asus_eng_for_gague_charging_limit_fop = {
+	    	.read = asus_charging_for_gague_toggle_read,
+		.write = asus_charging_for_gague_toggle_write,
+	};
+	ent = proc_create("asus_eng_for_gague_charging_limit", 0666,NULL, &asus_eng_for_gague_charging_limit_fop); 
+	if(!ent)
+	{
+		BAT_DBG_E("create /proc/asus_eng_for_gague_charging_limit fail\n");
+	}
 
-    return 0;
+	return 0;
 }
 
 int init_asus_charging_toggle(void)
 {
-    struct proc_dir_entry *entry=NULL;
+	struct proc_dir_entry *entry=NULL;
+	int ent=0;
 
-    entry = create_proc_entry("charger_limit_enable", 0666, NULL);
-    if (!entry) {
-        BAT_DBG_E("Unable to create asus_charging_toggle\n");
-        return -EINVAL;
-    }
-    entry->read_proc = asus_charging_toggle_read;
-    entry->write_proc = asus_charging_toggle_write;
+	static struct file_operations charger_limit_enable_fop = {
+	    	.read = asus_charging_toggle_read,
+		.write = asus_charging_toggle_write,
+	};
+	ent = proc_create("charger_limit_enable", 0666,NULL, &charger_limit_enable_fop); 
+	if(!ent)
+	{
+		BAT_DBG_E("create /proc/charger_limit_enable fail\n");
+	}
 
-    return 0;
+	return 0;
 }
 
 #endif
@@ -288,22 +307,30 @@ int init_asus_charging_toggle(void)
 
 
 //++Sewell+++ charging toggle interface for thermal
-int thermal_charging_toggle_read(char *page, char **start, off_t off, int count, int *eof, void *date)
+int thermal_charging_toggle_read(struct file *filp, char __user *buffer, size_t count, loff_t *ppos)
 {
-    struct battery_info_reply tmp_batt_info;
-    int len = 0;
+	struct battery_info_reply tmp_batt_info;
+	int len = 0;
+	ssize_t ret = 0;
+	char *buff;
 
-    mutex_lock(&batt_info_mutex);
-    tmp_batt_info = batt_info;
-    mutex_unlock(&batt_info_mutex);
+	buff = kmalloc(100,GFP_KERNEL);
+  	if(!buff)
+		return -ENOMEM;
 
-    BAT_DBG("%s:\n", __func__);
+	mutex_lock(&batt_info_mutex);
+	tmp_batt_info = batt_info;
+	mutex_unlock(&batt_info_mutex);
 
-    len = sprintf(page, "%d\n", tmp_batt_info.thermal_charging_limit);
-    return len;
+	BAT_DBG("%s:\n", __func__);
+
+	len += sprintf(buff + len, "%d\n", tmp_batt_info.thermal_charging_limit);
+	ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+  	kfree(buff);
+  	return ret;
 }
 
-int thermal_charging_toggle_write(struct file *file, const char *buffer, unsigned long count, void *data)
+int thermal_charging_toggle_write(struct file *filp, const char __user *buffer, size_t count, loff_t *ppos)
 {
     struct battery_info_reply tmp_batt_info;
     bool thermal_charging_limit = true;
@@ -336,17 +363,21 @@ int thermal_charging_toggle_write(struct file *file, const char *buffer, unsigne
 
 int init_thermal_charging_toggle(void)
 {
-    struct proc_dir_entry *entry=NULL;
 
-    entry = create_proc_entry("thermal_charging_limit", 0600, NULL);
-    if (!entry) {
-        BAT_DBG_E("Unable to create thermal_charging_toggle\n");
-        return -EINVAL;
-    }
-    entry->read_proc = thermal_charging_toggle_read;
-    entry->write_proc = thermal_charging_toggle_write;
+	struct proc_dir_entry *entry=NULL;
+	int ent=0;
 
-    return 0;
+	static struct file_operations thermal_charging_limit_fop = {
+	    	.read = thermal_charging_toggle_read,
+		.write = thermal_charging_toggle_write,
+	};
+	ent = proc_create("thermal_charging_limit", 0666,NULL, &thermal_charging_limit_fop); 
+	if(!ent)
+	{
+		BAT_DBG_E("create /proc/thermal_charging_limit fail\n");
+	}
+
+	return 0;
 }
 
 
@@ -437,8 +468,8 @@ int asus_battery_low_event()
         mutex_unlock(&batt_info_mutex);
 
         power_supply_changed(&asus_power_supplies[CHARGER_BATTERY]);
-        power_supply_changed(&asus_power_supplies[CHARGER_AC]);
-        power_supply_changed(&asus_power_supplies[CHARGER_USB]);
+        //power_supply_changed(&asus_power_supplies[CHARGER_AC]);
+        //power_supply_changed(&asus_power_supplies[CHARGER_USB]);
 
         return 0;
 }
@@ -629,41 +660,103 @@ static int asus_battery_update_status_no_mutex(int percentage)
 			/* A500CG limit to protect battery from damaged when battery temperature is too low or High*/
 			temperature = asus_battery_update_temp_no_mutex();
                         if ((temperature != ERROR_CODE_I2C_FAILURE)&&(tmp_batt_info.thermal_charging_limit)) {
-                                if (temperature <= 0) {
-						smb347_set_voltage(false);
-                                        smb347_charging_toggle(false);
-                                        status = POWER_SUPPLY_STATUS_DISCHARGING;
-                                        temp_status = 0;
-                                        goto final;
-                                } else if (temperature > 0 && temperature <= 450) {
-						if(temp_status==0&&temperature<50) {
-							smb347_charging_toggle(false);
-							status = POWER_SUPPLY_STATUS_DISCHARGING;
-							goto final;
-						}else if(temp_status==2&&temperature>400) {
-							smb347_set_voltage(true);
-						}else {
+					if(PROJ_ID_A502CG == Read_PROJ_ID()) {
+						if (temperature <= 15) {
+							temp_status_502 = 0;
+							smb347_set_fast_charge();
 							smb347_set_voltage(false);
-							smb347_charging_toggle(true);
-							temp_status = 1;
-						}
-                                } else if (temperature > 450 && temperature <= 600) {
-						if(temp_status==3&&temperature>550) {
 							smb347_charging_toggle(false);
 							status = POWER_SUPPLY_STATUS_DISCHARGING;
+							high_temp_status_502 = 0;
 							goto final;
-						}else {
+						} else if (temperature > 15 && temperature <= 100) {
+							if(temp_status_502==0&&temperature<45) {
+								smb347_charging_toggle(false);
+								status = POWER_SUPPLY_STATUS_DISCHARGING;
+								goto final;
+							}else {
+								high_temp_status_502 = 0;
+								temp_status_502 = 1;
+								smb347_set_fast_charge(); //limit current
+								smb347_set_voltage(false);
+								smb347_charging_toggle(true);
+							}
+						} else if (temperature > 100 && temperature <= 450) {
+							if((temp_status_502==1&&temperature<130)||(temp_status_502==3&&temperature>420)) {
+								goto final;
+							}else {
+								temp_status_502 = 2;
+								smb347_set_fast_charge();
+								smb347_set_voltage(false);
+								smb347_charging_toggle(true);
+								high_temp_status_502 = 0;
+							}
+						} else if (temperature > 450 && temperature <= 600) {
+							if(temp_status_502==4&&temperature>570) {
+								smb347_charging_toggle(false);
+								status = POWER_SUPPLY_STATUS_DISCHARGING;
+								goto final;
+							}else {
+								if((high_temp_status_502==0)&&(tmp_batt_info.batt_volt>=4110)) {
+									temp_status_502 = 3;
+									smb347_set_fast_charge();
+									smb347_set_voltage(false);
+									smb347_charging_toggle(false);
+								}else {
+									temp_status_502 = 3;
+									smb347_set_fast_charge();
+									smb347_set_voltage(true);
+									smb347_charging_toggle(true);
+									high_temp_status_502 = 1;
+								}
+							}
+						} else {
+							temp_status_502 = 4;
+							smb347_set_fast_charge();
 							smb347_set_voltage(true);
-							smb347_charging_toggle(true);
-							temp_status = 2;
+	                                        smb347_charging_toggle(false);
+							status = POWER_SUPPLY_STATUS_DISCHARGING;
+							high_temp_status_502 = 0;
+							goto final;
 						}
-                                } else {
-                                        smb347_set_voltage(true);
-                                        smb347_charging_toggle(false);
-                                        status = POWER_SUPPLY_STATUS_DISCHARGING;
-						temp_status = 3;
-                                        goto final;
-                                }
+						//BAT_DBG("%s , temperature = %d, temp_status_502 = %d\n", __func__, temperature, temp_status_502);
+					}else {
+						if (temperature <= 0) {
+							smb347_set_voltage(false);
+							smb347_charging_toggle(false);
+							status = POWER_SUPPLY_STATUS_DISCHARGING;
+							temp_status = 0;
+							goto final;
+						} else if (temperature > 0 && temperature <= 450) {
+							if(temp_status==0&&temperature<50) {
+								smb347_charging_toggle(false);
+								status = POWER_SUPPLY_STATUS_DISCHARGING;
+								goto final;
+							}else if(temp_status==2&&temperature>400) {
+								smb347_set_voltage(true);
+							}else {
+								smb347_set_voltage(false);
+								smb347_charging_toggle(true);
+								temp_status = 1;
+							}
+						} else if (temperature > 450 && temperature <= 600) {
+							if(temp_status==3&&temperature>550) {
+								smb347_charging_toggle(false);
+								status = POWER_SUPPLY_STATUS_DISCHARGING;
+								goto final;
+							}else {
+								smb347_set_voltage(true);
+								smb347_charging_toggle(true);
+								temp_status = 2;
+							}
+						} else {
+							smb347_set_voltage(true);
+	                                        smb347_charging_toggle(false);
+							status = POWER_SUPPLY_STATUS_DISCHARGING;
+							temp_status = 3;
+							goto final;
+						}
+					}
                         }
                         else if(temperature != ERROR_CODE_I2C_FAILURE) {
 					/*thermal protection off*/
@@ -672,8 +765,14 @@ static int asus_battery_update_status_no_mutex(int percentage)
 			    }
                         else
                                 status = POWER_SUPPLY_STATUS_UNKNOWN;
-                    if (cable_status == USB_ADAPTER && smb347_get_aicl_result() <= 0x01) {// AICL result < 500mA
-                        BAT_DBG("AICL get result, AICL results < 500mA \n");
+			    if(PROJ_ID_A502CG == Read_PROJ_ID()) {
+					if (cable_status == USB_ADAPTER && smb347_get_aicl_result() <= 0x01 && cable_status_old!=NO_CABLE ) {
+						BAT_DBG("AICL get result in A502CG, AICL results < 500mA, cable_status=%d\n", cable_status);
+                        			smb347_AC_in_current();
+					}
+			    }
+			    else if (cable_status == USB_ADAPTER && smb347_get_aicl_result() <= 0x01 && tmp_batt_info.batt_volt>=3000 ) {// AICL result < 500mA
+                        BAT_DBG("AICL get result, AICL results < 500mA, voltage=%d\n", tmp_batt_info.batt_volt);
                         smb347_AC_in_current();
                     }
                 }
@@ -735,7 +834,7 @@ final:
 			gpio_direction_output(39, 0);
 		}
 	}
-
+	cable_status_old = cable_status;
         return status;
 }
 
@@ -859,8 +958,8 @@ void asus_update_all(void)
         asus_battery_get_info_no_mutex();
         // if the power source changes, all power supplies may change state 
         power_supply_changed(&asus_power_supplies[CHARGER_BATTERY]);
-        power_supply_changed(&asus_power_supplies[CHARGER_AC]);
-        power_supply_changed(&asus_power_supplies[CHARGER_USB]);
+        //power_supply_changed(&asus_power_supplies[CHARGER_AC]);
+        //power_supply_changed(&asus_power_supplies[CHARGER_USB]);
 
         mutex_unlock(&batt_info_mutex);
 }
@@ -1135,13 +1234,13 @@ int asus_register_power_supply(struct device *dev, struct dev_func *tbl)
         //register to power supply driver
         ret = power_supply_register(dev, &asus_power_supplies[CHARGER_BATTERY]);
         if (ret) { BAT_DBG_E("Fail to register battery\n"); goto batt_err_reg_fail_battery; }
-		
+#if 0 // register in charger driver
         ret = power_supply_register(dev, &asus_power_supplies[CHARGER_USB]);
         if (ret) { BAT_DBG_E("Fail to register USB\n"); goto batt_err_reg_fail_usb; }
 
         ret = power_supply_register(dev, &asus_power_supplies[CHARGER_AC]);
         if (ret) { BAT_DBG_E("Fail to register AC\n"); goto batt_err_reg_fail_ac; }
-
+#endif
         //first update current information
         mutex_lock(&batt_info_mutex);
         asus_battery_get_info_no_mutex();
@@ -1173,9 +1272,9 @@ int asus_register_power_supply(struct device *dev, struct dev_func *tbl)
         return 0;
 
 batt_err_reg_fail_ac:
-        power_supply_unregister(&asus_power_supplies[CHARGER_AC]);
+        //power_supply_unregister(&asus_power_supplies[CHARGER_AC]);
 batt_err_reg_fail_usb:
-        power_supply_unregister(&asus_power_supplies[CHARGER_USB]);
+        //power_supply_unregister(&asus_power_supplies[CHARGER_USB]);
 batt_err_reg_fail_battery:
         power_supply_unregister(&asus_power_supplies[CHARGER_BATTERY]);
 
@@ -1256,7 +1355,7 @@ int asus_battery_init(
                 goto already_init;
         }
 
-#if CONFIG_PROC_FS
+#ifdef CONFIG_PROC_FS
         ret = asus_battery_register_proc_fs();
         if (ret) {
                 BAT_DBG_E("Unable to create proc asus_battery_register_proc_fs\n");
@@ -1271,8 +1370,8 @@ int asus_battery_init(
                 ret = -ENOMEM;
                 goto error_workq;
         }
-        INIT_DELAYED_WORK_DEFERRABLE(&battery_poll_data_work, asus_polling_data);
-        INIT_DELAYED_WORK_DEFERRABLE(&detect_cable_work, USB_cable_status_worker);
+        INIT_DELAYED_WORK(&battery_poll_data_work, asus_polling_data);
+        INIT_DELAYED_WORK(&detect_cable_work, USB_cable_status_worker);
 
 #ifdef CONFIG_ASUS_FACTORY_MODE
 #if CONFIG_PROC_FS
@@ -1304,8 +1403,10 @@ int asus_battery_init(
         mutex_unlock(&batt_info_mutex);
 
         BAT_DBG("%s: success\n", __func__);
+
         pmic_dump_registers(MSIC_CHRG_REG_DUMP_INT | MSIC_CHRG_REG_DUMP_BOOT
              | MSIC_CHRG_REG_DUMP_EVENT | MSIC_CHRG_REG_DUMP_OTHERS);
+
         return 0;
 
 error_workq:    
@@ -1329,8 +1430,8 @@ void asus_battery_exit(void)
 
         if (drv_sts == DRV_REGISTER_OK) {
                 power_supply_unregister(&asus_power_supplies[CHARGER_BATTERY]);
-                power_supply_unregister(&asus_power_supplies[CHARGER_USB]);
-                power_supply_unregister(&asus_power_supplies[CHARGER_AC]);
+                //power_supply_unregister(&asus_power_supplies[CHARGER_USB]);
+                //power_supply_unregister(&asus_power_supplies[CHARGER_AC]);
                 if (entry_mode == 4)
                     wake_lock_destroy(&wakelock);
         }

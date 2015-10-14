@@ -56,6 +56,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvrsrv.h"
 #include "debug_request_ids.h"
 
+#if defined(PVR_RI_DEBUG)
+#include "ri_server.h"
+#endif
+
 struct _DC_DISPLAY_CONTEXT_
 {
 	DC_DEVICE		*psDevice;
@@ -783,7 +787,7 @@ static PVRSRV_ERROR _DCCreatePMR(IMG_DEVMEM_LOG2ALIGN_T uiLog2PageSize,
 						  1,
 						  &bMappingTable,
 						  uiLog2PageSize,
-						  PVRSRV_MEMALLOCFLAG_UNCACHED,
+						  PVRSRV_MEMALLOCFLAG_WRITE_COMBINE,
 						  "DISPLAY",
 						  &sDCPMRFuncTab,
 						  psPMRPriv,
@@ -796,11 +800,6 @@ static PVRSRV_ERROR _DCCreatePMR(IMG_DEVMEM_LOG2ALIGN_T uiLog2PageSize,
 		goto fail_pmrcreate;
 	}
 
-//	PDumpPMRMallocPMR(*ppsPMR,
-//					  uiBufferSize,
-//					  1ULL<<uiLog2PageSize,
-//	                  IMG_TRUE,
-//					  &hPDumpAllocInfo);
 #if defined(PDUMP)
 	psPMRPriv->hPDumpAllocInfo = hPDumpAllocInfo;
 	psPMRPriv->bPDumpMalloced = IMG_TRUE;
@@ -1106,6 +1105,21 @@ PVRSRV_ERROR DCSystemBufferAcquire(DC_DEVICE *psDevice,
 		{
 			goto fail_createpmr;
 		}
+
+#if defined(PVR_RI_DEBUG)
+	{
+		/* Dummy handle - we don't need to store the reference to the PMR RI entry. Its deletion is handled internally. */
+		DC_DISPLAY_INFO	sDisplayInfo;
+		IMG_CHAR pszRIText[RI_MAX_TEXT_LEN];
+
+		DCGetInfo(psDevice, &sDisplayInfo);
+		OSSNPrintf((IMG_CHAR *)pszRIText, RI_MAX_TEXT_LEN, "%s: DisplayContext 0x%p SystemBuffer", (IMG_CHAR *)sDisplayInfo.szDisplayName, &psDevice->sSystemContext);
+		pszRIText[RI_MAX_TEXT_LEN-1] = '\0';
+		eError = RIWritePMREntryKM (psPMR,
+									(IMG_CHAR *)pszRIText,
+									(uiLog2PageSize*ui32PageCount));
+	}
+#endif
 
 		psNew->uBufferData.sAllocData.psPMR = psPMR;
 		psDevice->hSystemBuffer = psNew->hBuffer;
@@ -1619,6 +1633,21 @@ PVRSRV_ERROR DCBufferAlloc(DC_DISPLAY_CONTEXT *psDisplayContext,
 		goto fail_createpmr;
 	}
 
+#if defined(PVR_RI_DEBUG)
+	{
+		/* Dummy handle - we don't need to store the reference to the PMR RI entry. Its deletion is handled internally. */
+		DC_DISPLAY_INFO	sDisplayInfo;
+		IMG_CHAR pszRIText[RI_MAX_TEXT_LEN];
+
+		DCGetInfo(psDevice, &sDisplayInfo);
+		OSSNPrintf((IMG_CHAR *)pszRIText, RI_MAX_TEXT_LEN, "%s: DisplayContext 0x%p BufferAlloc", (IMG_CHAR *)sDisplayInfo.szDisplayName, &psDevice->sSystemContext);
+		pszRIText[RI_MAX_TEXT_LEN-1] = '\0';
+		eError = RIWritePMREntryKM (psPMR,
+									(IMG_CHAR *)pszRIText,
+									(uiLog2PageSize*ui32PageCount));
+	}
+#endif
+
 	psNew->uBufferData.sAllocData.psPMR = psPMR;
 	_DCDisplayContextAcquireRef(psDisplayContext);
 
@@ -1864,8 +1893,10 @@ IMG_VOID DCUnregisterDevice(IMG_HANDLE hSrvHandle)
 	/* If the driver is in a bad state we just free resources regardless */
 	if (psPVRSRVData->eServicesState == PVRSRV_SERVICES_STATE_OK)
 	{
-		/* Skip the wait if we're the last reference holder */
-		if (psDevice->ui32RefCount != 1)
+		volatile IMG_UINT32 * ref_count_ptr = &(psDevice->ui32RefCount);
+
+	    /* Skip the wait if we're the last reference holder */
+		if (*ref_count_ptr != 1)
 		{
 			IMG_HANDLE hEvent;
 			
@@ -1878,7 +1909,7 @@ IMG_VOID DCUnregisterDevice(IMG_HANDLE hSrvHandle)
 				hEvent = IMG_NULL;
 			}
 			
-			while(psDevice->ui32RefCount != 1)
+			while(*ref_count_ptr != 1)
 			{
 				if (hEvent != IMG_NULL)
 				{

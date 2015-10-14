@@ -31,10 +31,9 @@
 #include <linux/cdev.h>
 #include <linux/uaccess.h>
 #include <linux/sched.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
-
 
 /* Instance for generic kernel IPC calls */
 static struct rpmsg_device_data rpmsg_ddata[RPMSG_IPC_COMMAND_TYPE_NUM] = {

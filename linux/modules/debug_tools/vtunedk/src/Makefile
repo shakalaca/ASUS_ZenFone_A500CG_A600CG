@@ -46,8 +46,11 @@ EXTRA_CFLAGS += -I$(M)/../include -I$(M)/inc
 unexport ARCH
 
 # platform details
-MACH ?= i686
-export MACH
+ifeq ($(CONFIG_X86_64),y)
+    MACH=x86_64
+else
+    MACH=i686
+endif
 ifeq ($(MACH),x86_64)
 PLATFORM=x32_64
 BUILD_CHIPSET=YES

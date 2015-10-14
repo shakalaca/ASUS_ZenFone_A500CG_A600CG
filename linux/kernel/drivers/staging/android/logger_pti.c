@@ -26,121 +26,209 @@
  * See logger.h if others.
  */
 
+#include <linux/uaccess.h>
 #include <linux/slab.h>
-#include "logger_pti.h"
+#include <linux/module.h>
+#include <linux/pti.h>
+#include "logger.h"
+#include "logger_kernel.h"
 
-/*
- * init_pti - initialize the pti members with the 'log' passed in
- * argument
+struct pti_plugin {
+	char *log_name;
+	bool enabled;
+	struct logger_plugin *plugin;
+	struct pti_masterchannel *mc;
+	struct list_head list;
+};
+
+static LIST_HEAD(plugin_list);
+
+/**
+ * @logger_pti_init() - this callback function is called by logger.c
+ * when a plug-in is added (via a call to logger_add_plugin)
+ *
+ * @cb_data: callback data for the plug-in (in our case it is a pointer
+ *           to the pti_plugin structure
  */
-int init_pti(struct logger_log *log)
+static void logger_pti_init(void *cb_data)
 {
-	struct pti_reader *pti_reader;
-	struct logger_reader *reader;
-	int ret = 0;
+	struct pti_plugin *pti_plugin;
 
-	pti_reader = kmalloc(sizeof(struct pti_reader), GFP_KERNEL);
+	if (unlikely(cb_data == NULL))
+		return;
 
-	if (!pti_reader) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	reader = kmalloc(sizeof(struct logger_reader), GFP_KERNEL);
-
-	if (!reader) {
-		kfree(pti_reader);
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	/* entry init */
-	pti_reader->entry = kmalloc(sizeof(struct queued_entry), GFP_KERNEL);
-	if (!pti_reader->entry) {
-		kfree(pti_reader);
-		kfree(reader);
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	/*
-	 * masterchannel init
-	 * request OS channel type : 1, see drivers/misc/pti.c
+	/* Channel-ID is reserved at plug-in initialization.
+	 * Each plug-in (associated to a given logger) is associated
+	 * with one channel-ID.
 	 */
-	pti_reader->mc = pti_request_masterchannel(1, log->misc.name);
-	if (!pti_reader->mc) {
-		kfree(pti_reader);
-		kfree(reader);
-		ret = -ENODEV;
-		goto out;
+	pti_plugin = (struct pti_plugin *)cb_data;
+	pti_plugin->mc = pti_request_masterchannel(1, pti_plugin->log_name);
+}
+
+/**
+ * @logger_pti_exit() - this callback function is called by logger.c
+ * when a plug-in is removed (via a call to logger_remove_plugin)
+ *
+ * @cb_data: callback data for the plug-in (in our case it is a pointer
+ *           to the pti_plugin structure
+ */
+static void logger_pti_exit(void *cb_data)
+{
+	struct pti_plugin *pti_plugin;
+
+	if (unlikely(cb_data == NULL))
+		return;
+
+	/* Release channel-ID when removing the plug-in */
+	pti_plugin = (struct pti_plugin *)cb_data;
+	pti_release_masterchannel(pti_plugin->mc);
+}
+
+/**
+ * @logger_pti_write_seg() - this callback function is called by logger.c
+ * when writing a segment of message (logger_aio_write)
+ *
+ * @buf:      data to be written (message segment)
+ * @len:      length of the data to be written
+ * @from_usr: true if data is from user-space
+ * @som:      Start Of Message indication
+ * @eom:      End Of Message indication
+ * @cb_data:  callback data for the plug-in (in our case it is a pointer
+ *            to the pti_plugin structure
+ */
+static void logger_pti_write_seg(void *buf, unsigned int len,
+				 bool from_usr, bool som, bool eom,
+				 void *cb_data)
+{
+	struct pti_plugin *pti_plugin;
+	char *tmp_buf;
+
+	if (unlikely(cb_data == NULL))
+		return;
+
+	if (from_usr) {
+		tmp_buf = kmalloc(len, GFP_KERNEL);
+
+		if ((!tmp_buf) || copy_from_user(tmp_buf, buf, len)) {
+			kfree(tmp_buf);
+			return;
+		}
+	} else
+		tmp_buf = buf;
+
+	pti_plugin = (struct pti_plugin *)cb_data;
+	pti_writedata(pti_plugin->mc, (u8 *)buf, len, eom);
+}
+
+/**
+ * @logger_pti_write_seg_recover() - this callback function is called
+ * by logger.c when an issue is encountered while writing a segmented
+ * message (logger_aio_write)
+ *
+ * @cb_data: callback data for the plug-in (in our case it is a pointer
+ *           to the pti_plugin structure
+ */
+static void logger_pti_write_seg_recover(void *cb_data)
+{
+	/* An issue has occured in logger_aio_write function.
+	 * To avoid messing up the STP flow, force the End Of Message
+	 * indication by writing a zero byte.
+	 */
+	__u8 data = 0x00;
+	struct pti_plugin *pti_plugin;
+
+	if (unlikely(cb_data == NULL))
+		return;
+
+	pti_plugin = (struct pti_plugin *)cb_data;
+	pti_writedata(pti_plugin->mc, &data, 1, true);
+}
+
+/**
+ * @create_pti_plugin() - creates a @pti_plugin for a given logger
+ *
+ * @name: logger's name
+ */
+static int create_pti_plugin(const char *name)
+{
+	int ret = 0;
+	struct logger_plugin *log_plugin;
+	struct pti_plugin *pti_plugin;
+
+	log_plugin = kzalloc(sizeof(struct logger_plugin), GFP_KERNEL);
+	if (log_plugin == NULL)
+		return -ENOMEM;
+
+	pti_plugin = kzalloc(sizeof(struct pti_plugin), GFP_KERNEL);
+	if (pti_plugin == NULL) {
+		ret = -ENOMEM;
+		goto out_free_log_plugin;
 	}
 
-	pti_reader->reader = reader;
-	reader->r_off = log->w_off;
-	mutex_lock(&log->mutex);
-	log->pti_reader = pti_reader;
-	mutex_unlock(&log->mutex);
+	pti_plugin->log_name = kstrdup(name, GFP_KERNEL);
+	pti_plugin->enabled = false;
+	pti_plugin->plugin = log_plugin;
 
-	pr_info("logger_pti: %s, mc : %d %d\n", log->misc.name,
-			pti_reader->mc->master, pti_reader->mc->channel);
+	log_plugin->init = logger_pti_init;
+	log_plugin->exit = logger_pti_exit;
+	log_plugin->write_seg = logger_pti_write_seg;
+	log_plugin->write_seg_recover = logger_pti_write_seg_recover;
+	log_plugin->data = (void *)pti_plugin;
 
-out:
-	if (unlikely(ret)) {
-		log->pti_reader = NULL;
-		pr_err("logger_pti: failed to init %s\n",
-		       log->misc.name);
-	}
+	list_add_tail(&pti_plugin->list, &plugin_list);
+
+	return 0;
+
+out_free_log_plugin:
+	kfree(log_plugin);
 	return ret;
 }
 
-/*
- * log_kernel_write_to_pti - write a kernel log to the pti master/channel
- * Can be called in any context
- *
- */
-void log_kernel_write_to_pti(struct logger_log *log,
-				const char *buf, size_t count)
+static int __init init_logger_pti(void)
 {
-	struct pti_reader *pti_reader = log->pti_reader;
+	int ret;
 
-	/* kernel logs are not buffered */
-	if (log->ptienable && pti_reader && pti_reader->mc)
-		pti_writedata(pti_reader->mc, (unsigned char *) buf, count);
+	ret = create_pti_plugin(LOGGER_LOG_RADIO);
+	if (unlikely(ret))
+		goto out;
+
+	ret = create_pti_plugin(LOGGER_LOG_EVENTS);
+	if (unlikely(ret))
+		goto out;
+
+	ret = create_pti_plugin(LOGGER_LOG_SYSTEM);
+	if (unlikely(ret))
+		goto out;
+
+	ret = create_pti_plugin(LOGGER_LOG_MAIN);
+	if (unlikely(ret))
+		goto out;
+
+	ret = create_pti_plugin(LOGGER_LOG_KERNEL_BOT);
+	if (unlikely(ret))
+		goto out;
+
+	return 0;
+
+out:
+	return ret;
 }
 
-/*
- * log_write_to_pti - write a buffer to the pti master/channel
- * Can be called in any context
- *
- */
-void log_write_to_pti(struct logger_log *log)
+static void __exit exit_logger_pti(void)
 {
-	struct pti_reader *pti_reader;
-	struct logger_reader *reader;
-	size_t count;
+	struct pti_plugin *current_plugin, *next_plugin;
 
-	/* other logs are buffered to add the tag from the header*/
-	pti_reader = log->pti_reader;
-	if (unlikely(!pti_reader))
-		return;
-
-	reader = pti_reader->reader;
-
-	/* get the size of the next entry */
-	count = sizeof(struct logger_entry) +
-			get_entry_msg_len(log, reader->r_off);
-
-	if (log->ptienable) {
-		/* copy exactly one entry from the log */
-		do_read_log(log, reader, pti_reader->entry->buf, count);
-
-		pti_writedata(pti_reader->mc,
-				pti_reader->entry->entry.msg,
-				pti_reader->entry->entry.len);
-	} else {
-		reader->r_off = logger_offset(log, reader->r_off + count);
+	list_for_each_entry_safe(current_plugin, next_plugin,
+				 &plugin_list, list) {
+		kfree(current_plugin->log_name);
+		kfree(current_plugin->plugin);
+		list_del(&current_plugin->list);
+		kfree(current_plugin);
 	}
 }
+
+module_init(init_logger_pti)
+module_exit(exit_logger_pti)
 
 /*
  * set_out - 'out' parameter set function from 'logger_pti' module
@@ -149,21 +237,31 @@ void log_write_to_pti(struct logger_log *log)
  */
 static int set_out(const char *val, struct kernel_param *kp)
 {
-	int i;
-	const char *log_name;
-	struct logger_log *log;
-	struct logger_log **log_list;
+	const char *name;
+	struct pti_plugin *plugin;
 
-	log_list = get_log_list();
-	for (i = 0; i < LOGGER_LIST_SIZE; i++) {
-		log = log_list[i];
-		log_name = log->misc.name;
+	list_for_each_entry(plugin, &plugin_list, list) {
+		name = plugin->log_name;
+
 		/* remove "log_" in the log_name string */
-		log_name += 4;
-		if (strstr(val, log_name))
-			log->ptienable = true;
-		else
-			log->ptienable = false;
+		name += 4;
+
+		/* hack: user asks for "kernel", but the
+		 * plugin is actually associated to "kern_bot" logger
+		 */
+		if (!strcmp(name, "kern_bot"))
+		    name = "kernel";
+
+		if (strstr(val, name)) {
+			if (plugin->enabled == false) {
+				logger_add_plugin(plugin->plugin,
+						  plugin->log_name);
+				plugin->enabled = true;
+			}
+		} else if (plugin->enabled == true) {
+			logger_remove_plugin(plugin->plugin, plugin->log_name);
+			plugin->enabled = false;
+		}
 	}
 
 	return 0;
@@ -176,20 +274,24 @@ static int set_out(const char *val, struct kernel_param *kp)
  */
 static int get_out(char *buffer, struct kernel_param *kp)
 {
-	int i;
-	const char *log_name;
+	const char *name;
 	const char *k = ",";
-	struct logger_log *log;
-	struct logger_log **log_list;
+	struct pti_plugin *plugin;
 
-	log_list = get_log_list();
-	for (i = 0; i < LOGGER_LIST_SIZE; i++) {
-		if (log_list[i]->ptienable) {
-			log = log_list[i];
-			log_name = log->misc.name;
+	list_for_each_entry(plugin, &plugin_list, list) {
+		if (plugin->enabled == true) {
+			name = plugin->log_name;
+
 			/* remove "log_" in the log_name string */
-			log_name += 4;
-			strcat(buffer, log_name);
+			name += 4;
+
+			/* hack: if plugin is associated to "kern_bot" logger,
+			 * user actually wants to see "kernel"
+			 */
+			if (!strcmp(name, "kern_bot"))
+			    name = "kernel";
+
+			strcat(buffer, name);
 			strcat(buffer, k);
 		}
 	}
@@ -199,5 +301,6 @@ static int get_out(char *buffer, struct kernel_param *kp)
 }
 
 module_param_call(out, set_out, get_out, NULL, 0644);
-MODULE_PARM_DESC(out, "configure logger to pti [main|events|radio|system|kernel]");
+MODULE_PARM_DESC(out,
+		 "configure logger to pti [main|events|radio|system|kernel]");
 

@@ -21,6 +21,8 @@
 #include <linux/regulator/intel_basin_cove_pmic.h>
 #include <linux/regulator/machine.h>
 
+#include <asm/intel-mid.h>
+
 /***********VPROG1 REGUATOR platform data*************/
 static struct regulator_consumer_supply vprog1_consumer[] = {
 };
@@ -113,8 +115,11 @@ static struct platform_device *regulator_devices[] __initdata = {
 
 static int __init regulator_init(void)
 {
-	platform_add_devices(regulator_devices,
-		ARRAY_SIZE(regulator_devices));
+	/* register the regulator only if SoC is Tangier */
+	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER)
+		platform_add_devices(regulator_devices,
+				ARRAY_SIZE(regulator_devices));
+
 	return 0;
 }
 device_initcall(regulator_init);

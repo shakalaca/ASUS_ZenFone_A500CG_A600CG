@@ -118,11 +118,10 @@ int csc_number = 6;
 int dpst_level = 5;
 #endif
 int drm_hdmi_hpd_auto;
+int default_hdmi_scaling_mode = DRM_MODE_SCALE_CENTER;
 
 int drm_psb_msvdx_tiling = 1;
 int drm_msvdx_bottom_half;
-bool psb_is_shutdown;
-EXPORT_SYMBOL(psb_is_shutdown);
 struct drm_device *g_drm_dev;
 EXPORT_SYMBOL(g_drm_dev);
 
@@ -152,6 +151,14 @@ extern struct platform_driver orise1283a_lcd_driver;
 
 #ifdef CONFIG_SUPPORT_MIPI_ORISE8018B_DISPLAY
 extern struct platform_driver orise8018b_lcd_driver;
+#endif
+
+#ifdef CONFIG_SUPPORT_MIPI_ORISE9605A_DISPLAY
+extern struct platform_driver orise9605a_lcd_driver;
+#endif
+
+#ifdef CONFIG_SUPPORT_MIPI_RM68191_DISPLAY
+extern struct platform_driver rm68191_lcd_driver;
 #endif
 
 
@@ -184,6 +191,7 @@ MODULE_PARM_DESC(pm_history, "whether to dump pm history when SGX HWR");
 MODULE_PARM_DESC(dpst_level, "dpst aggressive level: 0~5");
 #endif
 MODULE_PARM_DESC(hdmi_hpd_auto, "HDMI hot-plug auto test flag");
+MODULE_PARM_DESC(default_hdmi_scaling_mode, "Default HDMI scaling mode");
 
 module_param_named(debug, drm_psb_debug, int, 0600);
 module_param_named(psb_enable_cabc, drm_psb_enable_cabc, int, 0600);
@@ -217,6 +225,8 @@ module_param_array_named(csc_adjust, csc_setting, int, &csc_number, 0600);
 module_param_named(dpst_level, dpst_level, int, 0600);
 #endif
 module_param_named(hdmi_hpd_auto, drm_hdmi_hpd_auto, int, 0600);
+module_param_named(default_hdmi_scaling_mode, default_hdmi_scaling_mode,
+					int, 0600);
 
 #ifndef MODULE
 /* Make ospm configurable via cmdline firstly, and others can be enabled if needed. */
@@ -1161,16 +1171,20 @@ static bool intel_mid_get_vbt_data(struct drm_psb_private *dev_priv)
 	DRM_INFO("%s: FW panel name: %s, mipi_mode = %d !\n", __func__, panel_name_FW, mipi_mode);
 
 	if (Read_PROJ_ID() == PROJ_ID_A502CG) {
-		if (Read_LCD_ID() == A502CG_LCD_ID_TM) {
-			printk("[DISP] DriverIC : HX8394 SR device registered!\n");
-			strncpy(panel_name, panel_name_FW, strlen("HX8394"));
+		if (Read_LCD_ID() == A502CG_LCD_ID_TXD) {
+			printk("[DISP] DriverIC : ORISE9605A, Panel : TXD device registered!\n");
+			strncpy(panel_name, panel_name_FW, strlen("OTM9605A"));
 			mipi_mode = MDFLD_DSI_ENCODER_DPI;
-		} else if (Read_LCD_ID() == A502CG_LCD_ID_HSD) {
-			printk("[DISP] DriverIC : ORISE1283A device registered!\n");
-			strncpy(panel_name, panel_name_FW, strlen("ORISE1283A"));
+		} else if (Read_LCD_ID() == A502CG_LCD_ID_TM) {
+			printk("[DISP] DriverIC : RM68191, Panel : TM device registered!\n");
+			strncpy(panel_name, panel_name_FW, strlen("RM68191"));
+			mipi_mode = MDFLD_DSI_ENCODER_DPI;
+		} else if (Read_LCD_ID() == A502CG_LCD_ID_OFILM) {
+			printk("[DISP] DriverIC : ORISE8018B, Panel : OFILM device registered!\n");
+			strncpy(panel_name, panel_name_FW, strlen("OTM8018B"));
 			mipi_mode = MDFLD_DSI_ENCODER_DPI;
 		} else {
-			printk("[DISP] DriverIC : ORISE8018B device registered!\n");
+			printk("[DISP] DriverIC : ORISE8018B, Panel : GIS device registered!\n");
 			strncpy(panel_name, panel_name_FW, strlen("OTM8018B"));
 			mipi_mode = MDFLD_DSI_ENCODER_DPI;
 		}
@@ -1403,9 +1417,10 @@ static int mdfld_init_overlay_backbuf(struct drm_device *dev)
 				TTM_PL_FLAG_NO_EVICT,
 				16, 0, NULL, &overlay_buf);
 #endif
+
 		if (ret < 0) {
 			DRM_ERROR("failed to alloc back buf %d, ret:%d\n",
-				i, ret);
+				  i, ret);
 			goto fail;
 		}
 
@@ -1413,7 +1428,7 @@ static int mdfld_init_overlay_backbuf(struct drm_device *dev)
 				i, overlay_buf->offset);
 
 		ret = ttm_bo_kmap(overlay_buf, 0, overlay_buf->num_pages,
-				&dev_priv->overlay_kmap[i]);
+					&dev_priv->overlay_kmap[i]);
 		if (ret) {
 			DRM_ERROR("fail to map overlay buf %d\n", i);
 			ttm_bo_unref(&overlay_buf);
@@ -1421,6 +1436,7 @@ static int mdfld_init_overlay_backbuf(struct drm_device *dev)
 		}
 		dev_priv->overlay_backbuf[i] = overlay_buf;
 	}
+
 	mutex_init(&dev_priv->ov_ctrl_lock);
 	dev_priv->ov_ctrl_blk = kzalloc(sizeof(struct overlay_ctrl_blk) *
 					INTEL_OVERLAY_PLANE_NUM, GFP_KERNEL);
@@ -1563,7 +1579,7 @@ static int psb_driver_load(struct drm_device *dev, unsigned long chipset)
 	if (dev_priv == NULL)
 		return -ENOMEM;
 	INIT_LIST_HEAD(&dev_priv->video_ctx);
-	mutex_init(&dev_priv->video_ctx_mutex);
+	spin_lock_init(&dev_priv->video_ctx_lock);
 	if (IS_CTP(dev)) {
 		dev_priv->num_pipe = 2;
 	} else if (IS_MDFLD(dev)) {
@@ -3363,7 +3379,7 @@ void psb_flip_abnormal_debug_info(struct drm_device *dev)
 		nanosec_rem = do_div(interval, 1000000000);
 		if (interval > 0 || nanosec_rem > 200000000) {
 			DRM_INFO("pipe %d vsync te missing %lldms !\n\n",
-				pipe, interval * 1000 + nanosec_rem/1000000);
+				 pipe, interval * 1000 + nanosec_rem/1000000);
 			dev_priv->vsync_te_working[pipe] = false;
 			if (pipe == 0)
 				atomic_set(&dev_priv->mipi_flip_abnormal, 1);
@@ -3504,7 +3520,7 @@ static int psb_vsync_set_ioctl(struct drm_device *dev, void *data,
 					 * and flip watchdog may be fired
 					 * mistakenly.
 					 */
-                                       dev_priv->vsync_enabled = false;
+					dev_priv->vsync_enabled = false;
 				}
 
 				mdfld_dsi_dsr_allow(dsi_config);
@@ -4129,8 +4145,8 @@ static const struct file_operations psb_blc_proc_fops = {
 	.release	= single_release,
 };
 
-static int psb_rtpm_read(char *buf, char **start, off_t offset, int request,
-			 int *eof, void *data)
+static int psb_rtpm_read(struct file *file, char __user *buf,
+				    size_t nbytes,loff_t *ppos)
 {
 	PSB_DEBUG_ENTRY("Current Runtime PM delay for GFX: %d (ms)\n", gfxrtdelay);
 
@@ -4138,7 +4154,7 @@ static int psb_rtpm_read(char *buf, char **start, off_t offset, int request,
 }
 
 static int psb_rtpm_write(struct file *file, const char *buffer,
-			  unsigned long count, void *data)
+			  size_t count, loff_t *ppos)
 {
 	char buf[2];
 	int temp = 0;
@@ -4167,21 +4183,18 @@ static int psb_rtpm_write(struct file *file, const char *buffer,
 	return count;
 }
 
-static int psb_ospm_read(char *buf, char **start, off_t offset, int request,
-			 int *eof, void *data)
+static int psb_ospm_read(struct file *file, char __user *buf,
+				    size_t nbytes,loff_t *ppos)
 {
-	struct drm_minor *minor = (struct drm_minor *) data;
+	struct drm_minor *minor = (struct drm_minor *)PDE_DATA(file_inode(file));
 	struct drm_device *dev = minor->dev;
 	struct drm_psb_private *dev_priv =
 		(struct drm_psb_private *) dev->dev_private;
-	int len = 0;
 #ifdef OSPM_STAT
 	unsigned long on_time = 0;
 	unsigned long off_time = 0;
 #endif
 
-	*start = &buf[offset];
-	*eof = 0;
 
 	/*#ifdef SUPPORT_ACTIVE_POWER_MANAGEMENT
 	    DRM_INFO("GFX D0i3: enabled	      ");
@@ -4221,15 +4234,12 @@ static int psb_ospm_read(char *buf, char **start, off_t offset, int request,
 	DRM_INFO("on:%lu/%lu, off:%lu/%lu \n",
 		 dev_priv->gfx_on_cnt, on_time, dev_priv->gfx_off_cnt, off_time);
 #endif
-	if (len > request + offset)
-		return request;
-	*eof = 1;
-	return len - offset;
+	return nbytes;
 }
 
 
 static int psb_ospm_write(struct file *file, const char *buffer,
-			  unsigned long count, void *data)
+			  size_t count, loff_t *ppos)
 {
 	char buf[2];
 	if (count != sizeof(buf)) {
@@ -4245,28 +4255,28 @@ static int psb_ospm_write(struct file *file, const char *buffer,
 	}
 	return count;
 }
-static int psb_panel_register_read(char *buf, char **start, off_t offset,
-				 int request, int *eof, void *data)
+static int psb_panel_register_read(struct file *file, char __user *buf,
+				    size_t nbytes,loff_t *ppos)
 {
-	struct drm_minor *minor = (struct drm_minor *) data;
+	char msg[PSB_REG_PRINT_SIZE];
+	struct drm_minor *minor = (struct drm_minor *)PDE_DATA(file_inode(file));
 	struct drm_device *dev = minor->dev;
 	struct drm_psb_private *dev_priv =
 		(struct drm_psb_private *) dev->dev_private;
 	/*do nothing*/
-	int len = dev_priv->count;
-	*eof = 1;
+
 	if (dev_priv->buf && dev_priv->count < PSB_REG_PRINT_SIZE)
-		memcpy(buf, dev_priv->buf, dev_priv->count);
-	return len - offset;
+		memcpy(msg, dev_priv->buf, dev_priv->count);
+	return simple_read_from_buffer(buf, nbytes, ppos, msg, dev_priv->count);
 }
 /*
 * use to read and write panel side register. and print to standard output.
 */
 #define GENERIC_READ_FIFO_SIZE_MAX 0x40
 static int psb_panel_register_write(struct file *file, const char *buffer,
-				      unsigned long count, void *data)
+				      size_t count, loff_t *ppos)
 {
-	struct drm_minor *minor = (struct drm_minor *) data;
+	struct drm_minor *minor = (struct drm_minor *)PDE_DATA(file_inode(file));
 	struct drm_device *dev = minor->dev;
 	struct drm_psb_private *dev_priv =
 		(struct drm_psb_private *) dev->dev_private;
@@ -4420,27 +4430,27 @@ fun_exit:
 	return count;
 }
 
-static int psb_display_register_read(char *buf, char **start, off_t offset, int request,
-				     int *eof, void *data)
+static int psb_display_register_read(struct file *file, char __user *buf,
+				    size_t nbytes,loff_t *ppos)
 {
-	struct drm_minor *minor = (struct drm_minor *) data;
+	char msg[PSB_REG_PRINT_SIZE];
+	struct drm_minor *minor = (struct drm_minor *)PDE_DATA(file_inode(file));
 	struct drm_device *dev = minor->dev;
 	struct drm_psb_private *dev_priv =
 		(struct drm_psb_private *) dev->dev_private;
 	/*do nothing*/
-	int len = dev_priv->count;
-	*eof = 1;
+
 	if (dev_priv->buf && dev_priv->count < PSB_REG_PRINT_SIZE)
-		memcpy(buf, dev_priv->buf, dev_priv->count);
-	return len - offset;
+		memcpy(msg, dev_priv->buf, dev_priv->count);
+	return simple_read_from_buffer(buf, nbytes, ppos, msg, dev_priv->count);
 }
 /*
 * use to read and write display register. and print to standard output.
 */
 static int psb_display_register_write(struct file *file, const char *buffer,
-				      unsigned long count, void *data)
+				      size_t count, loff_t *ppos)
 {
-	struct drm_minor *minor = (struct drm_minor *) data;
+	struct drm_minor *minor = (struct drm_minor *)PDE_DATA(file_inode(file));
 	struct drm_device *dev = minor->dev;
 	struct drm_psb_private *dev_priv =
 		(struct drm_psb_private *) dev->dev_private;
@@ -4609,18 +4619,18 @@ fun_exit:
 	return count;
 }
 
-static int csc_control_read(char *buf, char **start, off_t offset, int request,
-				     int *eof, void *data)
+static int csc_control_read(struct file *file, char __user *buf,
+				    size_t nbytes,loff_t *ppos)
 {
 	return 0;
 }
 
 static int csc_control_write(struct file *file, const char *buffer,
-				      unsigned long count, void *data)
+				      size_t count, loff_t *ppos)
 {
 	char buf[2];
 	int  csc_control;
-	struct drm_minor *minor = (struct drm_minor *) data;
+	struct drm_minor *minor = (struct drm_minor *)PDE_DATA(file_inode(file));
 	struct drm_device *dev = minor->dev;
 	struct csc_setting csc;
 	struct gamma_setting gamma;
@@ -4661,8 +4671,8 @@ static int csc_control_write(struct file *file, const char *buffer,
 
 
 #ifdef CONFIG_SUPPORT_HDMI
-int gpio_control_read(char *buf, char **start, off_t offset, int request,
-				     int *eof, void *data)
+int gpio_control_read(struct file *file, char __user *buf,
+				    size_t nbytes,loff_t *ppos)
 {
 	unsigned int value = 0;
 	unsigned int pin_num = otm_hdmi_get_hpd_pin();
@@ -4674,7 +4684,7 @@ int gpio_control_read(char *buf, char **start, off_t offset, int request,
 }
 
 int gpio_control_write(struct file *file, const char *buffer,
-				      unsigned long count, void *data)
+				      size_t count, loff_t *ppos)
 {
 	char buf[2];
 	int  gpio_control;
@@ -4729,7 +4739,6 @@ int gpio_control_write(struct file *file, const char *buffer,
 }
 #endif
 
-#if !(LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0))
 static const struct file_operations psb_gpio_proc_fops = {
        .owner = THIS_MODULE,
        .read = gpio_control_read,
@@ -4765,26 +4774,17 @@ static const struct file_operations psb_csc_proc_fops = {
        .read = csc_control_read,
        .write = csc_control_write,
  };
-#endif
+
 
 #ifdef CONFIG_SUPPORT_HDMI
 static int psb_hdmi_proc_init(struct drm_minor *minor)
 {
 	struct proc_dir_entry *gpio_setting;
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0))
-	gpio_setting = create_proc_entry(GPIO_PROC_ENTRY,
-				0644, minor->proc_root);
-#else
         gpio_setting = proc_create_data(GPIO_PROC_ENTRY,
                                 0644, minor->proc_root, &psb_gpio_proc_fops, minor);
-#endif
+
 	if (!gpio_setting)
 		return -1;
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0))
-	gpio_setting->write_proc = gpio_control_write;
-	gpio_setting->read_proc = gpio_control_read;
-	gpio_setting->data = (void *)minor;
-#endif
 
 	return 0;
 }
@@ -4799,17 +4799,6 @@ static int psb_proc_init(struct drm_minor *minor)
 	struct proc_dir_entry *ent_panel_status;
 	struct proc_dir_entry *csc_setting;
 
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0))
-	ent = create_proc_entry(OSPM_PROC_ENTRY, 0644, minor->proc_root);
-	rtpm = create_proc_entry(RTPM_PROC_ENTRY, 0644, minor->proc_root);
-	ent_display_status = create_proc_entry(DISPLAY_PROC_ENTRY, 0644, minor->proc_root);
-	ent_panel_status = create_proc_entry(PANEL_PROC_ENTRY,
-			 0644, minor->proc_root);
-	ent1 = proc_create_data(BLC_PROC_ENTRY, 0, minor->proc_root, &psb_blc_proc_fops, minor);
-	csc_setting = create_proc_entry(CSC_PROC_ENTRY, 0644, minor->proc_root);
-
-#else
 	ent = proc_create_data(OSPM_PROC_ENTRY, 0644, minor->proc_root, &psb_ospm_proc_fops, minor);
 	rtpm = proc_create_data(RTPM_PROC_ENTRY, 0644, minor->proc_root, &psb_rtpm_proc_fops, minor);
 	ent_display_status = proc_create_data(DISPLAY_PROC_ENTRY, 0644, minor->proc_root,
@@ -4818,34 +4807,11 @@ static int psb_proc_init(struct drm_minor *minor)
 		&psb_panel_proc_fops, minor);
 	ent1 = proc_create_data(BLC_PROC_ENTRY, 0, minor->proc_root, &psb_blc_proc_fops, minor);
 	csc_setting = proc_create_data(CSC_PROC_ENTRY, 0644, minor->proc_root, &psb_csc_proc_fops, minor);
-	lcd_type = proc_create_data(PANEL_ID_PROC_ENTRY, 0444, minor->proc_root, &psb_panel_id_proc_fops, minor);
-	lcd_unique_id = proc_create_data(LCD_UNIQUE_ID_PROC_ENTRY, 0444, minor->proc_root, &psb_lcd_unique_id_proc_fops, minor);
-#ifdef CONFIG_CTP_DPST
-	dpst_levels = proc_create_data(DPST_LEVEL_PROC_ENTRY, 0644, minor->proc_root, &psb_dpst_proc_fops, minor);
-#endif
-#endif
-
 
 	if (!ent || !ent1 || !rtpm || !ent_display_status || !ent_panel_status
 		|| !csc_setting)
 		return -1;
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0))
-	ent->read_proc = psb_ospm_read;
-	ent->write_proc = psb_ospm_write;
-	ent->data = (void *)minor;
-	rtpm->read_proc = psb_rtpm_read;
-	rtpm->write_proc = psb_rtpm_write;
-	ent_display_status->write_proc = psb_display_register_write;
-	ent_display_status->read_proc = psb_display_register_read;
-	ent_display_status->data = (void *)minor;
-	ent_panel_status->write_proc = psb_panel_register_write;
-	ent_panel_status->read_proc = psb_panel_register_read;
-	ent_panel_status->data = (void *)minor;
-	csc_setting->write_proc = csc_control_write;
-	csc_setting->read_proc = csc_control_read;
-	csc_setting->data = (void *)minor;
-#endif
 #ifdef CONFIG_SUPPORT_HDMI
 	psb_hdmi_proc_init(minor);
 #endif
@@ -5075,20 +5041,6 @@ int psb_mmap(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
-static void psb_shutdown(struct pci_dev *dev)
-{
-	/*
-	* When doing the sys_reboot(), before disabling non-boot cpus,
-	* all devices will be shutdown, and for MSI devices, the MSI will
-	* will be shut down in pci_device_shutdown().
-	* Here we need set the shutdown flag to let the last interrupt and
-	* workers to be flush.
-	* Otherwise, after MSI is shut down, no new interrupt is coming,
-	* in some cases, the pending MISR worker will wait for a long time.
-	*/
-	psb_is_shutdown = true;
-}
-
 static const struct file_operations driver_psb_fops = {
 	.owner = THIS_MODULE,
 	.open = psb_open,
@@ -5145,7 +5097,6 @@ static struct pci_driver psb_pci_driver = {
 #ifdef CONFIG_PM
 	.driver.pm = &psb_pm_ops,
 #endif
-	.shutdown = psb_shutdown,
 };
 
 static int psb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
@@ -5181,74 +5132,92 @@ static __init int parse_hdmi_edid(char *arg)
 early_param("hdmi_edid", parse_hdmi_edid);
 #endif
 
-
-static int panel_id_read(char *buf, char **start, off_t offset, int request,
-				     int *eof, void *data)
-{
-	int len = 0;
-	int lcd_id;
-	if (Read_LCD_ID() == LCD_ID_TM)
-		lcd_id = 0;
-	else {
-#ifdef PANEL_HX8394_EVB
-		lcd_id = 0;
-#else
-		lcd_id = 1;
-#endif
-	}
-	len = sprintf(buf, "%d\n", lcd_id);
-	return len;
-}
-static int panel_id_write(struct file *file, const char *buffer,
-				      unsigned long count, void *data)
-{
-	return 0;
-}
-
-static int lcd_unique_id_read(char *buf, char **start, off_t offset, int request,
-				     int *eof, void *data)
-{
-	int len = 0;
-
-	len = sprintf(buf, "%s\n", lcd_unique_id);
-	return len;
-}
-static int lcd_unique_id_write(struct file *file, const char *buffer,
-				      unsigned long count, void *data)
-{
-	return 0;
-}
-
-
 #ifdef CONFIG_CTP_DPST
-static int dpst_level_read(char *buf, char **start, off_t offset, int request,
-				     int *eof, void *data)
+static int dpst_level_read(struct file *file, char __user *buffer,
+				    size_t count, loff_t *ppos)
 {
 	int len = 0;
+	ssize_t ret = 0;
+	char *buff;
 
-	len = sprintf(buf, "%d\n", dpst_level);
-	return len;
+	buff = kmalloc(100, GFP_KERNEL);
+	if(!buff)
+		return -ENOMEM;
+
+	len += sprintf(buff + len, "%d\n", dpst_level);
+	ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+	kfree(buff);
+
+	return ret;
 }
 static int dpst_level_write(struct file *file, const char *buffer,
-				      unsigned long count, void *data)
+			  size_t count, loff_t *ppos)
 {
-	char buf[2];
+	dpst_level = buffer[0] - '0';
+	printk("DPST level write: %d\n", dpst_level);
 
-	if (count != sizeof(buf)) {
-		return -EINVAL;
-	} else {
-		if (copy_from_user(buf, buffer, count))
-			return -EINVAL;
-		if (buf[count-1] != '\n')
-			return -EINVAL;
-
-		dpst_level = buf[0] - '0';
-		printk("DPST level write: %d\n", dpst_level);
-	}
 	return count;
 }
 #endif
 
+static int panel_id_read(struct file *file, char __user *buffer,
+				    size_t count, loff_t *ppos)
+{
+	int len = 0;
+	int lcd_id;
+	ssize_t ret = 0;
+	char *buff;
+
+	buff = kmalloc(100, GFP_KERNEL);
+	if(!buff)
+		return -ENOMEM;
+
+	lcd_id = Read_LCD_ID();
+
+	len += sprintf(buff + len, "%d\n", lcd_id);
+	ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+	kfree(buff);
+
+	return ret;
+}
+static int panel_id_write(struct file *file, const char *buffer,
+			  size_t count, loff_t *ppos)
+{
+	return 0;
+}
+
+static int lcd_unique_id_read(struct file *file, char __user *buffer,
+				    size_t count, loff_t *ppos)
+{
+	int len = 0;
+	ssize_t ret = 0;
+	char *buff;
+
+	buff = kmalloc(100, GFP_KERNEL);
+	if(!buff)
+		return -ENOMEM;
+
+	len += sprintf(buff + len, "%s\n", lcd_unique_id);
+	ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+	kfree(buff);
+
+	return ret;
+}
+static int lcd_unique_id_write(struct file *file, const char *buffer,
+			  size_t count, loff_t *ppos)
+{
+	return 0;
+}
+
+
+
+#ifdef CONFIG_CTP_DPST
+static const struct file_operations psb_dpst_proc_fops = {
+       .owner = THIS_MODULE,
+       .read = dpst_level_read,
+       .write = dpst_level_write,
+ };
+#endif
 
 static const struct file_operations psb_panel_id_proc_fops = {
        .owner = THIS_MODULE,
@@ -5262,23 +5231,16 @@ static const struct file_operations psb_lcd_unique_id_proc_fops = {
        .write = lcd_unique_id_write,
  };
 
-#ifdef CONFIG_CTP_DPST
-static const struct file_operations psb_dpst_proc_fops = {
-       .owner = THIS_MODULE,
-       .read = dpst_level_read,
-       .write = dpst_level_write,
- };
-#endif
 
 
 static int __init psb_init(void)
 {
 	int ret;
-	struct proc_dir_entry *lcd_type = NULL;
-	struct proc_dir_entry *lcd_unique_id = NULL;
 #ifdef CONFIG_CTP_DPST
-	struct proc_dir_entry *dpst_levels = NULL;
+	struct proc_dir_entry *dpst_levels;
 #endif
+	struct proc_dir_entry *lcd_type;
+	struct proc_dir_entry *lcd_unique_id;
 
 #if defined(MODULE) && defined(CONFIG_NET)
 #ifdef CONFIG_SUPPORT_HDMI
@@ -5336,6 +5298,20 @@ static int __init psb_init(void)
 	}
 #endif
 
+#ifdef CONFIG_SUPPORT_MIPI_ORISE9605A_DISPLAY
+	ret = platform_driver_register(&orise9605a_lcd_driver);
+	if (ret != 0) {
+		return ret;
+	}
+#endif
+
+#ifdef CONFIG_SUPPORT_MIPI_RM68191_DISPLAY
+	ret = platform_driver_register(&rm68191_lcd_driver);
+	if (ret != 0) {
+		return ret;
+	}
+#endif
+
 
 #ifdef CONFIG_SUPPORT_VB_MIPI_DISPLAY
 	ret = platform_driver_register(&vb_lcd_driver);
@@ -5358,31 +5334,27 @@ static int __init psb_init(void)
 /*
 /* Create the display related file node in proc
 */
-	lcd_type = create_proc_entry(PANEL_ID_PROC_ENTRY, 0444, NULL);
-	if (!lcd_type) {
-		DRM_ERROR("Unable to create %s\n", PANEL_ID_PROC_ENTRY);
-		return -EINVAL;
-	}
-	lcd_type->write_proc = panel_id_write;
-	lcd_type->read_proc = panel_id_read;
-
-	lcd_unique_id = create_proc_entry(LCD_UNIQUE_ID_PROC_ENTRY, 0444, NULL);
-	if (!lcd_unique_id) {
-		DRM_ERROR("Unable to create %s\n", LCD_UNIQUE_ID_PROC_ENTRY);
-		return -EINVAL;
-	}
-	lcd_unique_id->write_proc = lcd_unique_id_write;
-	lcd_unique_id->read_proc = lcd_unique_id_read;
 
 #ifdef CONFIG_CTP_DPST
-	dpst_levels = create_proc_entry(DPST_LEVEL_PROC_ENTRY, 0644, NULL);
+	dpst_levels = proc_create(DPST_LEVEL_PROC_ENTRY, 0644, NULL, &psb_dpst_proc_fops);
 	if (!dpst_levels) {
 		DRM_ERROR("Unable to create %s\n", DPST_LEVEL_PROC_ENTRY);
 		return -EINVAL;
 	}
-	dpst_levels->write_proc = dpst_level_write;
-	dpst_levels->read_proc = dpst_level_read;
 #endif
+
+	lcd_type = proc_create(PANEL_ID_PROC_ENTRY, 0444, NULL, &psb_panel_id_proc_fops);
+	if (!lcd_type) {
+		DRM_ERROR("Unable to create %s\n", PANEL_ID_PROC_ENTRY);
+		return -EINVAL;
+	}
+
+	lcd_unique_id = proc_create(LCD_UNIQUE_ID_PROC_ENTRY, 0444, NULL, &psb_lcd_unique_id_proc_fops);
+	if (!lcd_unique_id) {
+		DRM_ERROR("Unable to create %s\n", LCD_UNIQUE_ID_PROC_ENTRY);
+		return -EINVAL;
+	}
+
 
 	return ret;
 }

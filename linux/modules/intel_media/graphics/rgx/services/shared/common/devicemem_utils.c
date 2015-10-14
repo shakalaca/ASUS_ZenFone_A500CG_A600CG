@@ -210,6 +210,7 @@ IMG_VOID _DevmemMemDescAcquire(DEVMEM_MEMDESC *psMemDesc)
 IMG_INTERNAL
 IMG_VOID _DevmemMemDescRelease(DEVMEM_MEMDESC *psMemDesc)
 {
+	PVR_ASSERT(psMemDesc != NULL);
 	PVR_ASSERT(psMemDesc->ui32RefCount != 0);
 
 	OSLockAcquire(psMemDesc->hLock);

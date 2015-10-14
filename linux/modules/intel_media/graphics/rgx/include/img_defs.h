@@ -128,11 +128,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #endif /* UNDER_WDDM */
 #endif /* UNDER_CE */
 #else
-	#if defined(LINUX) || defined(__METAG)
+	#if defined(LINUX) || defined(__METAG) || defined(__QNXNTO__)
 
 		#define IMG_CALLCONV
 		#define C_CALLCONV
-		#if defined(__linux__)
+		#if defined(__linux__) || defined(__QNXNTO__)
 			#define IMG_INTERNAL	__attribute__((visibility("hidden")))
 		#else
 			#define IMG_INTERNAL

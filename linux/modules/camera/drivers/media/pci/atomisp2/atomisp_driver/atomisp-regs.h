@@ -91,6 +91,9 @@
 #define MRFLD_PCI_CSI_DEADLINE_CONTROL	0xec
 #define MRFLD_PCI_CSI_RCOMP_CONTROL	0xf4
 
+/* Select Arasan (legacy)/Intel input system */
+#define MRFLD_PCI_CSI_CONTROL_PARPATHEN	BIT(24)
+
 /*
  * Enables the combining of adjacent 32-byte read requests to the same
  * cache line. When cleared, each 32-byte read request is sent as a
@@ -99,11 +102,28 @@
 #define MRFLD_PCI_I_CONTROL_ENABLE_READ_COMBINING	0x1
 
 /*
+ * Register: MRFLD_PCI_CSI_RCOMP_CONTROL
+ * If cleared, the high speed clock going to the digital logic is gated when
+ * RCOMP update is happening. The clock is gated for a minimum of 100 nsec.
+ * If this bit is set, then the high speed clock is not gated during the
+ * update cycle.
+ */
+#define MRFLD_PCI_CSI_HS_OVR_CLK_GATE_ON_UPDATE		0x800000
+
+/*
  * Enables the combining of adjacent 32-byte write requests to the same
  * cache line. When cleared, each 32-byte write request is sent as a
  * separate request on the IB interface.
  */
 #define MRFLD_PCI_I_CONTROL_ENABLE_WRITE_COMBINING	0x2
+
+#define MRFLD_PCI_CSI1_HSRXCLKTRIM		0x2
+#define MRFLD_PCI_CSI1_HSRXCLKTRIM_SHIFT	16
+#define MRFLD_PCI_CSI2_HSRXCLKTRIM		0x3
+#define MRFLD_PCI_CSI2_HSRXCLKTRIM_SHIFT	24
+#define MRFLD_PCI_CSI3_HSRXCLKTRIM		0x2
+#define MRFLD_PCI_CSI3_HSRXCLKTRIM_SHIFT	28
+#define MRFLD_PCI_CSI_HSRXCLKTRIM_MASK		0xf
 
 /*
  * This register is IUINT MMIO register, it is used to select the CSI
@@ -130,13 +150,18 @@
 /* MRFLD CSI lane configuration related */
 #define MRFLD_PORT_CONFIG_NUM  8
 #define MRFLD_PORT_NUM         3
+#define MRFLD_PORT1_ENABLE_SHIFT       0
+#define MRFLD_PORT2_ENABLE_SHIFT       1
 #define MRFLD_PORT3_ENABLE_SHIFT       2
 #define MRFLD_PORT1_LANES_SHIFT        3
 #define MRFLD_PORT2_LANES_SHIFT        7
 #define MRFLD_PORT3_LANES_SHIFT        8
-#define MRFLD_PORT_CONFIGCODE_SHIFT    16
 #define MRFLD_PORT_CONFIG_MASK 0x000f03ff
+#define MRFLD_PORT_CONFIGCODE_SHIFT    16
 #define MRFLD_ALL_CSI_PORTS_OFF_MASK   0x7
+
+#define CHV_PORT3_LANES_SHIFT		9
+#define CHV_PORT_CONFIG_MASK		0x1f07ff
 
 #define ISPSSPM1				0x3a
 #define ISP_FREQ_STAT_MASK			(0x1f << ISP_FREQ_STAT_OFFSET)
@@ -148,10 +173,16 @@
 #define ISP_FREQ_VALID_OFFSET			0x7
 #define ISP_FREQ_RULE_ANY			0x0
 
+#define ISP_FREQ_457MHZ				0x1C9
 #define ISP_FREQ_400MHZ				0x190
 #define ISP_FREQ_320MHZ				0x140
 #define ISP_FREQ_266MHZ				0x10a
 #define ISP_FREQ_200MHZ				0xc8
 #define HPLL_FREQ				0x640
 
+#if defined(ISP2401)
+#define ISP_FREQ_MAX	ISP_FREQ_320MHZ
+#else
+#define ISP_FREQ_MAX	ISP_FREQ_400MHZ
+#endif
 #endif /* ATOMISP_REGS_H */

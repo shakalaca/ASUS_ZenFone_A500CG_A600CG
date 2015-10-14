@@ -8,7 +8,8 @@ enum {
 };
 
 enum batt_chrg_prof_type {
-	PSE_MOD_CHRG_PROF = 0,
+	CHRG_PROF_NONE = 0,
+	PSE_MOD_CHRG_PROF,
 };
 
 /* charging profile structure definition */
@@ -47,7 +48,7 @@ struct ps_pse_mod_prof {
 	u16 capacity;
 	u16 voltage_max;
 	/* charge termination current */
-	u16 chrg_term_mA;
+	u16 chrg_term_ma;
 	/* Low battery level voltage */
 	u16 low_batt_mV;
 	/* upper and lower temperature limits on discharging */

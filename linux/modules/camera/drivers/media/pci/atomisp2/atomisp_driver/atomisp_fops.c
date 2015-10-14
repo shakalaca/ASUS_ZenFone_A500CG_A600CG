@@ -39,8 +39,11 @@
 
 #include "hrt/hive_isp_css_mm_hrt.h"
 
-#include "sh_css_debug.h"
+#ifndef CSS21
 #include "host/mmu_local.h"
+#else
+#include "type_support.h"
+#endif
 #include "device_access/device_access.h"
 #include "memory_access/memory_access.h"
 
@@ -91,6 +94,7 @@ static int atomisp_buf_prepare(struct videobuf_queue *vq,
 
 int atomisp_q_video_buffers_to_css(struct atomisp_sub_device *asd,
 			     struct atomisp_video_pipe *pipe,
+			     enum atomisp_input_stream_id stream_id,
 			     enum atomisp_css_buffer_type css_buf_type,
 			     enum atomisp_css_pipe_id css_pipe_id)
 {
@@ -114,7 +118,7 @@ int atomisp_q_video_buffers_to_css(struct atomisp_sub_device *asd,
 
 		vm_mem = vb->priv;
 
-		err = atomisp_q_video_buffer_to_css(asd, vm_mem,
+		err = atomisp_q_video_buffer_to_css(asd, vm_mem, stream_id,
 						css_buf_type, css_pipe_id);
 		if (err) {
 			spin_lock_irqsave(&pipe->irq_lock, irqflags);
@@ -131,6 +135,7 @@ int atomisp_q_video_buffers_to_css(struct atomisp_sub_device *asd,
 }
 
 int atomisp_q_s3a_buffers_to_css(struct atomisp_sub_device *asd,
+				enum atomisp_input_stream_id stream_id,
 				enum atomisp_css_pipe_id css_pipe_id)
 {
 	struct atomisp_s3a_buf *s3a_buf;
@@ -145,7 +150,8 @@ int atomisp_q_s3a_buffers_to_css(struct atomisp_sub_device *asd,
 				struct atomisp_s3a_buf, list);
 		list_move_tail(&s3a_buf->list, &asd->s3a_stats);
 
-		if (atomisp_q_s3a_buffer_to_css(asd, s3a_buf, css_pipe_id))
+		if (atomisp_q_s3a_buffer_to_css(asd, s3a_buf,
+						stream_id, css_pipe_id))
 			return -EINVAL;
 
 		asd->s3a_bufs_in_css[css_pipe_id]++;
@@ -155,6 +161,7 @@ int atomisp_q_s3a_buffers_to_css(struct atomisp_sub_device *asd,
 }
 
 int atomisp_q_dis_buffers_to_css(struct atomisp_sub_device *asd,
+				enum atomisp_input_stream_id stream_id,
 				enum atomisp_css_pipe_id css_pipe_id)
 {
 	if (list_empty(&asd->dis_stats)) {
@@ -168,7 +175,8 @@ int atomisp_q_dis_buffers_to_css(struct atomisp_sub_device *asd,
 				   struct atomisp_dis_buf, list);
 		list_move_tail(&dis_buf->list, &asd->dis_stats);
 
-		if (atomisp_q_dis_buffer_to_css(asd, dis_buf, css_pipe_id))
+		if (atomisp_q_dis_buffer_to_css(asd, dis_buf,
+						stream_id, css_pipe_id))
 			return -EINVAL;
 
 		asd->dis_bufs_in_css++;
@@ -178,9 +186,12 @@ int atomisp_q_dis_buffers_to_css(struct atomisp_sub_device *asd,
 }
 
 static int atomisp_get_css_buf_type(struct atomisp_sub_device *asd,
+				    enum atomisp_css_pipe_id pipe_id,
 				    uint16_t source_pad)
 {
-	if (source_pad == ATOMISP_SUBDEV_PAD_SOURCE_CAPTURE ||
+	if (pipe_id == CSS_PIPE_ID_COPY ||
+	    source_pad == ATOMISP_SUBDEV_PAD_SOURCE_CAPTURE ||
+	    source_pad == ATOMISP_SUBDEV_PAD_SOURCE_VIDEO ||
 	    (source_pad == ATOMISP_SUBDEV_PAD_SOURCE_PREVIEW &&
 	     asd->run_mode->val != ATOMISP_RUN_MODE_VIDEO))
 		return CSS_BUFFER_TYPE_OUTPUT_FRAME;
@@ -194,20 +205,30 @@ int atomisp_qbuffers_to_css(struct atomisp_sub_device *asd)
 	enum atomisp_css_buffer_type buf_type;
 	enum atomisp_css_pipe_id css_capture_pipe_id = CSS_PIPE_ID_NUM;
 	enum atomisp_css_pipe_id css_preview_pipe_id = CSS_PIPE_ID_NUM;
+	enum atomisp_css_pipe_id css_video_pipe_id = CSS_PIPE_ID_NUM;
+	enum atomisp_input_stream_id input_stream_id;
 	struct atomisp_video_pipe *capture_pipe = NULL;
 	struct atomisp_video_pipe *vf_pipe = NULL;
 	struct atomisp_video_pipe *preview_pipe = NULL;
+	struct atomisp_video_pipe *video_pipe = NULL;
+	bool raw_mode = atomisp_is_mbuscode_raw(
+			    asd->fmt[asd->capture_pad].fmt.code);
 
 	if (asd->vfpp->val == ATOMISP_VFPP_DISABLE_SCALER) {
-		preview_pipe = &asd->video_out_capture;
-		css_preview_pipe_id = CSS_PIPE_ID_VIDEO;
+		video_pipe = &asd->video_out_video_capture;
+		css_video_pipe_id = CSS_PIPE_ID_VIDEO;
 	} else if (asd->vfpp->val == ATOMISP_VFPP_DISABLE_LOWLAT) {
 		preview_pipe = &asd->video_out_capture;
 		css_preview_pipe_id = CSS_PIPE_ID_CAPTURE;
 	} else if (asd->run_mode->val == ATOMISP_RUN_MODE_VIDEO) {
-		capture_pipe = &asd->video_out_capture;
+		if (asd->continuous_mode->val) {
+			capture_pipe = &asd->video_out_capture;
+			vf_pipe = &asd->video_out_vf;
+			css_capture_pipe_id = CSS_PIPE_ID_CAPTURE;
+		}
+		video_pipe = &asd->video_out_video_capture;
 		preview_pipe = &asd->video_out_preview;
-		css_capture_pipe_id = CSS_PIPE_ID_VIDEO;
+		css_video_pipe_id = CSS_PIPE_ID_VIDEO;
 		css_preview_pipe_id = CSS_PIPE_ID_VIDEO;
 	} else if (asd->continuous_mode->val) {
 		capture_pipe = &asd->video_out_capture;
@@ -222,44 +243,99 @@ int atomisp_qbuffers_to_css(struct atomisp_sub_device *asd)
 	} else {
 		/* ATOMISP_RUN_MODE_STILL_CAPTURE */
 		capture_pipe = &asd->video_out_capture;
-		if (!atomisp_is_mbuscode_raw(
-			    asd->fmt[asd->capture_pad].fmt.code))
+		if (!raw_mode)
 			vf_pipe = &asd->video_out_vf;
 		css_capture_pipe_id = CSS_PIPE_ID_CAPTURE;
 	}
 
+#ifdef ISP2401_NEW_INPUT_SYSTEM
+	if (asd->isp->inputs[asd->input_curr].type == SOC_CAMERA || raw_mode) {
+		css_capture_pipe_id = CSS_PIPE_ID_COPY;
+		css_preview_pipe_id = CSS_PIPE_ID_COPY;
+	}
+#endif
+
 	if (capture_pipe) {
 		buf_type = atomisp_get_css_buf_type(
-			asd, atomisp_subdev_source_pad(&capture_pipe->vdev));
+			asd, css_capture_pipe_id,
+			atomisp_subdev_source_pad(&capture_pipe->vdev));
+#ifdef CSS20
+		if (asd->run_mode->val == ATOMISP_RUN_MODE_VIDEO &&
+			asd->stream_env[ATOMISP_INPUT_STREAM_VIDEO].stream)
+			input_stream_id = ATOMISP_INPUT_STREAM_VIDEO;
+		else
+#endif
+			input_stream_id = ATOMISP_INPUT_STREAM_GENERAL;
 		atomisp_q_video_buffers_to_css(asd, capture_pipe,
+					       input_stream_id,
 					       buf_type, css_capture_pipe_id);
 	}
 
 	if (vf_pipe) {
 		buf_type = atomisp_get_css_buf_type(
-			asd, atomisp_subdev_source_pad(&vf_pipe->vdev));
-		atomisp_q_video_buffers_to_css(asd, vf_pipe, buf_type,
-					 css_capture_pipe_id);
+			asd, css_capture_pipe_id,
+			atomisp_subdev_source_pad(&vf_pipe->vdev));
+#ifdef CSS20
+		if (asd->stream_env[ATOMISP_INPUT_STREAM_POSTVIEW].stream)
+			input_stream_id = ATOMISP_INPUT_STREAM_POSTVIEW;
+		else
+#endif
+			input_stream_id = ATOMISP_INPUT_STREAM_GENERAL;
+		atomisp_q_video_buffers_to_css(asd, vf_pipe,
+					       input_stream_id,
+					       buf_type, css_capture_pipe_id);
 	}
 
 	if (preview_pipe) {
 		buf_type = atomisp_get_css_buf_type(
-			asd, atomisp_subdev_source_pad(&preview_pipe->vdev));
+			asd, css_preview_pipe_id,
+			atomisp_subdev_source_pad(&preview_pipe->vdev));
+#ifdef CSS20
+		if (asd->stream_env[ATOMISP_INPUT_STREAM_PREVIEW].stream)
+			input_stream_id = ATOMISP_INPUT_STREAM_PREVIEW;
+		else
+#endif
+			input_stream_id = ATOMISP_INPUT_STREAM_GENERAL;
 		atomisp_q_video_buffers_to_css(asd, preview_pipe,
+					       input_stream_id,
 					       buf_type, css_preview_pipe_id);
 	}
+
+	if (video_pipe) {
+		buf_type = atomisp_get_css_buf_type(
+			asd, css_video_pipe_id,
+			atomisp_subdev_source_pad(&video_pipe->vdev));
+#ifdef CSS20
+		if (asd->stream_env[ATOMISP_INPUT_STREAM_VIDEO].stream)
+			input_stream_id = ATOMISP_INPUT_STREAM_VIDEO;
+		else
+#endif
+			input_stream_id = ATOMISP_INPUT_STREAM_GENERAL;
+		atomisp_q_video_buffers_to_css(asd, video_pipe,
+					       input_stream_id,
+					       buf_type, css_video_pipe_id);
+	}
+
 
 	if (asd->params.curr_grid_info.s3a_grid.enable) {
 		if (css_capture_pipe_id < CSS_PIPE_ID_NUM)
 			atomisp_q_s3a_buffers_to_css(asd,
-						     css_capture_pipe_id);
+					ATOMISP_INPUT_STREAM_GENERAL,
+					css_capture_pipe_id);
 		if (css_preview_pipe_id < CSS_PIPE_ID_NUM)
 			atomisp_q_s3a_buffers_to_css(asd,
-						     css_preview_pipe_id);
+					ATOMISP_INPUT_STREAM_GENERAL,
+					css_preview_pipe_id);
+		if (css_video_pipe_id < CSS_PIPE_ID_NUM)
+			atomisp_q_s3a_buffers_to_css(asd,
+					ATOMISP_INPUT_STREAM_GENERAL,
+					css_video_pipe_id);
 	}
 
 	if (asd->params.curr_grid_info.dvs_grid.enable)
-		atomisp_q_dis_buffers_to_css(asd, css_capture_pipe_id);
+		atomisp_q_dis_buffers_to_css(asd,
+					ATOMISP_INPUT_STREAM_GENERAL,
+					css_video_pipe_id);
 
 	return 0;
 }
@@ -367,7 +443,7 @@ static void atomisp_dev_init_struct(struct atomisp_device *isp)
 	isp->sw_contex.file_input = 0;
 	isp->need_gfx_throttle = true;
 	isp->isp_fatal_error = false;
-	isp->delayed_init = ATOMISP_DELAYED_INIT_NOT_QUEUED;
+	isp->mipi_frame_size = 0;
 
 	for (i = 0; i < isp->input_cnt; i++)
 		isp->inputs[i].asd = NULL;
@@ -376,7 +452,7 @@ static void atomisp_dev_init_struct(struct atomisp_device *isp)
 	 * After boot-up, the default frequency is 200MHz.
 	 * For Medfield/Clovertrail, all running at 320MHz
 	 */
-	if (IS_ISP2400(isp))
+	if (IS_ISP24XX(isp))
 		isp->sw_contex.running_freq = ISP_FREQ_200MHZ;
 	else
 		isp->sw_contex.running_freq = ISP_FREQ_320MHZ;
@@ -395,11 +471,17 @@ static void atomisp_subdev_init_struct(struct atomisp_sub_device *asd)
 	asd->params.false_color = 0;
 	asd->params.online_process = 1;
 	asd->params.yuv_ds_en = 0;
+#ifdef CSS20
+	asd->params.dvs_6axis = NULL;
+#endif
 	asd->params.offline_parm.num_captures = 1;
 	asd->params.offline_parm.skip_frames = 0;
 	asd->params.offline_parm.offset = 0;
+	asd->delayed_init = ATOMISP_DELAYED_INIT_NOT_QUEUED;
 	/* Add for channel */
 	asd->input_curr = 0;
+
+	asd->mipi_frame_size = 0;
 
 	atomisp_css_init_struct(asd);
 }
@@ -411,6 +493,7 @@ unsigned int atomisp_subdev_users(struct atomisp_sub_device *asd)
 	return asd->video_out_preview.users +
 	       asd->video_out_vf.users +
 	       asd->video_out_capture.users +
+	       asd->video_out_video_capture.users +
 	       asd->video_in.users;
 }
 
@@ -477,7 +560,7 @@ static int atomisp_open(struct file *file)
 	 * the verbosity level, change the definition of this macro
 	 * up in the file
 	 */
-	sh_css_set_dtrace_level(CSS_DTRACE_VERBOSITY_LEVEL);
+	atomisp_css_debug_set_dtrace_level(CSS_DTRACE_VERBOSITY_LEVEL);
 
 	atomisp_dev_init_struct(isp);
 
@@ -512,9 +595,12 @@ static int atomisp_release(struct file *file)
 	struct atomisp_video_pipe *pipe = atomisp_to_video_pipe(vdev);
 	struct atomisp_sub_device *asd = pipe->asd;
 	struct v4l2_requestbuffers req;
+	struct v4l2_subdev_fh fh;
 	int ret = 0;
 
 	dev_dbg(isp->dev, "release device %s\n", vdev->name);
+
+	v4l2_fh_init(&fh.vfh, vdev);
 
 	req.count = 0;
 	if (isp == NULL)
@@ -557,7 +643,7 @@ static int atomisp_release(struct file *file)
 	if (!isp->sw_contex.file_input && asd->fmt_auto->val) {
 		struct v4l2_mbus_framefmt isp_sink_fmt = { 0 };
 		atomisp_subdev_set_ffmt(
-			&asd->subdev, NULL,
+			&asd->subdev, &fh,
 			V4L2_SUBDEV_FORMAT_ACTIVE, ATOMISP_SUBDEV_PAD_SINK,
 			&isp_sink_fmt);
 	}
@@ -568,7 +654,7 @@ static int atomisp_release(struct file *file)
 	/* clear the sink pad for file input */
 	if (isp->sw_contex.file_input && asd->fmt_auto->val) {
 		struct v4l2_mbus_framefmt isp_sink_fmt = { 0 };
-		atomisp_subdev_set_ffmt(&asd->subdev, NULL,
+		atomisp_subdev_set_ffmt(&asd->subdev, &fh,
 					V4L2_SUBDEV_FORMAT_ACTIVE,
 					ATOMISP_SUBDEV_PAD_SINK, &isp_sink_fmt);
 	}
@@ -589,10 +675,15 @@ static int atomisp_release(struct file *file)
 	del_timer_sync(&isp->wdt);
 	atomisp_acc_release(isp);
 	atomisp_free_all_shading_tables(isp);
+#ifdef CSS20
+	atomisp_destroy_pipes_stream_force(asd);
+#endif
 	atomisp_css_uninit(isp);
-#ifndef CONFIG_VIDEO_ATOMISP_CSS20
+#ifndef CSS20
 	hrt_isp_css_mm_clear();
-#endif /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#else /* CSS20 */
+	hmm_cleanup_mmu_l2();
+#endif /* CSS20 */
 	hmm_pool_unregister(HMM_POOL_TYPE_DYNAMIC);
 
 	ret = v4l2_subdev_call(isp->flash, core, s_power, 0);
@@ -614,7 +705,7 @@ done:
  */
 static int do_isp_mm_remap(struct atomisp_device *isp,
 			   struct vm_area_struct *vma,
-			   void *isp_virt, u32 host_virt, u32 pgnr)
+			   ia_css_ptr isp_virt, u32 host_virt, u32 pgnr)
 {
 	u32 pfn;
 
@@ -637,7 +728,7 @@ static int do_isp_mm_remap(struct atomisp_device *isp,
 static int frame_mmap(struct atomisp_device *isp,
 	const struct atomisp_css_frame *frame, struct vm_area_struct *vma)
 {
-	void *isp_virt;
+	ia_css_ptr isp_virt;
 	u32 host_virt;
 	u32 pgnr;
 
@@ -647,7 +738,7 @@ static int frame_mmap(struct atomisp_device *isp,
 	}
 
 	host_virt = vma->vm_start;
-	isp_virt = (void *)frame->data;
+	isp_virt = frame->data;
 	atomisp_get_frame_pgnr(isp, frame, &pgnr);
 
 	if (do_isp_mm_remap(isp, vma, isp_virt, host_virt, pgnr))
@@ -717,10 +808,10 @@ static int remove_pad_from_frame(struct atomisp_device *isp,
 	unsigned int i;
 	unsigned short *buffer;
 	int ret = 0;
-	unsigned short *load = (unsigned short *)in_frame->data;
-	unsigned short *store = load;
+	ia_css_ptr load = in_frame->data;
+	ia_css_ptr store = load;
 
-	buffer = kmalloc(width*sizeof(*load), GFP_KERNEL);
+	buffer = kmalloc(width*sizeof(load), GFP_KERNEL);
 	if (!buffer) {
 		dev_err(isp->dev, "out of memory.\n");
 		return -ENOMEM;
@@ -729,11 +820,11 @@ static int remove_pad_from_frame(struct atomisp_device *isp,
 //#define ISP_LEFT_PAD			128	/* equal to 2*NWAY */
 	load += ISP_LEFT_PAD;
 	for (i = 0; i < height; i++) {
-		ret = hrt_isp_css_mm_load(load, buffer, width*sizeof(*load));
+		ret = hrt_isp_css_mm_load(load, buffer, width*sizeof(load));
 		if (ret < 0)
 			goto remove_pad_error;
 
-		ret = hrt_isp_css_mm_store(store, buffer, width*sizeof(*store));
+		ret = hrt_isp_css_mm_store(store, buffer, width*sizeof(store));
 		if (ret < 0)
 			goto remove_pad_error;
 
@@ -864,6 +955,9 @@ const struct v4l2_file_operations atomisp_fops = {
 	.release = atomisp_release,
 	.mmap = atomisp_mmap,
 	.ioctl = video_ioctl2,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = atomisp_compat_ioctl32,
+#endif
 	.poll = atomisp_poll,
 };
 
@@ -873,6 +967,9 @@ const struct v4l2_file_operations atomisp_file_fops = {
 	.release = atomisp_release,
 	.mmap = atomisp_file_mmap,
 	.ioctl = video_ioctl2,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = atomisp_compat_ioctl32,
+#endif
 	.poll = atomisp_poll,
 };
 

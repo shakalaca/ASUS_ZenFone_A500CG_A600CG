@@ -17,12 +17,17 @@
 #include <asm/intel-mid.h>
 #include <media/v4l2-subdev.h>
 #include <linux/mfd/intel_mid_pmic.h>
+
+#ifdef CONFIG_VLV2_PLAT_CLK
 #include <linux/vlv2_plat_clock.h>
+#endif
+
 #include "platform_camera.h"
 #include "platform_imx175.h"
 
 /* workround - pin defined for byt */
 #define CAMERA_0_RESET 126
+#define CAMERA_0_RESET_CRV2 119
 #ifdef CONFIG_VLV2_PLAT_CLK
 #define OSC_CAM0_CLK 0x0
 #define CLK_19P2MHz 0x1
@@ -44,7 +49,7 @@ static int imx175_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 {
 	int ret;
 
-	if (intel_mid_identify_cpu() != INTEL_MID_CPU_CHIP_VALLEYVIEW2) {
+	if (!IS_BYT) {
 		if (camera_reset < 0) {
 			ret = camera_sensor_gpio(-1, GP_CAMERA_0_RESET,
 					GPIOF_DIR_OUT, 1);
@@ -59,14 +64,18 @@ static int imx175_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 		 * not implemented currently
 		 */
 		if (camera_reset < 0) {
-			ret = gpio_request(CAMERA_0_RESET, "camera_0_reset");
+			if (spid.hardware_id == BYT_TABLET_BLK_CRV2)
+				camera_reset = CAMERA_0_RESET_CRV2;
+			else
+				camera_reset = CAMERA_0_RESET;
+			ret = gpio_request(camera_reset, "camera_reset");
 			if (ret) {
 				pr_err("%s: failed to request gpio(pin %d)\n",
 				__func__, CAMERA_0_RESET);
 				return -EINVAL;
 			}
 		}
-		camera_reset = CAMERA_0_RESET;
+
 		ret = gpio_direction_output(camera_reset, 1);
 		if (ret) {
 			pr_err("%s: failed to set gpio(pin %d) direction\n",
@@ -103,12 +112,13 @@ static int imx175_flisclk_ctrl(struct v4l2_subdev *sd, int flag)
 			return ret;
 	}
 	return vlv2_plat_configure_clock(OSC_CAM0_CLK, flag);
-#endif
-	if (intel_mid_identify_cpu() != INTEL_MID_CPU_CHIP_VALLEYVIEW2)
-		return intel_scu_ipc_osc_clk(OSC_CLK_CAM0,
+#elif defined(CONFIG_INTEL_SCU_IPC_UTIL)
+	return intel_scu_ipc_osc_clk(OSC_CLK_CAM0,
 			flag ? clock_khz : 0);
-	else
-		return 0;
+#else
+	pr_err("imx175 clock is not set\n");
+	return 0;
+#endif
 }
 
 static int imx175_power_ctrl(struct v4l2_subdev *sd, int flag)
@@ -117,9 +127,6 @@ static int imx175_power_ctrl(struct v4l2_subdev *sd, int flag)
 
 	if (flag) {
 		if (!camera_vprog1_on) {
-			if (intel_mid_identify_cpu() !=
-			    INTEL_MID_CPU_CHIP_VALLEYVIEW2)
-				ret = intel_scu_ipc_msic_vprog1(1);
 #ifdef CONFIG_CRYSTAL_COVE
 			/*
 			 * This should call VRF APIs.
@@ -131,6 +138,10 @@ static int imx175_power_ctrl(struct v4l2_subdev *sd, int flag)
 			if (ret)
 				return ret;
 			ret = camera_set_pmic_power(CAMERA_1P8V, true);
+#elif defined(CONFIG_INTEL_SCU_IPC_UTIL)
+			ret = intel_scu_ipc_msic_vprog1(1);
+#else
+			pr_err("imx175 power is not set.\n");
 #endif
 			if (!ret) {
 				/* imx1x5 VDIG rise to XCLR release */
@@ -141,14 +152,15 @@ static int imx175_power_ctrl(struct v4l2_subdev *sd, int flag)
 		}
 	} else {
 		if (camera_vprog1_on) {
-			if (intel_mid_identify_cpu() !=
-			    INTEL_MID_CPU_CHIP_VALLEYVIEW2)
-				ret = intel_scu_ipc_msic_vprog1(0);
 #ifdef CONFIG_CRYSTAL_COVE
 			ret = camera_set_pmic_power(CAMERA_2P8V, false);
 			if (ret)
 				return ret;
 			ret = camera_set_pmic_power(CAMERA_1P8V, false);
+#elif defined(CONFIG_INTEL_SCU_IPC_UTIL)
+			ret = intel_scu_ipc_msic_vprog1(0);
+#else
+			pr_err("imx175 power is not set.\n");
 #endif
 			if (!ret)
 				camera_vprog1_on = 0;

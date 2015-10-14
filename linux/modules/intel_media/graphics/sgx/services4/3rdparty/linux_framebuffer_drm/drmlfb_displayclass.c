@@ -158,7 +158,6 @@ static int MRSTLFBCopyOverlayBuf(struct drm_device *dev,
 
 	mutex_lock(&dev_priv->ov_ctrl_lock);
 	addr = dev_priv->overlay_kmap[index].virtual;
-
 	memcpy(addr, dev_priv->ov_ctrl_blk + context->index,
 			sizeof(struct overlay_ctrl_blk));
 	mutex_unlock(&dev_priv->ov_ctrl_lock);
@@ -232,13 +231,9 @@ static void MRSTLFBFlipOverlay(MRSTLFB_DEVINFO *psDevInfo,
 	else if (psContext->index > 1)
 		return;
 
-
-
 	ovadd = MRSTLFBSetupOvadd(dev, psContext);
 	if (ovadd == 0)
 		return;
-	if (!(is_cmd_mode_panel(dev) && overlay_pipe == 0))
-		MRSTLFBWaitOverlayFlip(dev);
 	PSB_WVDC32(ovadd, ovadd_reg);
 
 	/* If overlay enabled while display plane doesn't,
@@ -1535,16 +1530,29 @@ static MRST_BOOL MRSTLFBVSyncIHandler(MRSTLFB_DEVINFO *psDevInfo, int iPipe)
 	MRST_BOOL bStatus = MRST_TRUE;
 	unsigned long ulMaxIndex;
 	MRSTLFB_SWAPCHAIN *psSwapChain;
- 
+        struct drm_psb_private *dev_priv;
+        int bhdmiplane_enable = IMG_TRUE;
 
 	mutex_lock(&psDevInfo->sSwapChainMutex);
+
 
 	psSwapChain = psDevInfo->psCurrentSwapChain;
 	if (psSwapChain == NULL)
 		goto ExitUnlock;
 
-	if (psDevInfo->bFlushCommands || psDevInfo->bSuspended || psDevInfo->bLeaveVT)
-		goto ExitUnlock;
+        //if hdmi connect,and hdmi plane disable,not flush commands
+        if(psDevInfo->psDrmDevice){
+                dev_priv =
+                        (struct drm_psb_private *)psDevInfo->psDrmDevice->dev_private;
+
+                if(dev_priv)
+                        bhdmiplane_enable = dev_priv->bhdmi_enable;
+        }
+
+        if ((psDevInfo->bFlushCommands && !(hdmi_state && (bhdmiplane_enable == IMG_FALSE)))
+                || psDevInfo->bSuspended || psDevInfo->bLeaveVT)
+                goto ExitUnlock;
+
 
 	psFlipItem = &psSwapChain->psVSyncFlips[psSwapChain->ulRemoveIndex];
 	ulMaxIndex = psSwapChain->ulSwapChainLength - 1;
@@ -1604,7 +1612,6 @@ static MRST_BOOL MRSTLFBVSyncIHandler(MRSTLFB_DEVINFO *psDevInfo, int iPipe)
 	}
 ExitUnlock:
 	mutex_unlock(&psDevInfo->sSwapChainMutex);
-
 
 	return bStatus;
 }
@@ -1861,7 +1868,6 @@ static IMG_BOOL ProcessFlip2(IMG_HANDLE hCmdCookie,
 
 	if (contextlocked)
 		mdfld_dsi_dsr_forbid_locked(dsi_config);
-
 #if 0
 	if (dev_priv->exit_idle && (dsi_config->type == MDFLD_DSI_ENCODER_DPI))
 		dev_priv->exit_idle(dev, MDFLD_DSR_2D_3D, NULL, true);
@@ -1901,8 +1907,18 @@ static IMG_BOOL ProcessFlip2(IMG_HANDLE hCmdCookie,
 	updatePlaneContexts(psSwapChain, psFlipCmd, psPlaneContexts);
 
 #if defined(MRST_USING_INTERRUPTS)
+
+        /*
+        **HDMI plug-in,Play video in OVERLAY_EXTEND mode
+        **MIPI will off,bFlushCommands will be set to 1
+        **pfnPVRSRVCmdComplete will be called immediately
+        **after DRMLFBFlipBuffer2,Video will decode something
+        **to the buffer which is displaying,so abnormal.
+        **In normal mode,pfnPVRSRVCmdComplete will be called
+        **In next vsync if the new buffer is displaying.
+        */
 	if (!drm_psb_3D_vblank || psFlipCmd->ui32SwapInterval == 0 ||
-		psDevInfo->bFlushCommands) {
+		(psDevInfo->bFlushCommands && !(hdmi_state && (dev_priv->bhdmi_enable == IMG_FALSE)))) {
 #endif
 		/* update sprite plane context*/
 		if (DRMLFBFlipBuffer2(

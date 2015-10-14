@@ -80,7 +80,7 @@ static const struct file_operations emmc0_id_entry_fops = {
 };
 
 
-static int mmcblk0_match(struct device *dev, void *data)
+static int mmcblk0_match(struct device *dev, const void *data)
 {
 	if (strcmp(dev_name(dev), "mmcblk0") == 0)
 		return 1;
@@ -123,7 +123,6 @@ static int get_emmc0_cid(void)
 	return 0;
 }
 
-#define SERIALNO_CMDLINE "androidboot.serialno="
 
 static void set_cmdline_serialno(void)
 {
@@ -132,6 +131,8 @@ static void set_cmdline_serialno(void)
 	char *end_of_field;
 	int serialno_len;
 	int value_length;
+	char SERIALNO_CMDLINE[] = "androidboot.serialno=";
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0))
 	if (intel_platform_ssn[0] != '\0') {
 		serialno = intel_platform_ssn;
@@ -150,7 +151,7 @@ static void set_cmdline_serialno(void)
 
 	start = strstr(saved_command_line, SERIALNO_CMDLINE);
 	if (!start) {
-		pr_err("Could not find %s in cmdline\n" SERIALNO_CMDLINE);
+		pr_err("Could not find %s in cmdline\n", SERIALNO_CMDLINE);
 		goto error;
 	}
 

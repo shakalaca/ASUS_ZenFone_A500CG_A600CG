@@ -10,12 +10,11 @@
  */
 #include <linux/module.h>
 #include <linux/console.h>
-#include "drmP.h"
-#include "drm.h"
+#include <drm/drmP.h>
 
 #include "mgag200_drv.h"
 
-#include "drm_pciids.h"
+#include <drm/drm_pciids.h>
 
 /*
  * This is the generic driver code. This binds the driver to the drm core,
@@ -61,8 +60,7 @@ static void mgag200_kick_out_firmware_fb(struct pci_dev *pdev)
 }
 
 
-static int __devinit
-mga_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+static int mga_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	mgag200_kick_out_firmware_fb(pdev);
 
@@ -84,6 +82,9 @@ static const struct file_operations mgag200_driver_fops = {
 	.mmap = mgag200_mmap,
 	.poll = drm_poll,
 	.fasync = drm_fasync,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = drm_compat_ioctl,
+#endif
 	.read = drm_read,
 };
 

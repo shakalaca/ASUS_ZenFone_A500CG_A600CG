@@ -25,8 +25,13 @@
  */
 
 #include <asm/intel_scu_pmic.h>
+#include <asm/intel_mid_rpmsg.h>
+#include <asm/intel_mid_remoteproc.h>
 
 #include "displays/jdi_vid.h"
+
+/* The register to control secure I2C FLIS pin */
+#define SECURE_I2C_FLIS_REG	0xFF0C1D30
 
 static int mipi_reset_gpio;
 static int bias_en_gpio;
@@ -349,10 +354,13 @@ static int mdfld_dsi_jdi_panel_reset(struct mdfld_dsi_config *dsi_config)
 	/* Because when reset touchscreen panel, touchscreen will pull i2c bus
 	 * to low, sometime this operation will cause i2c bus enter into wrong
 	 * status, so before reset, switch i2c scl pin */
-	vaddr1 = ioremap(0xff0c1d30, 4);
+	vaddr1 = ioremap(SECURE_I2C_FLIS_REG, 4);
 	reg_value_scl = ioread32(vaddr1);
 	reg_value_scl &= ~0x1000;
-	iowrite32(reg_value_scl, vaddr1);
+	rpmsg_send_generic_raw_command(RP_INDIRECT_WRITE, 0,
+					(u8 *)&reg_value_scl, 4,
+					NULL, 0,
+					SECURE_I2C_FLIS_REG, 0);
 
 	__vpro2_power_ctrl(true);
 
@@ -394,7 +402,10 @@ static int mdfld_dsi_jdi_panel_reset(struct mdfld_dsi_config *dsi_config)
 	usleep_range(2000, 2500);
 	/* switch i2c scl pin back */
 	reg_value_scl |= 0x1000;
-	iowrite32(reg_value_scl, vaddr1);
+	rpmsg_send_generic_raw_command(RP_INDIRECT_WRITE, 0,
+					(u8 *)&reg_value_scl, 4,
+					NULL, 0,
+					SECURE_I2C_FLIS_REG, 0);
 	iounmap(vaddr1);
 
 	return 0;

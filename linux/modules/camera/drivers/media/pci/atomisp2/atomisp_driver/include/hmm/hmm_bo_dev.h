@@ -32,6 +32,11 @@
 #include "mmu/isp_mmu.h"
 #include "hmm/hmm_common.h"
 #include "hmm/hmm_vm.h"
+#ifdef CSS20
+#include "ia_css_types.h"
+#else /* CSS20 */
+#include "sh_css_types.h"
+#endif /* CSS20 */
 
 #define	check_bodev_null_return(bdev, exp)	\
 		check_null_return(bdev, exp, \
@@ -73,6 +78,11 @@ int hmm_bo_device_init(struct hmm_bo_device *bdev,
 void hmm_bo_device_exit(struct hmm_bo_device *bdev);
 
 /*
+ * only clean up empty MMU L2 tables.
+ */
+void hmm_bo_device_cleanup_mmu_l2(struct hmm_bo_device *bdev);
+
+/*
  * whether the bo device is inited or not.
  */
 int hmm_bo_device_inited(struct hmm_bo_device *bdev);
@@ -82,14 +92,21 @@ int hmm_bo_device_inited(struct hmm_bo_device *bdev);
  * return NULL if no such buffer object found.
  */
 struct hmm_buffer_object *hmm_bo_device_search_start(
-		struct hmm_bo_device *bdev, unsigned int vaddr);
+		struct hmm_bo_device *bdev, ia_css_ptr vaddr);
 
 /*
  * find the buffer object with virtual address vaddr.
  * return NULL if no such buffer object found.
  */
 struct hmm_buffer_object *hmm_bo_device_search_in_range(
-		struct hmm_bo_device *bdev, unsigned int vaddr);
+		struct hmm_bo_device *bdev, ia_css_ptr vaddr);
+
+/*
+ * find the buffer object with kernel virtual address vaddr.
+ * return NULL if no such buffer object found.
+ */
+struct hmm_buffer_object *hmm_bo_device_search_vmap_start(
+		struct hmm_bo_device *bdev, const void *vaddr);
 
 /*
  * find a buffer object with pgnr pages from free_bo_list and
@@ -109,7 +126,7 @@ void hmm_bo_device_destroy_free_bo_list(struct hmm_bo_device *bdev);
  * destroy buffer object with start virtual address vaddr.
  */
 void hmm_bo_device_destroy_free_bo_addr(struct hmm_bo_device *bdev,
-		unsigned int vaddr);
+		ia_css_ptr vaddr);
 /*
  * destroy all buffer objects with pgnr pages.
  */

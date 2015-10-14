@@ -1,14 +1,30 @@
 ccflags-$(CONFIG_USB_DWC3_DEBUG)	:= -DDEBUG
 ccflags-$(CONFIG_USB_DWC3_VERBOSE)	+= -DVERBOSE_DEBUG
 
+
+obj-$(CONFIG_USB_DWC3_DEVICE_INTEL)		+= dwc3-device-intel.o
+obj-$(CONFIG_USB_DWC3_INTEL_MRFL)		+= dwc3-intel-mrfl.o
+obj-$(CONFIG_USB_DWC3_INTEL_BYT)		+= dwc3-intel-byt.o
+ifneq ($(CONFIG_DEBUG_FS),)
+	obj-$(CONFIG_USB_DWC3_DEVICE_INTEL)	+= debugfs.o
+endif
+
+ifeq ($(CONFIG_USB_DWC3_DEVICE_INTEL),)
 obj-$(CONFIG_USB_DWC3)			+= dwc3.o
 
 dwc3-y					:= core.o
-dwc3-y					+= host.o
-dwc3-y					+= gadget.o ep0.o
+
+ifneq ($(filter y,$(CONFIG_USB_DWC3_HOST) $(CONFIG_USB_DWC3_DUAL_ROLE)),)
+	dwc3-y				+= host.o
+endif
+
+ifneq ($(filter y,$(CONFIG_USB_DWC3_GADGET) $(CONFIG_USB_DWC3_DUAL_ROLE)),)
+	dwc3-y				+= gadget.o ep0.o
+endif
 
 ifneq ($(CONFIG_DEBUG_FS),)
 	dwc3-y				+= debugfs.o
+endif
 endif
 
 ##
@@ -21,27 +37,13 @@ endif
 # the entire driver (with all its glue layers) on several architectures
 # and make sure it compiles fine. This will also help with allmodconfig
 # and allyesconfig builds.
-#
-# The only exception is the PCI glue layer, but that's only because
-# PCI doesn't provide nops if CONFIG_PCI isn't enabled.
 ##
 
-obj-$(CONFIG_USB_DWC3)		+= dwc3-omap.o
-
-##
-# REVISIT Samsung Exynos platform needs the clk API which isn't
-# defined on all architectures. If we allow dwc3-exynos.c compile
-# always we will fail the linking phase on those architectures
-# which don't provide clk api implementation and that's unnaceptable.
-#
-# When Samsung's platform start supporting pm_runtime, this check
-# for HAVE_CLK should be removed.
-##
-ifneq ($(CONFIG_HAVE_CLK),)
-	obj-$(CONFIG_USB_DWC3)		+= dwc3-exynos.o
-endif
 
 ifneq ($(CONFIG_PCI),)
-	obj-$(CONFIG_USB_DWC3)		+= dwc3-pci.o
+	obj-$(CONFIG_USB_DWC3_OTG)	+= otg.o
 endif
+obj-$(CONFIG_USB_DWC3_OMAP)		+= dwc3-omap.o
+obj-$(CONFIG_USB_DWC3_EXYNOS)		+= dwc3-exynos.o
+obj-$(CONFIG_USB_DWC3_PCI)		+= dwc3-pci.o
 

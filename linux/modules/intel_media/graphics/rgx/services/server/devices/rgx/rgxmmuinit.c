@@ -176,7 +176,10 @@ static PVRSRV_ERROR RGXGetPageSizeConfigCB(IMG_UINT32 uiLog2DataPageSize,
                                            IMG_HANDLE *phPriv);
 
 static PVRSRV_ERROR RGXPutPageSizeConfigCB(IMG_HANDLE hPriv);
-    
+
+static PVRSRV_ERROR RGXGetPageSizeFromPDE4(IMG_UINT32 ui32PDE, IMG_UINT32 *pui32Log2PageSize);
+static PVRSRV_ERROR RGXGetPageSizeFromPDE8(IMG_UINT64 ui64PDE, IMG_UINT32 *pui32Log2PageSize);
+
 static MMU_DEVICEATTRIBS sRGXMMUDeviceAttributes;
 
 PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
@@ -203,6 +206,8 @@ PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
 	sRGXMMUDeviceAttributes.pfnGetPageSizeConfiguration = RGXGetPageSizeConfigCB;
 	sRGXMMUDeviceAttributes.pfnPutPageSizeConfiguration = RGXPutPageSizeConfigCB;
 
+	sRGXMMUDeviceAttributes.pfnGetPageSizeFromPDE4 = RGXGetPageSizeFromPDE4;
+	sRGXMMUDeviceAttributes.pfnGetPageSizeFromPDE8 = RGXGetPageSizeFromPDE8;
 
 	/*
 	 * Setup sRGXMMUPCEConfig
@@ -861,4 +866,41 @@ static PVRSRV_ERROR RGXPutPageSizeConfigCB(IMG_HANDLE hPriv)
     psPageSizeConfig->uiRefCount --;
 
     return PVRSRV_OK;
+}
+
+static PVRSRV_ERROR RGXGetPageSizeFromPDE4(IMG_UINT32 ui32PDE, IMG_UINT32 *pui32Log2PageSize)
+{
+    PVR_UNREFERENCED_PARAMETER(ui32PDE);
+    PVR_UNREFERENCED_PARAMETER(pui32Log2PageSize);
+	PVR_DPF((PVR_DBG_ERROR, "4-byte PDE not supported on this device"));
+	return PVRSRV_ERROR_MMU_INVALID_PAGE_SIZE_FOR_DEVICE;
+}
+
+static PVRSRV_ERROR RGXGetPageSizeFromPDE8(IMG_UINT64 ui64PDE, IMG_UINT32 *pui32Log2PageSize)
+{
+	switch (ui64PDE & (~RGX_MMUCTRL_PD_DATA_PAGE_SIZE_CLRMSK))
+	{
+		case RGX_MMUCTRL_PD_DATA_PAGE_SIZE_4KB:
+			*pui32Log2PageSize = 12;
+			break;
+		case RGX_MMUCTRL_PD_DATA_PAGE_SIZE_16KB:
+			*pui32Log2PageSize = 14;
+			break;
+		case RGX_MMUCTRL_PD_DATA_PAGE_SIZE_64KB:
+			*pui32Log2PageSize = 16;
+			break;
+		case RGX_MMUCTRL_PD_DATA_PAGE_SIZE_256KB:
+			*pui32Log2PageSize = 18;
+			break;
+		case RGX_MMUCTRL_PD_DATA_PAGE_SIZE_1MB:
+			*pui32Log2PageSize = 20;
+			break;
+		case RGX_MMUCTRL_PD_DATA_PAGE_SIZE_2MB:
+			*pui32Log2PageSize = 21;
+			break;
+		default:
+			return PVRSRV_ERROR_MMU_INVALID_PAGE_SIZE_FOR_DEVICE;
+			break;
+	}
+	return PVRSRV_OK;
 }

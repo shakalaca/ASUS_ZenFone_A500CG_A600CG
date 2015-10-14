@@ -117,8 +117,8 @@ static int process_cable_props(struct power_supply_cable_props *cap)
 
 	struct charger_cable *cable = NULL;
 
-	pr_info("%s: event:%d, type:%d, mA:%d\n",
-		__func__, cap->chrg_evt, cap->chrg_type, cap->mA);
+	pr_info("%s: event:%d, type:%d, ma:%d\n",
+		__func__, cap->chrg_evt, cap->chrg_type, cap->ma);
 
 	cable = get_cable(cap->chrg_type);
 	if (!cable) {
@@ -129,6 +129,7 @@ static int process_cable_props(struct power_supply_cable_props *cap)
 
 	switch (cap->chrg_evt) {
 	case POWER_SUPPLY_CHARGER_EVENT_CONNECT:
+	case POWER_SUPPLY_CHARGER_EVENT_RESUME:
 		cable->cable_props.cable_stat = EXTCON_CHRGR_CABLE_CONNECTED;
 		break;
 	case POWER_SUPPLY_CHARGER_EVENT_UPDATE:
@@ -145,7 +146,7 @@ static int process_cable_props(struct power_supply_cable_props *cap)
 		return -EINVAL;
 	}
 
-	cable->cable_props.mA = cap->mA;
+	cable->cable_props.ma = cap->ma;
 	schedule_work(&notifier_work);
 
 	return 0;
@@ -171,7 +172,7 @@ static int register_notifier(void)
 {
 	int retval;
 
-	otg_xceiver = usb_get_transceiver();
+	otg_xceiver = usb_get_phy(USB_PHY_TYPE_USB2);
 	if (!otg_xceiver) {
 		pr_err("failure to get otg transceiver\n");
 		retval = -EIO;
@@ -219,7 +220,7 @@ static void init_charger_cables(struct charger_cable *cable_lst, int count)
 		INIT_WORK(&cable->work, charger_cable_event_worker);
 		cable->nb.notifier_call = charger_cable_notifier;
 		cable->cable_props.cable_stat = EXTCON_CHRGR_CABLE_DISCONNECTED;
-		cable->cable_props.mA = 0;
+		cable->cable_props.ma = 0;
 		cable_name = extcon_cable_name[cable->extcon_cable_type];
 
 		if (extcon_register_interest(&cable->extcon_dev,
@@ -238,11 +239,11 @@ static void init_charger_cables(struct charger_cable *cable_lst, int count)
 		} else if (cable_props.cable_stat !=
 			   cable->cable_props.cable_stat) {
 			cable->cable_props.cable_stat = cable_props.cable_stat;
-			cable->cable_props.mA = cable_props.mA;
+			cable->cable_props.ma = cable_props.ma;
 		}
 	}
 
-	if (!otg_get_chr_status(otg_xceiver, &cap))
+	if (!otg_get_chrg_status(otg_xceiver, &cap))
 		process_cable_props(&cap);
 
 }
@@ -555,6 +556,7 @@ static int get_battery_status(struct power_supply *psy)
 	int cnt, status, ret;
 	struct power_supply *chrgr_lst[MAX_CHARGER_COUNT];
 	struct batt_props bat_prop;
+	int health;
 
 	if (!IS_BATTERY(psy))
 		return -EINVAL;
@@ -572,14 +574,19 @@ static int get_battery_status(struct power_supply *psy)
 			status = POWER_SUPPLY_STATUS_NOT_CHARGING;
 
 		if (IS_CHARGING_CAN_BE_ENABLED(chrgr_lst[cnt]) &&
-			(IS_HEALTH_GOOD(psy)) &&
 				(IS_HEALTH_GOOD(chrgr_lst[cnt]))) {
-
-			if ((bat_prop.algo_stat == PSY_ALGO_STAT_FULL) ||
-				(bat_prop.algo_stat == PSY_ALGO_STAT_MAINT))
-				status = POWER_SUPPLY_STATUS_FULL;
-			else if (IS_CHARGING_ENABLED(chrgr_lst[cnt]))
-				status = POWER_SUPPLY_STATUS_CHARGING;
+			health = HEALTH(psy);
+			if ((health == POWER_SUPPLY_HEALTH_GOOD) ||
+				(health == POWER_SUPPLY_HEALTH_DEAD)) {
+				/* do charging with Good / Dead battery */
+				if ((bat_prop.algo_stat ==
+							PSY_ALGO_STAT_FULL) ||
+					(bat_prop.algo_stat ==
+							PSY_ALGO_STAT_MAINT))
+					status = POWER_SUPPLY_STATUS_FULL;
+				else if (IS_CHARGING_ENABLED(chrgr_lst[cnt]))
+					status = POWER_SUPPLY_STATUS_CHARGING;
+			}
 		}
 	}
 	pr_devel("%s: Set status=%d for %s\n", __func__, status, psy->name);
@@ -833,9 +840,9 @@ static inline int get_battery_thresholds(struct power_supply *psy,
 static int select_chrgr_cable(struct device *dev, void *data)
 {
 	struct power_supply *psy = dev_get_drvdata(dev);
-	struct charger_cable *cable, *max_mA_cable = NULL;
+	struct charger_cable *cable, *max_ma_cable = NULL;
 	struct charger_cable *cable_lst = (struct charger_cable *)data;
-	unsigned int max_mA = 0, iterm;
+	int max_ma = -1;
 	int i;
 
 	if (!IS_CHARGER(psy))
@@ -850,14 +857,14 @@ static int select_chrgr_cable(struct device *dev, void *data)
 		    (!IS_SUPPORTED_CABLE(psy, cable->psy_cable_type)))
 			continue;
 
-		if (cable->cable_props.mA > max_mA) {
-			max_mA_cable = cable;
-			max_mA = cable->cable_props.mA;
+		if ((int)cable->cable_props.ma > max_ma) {
+			max_ma_cable = cable;
+			max_ma = cable->cable_props.ma;
 		}
 	}
 
 	/* no cable connected. disable charging */
-	if (!max_mA_cable) {
+	if (!max_ma_cable) {
 
 		if ((IS_CHARGER_ENABLED(psy) || IS_CHARGING_ENABLED(psy))) {
 			disable_charging(psy);
@@ -883,17 +890,18 @@ static int select_chrgr_cable(struct device *dev, void *data)
 	 */
 	set_present(psy, 1);
 
-	if (CABLE_TYPE(psy) != max_mA_cable->psy_cable_type)
-		switch_cable(psy, max_mA_cable->psy_cable_type);
+	if (CABLE_TYPE(psy) != max_ma_cable->psy_cable_type)
+		switch_cable(psy, max_ma_cable->psy_cable_type);
 
-	if (IS_CHARGER_CAN_BE_ENABLED(psy)) {
+	if (IS_CHARGER_CAN_BE_ENABLED(psy) &&
+			(max_ma_cable->cable_props.ma >= 100)) {
 		struct psy_batt_thresholds bat_thresh;
 		memset(&bat_thresh, 0, sizeof(bat_thresh));
 		enable_charger(psy);
 
 		update_charger_online(psy);
 
-		set_inlmt(psy, max_mA_cable->cable_props.mA);
+		set_inlmt(psy, max_ma_cable->cable_props.ma);
 		if (!get_battery_thresholds(psy, &bat_thresh)) {
 			SET_ITERM(psy, bat_thresh.iterm);
 			SET_MIN_TEMP(psy, bat_thresh.temp_min);
@@ -901,6 +909,7 @@ static int select_chrgr_cable(struct device *dev, void *data)
 		}
 
 	} else {
+		set_inlmt(psy, max_ma_cable->cable_props.ma);
 		disable_charger(psy);
 		update_charger_online(psy);
 	}
@@ -934,7 +943,7 @@ static void charger_cable_event_worker(struct work_struct *work)
 	} else {
 		if (cable_props.cable_stat != cable->cable_props.cable_stat) {
 			cable->cable_props.cable_stat = cable_props.cable_stat;
-			cable->cable_props.mA = cable_props.mA;
+			cable->cable_props.ma = cable_props.ma;
 			configure_chrgr_source(cable_list);
 		}
 	}
@@ -956,6 +965,9 @@ int psy_charger_throttle_charger(struct power_supply *psy,
 					unsigned long state)
 {
 	int ret = 0;
+
+	if (!IS_PRESENT(psy))
+		return 0;
 
 	if (state < 0 || state > MAX_THROTTLE_STATE(psy))
 		return -EINVAL;

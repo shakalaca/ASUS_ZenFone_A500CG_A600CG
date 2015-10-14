@@ -69,11 +69,11 @@ struct kct_packet {
 
 #  define ATTCHMT_ALIGNMENT	4
 
-#  ifndef ALIGN
-#    define __ALIGN_MASK(x, mask)    (((x) + (mask)) & ~(mask))
-#    define __ALIGN(x, a)            __ALIGN_MASK(x, (typeof(x))(a) - 1)
-#    define ALIGN(x, a)		     __ALIGN((x), (a))
-#  endif /* !ALIGN */
+#  ifndef KCT_ALIGN
+#    define __KCT_ALIGN_MASK(x, mask)    (((x) + (mask)) & ~(mask))
+#    define __KCT_ALIGN(x, a)            __KCT_ALIGN_MASK(x, (typeof(x))(a) - 1)
+#    define KCT_ALIGN(x, a)		     __KCT_ALIGN((x), (a))
+#  endif /* !KCT_ALIGN */
 
 #  define foreach_attchmt(Event, Attchmt)				\
 	if ((Event)->attchmt_size)					\
@@ -81,7 +81,7 @@ struct kct_packet {
 		     (Attchmt) < (typeof(Attchmt))(((char *)		\
 				  (Event)->attachments) +               \
 			(Event)->attchmt_size);                         \
-		     (Attchmt) = (typeof(Attchmt))ALIGN(((size_t)(Attchmt)) \
+	(Attchmt) = (typeof(Attchmt))KCT_ALIGN(((size_t)(Attchmt)) \
 						     + sizeof(*(Attchmt)) + \
 			      (Attchmt)->size, ATTCHMT_ALIGNMENT))
 

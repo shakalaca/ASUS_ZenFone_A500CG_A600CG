@@ -56,6 +56,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define PVRSRV_SURFACE_TRANSFORM_ROT_180   ((1 << 1) + (1 << 2))
 #define PVRSRV_SURFACE_TRANSFORM_ROT_270   ((1 << 1) + (1 << 2) + (1 << 3))
 
+#define PVRSRV_SURFACE_BLENDING_NONE	   0
+#define PVRSRV_SURFACE_BLENDING_PREMULT	   1
+#define PVRSRV_SURFACE_BLENDING_COVERAGE   2
+
 typedef enum _PVRSRV_SURFACE_MEMLAYOUT_ {
 	PVRSRV_SURFACE_MEMLAYOUT_STRIDED = 0,		/*!< Strided memory buffer */
 	PVRSRV_SURFACE_MEMLAYOUT_FBC,				/*!< Frame buffer compressed buffer */
@@ -105,19 +109,23 @@ typedef struct _PVRSRV_SURFACE_CONFIG_INFO_
 	/*!< Surface rotation / flip / mirror */
 	IMG_UINT32				ui32Transform;
 
-	/*!< Whether surface alpha was premultiplied or not */
-	IMG_UINT32				bPremultipliedAlpha;
+	/*!< Alpha blending mode e.g. none / premult / coverage */
+	IMG_UINT32				eBlendType;
 
 	/*!< Custom data for the display engine */
 	IMG_UINT32				ui32Custom;
+
+	/*!< Plane alpha */
+	IMG_UINT8				ui8PlaneAlpha;
+	IMG_UINT8				ui8Reserved1[3];
 } PVRSRV_SURFACE_CONFIG_INFO;
 
 typedef struct _PVRSRV_PANEL_INFO_
 {
 	PVRSRV_SURFACE_INFO sSurfaceInfo;
 	IMG_UINT32			ui32RefreshRate;
-	IMG_UINT32			ui32PhysicalWidthmm;
-	IMG_UINT32			ui32PhysicalHeightmm;
+	IMG_UINT32			ui32XDpi;
+	IMG_UINT32			ui32YDpi;
 } PVRSRV_PANEL_INFO;
 
 /*
@@ -134,7 +142,9 @@ static INLINE IMG_VOID SurfaceConfigFromSurfInfo(PVRSRV_SURFACE_INFO *psSurfaceI
 	psConfigInfo->sDisplay.i32XOffset = 0;
 	psConfigInfo->sDisplay.i32YOffset = 0;
 	psConfigInfo->ui32Transform = PVRSRV_SURFACE_TRANSFORM_NONE;
-	psConfigInfo->bPremultipliedAlpha = IMG_FALSE;
+	psConfigInfo->eBlendType = PVRSRV_SURFACE_BLENDING_NONE;
+	psConfigInfo->ui32Custom = 0;
+	psConfigInfo->ui8PlaneAlpha = 0xff;
 }
 
 #endif /* _PVRSRV_SURFACE_H_ */

@@ -1,4 +1,4 @@
-/* Release Version: ci_master_byt_20130823_2200 */
+/* Release Version: ci_master_byt_20130916_2228 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  *
@@ -271,6 +271,8 @@ struct ia_css_stream_config {
 	bool two_pixels_per_clock; /**< Enable/disable 2 pixels per clock */
 	bool online; /**< offline will activate RAW copy on SP, use this for
 		          continuous capture. */
+	unsigned init_num_cont_raw_buf;
+	unsigned target_num_cont_raw_buf;
 	bool continuous; /**< Use SP copy feature to continuously capture frames
 			      to system memory and run pipes in offline mode */
 	int32_t flash_gpio_pin; /**< pin on which the flash is connected, -1 for no flash */
@@ -366,7 +368,7 @@ enum ia_css_rx_irq_info {
 	IA_CSS_RX_IRQ_INFO_ERR_UNKNOWN_ESC  = 1U << 13,/**< Unknown escape seq. */
 	IA_CSS_RX_IRQ_INFO_ERR_LINE_SYNC    = 1U << 14,/**< Line Sync error */
 	IA_CSS_RX_IRQ_INFO_INIT_TIMEOUT     = 1U << 15,
-	IA_CSS_RX_IRQ_INFO_ERR_ECC_NO_ERR     = 1U << 16,
+	IA_CSS_RX_IRQ_INFO_ERR_ECC_NO_ERR   = 1U << 16,
 };
 
 /** Errors, these values are used as the return value for most
@@ -457,15 +459,6 @@ struct ia_css_frame_info {
 						      for RAW bayer frames */
 };
 
-/** 
- *  Specifies the DVS loop delay in "frame periods"  
- */
-enum ia_css_frame_delay {
-	IA_CSS_FRAME_DELAY_0, /**< Frame delay = 0 */
-	IA_CSS_FRAME_DELAY_1, /**< Frame delay = 1 */
-	IA_CSS_FRAME_DELAY_2  /**< Frame delay = 2 */
-};
-
 /* Temporary hack, hivecc fails to properly compile if this struct is
  * included. */
 #ifndef __HIVECC__
@@ -497,9 +490,12 @@ struct ia_css_pipe_config {
 	struct ia_css_capture_config default_capture_config;
 	/**< Default capture config for initial capture pipe configuration. */
 	struct ia_css_resolution dvs_envelope; /**< temporary */
-	enum ia_css_frame_delay dvs_frame_delay;
+	uint32_t dvs_frame_delay;
 	/**< indicates the DVS loop delay in frame periods */
-
+	int acc_num_execs;
+	/**< For acceleration pipes only: determine how many times the pipe
+	     should be run. Setting this to -1 means it will run until
+	     stopped. */
 };
 #else
 struct ia_css_pipe_config;

@@ -34,12 +34,12 @@
 #include <media/media-device.h>
 #include <media/v4l2-subdev.h>
 
-#ifdef CONFIG_VIDEO_ATOMISP_CSS20
+#ifdef CSS20
 #include "ia_css_types.h"
 #include "sh_css_legacy.h"
-#else /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#else /* CSS20 */
 #include "sh_css_types.h"
-#endif /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#endif /* CSS20 */
 
 #include "atomisp_csi2.h"
 #include "atomisp_file.h"
@@ -50,6 +50,8 @@
 #include "gp_device.h"
 #include "irq.h"
 
+#define IS_MOFD (INTEL_MID_BOARD(1, PHONE, MOFD) || \
+	INTEL_MID_BOARD(1, TABLET, MOFD))
 #define IS_BYT (INTEL_MID_BOARD(1, PHONE, BYT) || \
 	INTEL_MID_BOARD(1, TABLET, BYT))
 #define IS_MFLD (INTEL_MID_BOARD(1, PHONE, MFLD) || \
@@ -63,6 +65,8 @@
 /* MRFLD with 0x1179: max ISP freq limited to 400MHz */
 #define ATOMISP_PCI_DEVICE_SOC_MRFLD_FREQ_LIMITED	0x1179
 #define ATOMISP_PCI_DEVICE_SOC_BYT	0x0f38
+#define ATOMISP_PCI_DEVICE_SOC_ANN	0x1478
+#define ATOMISP_PCI_DEVICE_SOC_CHT	0x22b8
 
 #define ATOMISP_PCI_REV_MRFLD_A0_MAX	0
 #define ATOMISP_PCI_REV_BYT_A0_MAX	4
@@ -142,6 +146,8 @@ struct atomisp_input_subdev {
 	 * which stream, in ISP multiple stream mode
 	 */
 	struct atomisp_sub_device *asd;
+
+	const struct atomisp_camera_caps *camera_caps;
 };
 
 struct atomisp_freq_scaling_rule {
@@ -207,7 +213,7 @@ struct atomisp_acc_fw {
 };
 
 struct atomisp_map {
-	hrt_vaddress ptr;
+	ia_css_ptr ptr;
 	size_t length;
 	struct list_head list;
 	/* FIXME: should keep book which maps are currently used
@@ -299,13 +305,7 @@ struct atomisp_device {
 
 	bool need_gfx_throttle;
 
-	/* delayed memory allocation for css */
-	struct completion init_done;
-	struct workqueue_struct *delayed_init_workq;
-	unsigned int delayed_init;
-	struct work_struct delayed_init_work;
-
-	unsigned int latest_preview_exp_id; /* CSS ZSL raw buffer id */
+	unsigned int mipi_frame_size;
 };
 
 #define v4l2_dev_to_atomisp_device(dev) \

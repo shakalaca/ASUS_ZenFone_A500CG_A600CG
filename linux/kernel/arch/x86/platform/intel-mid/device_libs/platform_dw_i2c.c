@@ -35,7 +35,7 @@ static struct i2c_pin_cfg dw_i2c_pin_cfgs[][10] = {
 	[BOARD_NONE] =  {},
 	[BOARD_VTB] =  {
 		[1] = {27, 1, 26, 1},
-        [5] = {41, 1, 40, 1},
+        [5] = {137, 1, 136, 1}, //I2C-5, SCL gpio: 137, SDA gpio: 136
 	},
 	[BOARD_SALTBAY] =  {
 		[1] = {19, 1, 20, 1},
@@ -77,7 +77,7 @@ int intel_mid_dw_i2c_abort(int busnum)
 			gpio_get_value(pins->scl_gpio) ? 1 : 0,
 			gpio_get_value(pins->sda_gpio) ? 1 : 0);
 	gpio_direction_output(pins->scl_gpio, 1);
-	pr_err("i2c-%d: toggle begin\n");
+	pr_err("i2c-%d: toggle begin\n", busnum);
 	for (i = 0; i < 9; i++) {
 		if (gpio_get_value(pins->sda_gpio)) {
 			if (gpio_get_value(pins->scl_gpio)) {
@@ -95,7 +95,7 @@ int intel_mid_dw_i2c_abort(int busnum)
 		usleep_range(10, 20);
 		pr_err("i2c-%d: toggle SCL loop %d\n", busnum, i);
 	}
-	pr_err("i2c-%d: toggle end\n");
+	pr_err("i2c-%d: toggle end\n", busnum);
 	gpio_direction_output(pins->scl_gpio, 1);
 	gpio_direction_output(pins->sda_gpio, 0);
 	gpio_set_value(pins->scl_gpio, 0);

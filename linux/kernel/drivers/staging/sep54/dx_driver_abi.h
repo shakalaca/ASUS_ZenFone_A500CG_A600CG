@@ -316,6 +316,8 @@ enum dxdi_input_engine_type {
 	DXDI_INPUT_ENGINE_RESERVE32B = INT32_MAX,
 };
 
+#pragma pack(push)
+#pragma pack(4) /* Force to 32 bit alignment */
 /* Properties of specific ciphers */
 /* (for use in alg_specific union of dxdi_cipher_props) */
 struct dxdi_des_cbc_props {
@@ -329,7 +331,7 @@ struct dxdi_aes_ctr_props {
 };
 struct dxdi_aes_xts_props {
 	u8 init_tweak[DXDI_AES_BLOCK_SIZE];
-	unsigned long data_unit_size;
+	u32 data_unit_size;
 };
 struct dxdi_c2_cbc_props {
 	u32 reset_interval;
@@ -551,10 +553,10 @@ struct dxdi_memref {
 	int ref_id;
 	/* Start address of a non-registered memory or offset within a
 	 * registered memory */
-	unsigned long start_or_offset;
+	u32 start_or_offset;
 	/* Size in bytes of non-registered buffer or size of chunk within a
 	 * registered buffer */
-	unsigned long size;
+	u32 size;
 };
 
 struct dxdi_register_mem4dma_params {
@@ -563,7 +565,7 @@ struct dxdi_register_mem4dma_params {
 };
 
 struct dxdi_alloc_mem4dma_params {
-	unsigned long size;	/*[in] */
+	u32 size;	/*[in] */
 	int memref_id;	/*[out] */
 };
 
@@ -578,7 +580,7 @@ struct dxdi_sep_rpc_params {
 	u16 agent_id;	/*[in] */
 	u16 func_id;	/*[in] */
 	struct dxdi_memref mem_refs[SEP_RPC_MAX_MEMREF_PER_FUNC]; /*[in] */
-	unsigned long rpc_params_size;	/*[in] */
+	u32 rpc_params_size;	/*[in] */
 	struct seprpc_params *rpc_params;	/*[in] */
 	/* rpc_params to be copied into kernel DMA buffer */
 	enum seprpc_retcode error_info;	/*[out] */
@@ -647,5 +649,7 @@ struct dxdi_sepapp_command_invoke_params {
 	enum dxdi_sep_module sep_ret_origin;	/*[out] */
 	u32 error_info;	/*[out] */
 };
+
+#pragma pack(pop)
 
 #endif /*__SEP_DRIVER_ABI_H__*/

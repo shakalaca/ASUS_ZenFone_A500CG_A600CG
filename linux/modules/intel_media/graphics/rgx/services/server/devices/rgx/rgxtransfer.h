@@ -135,4 +135,8 @@ IMG_EXPORT
 PVRSRV_ERROR PVRSRVRGXSetTransferContextPriorityKM(CONNECTION_DATA *psConnection,
 												   RGX_SERVER_TQ_CONTEXT *psTransferContext,
 												   IMG_UINT32 ui32Priority);
+
+/* Debug - check if transfer context is waiting on a fence */
+IMG_VOID CheckForStalledTransferCtxt(PVRSRV_RGXDEV_INFO *psDevInfo);
+
 #endif /* __RGXTRANSFER_H__ */

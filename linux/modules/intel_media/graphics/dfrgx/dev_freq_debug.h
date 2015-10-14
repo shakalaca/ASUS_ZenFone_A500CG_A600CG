@@ -34,9 +34,9 @@
 #define DFRGX_DEBUG_MED		0x02
 #define DFRGX_DEBUG_LOW		0x04
 
-#define DFRGX_HWPERF_DEBUG 1
+#define DFRGX_DEBUG 0
 
-#ifdef DFRGX_HWPERF_DEBUG
+#if (defined DFRGX_DEBUG) && DFRGX_DEBUG
 #define DFRGX_DPF(mask,...) if (mask & DFRGX_DEBUG_MASK ) \
 		{ \
 			printk(DFRGX_ALERT __VA_ARGS__); \

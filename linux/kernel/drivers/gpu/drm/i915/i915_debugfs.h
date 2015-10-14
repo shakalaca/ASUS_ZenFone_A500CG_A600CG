@@ -32,12 +32,9 @@
 /* Header file for Color management through debugfs */
 #include "intel_clrmgr.h"
 
-#define to_drm_encoder(n) container_of(n, struct drm_encoder, dev)
-
 /* Operations supported
 */
-
-#define MAX_BUFFER_STR_LEN			200
+#define MAX_BUFFER_STR_LEN	200
 
 #define READ_TOKEN	        "READ"
 #define WRITE_TOKEN	        "WRITE"
@@ -47,7 +44,6 @@
 #define DISABLE_TOKEN		"DISABLE"
 #define DETAILS_TOKEN		"DETAILS"
 
-/* IOSF implementaion */
 #define IOSF_FUSE_TOKEN	"FUSE"
 #define IOSF_PUNIT_TOKEN	"PUNIT"
 
@@ -71,6 +67,9 @@
 #define DPST_GET_LUMA_DATA_TOKEN	"GET_LUMA_DATA"
 #define DPST_IRQ_COUNT_TOKEN	"INTERRUPT_COUNT"
 
+/* RPM(S0iX) Operations */
+#define RPM_DISPLAY_RUNTIME_SUSPEND_TOKEN       "DISPLAY_SUSPEND"
+#define RPM_DISPLAY_RUNTIME_RESUME_TOKEN        "DISPLAY_RESUME"
 
 /* DebugFS Variable declaration */
 struct debugfs_mmio_vars {
@@ -88,6 +87,11 @@ struct debugfs_rc6_vars {
 	u32 rc6_input;
 };
 
+struct debugfs_rpm_vars {
+	char rpm_vars[MAX_BUFFER_STR_LEN];
+	u32 rpm_input;
+};
+
 struct debugfs_turbo_vars {
 	char turbo_vars[MAX_BUFFER_STR_LEN];
 	u32 turbo_input;
@@ -102,6 +106,7 @@ union {
 	struct debugfs_mmio_vars mmio;
 	struct debugfs_iosf_vars iosf;
 	struct debugfs_rc6_vars rc6;
+	struct debugfs_rpm_vars rpm;
 	struct debugfs_turbo_vars turbo;
 	struct debugfs_dpst_vars dpst;
 } i915_debugfs_vars;

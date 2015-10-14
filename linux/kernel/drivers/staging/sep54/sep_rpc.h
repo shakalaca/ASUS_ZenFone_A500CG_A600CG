@@ -79,6 +79,8 @@ enum seprpc_memref_type {
 	SEPRPC_MEMREF_RESERVE32 = 0x7FFFFFFF	/* assure this enum is 32b */
 };
 
+#pragma pack(push)
+#pragma pack(4)
 /* A strcuture to pass host memory reference */
 struct seprpc_memref {
 	enum seprpc_memref_type ref_type;
@@ -101,5 +103,7 @@ struct seprpc_params {
 	 * (i.e., it is just a placeholder that may be void) */
 	/*   Following this array comes the function-specific parameters */
 } __attribute__ ((__may_alias__));
+
+#pragma pack(pop)
 
 #endif /*__SEP_RPC_H__*/

@@ -12,9 +12,11 @@
  * for more details.
  */
 
+#include <linux/version.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
+#include <linux/input/mt.h>
 #include <linux/input-polldev.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
@@ -28,6 +30,14 @@
 #include <linux/io.h>
 #include <linux/gpio.h>
 #include <linux/uaccess.h>
+
+#ifdef CONFIG_DEBUG_FS
+#include <linux/debugfs.h>
+
+#define MODE_COUNT                  4
+#define MODE_STRING_MAX_LEN         30
+#define MODE_FILE_NAME              "mode"
+#endif
 
 #define CONFIG_R69001_POLLING_TIME 10
 #include <linux/r69001-ts.h>
@@ -85,7 +95,13 @@
 #define INTERRUPT_MODE              R69001_TS_INTERRUPT_MODE
 #define POLLING_MODE                R69001_TS_POLLING_MODE
 #define POLLING_LOW_EDGE_MODE       R69001_TS_POLLING_LOW_EDGE_MODE
+#define CALIBRATION_INTERRUPT_MODE  R69001_TS_CALIBRATION_INTERRUPT_MODE
 #define UNKNOW_MODE                 255
+
+#define DEFAULT_INTERRUPT_MASK      0x0e
+#define CALIBRATION_INTERRUPT_MASK  0x08
+#define TOUCH_ID_MIN                1
+#define TOUCH_ID_INVALID            0xff
 
 struct r69001_ts_finger {
 	u16 x;
@@ -106,9 +122,16 @@ struct r69001_ts_data {
 	struct r69001_io_data data;
 	struct r69001_ts_before_regs regs;
 	struct r69001_platform_data *pdata;
+	unsigned int finger_mask;
 	u8 mode;
 	u8 t_num;
 };
+
+#ifdef CONFIG_DEBUG_FS
+static struct dentry *r69001_ts_dbgfs_root;
+static const char * const r69001_ts_modes[] = { "interrupt", "polling",
+		"polling low edge", "calibration interrupt" };
+#endif
 
 static void r69001_set_mode(struct r69001_ts_data *ts, u8 mode, u16 poll_time);
 
@@ -172,27 +195,43 @@ r69001_ts_write_data(struct r69001_ts_data *ts, u8 addr_h, u8 addr_l, u8 data)
 	return error;
 }
 
-static void r69001_ts_report_coordinates_data(struct r69001_ts_data *ts)
+static void
+r69001_ts_report_coordinates_data(struct r69001_ts_data *ts, int filter)
 {
 	struct r69001_ts_finger *finger = ts->finger;
 	struct input_dev *input_dev = ts->input_dev;
+	unsigned int mask = 0;
 	u8 i;
 
 	for (i = 0; i < ts->t_num; i++) {
-		input_report_abs(input_dev, ABS_MT_TOUCH_MAJOR, finger[i].t);
+		if (finger[i].t < TOUCH_ID_MIN || finger[i].t == filter)
+			continue;
+		finger[i].t -= TOUCH_ID_MIN;
+		input_mt_slot(input_dev, finger[i].t);
+		input_mt_report_slot_state(input_dev, MT_TOOL_FINGER, true);
 		input_report_abs(input_dev, ABS_MT_POSITION_X, finger[i].x);
 		input_report_abs(input_dev, ABS_MT_POSITION_Y, finger[i].y);
 		input_report_abs(input_dev, ABS_MT_PRESSURE, finger[i].z);
-		input_mt_sync(input_dev);
+		mask |= (1 << finger[i].t);
 	}
 
-	/* SYN_MT_REPORT only if no contact */
-	if (!ts->t_num)
-		input_mt_sync(input_dev);
+	/* Get the removed fingers */
+	ts->finger_mask &= ~mask;
+
+	/* Release the removed fingers */
+	for (i = 0; ts->finger_mask != 0; i++) {
+		if (ts->finger_mask & 0x01) {
+			input_mt_slot(input_dev, i);
+			input_mt_report_slot_state(input_dev,
+					MT_TOOL_FINGER, false);
+		}
+		ts->finger_mask >>= 1;
+	}
 
 	/* SYN_REPORT */
 	input_sync(input_dev);
 
+	ts->finger_mask = mask;
 	ts->t_num = 0;
 }
 
@@ -204,6 +243,7 @@ static int r69001_ts_read_coordinates_data(struct r69001_ts_data *ts)
 	u8 data[ONE_SET_COORD_DATA_SIZE] = { 0 };
 	u8 lowreg[5] = {REG_DATA0, REG_DATA1, REG_DATA2, REG_DATA3, REG_DATA4};
 	int error;
+	bool inval_id = false;
 
 	error = r69001_ts_read_data(ts,
 			REG_COORDINATES_DATA, REG_INFO1, 1, &numt);
@@ -222,6 +262,9 @@ static int r69001_ts_read_coordinates_data(struct r69001_ts_data *ts)
 				((u16)(data[7] & 0xf0) << 4) | (u16)(data[6]);
 			finger[i].z = data[8];
 			finger[i].t = (data[0] & 0xf0) >> 4;
+			if (finger[i].t < TOUCH_ID_MIN)
+				inval_id = true;
+
 		} else {
 			error = r69001_ts_read_data(ts,
 					REG_COORDINATES_DATA, lowreg[i / 2],
@@ -234,33 +277,50 @@ static int r69001_ts_read_coordinates_data(struct r69001_ts_data *ts)
 				((u16)(data[3] & 0xf0) << 4) | (u16)(data[2]);
 			finger[i].z = data[4];
 			finger[i].t = data[0] & 0x0f;
+			if (finger[i].t < TOUCH_ID_MIN)
+				inval_id = true;
 		}
 	}
 
 	/* Only update the number when there is no error happened */
 	ts->t_num = numt;
-	return 0;
+	return inval_id ? TOUCH_ID_INVALID : 0;
 }
 
 static irqreturn_t r69001_ts_irq_handler(int irq, void *dev_id)
 {
 	struct r69001_ts_data *ts = dev_id;
+	struct i2c_client *client = ts->client;
 	u8 mode = 0;
+	int err = 0;
+	int filter = 0;
 
 	r69001_ts_read_data(ts, REG_CONTROL, REG_SCAN_MODE, 1, &mode);
 
-	if (mode == SCAN_MODE_STOP) {
-		/* if receive a touchscreen interrupt, but the scan mode is stop
-		 * that means touch panel just power on, so re-init it
-		 */
-		ts->data.mode.mode = UNKNOW_MODE;
-		r69001_ts_write_data(ts, REG_CONTROL,
-					REG_SCAN_CYCLE, SCAN_TIME);
-		r69001_set_mode(ts, ts->mode, POLL_INTERVAL);
-	}
+	if (ts->data.mode.mode == INTERRUPT_MODE) {
+		if (mode == SCAN_MODE_STOP) {
+			/* if receive a touchscreen interrupt, but the scan
+			 * mode is stop and we are in interrupt mode, that means
+			 * touch panel just power on, so re-init it
+			 */
+			ts->data.mode.mode = UNKNOW_MODE;
+			r69001_ts_write_data(ts, REG_CONTROL,
+						REG_SCAN_CYCLE, SCAN_TIME);
+			r69001_set_mode(ts, ts->mode, POLL_INTERVAL);
+		}
 
-	r69001_ts_read_coordinates_data(ts);
-	r69001_ts_report_coordinates_data(ts);
+		err = r69001_ts_read_coordinates_data(ts);
+		if (err < 0) {
+			dev_err(&client->dev,
+					"%s: Read coordinate data failed\n",
+					__func__);
+
+			return IRQ_HANDLED;
+		}
+		if (err == TOUCH_ID_INVALID)
+			filter = 1;
+		r69001_ts_report_coordinates_data(ts, filter);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -288,6 +348,9 @@ static void r69001_set_mode(struct r69001_ts_data *ts, u8 mode, u16 poll_time)
 
 		r69001_ts_write_data(ts, REG_CONTROL,
 				REG_SCAN_MODE, SCAN_MODE_STOP);
+		r69001_ts_write_data(ts, REG_CONTROL,
+				REG_INT_SIGNAL_OUTPUT_CTRL,
+				DEFAULT_INTERRUPT_MASK);
 		msleep(100);
 		r69001_ts_write_data(ts, REG_CONTROL,
 				REG_SCAN_MODE, SCAN_MODE_FULL_SCAN);
@@ -316,12 +379,124 @@ static void r69001_set_mode(struct r69001_ts_data *ts, u8 mode, u16 poll_time)
 			ts->data.mode.poll_time = POLL_INTERVAL;
 		ts->data.mode.mode = mode;
 		break;
+	case CALIBRATION_INTERRUPT_MODE:
+		r69001_ts_write_data(ts, REG_CONTROL,
+				REG_SCAN_MODE, SCAN_MODE_STOP);
+		r69001_ts_write_data(ts, REG_CONTROL,
+				REG_INT_SIGNAL_OUTPUT_CTRL,
+				CALIBRATION_INTERRUPT_MASK);
+		msleep(100);
+		r69001_ts_write_data(ts, REG_CONTROL,
+				REG_SCAN_MODE, SCAN_MODE_CALIBRATION);
+		ts->data.mode.mode = mode;
+		break;
 	default:
 		dev_err(&client->dev, "Set Int Ctl bad parameter = %d\n", mode);
 		break;
 	}
 }
 
+#ifdef CONFIG_DEBUG_FS
+static int r69001_ts_dbgfs_show(struct seq_file *seq, void *unused)
+{
+	struct r69001_ts_data *ts;
+
+	ts = (struct r69001_ts_data *)seq->private;
+	if (!ts)
+		return -EFAULT;
+
+	if (ts->data.mode.mode >= MODE_COUNT)
+		return -EFAULT;
+
+	seq_printf(seq, "%s\n", r69001_ts_modes[ts->data.mode.mode]);
+
+	return 0;
+}
+
+static int r69001_ts_dbgfs_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, r69001_ts_dbgfs_show, inode->i_private);
+}
+
+static ssize_t r69001_ts_dbgfs_write(struct file *file,
+		const char __user *user_buf, size_t count, loff_t *ppos)
+{
+	int i;
+	struct seq_file *seq;
+	struct r69001_ts_data *ts;
+	char buf[MODE_STRING_MAX_LEN] = {0};
+
+	if (count > sizeof(buf) - 1)
+		return -EINVAL;
+
+	if (copy_from_user(buf, user_buf, count - 1))
+		return -EFAULT;
+
+	seq = (struct seq_file *)file->private_data;
+	if (!seq) {
+		pr_warn("r69001-touchscreen: Failed to get seq_file\n");
+		return -EFAULT;
+	}
+
+	ts = (struct r69001_ts_data *)seq->private;
+	if (!ts) {
+		pr_warn("r69001-touchscreen: Failed to get private data\n");
+		return -EFAULT;
+	}
+
+	for (i = 0; i < MODE_COUNT; i++) {
+		if (!strncmp(buf, r69001_ts_modes[i], MODE_STRING_MAX_LEN)) {
+			r69001_set_mode(ts, i, POLL_INTERVAL);
+			break;
+		}
+	}
+
+	if (i == MODE_COUNT) {
+		pr_warn("r69001-touchscreen: Invalid mode: %s\n", buf);
+		return -EINVAL;
+	}
+
+	return count;
+}
+
+static const struct file_operations r69001_ts_dbgfs_fops = {
+	.owner		= THIS_MODULE,
+	.open		= r69001_ts_dbgfs_open,
+	.read		= seq_read,
+	.write		= r69001_ts_dbgfs_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int r69001_ts_create_dbgfs(struct r69001_ts_data *ts)
+{
+	struct dentry *entry;
+
+	r69001_ts_dbgfs_root = debugfs_create_dir(R69001_TS_NAME, NULL);
+	if (!r69001_ts_dbgfs_root) {
+		dev_warn(&ts->client->dev, "debugfs_create_dir failed\n");
+		return -ENOMEM;
+	}
+
+	entry = debugfs_create_file(MODE_FILE_NAME, S_IRUGO,
+			r69001_ts_dbgfs_root,
+			(void *)ts, &r69001_ts_dbgfs_fops);
+	if (!entry) {
+		debugfs_remove_recursive(r69001_ts_dbgfs_root);
+		r69001_ts_dbgfs_root = NULL;
+		dev_warn(&ts->client->dev, "%s debugfs entry creation failed\n",
+				MODE_FILE_NAME);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static void r69001_ts_remove_dbgfs(void)
+{
+	debugfs_remove_recursive(r69001_ts_dbgfs_root);
+}
+#endif
 
 static int
 r69001_ts_probe(struct i2c_client *client, const struct i2c_device_id *id)
@@ -368,8 +543,11 @@ r69001_ts_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	__set_bit(EV_SYN, input_dev->evbit);
 	__set_bit(EV_ABS, input_dev->evbit);
 
-	input_set_abs_params(input_dev,
-				ABS_MT_TOUCH_MAJOR, MIN_AREA, MAX_AREA, 0, 0);
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3,6,0))
+	input_mt_init_slots(input_dev, MAX_FINGERS, 0);
+#else
+	input_mt_init_slots(input_dev, MAX_FINGERS);
+#endif
 	input_set_abs_params(input_dev, ABS_MT_POSITION_X, MIN_X, MAX_X, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_POSITION_Y, MIN_Y, MAX_Y, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_PRESSURE, MIN_Z, MAX_Z, 0, 0);
@@ -391,6 +569,13 @@ r69001_ts_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		dev_err(&client->dev, "Failed to register interrupt\n");
 		goto err4;
 	}
+
+#ifdef CONFIG_DEBUG_FS
+	error = r69001_ts_create_dbgfs(ts);
+	if (error)
+		dev_warn(&client->dev, "Failed to create debugfs\n");
+#endif
+
 	return 0;
 
 err4:
@@ -406,6 +591,10 @@ err1:
 static int r69001_ts_remove(struct i2c_client *client)
 {
 	struct r69001_ts_data *ts = i2c_get_clientdata(client);
+
+#ifdef CONFIG_DEBUG_FS
+	r69001_ts_remove_dbgfs();
+#endif
 
 	input_unregister_device(ts->input_dev);
 	if (client->irq)

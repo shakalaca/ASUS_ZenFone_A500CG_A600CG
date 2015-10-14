@@ -295,7 +295,8 @@ GGSTATUS CheckOtpData(OtpDataType *pObj)
   }
 
   /// [AT-PM] : Check product type ; 01/25/2013
-  if(pObj->productType != UG31XX_PRODUCT_TYPE_0)
+  if((pObj->productType != UG31XX_PRODUCT_TYPE_0) &&
+     (pObj->productType != UG31XX_PRODUCT_TYPE_1))
   {
     return (UG_OTP_PRODUCT_DISMATCH);
   }
@@ -948,7 +949,8 @@ GGSTATUS upiGG_Initial(char **pObj, GGBX_FILE_HEADER *pGGBXBuf, unsigned char Fo
   #endif  ///< end of defined(uG31xx_OS_WINDOWS) || defined(uG31xx_BOOT_LOADER)
 
   UpiLoadBatInfoFromIC(&pUg31xx->sysData);
-	if((pUg31xx->sysData.cycleCount & 0x8000) && (ForceReset == _UPI_FALSE_))
+	if((pUg31xx->sysData.cycleCount & 0x8000) && (ForceReset
+ == _UPI_FALSE_))
 	{
 		resetByRange = _UPI_TRUE_;
 		pUg31xx->sysData.cycleCount = pUg31xx->sysData.cycleCount & 0x7FFF;
@@ -1115,7 +1117,8 @@ GGSTATUS upiGG_Initial(char **pObj, GGBX_FILE_HEADER *pGGBXBuf, unsigned char Fo
   UpiConvertOtp(&pUg31xx->otpData);
 
   /// [AT-PM] : Check product type ; 01/25/2013
-  if(pUg31xx->otpData.productType != UG31XX_PRODUCT_TYPE_0)
+  if((pUg31xx->otpData.productType != UG31XX_PRODUCT_TYPE_0) &&
+     (pUg31xx->otpData.productType != UG31XX_PRODUCT_TYPE_1))
   {
     #ifdef  uG31xx_BOOT_LOADER
 
@@ -1331,7 +1334,8 @@ GGSTATUS upiGG_MpkActiveGG(char **pObj,const wchar_t* GGBFilename,const wchar_t*
   UpiConvertOtp(&pUg31xx->otpData);
 
   /// [AT-PM] : Check product type ; 01/25/2013
-  if(pUg31xx->otpData.productType != UG31XX_PRODUCT_TYPE_0)
+  if((pUg31xx->otpData.productType != UG31XX_PRODUCT_TYPE_0) &&
+     (pUg31xx->otpData.productType != UG31XX_PRODUCT_TYPE_1))
   {
     return (UG_OTP_PRODUCT_DISMATCH);
   }
@@ -3145,7 +3149,8 @@ void upiGG_InternalSuspendMode(char *pObj, _upi_bool_ inSuspend)
     return (UG_NOT_DEF);
   }
 
-  // [FC] : Load table from IC ; 05/30/2013  
+  // [FC] : Load table from IC ; 05/30/2013
+  
   UpiInitNacTable(&pUg31xx->capData);
   /// [FC] : Save table to IC ; 05/30/2013
   if(Ug31SaveDataEnable == _UPI_TRUE_)
@@ -3173,7 +3178,8 @@ void upiGG_InternalSuspendMode(char *pObj, _upi_bool_ inSuspend)
   UpiConvertOtp(&pUg31xx->otpData);
 
   /// [AT-PM] : Check product type ; 01/25/2013
-  if(pUg31xx->otpData.productType != UG31XX_PRODUCT_TYPE_0)
+  if((pUg31xx->otpData.productType != UG31XX_PRODUCT_TYPE_0) &&
+     (pUg31xx->otpData.productType != UG31XX_PRODUCT_TYPE_1))
   {
     return (UG_OTP_PRODUCT_DISMATCH);
   }

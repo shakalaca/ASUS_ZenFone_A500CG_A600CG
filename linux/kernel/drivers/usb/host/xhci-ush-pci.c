@@ -17,6 +17,11 @@
  * Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#ifdef CONFIG_ACPI
+#include <linux/acpi.h>
+#include <linux/acpi_gpio.h>
+#endif
+
 #include <linux/pci.h>
 #include <linux/module.h>
 #include <linux/wakelock.h>
@@ -25,16 +30,17 @@
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 #include <linux/usb/xhci-ush-hsic-pci.h>
+#include <linux/wakelock.h>
+#include <linux/jiffies.h>
+#include <linux/suspend.h>
 #include "xhci.h"
+#include "../core/usb.h"
 
 static struct pci_dev	*pci_dev;
 
-static int ush_hsic_start_host(struct pci_dev  *pdev);
-static int ush_hsic_stop_host(struct pci_dev *pdev);
 static int create_device_files();
 static void remove_device_files();
 
-static int enabling_disabling;
 static int hsic_enable;
 static struct ush_hsic_priv hsic;
 
@@ -101,6 +107,10 @@ static irqreturn_t hsic_wakeup_gpio_irq(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
+	/* take a wake lock during 25ms, because resume lasts 20ms, after that
+	USB framework will prevent to go in low power if there is traffic */
+	wake_lock_timeout(&hsic.resume_wake_lock, msecs_to_jiffies(25));
+
 	queue_work(hsic.work_queue, &hsic.wakeup_work);
 	dev_dbg(dev,
 		"%s<----\n", __func__);
@@ -108,38 +118,36 @@ static irqreturn_t hsic_wakeup_gpio_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static int hsic_aux_irq_init(void)
+static int hsic_aux_irq_init(int pin)
 {
 	int retval;
 
-	dev_dbg(&pci_dev->dev,
-		"%s---->\n", __func__);
+	dev_dbg(&pci_dev->dev, "%s---->%d\n", __func__, pin);
 	if (hsic.hsic_aux_irq_enable) {
 		dev_dbg(&pci_dev->dev,
 			"%s<----AUX IRQ is enabled\n", __func__);
 		return 0;
 	}
 	hsic.hsic_aux_irq_enable = 1;
-	gpio_direction_input(hsic.aux_gpio);
-	retval = request_irq(gpio_to_irq(hsic.aux_gpio),
+	gpio_direction_input(pin);
+	retval = request_irq(gpio_to_irq(pin),
 			hsic_aux_gpio_irq,
 			IRQF_NO_SUSPEND | IRQF_TRIGGER_RISING,
 			"hsic_disconnect_request", &pci_dev->dev);
 	if (retval) {
 		dev_err(&pci_dev->dev,
 			"unable to request irq %i, err: %d\n",
-			gpio_to_irq(hsic.aux_gpio), retval);
+			gpio_to_irq(pin), retval);
 		goto err;
 	}
 
-	lnw_gpio_set_alt(hsic.aux_gpio, 0);
-	dev_dbg(&pci_dev->dev,
-		"%s<----\n", __func__);
+	lnw_gpio_set_alt(pin, 0);
+	dev_dbg(&pci_dev->dev, "%s<----\n", __func__);
 	return retval;
 
 err:
 	hsic.hsic_aux_irq_enable = 0;
-	free_irq(gpio_to_irq(hsic.aux_gpio), &pci_dev->dev);
+	free_irq(gpio_to_irq(pin), &pci_dev->dev);
 	return retval;
 }
 
@@ -180,19 +188,18 @@ err:
 }
 
 /* Init HSIC AUX GPIO */
-static int hsic_aux_gpio_init(void)
+static int hsic_aux_gpio_init(int pin)
 {
 	int		retval = 0;
 
-	dev_dbg(&pci_dev->dev,
-		"%s---->\n", __func__);
-	hsic.aux_gpio = USH_HSIC_AUX1_GPIO;
-	if (gpio_is_valid(hsic.aux_gpio)) {
-		retval = gpio_request(hsic.aux_gpio, "hsic_aux");
+	dev_dbg(&pci_dev->dev, "%s----> %d\n", __func__, pin);
+
+	if (gpio_is_valid(pin)) {
+		retval = gpio_request(pin, "hsic_aux");
 		if (retval < 0) {
 			dev_err(&pci_dev->dev,
 				"Request GPIO %d with error %d\n",
-				hsic.aux_gpio, retval);
+				pin, retval);
 			retval = -ENODEV;
 			goto err1;
 		}
@@ -202,15 +209,16 @@ static int hsic_aux_gpio_init(void)
 	}
 
 	pr_debug("%s----> Enable AUX irq\n", __func__);
-	retval = hsic_aux_irq_init();
+	retval = hsic_aux_irq_init(pin);
 	if (retval) {
 		dev_err(&pci_dev->dev,
 			"unable to request IRQ\n");
 		goto err2;
 	}
 
-	dev_dbg(&pci_dev->dev,
-		"%s<----\n", __func__);
+	hsic.aux_gpio = pin;
+
+	dev_dbg(&pci_dev->dev, "%s<----\n", __func__);
 	return retval;
 
 err2:
@@ -220,34 +228,29 @@ err1:
 }
 
 /* Init HSIC AUX2 GPIO as side band remote wakeup source */
-static int hsic_wakeup_gpio_init(void)
+static int hsic_wakeup_gpio_init(int pin)
 {
 	int		retval = 0;
 
-	dev_dbg(&pci_dev->dev,
-		"%s---->\n", __func__);
-	hsic.wakeup_gpio = USH_HSIC_WAKEUP_GPIO;
-	if (gpio_is_valid(hsic.wakeup_gpio)) {
-		retval = gpio_request(hsic.wakeup_gpio, "hsic_wakeup");
+	dev_dbg(&pci_dev->dev, "%s----> %d\n", __func__, pin);
+	if (gpio_is_valid(pin)) {
+		retval = gpio_request(pin, "hsic_wakeup");
 		if (retval < 0) {
 			dev_err(&pci_dev->dev,
 				"Request GPIO %d with error %d\n",
-				hsic.wakeup_gpio, retval);
+				pin, retval);
 			retval = -ENODEV;
 			goto err;
 		}
+		hsic.wakeup_gpio = pin;
 	} else {
 		retval = -ENODEV;
 		goto err;
 	}
 
 	gpio_direction_input(hsic.wakeup_gpio);
-	dev_dbg(&pci_dev->dev,
-		"%s<----\n", __func__);
-	return retval;
-
+	dev_dbg(&pci_dev->dev, "%s<----\n", __func__);
 err:
-	gpio_free(hsic.wakeup_gpio);
 	return retval;
 }
 
@@ -277,113 +280,220 @@ static void hsic_wakeup_irq_free(void)
 	return;
 }
 
-/* the root hub will call this callback when device added/removed */
-void hsic_notify(struct usb_device *udev, unsigned action)
+static unsigned int is_ush_hsic(struct usb_device *udev)
 {
-	int retval;
 	struct pci_dev *pdev = to_pci_dev(udev->bus->controller);
 
-	printk(KERN_ERR "pdev device ID: %d, portnum: %d",
+	pr_debug("pdev device ID: %d, portnum: %d",
 			pdev->device, udev->portnum);
 	/* Ignore and only valid for HSIC. Filter out
 	 * the USB devices added by other USB2 host driver */
 	if (pdev->device != USH_PCI_ID)
-		return;
+		return 0;
 
 	/* Ignore USB devices on external hub */
 	if (udev->parent && udev->parent->parent)
+		return 0;
+
+	return 1;
+}
+
+static void s3_wake_lock(void)
+{
+	mutex_lock(&hsic.wlock_mutex);
+	if (hsic.s3_wlock_state == UNLOCKED) {
+		wake_lock(&hsic.s3_wake_lock);
+		hsic.s3_wlock_state = LOCKED;
+	}
+	mutex_unlock(&hsic.wlock_mutex);
+}
+
+static void s3_wake_unlock(void)
+{
+	mutex_lock(&hsic.wlock_mutex);
+	if (hsic.s3_wlock_state == LOCKED) {
+		wake_unlock(&hsic.s3_wake_lock);
+		hsic.s3_wlock_state = UNLOCKED;
+	}
+	mutex_unlock(&hsic.wlock_mutex);
+}
+
+static void hsicdev_add(struct usb_device *udev)
+{
+
+	pr_debug("Notify HSIC add device\n");
+	if (is_ush_hsic(udev) == 0) {
+		pr_debug("Not a USH HSIC device\n");
 		return;
+	}
 
-	switch (action) {
-	case USB_DEVICE_ADD:
-		pr_debug("Notify HSIC add device\n");
-		/* Root hub */
-		if (!udev->parent) {
-			if (udev->speed == USB_SPEED_HIGH) {
-				pr_debug("%s rh device set\n", __func__);
-				hsic.rh_dev = udev;
-				pr_debug("%s Disable autosuspend\n", __func__);
-				pm_runtime_set_autosuspend_delay(&udev->dev,
-					hsic.bus_inactivityDuration);
-				usb_disable_autosuspend(udev);
-			}
+	/* Root hub */
+	if (!udev->parent) {
+		if (udev->speed == USB_SPEED_HIGH) {
+			pr_debug("%s rh device set\n", __func__);
+			hsic.rh_dev = udev;
+			pr_debug("%s Disable autosuspend\n", __func__);
+			pm_runtime_set_autosuspend_delay(&udev->dev,
+				hsic.bus_inactivityDuration);
+			usb_disable_autosuspend(udev);
+			hsic.autosuspend_enable = 0;
+		}
+	} else {
+		if (udev->portnum != HSIC_USH_PORT) {
+			pr_debug("%s ignore ush ports %d\n",
+				__func__, udev->portnum);
+			return;
+		}
+
+		/* Modem devices */
+		hsic.port_disconnect = 0;
+		hsic.modem_dev = udev;
+		pm_runtime_set_autosuspend_delay
+			(&udev->dev, hsic.port_inactivityDuration);
+
+		if (hsic.remoteWakeup_enable) {
+			pr_debug("%s Modem dev remote wakeup enabled\n",
+					 __func__);
+			device_set_wakeup_capable
+				(&hsic.modem_dev->dev, 1);
+			device_set_wakeup_capable
+				(&hsic.rh_dev->dev, 1);
 		} else {
-			if (udev->portnum != HSIC_USH_PORT) {
-				pr_debug("%s ignore ush ports except port5\n",
-						__func__);
-				pr_debug("%s ush ports %d\n", __func__,
-						udev->portnum);
-				break;
-			}
+			pr_debug("%s Modem dev remote wakeup disabled\n",
+					 __func__);
+			device_set_wakeup_capable
+				(&hsic.modem_dev->dev, 0);
+			device_set_wakeup_capable
+				(&hsic.rh_dev->dev, 0);
+		}
 
-			/* Modem devices */
-			hsic.modem_dev = udev;
-			pm_runtime_set_autosuspend_delay
-				(&udev->dev, hsic.port_inactivityDuration);
+		hsic.autosuspend_enable = HSIC_AUTOSUSPEND;
+		if (hsic.autosuspend_enable) {
+			pr_debug("%s----> enable autosuspend\n",
+				 __func__);
+			usb_enable_autosuspend(hsic.modem_dev);
+			usb_enable_autosuspend(hsic.rh_dev);
+			hsic_wakeup_irq_init();
+		}
 
-			if (hsic.remoteWakeup_enable) {
-				pr_debug("%s Modem dev remote wakeup enabled\n",
-						 __func__);
-				device_set_wakeup_capable
-					(&hsic.modem_dev->dev, 1);
-				device_set_wakeup_capable
-					(&hsic.rh_dev->dev, 1);
-			} else {
-				pr_debug("%s Modem dev remote wakeup disabled\n",
-						 __func__);
-				device_set_wakeup_capable
-					(&hsic.modem_dev->dev, 0);
-				device_set_wakeup_capable
-					(&hsic.rh_dev->dev, 0);
-			}
-
+		if (hsic.autosuspend_enable == 0) {
+			pr_debug("%s Modem dev autosuspend disable\n",
+					 __func__);
 			usb_disable_autosuspend(hsic.modem_dev);
 			usb_disable_autosuspend(hsic.rh_dev);
-#if 0
-			if (hsic.autosuspend_enable) {
-				pr_debug("%s----> enable autosuspend\n",
-					 __func__);
-				usb_enable_autosuspend(udev->parent);
-				hsic_wakeup_irq_init();
-			}
+		}
+	}
+}
 
-			if (hsic.autosuspend_enable == 0) {
-				pr_debug("%s Modem dev autosuspend disable\n",
-						 __func__);
-				usb_disable_autosuspend(hsic.modem_dev);
-			}
-#endif
-		}
-		break;
-	case USB_DEVICE_REMOVE:
-		pr_debug("Notify HSIC delete device\n");
-		/* Root hub */
-		if (udev->speed != USB_SPEED_HIGH) {
-			pr_debug("%s ignore ss port\n", __func__);
-			break;
-		}
-		if (!udev->parent) {
+static void hsicdev_remove(struct usb_device *udev)
+{
+	pr_debug("Notify HSIC remove device\n");
+	if (is_ush_hsic(udev) == 0) {
+		pr_debug("Not a USH HSIC device\n");
+		return;
+	}
+
+	/* Root hub */
+	if (!udev->parent) {
+		if (udev->speed == USB_SPEED_HIGH) {
 			pr_debug("%s rh_dev deleted\n", __func__);
 			hsic.rh_dev = NULL;
-		} else {
-			/* Modem devices */
-			pr_debug("%s----> modem dev deleted\n", __func__);
-			hsic.modem_dev = NULL;
-			usb_disable_autosuspend(hsic.rh_dev);
 		}
-		break;
-	case MODEM_WORK_FLUSH:
-		if (udev == hsic.modem_dev) {
-			pr_debug("Notify MODEM work flush\n");
-			synchronize_irq(gpio_to_irq(hsic.aux_gpio));
-			flush_work(&hsic.hsic_aux);
+	} else {
+		if (udev->portnum != HSIC_USH_PORT) {
+			pr_debug("%s ignore ush ports %d\n",
+				__func__, udev->portnum);
+			return;
 		}
-		break;
-	default:
-		pr_debug("Notify action not supported\n");
-		break ;
+		/* Modem devices */
+		pr_debug("%s----> modem dev deleted\n", __func__);
+		mutex_lock(&hsic.hsic_mutex);
+		hsic.modem_dev = NULL;
+		mutex_unlock(&hsic.hsic_mutex);
+		usb_enable_autosuspend(hsic.rh_dev);
+		hsic.autosuspend_enable = 1;
+		s3_wake_unlock();
 	}
-	return;
+}
+
+/* the root hub will call this callback when device added/removed */
+static int hsic_notify(struct notifier_block *self,
+		unsigned long action, void *dev)
+{
+	switch (action) {
+	case USB_DEVICE_ADD:
+		hsicdev_add(dev);
+		break;
+	case USB_DEVICE_REMOVE:
+		hsicdev_remove(dev);
+		break;
+	}
+	return NOTIFY_OK;
+}
+
+static void hsic_port_suspend(struct usb_device *udev)
+{
+	if (is_ush_hsic(udev) == 0) {
+		pr_debug("Not a USH HSIC device\n");
+		return;
+	}
+
+	if (udev->portnum != HSIC_USH_PORT) {
+		pr_debug("%s ignore ush ports %d\n",
+			__func__, udev->portnum);
+		return;
+	}
+
+	/* Modem dev */
+	if (udev->parent) {
+		pr_debug("%s s3 wlock unlocked\n", __func__);
+		s3_wake_unlock();
+	}
+}
+
+static void hsic_port_resume(struct usb_device *udev)
+{
+	if (is_ush_hsic(udev) == 0) {
+		pr_debug("Not a USH HSIC device\n");
+		return;
+	}
+
+	if (udev->portnum != HSIC_USH_PORT) {
+		pr_debug("%s ignore ush ports %d\n",
+			__func__, udev->portnum);
+		return;
+	}
+
+	/* Modem dev */
+	if ((udev->parent) && (hsic.s3_rt_state != SUSPENDING)) {
+		pr_debug("%s s3 wlock locked\n", __func__);
+		s3_wake_lock();
+	}
+}
+
+static int hsic_pm_notify(struct notifier_block *self,
+		unsigned long action, void *dev)
+{
+	switch (action) {
+	case USB_PORT_SUSPEND:
+		hsic_port_suspend(dev);
+		break;
+	case USB_PORT_RESUME:
+		hsic_port_resume(dev);
+		break;
+	}
+	return NOTIFY_OK;
+}
+
+static int hsic_s3_entry_notify(struct notifier_block *self,
+		unsigned long action, void *dummy)
+{
+	switch (action) {
+	case PM_SUSPEND_PREPARE:
+		hsic.s3_rt_state = SUSPENDING;
+		break;
+	}
+	return NOTIFY_OK;
 }
 
 static int clear_port_feature(struct usb_device *hdev, int port1, int feature)
@@ -400,70 +510,76 @@ static int set_port_feature(struct usb_device *hdev, int port1, int feature)
 		port1, NULL, 0, 1000);
 }
 
-static void ush_hsic_port_disable(struct pci_dev *pdev)
+static void ush_hsic_port_disable(void)
 {
 	printk(KERN_ERR "%s---->\n", __func__);
-#if 1
+	hsic_enable = 0;
+	hsic.autosuspend_enable = 0;
 	if (hsic.modem_dev) {
-		struct usb_device *hdev;
-
 		dev_dbg(&pci_dev->dev,
-			"%s----> disconnect modem\n", __func__);
-		hdev = hsic.modem_dev->parent;
+			"Disable auto suspend in port disable\n");
 		usb_disable_autosuspend(hsic.modem_dev);
 		usb_disable_autosuspend(hsic.rh_dev);
-		if (hdev->children[HSIC_USH_PORT - 1] == hsic.modem_dev) {
-			printk(KERN_ERR "%s----> usb disconnect\n", __func__);
-			usb_disconnect(&hsic.modem_dev);
-			hdev->children[HSIC_USH_PORT - 1] = NULL;
-		}
 	}
-#endif
 	if (hsic.rh_dev) {
 		dev_dbg(&pci_dev->dev,
 			"%s----> disable port\n", __func__);
-		printk(KERN_ERR "%s----> disable PP\n", __func__);
+		usb_disable_autosuspend(hsic.rh_dev);
 		clear_port_feature(hsic.rh_dev, HSIC_USH_PORT,
 				USB_PORT_FEAT_POWER);
 	}
-	hsic.hsic_stopped = 1;
-	hsic_enable = 0;
+	s3_wake_unlock();
 }
 
-static void ush_hsic_port_enable(struct pci_dev *pdev)
+static void ush_hsic_port_enable(void)
 {
 	printk(KERN_ERR "%s---->\n", __func__);
+	hsic_enable = 1;
+	hsic.autosuspend_enable = 0;
+	if (hsic.modem_dev) {
+		dev_dbg(&pci_dev->dev,
+			"Disable auto suspend in port enable\n");
+		usb_disable_autosuspend(hsic.modem_dev);
+		usb_disable_autosuspend(hsic.rh_dev);
+	}
+
 	if (hsic.rh_dev) {
 		dev_dbg(&pci_dev->dev,
 			"%s----> enable port\n", __func__);
 		printk(KERN_ERR "%s----> Enable PP\n", __func__);
+		usb_disable_autosuspend(hsic.rh_dev);
 		set_port_feature(hsic.rh_dev, HSIC_USH_PORT,
 				USB_PORT_FEAT_POWER);
 	}
-	hsic.hsic_stopped = 0;
-	hsic_enable = 1;
+	s3_wake_lock();
 }
 
-#ifdef START_STOP_HOST
+static void hsic_port_logical_disconnect(struct usb_device *hdev,
+		unsigned int port)
+{
+	dev_dbg(&pci_dev->dev, "logical disconnect on root hub\n");
+	hsic.port_disconnect = 1;
+	ush_hsic_port_disable();
+
+	usb_set_change_bits(hdev, port);
+	usb_kick_khubd(hdev);
+}
+
 static void hsic_aux_work(struct work_struct *work)
 {
 	dev_dbg(&pci_dev->dev,
 		"%s---->\n", __func__);
 	mutex_lock(&hsic.hsic_mutex);
-#if 0
-	/* Free the aux irq */
-	hsic_aux_irq_free();
-	msleep(800);
-	dev_dbg(&pci_dev->dev,
-		"%s---->AUX IRQ is disabled\n", __func__);
-#endif
-
-	if (hsic.hsic_stopped == 0)
-		ush_hsic_stop_host(pci_dev);
-
+	if ((!hsic.rh_dev) || (hsic_enable == 0)) {
+		dev_dbg(&pci_dev->dev,
+			"root hub is already removed\n");
+		mutex_unlock(&hsic.hsic_mutex);
+		return;
+	}
+	ush_hsic_port_disable();
 	usleep_range(hsic.reenumeration_delay,
 			hsic.reenumeration_delay + 1000);
-	ush_hsic_start_host(pci_dev);
+	ush_hsic_port_enable();
 	mutex_unlock(&hsic.hsic_mutex);
 
 	hsic.hsic_aux_finish = 1;
@@ -472,50 +588,19 @@ static void hsic_aux_work(struct work_struct *work)
 		"%s<----\n", __func__);
 	return;
 }
-#else
-static void hsic_aux_work(struct work_struct *work)
-{
-	dev_dbg(&pci_dev->dev,
-		"%s---->\n", __func__);
-	mutex_lock(&hsic.hsic_mutex);
-#if 0
-	/* Free the aux irq */
-	hsic_aux_irq_free();
-	msleep(800);
-	dev_dbg(&pci_dev->dev,
-		"%s---->AUX IRQ is disabled\n", __func__);
-#endif
-
-	if (hsic.hsic_stopped == 0)
-		ush_hsic_port_disable(pci_dev);
-
-	usleep_range(hsic.reenumeration_delay,
-			hsic.reenumeration_delay + 1000);
-	ush_hsic_port_enable(pci_dev);
-	mutex_unlock(&hsic.hsic_mutex);
-
-	hsic.hsic_aux_finish = 1;
-	wake_up(&hsic.aux_wq);
-	dev_dbg(&pci_dev->dev,
-		"%s<----\n", __func__);
-	return;
-}
-#endif
 
 static void wakeup_work(struct work_struct *work)
 {
 	dev_dbg(&pci_dev->dev,
 		"%s---->\n", __func__);
-	if (hsic.modem_dev == NULL) {
+	mutex_lock(&hsic.hsic_mutex);
+	if ((hsic.modem_dev == NULL) || (hsic_enable == 0)) {
+		mutex_unlock(&hsic.hsic_mutex);
 		dev_dbg(&pci_dev->dev,
 			"%s---->Modem not created\n", __func__);
 		return -ENODEV;
 	}
 
-	mutex_lock(&hsic.hsic_mutex);
-	/* Free the wakeup irq */
-	dev_dbg(&pci_dev->dev,
-		"%s---->Wakeup IRQ is disabled\n", __func__);
 	pm_runtime_get_sync(&hsic.modem_dev->dev);
 	usleep_range(5000, 6000);
 	pm_runtime_put_sync(&hsic.modem_dev->dev);
@@ -625,7 +710,7 @@ static ssize_t hsic_reenumeration_delay_store(struct device *dev,
 	return size;
 }
 
-static DEVICE_ATTR(reenumeration_delay, S_IRUGO | S_IWUSR | S_IROTH | S_IWOTH,
+static DEVICE_ATTR(reenumeration_delay, S_IRUGO | S_IWUSR,
 		hsic_reenumeration_delay_show,
 		 hsic_reenumeration_delay_store);
 
@@ -640,7 +725,7 @@ static ssize_t hsic_host_resume_store(struct device *dev,
 	return -EINVAL;
 }
 
-static DEVICE_ATTR(host_resume, S_IRUGO | S_IWUSR | S_IROTH | S_IWOTH,
+static DEVICE_ATTR(host_resume, S_IWUSR,
 		NULL, hsic_host_resume_store);
 
 static ssize_t hsic_port_enable_show(struct device *dev,
@@ -649,7 +734,6 @@ static ssize_t hsic_port_enable_show(struct device *dev,
 	return sprintf(buf, "%d\n", hsic_enable);
 }
 
-#ifdef START_STOP_HOST
 static ssize_t hsic_port_enable_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
@@ -663,13 +747,6 @@ static ssize_t hsic_port_enable_store(struct device *dev,
 		dev_dbg(dev, "Invalid, value\n");
 		return -EINVAL;
 	}
-
-#if 0
-	/* Free the aux irq */
-	hsic_aux_irq_free();
-	dev_dbg(dev,
-		"%s---->AUX IRQ is disabled\n", __func__);
-#endif
 
 	if (delayed_work_pending(&hsic.hsic_aux)) {
 		dev_dbg(dev,
@@ -685,83 +762,47 @@ static ssize_t hsic_port_enable_store(struct device *dev,
 	}
 
 	mutex_lock(&hsic.hsic_mutex);
+	if (!hsic.rh_dev) {
+		dev_dbg(&pci_dev->dev,
+			"root hub is already removed\n");
+		mutex_unlock(&hsic.hsic_mutex);
+		return -ENODEV;
+	}
+	if (hsic.modem_dev) {
+		pm_runtime_get_sync(&hsic.modem_dev->dev);
+		pm_runtime_put(&hsic.modem_dev->dev);
+	}
+	if (hsic.rh_dev) {
+		pm_runtime_get_sync(&hsic.rh_dev->dev);
+		pm_runtime_put(&hsic.rh_dev->dev);
+	}
+
 	if (org_req) {
 		dev_dbg(dev, "enable hsic\n");
 
 		/* add this due to hcd release
 			 doesn't set hcd to NULL */
-		if (hsic.hsic_stopped == 0)
-			ush_hsic_stop_host(pci_dev);
+		ush_hsic_port_disable();
 		usleep_range(5000, 6000);
-		ush_hsic_start_host(pci_dev);
+		ush_hsic_port_enable();
 	} else {
 		dev_dbg(dev, "disable hsic\n");
 		/* add this due to hcd release
 			 doesn't set hcd to NULL */
-		if (hsic.hsic_stopped == 0)
-			ush_hsic_stop_host(pci_dev);
-
+		if (hsic.port_disconnect == 0)
+			hsic_port_logical_disconnect(hsic.rh_dev,
+					HSIC_USH_PORT);
+		else {
+			ush_hsic_port_disable();
+			if (hsic.rh_dev) {
+				hsic.autosuspend_enable = 0;
+				usb_enable_autosuspend(hsic.rh_dev);
+			}
+		}
 	}
 	mutex_unlock(&hsic.hsic_mutex);
 	return size;
 }
-#else
-static ssize_t hsic_port_enable_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
-{
-	int retval;
-	int org_req;
-
-	if (size > HSIC_ENABLE_SIZE)
-		return -EINVAL;
-
-	if (sscanf(buf, "%d", &org_req) != 1) {
-		dev_dbg(dev, "Invalid, value\n");
-		return -EINVAL;
-	}
-
-#if 0
-	/* Free the aux irq */
-	hsic_aux_irq_free();
-	dev_dbg(dev,
-		"%s---->AUX IRQ is disabled\n", __func__);
-#endif
-
-	if (delayed_work_pending(&hsic.hsic_aux)) {
-		dev_dbg(dev,
-			"%s---->Wait for delayed work finish\n",
-			 __func__);
-		retval = wait_event_interruptible(hsic.aux_wq,
-						hsic.hsic_aux_finish);
-		if (retval < 0)
-			return retval;
-
-		if (org_req)
-			return size;
-	}
-
-	mutex_lock(&hsic.hsic_mutex);
-	if (org_req) {
-		dev_dbg(dev, "enable hsic\n");
-
-		/* add this due to hcd release
-			 doesn't set hcd to NULL */
-		if (hsic.hsic_stopped == 0)
-			ush_hsic_port_disable(pci_dev);
-		usleep_range(5000, 6000);
-		ush_hsic_port_enable(pci_dev);
-	} else {
-		dev_dbg(dev, "disable hsic\n");
-		/* add this due to hcd release
-			 doesn't set hcd to NULL */
-		if (hsic.hsic_stopped == 0)
-			ush_hsic_port_disable(pci_dev);
-
-	}
-	mutex_unlock(&hsic.hsic_mutex);
-	return size;
-}
-#endif
 
 static DEVICE_ATTR(hsic_enable, S_IRUGO | S_IWUSR | S_IROTH | S_IWOTH,
 		hsic_port_enable_show, hsic_port_enable_store);
@@ -801,7 +842,7 @@ static ssize_t hsic_port_inactivityDuration_store(struct device *dev,
 	return size;
 }
 
-static DEVICE_ATTR(L2_inactivityDuration, S_IRUGO | S_IWUSR | S_IROTH | S_IWOTH,
+static DEVICE_ATTR(L2_inactivityDuration, S_IRUGO | S_IWUSR,
 		hsic_port_inactivityDuration_show,
 		 hsic_port_inactivityDuration_store);
 
@@ -893,7 +934,7 @@ static ssize_t hsic_bus_inactivityDuration_store(struct device *dev,
 }
 
 static DEVICE_ATTR(bus_inactivityDuration,
-		S_IRUGO | S_IWUSR | S_IROTH | S_IWOTH,
+		S_IRUGO | S_IWUSR,
 		hsic_bus_inactivityDuration_show,
 		 hsic_bus_inactivityDuration_store);
 
@@ -941,7 +982,7 @@ static ssize_t hsic_remoteWakeup_store(struct device *dev,
 	return size;
 }
 
-static DEVICE_ATTR(remoteWakeup, S_IRUGO | S_IWUSR | S_IROTH | S_IWOTH,
+static DEVICE_ATTR(remoteWakeup, S_IRUGO | S_IWUSR,
 		hsic_remoteWakeup_show, hsic_remoteWakeup_store);
 
 static int create_device_files()
@@ -1037,6 +1078,63 @@ static void remove_device_files()
 	device_remove_file(&pci_dev->dev, &dev_attr_registers);
 }
 
+static int hsic_get_gpio_num(struct pci_dev *pdev)
+{
+#ifdef CONFIG_ACPI
+	struct ush_hsic_pdata *pdata;
+	acpi_handle handle;
+	acpi_status status;
+
+	pdata = pdev->dev.platform_data;
+
+	status = acpi_get_handle(NULL,
+			"\\_SB.PCI0.XHC1.RHUB.HSC1", &handle);
+	if (ACPI_FAILURE(status)) {
+		dev_err(&pdev->dev, "HSIC: cannot get HSC1 acpi handle\n");
+		/* Try to get GPIO pin number from fixed value */
+		pdata->aux_gpio = acpi_get_gpio("\\_SB.GPO2", 6);
+		pdata->wakeup_gpio = acpi_get_gpio("\\_SB.GPO2", 22);
+		if (gpio_is_valid(pdata->aux_gpio) &&
+			gpio_is_valid(pdata->wakeup_gpio)) {
+			dev_info(&pdev->dev, "HSIC GPO2 aux %d wakeup %d\n",
+					pdata->aux_gpio, pdata->wakeup_gpio);
+			return 0;
+		} else {
+			dev_err(&pdev->dev, "HSIC: no GPO2 entry for GPIO\n");
+			return -ENODEV;
+		}
+	}
+	ACPI_HANDLE_SET(&pdev->dev, handle);
+
+	/* Get the GPIO value from ACPI table */
+	pdata->aux_gpio = acpi_get_gpio_by_index(&pdev->dev, 0, NULL);
+	if (pdata->aux_gpio < 0) {
+		dev_err(&pdev->dev, "HSIC: fail to get AUX1 from acpi %d\n",
+				pdata->aux_gpio);
+		pdata->aux_gpio = acpi_get_gpio("\\_SB.GPO2", 6);
+		if (!gpio_is_valid(pdata->aux_gpio)) {
+			dev_err(&pdev->dev, "HSIC: no GPO2 entry for GPIO\n");
+			return -ENODEV;
+		}
+	}
+
+	pdata->wakeup_gpio = acpi_get_gpio_by_index(&pdev->dev, 1, NULL);
+	if (pdata->wakeup_gpio < 0) {
+		dev_err(&pdev->dev, "HSIC: fail to get WAKEUP from acpi %d\n",
+				pdata->wakeup_gpio);
+		pdata->wakeup_gpio = acpi_get_gpio("\\_SB.GPO2", 22);
+		if (!gpio_is_valid(pdata->wakeup_gpio)) {
+			dev_err(&pdev->dev, "HSIC: no GPO2 entry for GPIO\n");
+			return -ENODEV;
+		}
+	}
+
+	dev_info(&pdev->dev, "USH HSIC GPIO AUX %d WAKEUP %d\n",
+			pdata->aux_gpio, pdata->wakeup_gpio);
+#endif
+	return 0;
+}
+
 /*
  * We need to register our own PCI probe function (instead of the USB core's
  * function) in order to create a second roothub under xHCI.
@@ -1048,23 +1146,49 @@ static int xhci_ush_pci_probe(struct pci_dev *dev,
 	struct xhci_hcd *xhci;
 	struct hc_driver *driver;
 	struct usb_hcd *hcd;
+	struct ush_hsic_pdata *hsic_pdata;
+
+	hsic_pdata = dev->dev.platform_data;
+	if (!hsic_pdata->has_modem) {
+		dev_err(&dev->dev, "Don't match this driver\n");
+		return -ENODEV;
+	}
 
 	driver = (struct hc_driver *)id->driver_data;
 	pci_dev = dev;
 
+	wake_lock_init(&hsic.s3_wake_lock,
+			WAKE_LOCK_SUSPEND, "hsic_s3_wlock");
+	hsic.hsic_pm_nb.notifier_call = hsic_pm_notify;
+	usb_register_notify(&hsic.hsic_pm_nb);
+	hsic.hsic_s3_entry_nb.notifier_call = hsic_s3_entry_notify;
+	register_pm_notifier(&hsic.hsic_s3_entry_nb);
+
+	retval = hsic_get_gpio_num(pci_dev);
+	if (retval < 0) {
+		dev_err(&dev->dev, "failed to get gpio value\n");
+		return -ENODEV;
+	}
+
 	/* AUX GPIO init */
-	retval = hsic_aux_gpio_init();
+	retval = hsic_aux_gpio_init(hsic_pdata->aux_gpio);
 	if (retval < 0) {
 		dev_err(&dev->dev, "AUX GPIO init fail\n");
 		retval = -ENODEV;
 	}
 
 	/* AUX GPIO init */
-	retval = hsic_wakeup_gpio_init();
+	retval = hsic_wakeup_gpio_init(hsic_pdata->wakeup_gpio);
 	if (retval < 0) {
 		dev_err(&dev->dev, "Wakeup GPIO init fail\n");
 		retval = -ENODEV;
 	}
+
+	wake_lock_init(&hsic.resume_wake_lock,
+		WAKE_LOCK_SUSPEND, "hsic_aux2_wlock");
+
+	hsic.hsicdev_nb.notifier_call = hsic_notify;
+	usb_register_notify(&hsic.hsicdev_nb);
 
 	/* Register the USB 2.0 roothub.
 	 * FIXME: USB core must know to register the USB 2.0 roothub first.
@@ -1103,6 +1227,7 @@ static int xhci_ush_pci_probe(struct pci_dev *dev,
 
 	if (hsic.hsic_mutex_init == 0) {
 		mutex_init(&hsic.hsic_mutex);
+		mutex_init(&hsic.wlock_mutex);
 		hsic.hsic_mutex_init = 1;
 	}
 
@@ -1124,9 +1249,6 @@ static int xhci_ush_pci_probe(struct pci_dev *dev,
 	/* Enable Controller wakeup capability */
 	device_set_wakeup_enable(&dev->dev, true);
 
-	/* Enable runtime pm ability */
-	hcd->rpm_control = 1;
-	hcd->rpm_resume = 0;
 	pm_runtime_set_active(&dev->dev);
 
 	/* Check here to avoid to call pm_runtime_put_noidle() twice */
@@ -1134,14 +1256,18 @@ static int xhci_ush_pci_probe(struct pci_dev *dev,
 		pm_runtime_put_noidle(&dev->dev);
 
 	pm_runtime_allow(&dev->dev);
-	hsic.hsic_stopped = 0;
+	hsic.port_disconnect = 0;
 	hsic_enable = 1;
+	hsic.s3_rt_state = RESUMED;
+	s3_wake_lock();
 	return 0;
 
 put_usb3_hcd:
 	usb_put_hcd(xhci->shared_hcd);
 dealloc_usb2_hcd:
 	usb_hcd_pci_remove(dev);
+	wake_lock_destroy(&(hsic.resume_wake_lock));
+	wake_lock_destroy(&hsic.s3_wake_lock);
 	return retval;
 }
 
@@ -1168,8 +1294,12 @@ static void xhci_ush_pci_remove(struct pci_dev *dev)
 	gpio_free(hsic.aux_gpio);
 	gpio_free(hsic.wakeup_gpio);
 
-	hsic.hsic_stopped = 1;
+	hsic.port_disconnect = 1;
 	hsic_enable = 0;
+	wake_lock_destroy(&(hsic.resume_wake_lock));
+	wake_lock_destroy(&hsic.s3_wake_lock);
+	usb_unregister_notify(&hsic.hsic_pm_nb);
+	unregister_pm_notifier(&hsic.hsic_s3_entry_nb);
 
 	kfree(xhci);
 }
@@ -1180,15 +1310,7 @@ static int xhci_ush_hcd_pci_suspend_noirq(struct device *dev)
 	int	retval;
 
 	dev_dbg(dev, "%s --->\n", __func__);
-	mutex_lock(&hsic.hsic_mutex);
-	if (hsic.hsic_stopped == 1) {
-		dev_dbg(dev, "hsic stopped return\n");
-		mutex_unlock(&hsic.hsic_mutex);
-		return 0;
-	}
-
 	retval = usb_hcd_pci_pm_ops.suspend_noirq(dev);
-	mutex_unlock(&hsic.hsic_mutex);
 	dev_dbg(dev, "%s <--- retval = %d\n", __func__, retval);
 	return retval;
 }
@@ -1198,14 +1320,6 @@ static int xhci_ush_hcd_pci_suspend(struct device *dev)
 	int     retval;
 
 	dev_dbg(dev, "%s --->\n", __func__);
-	mutex_lock(&hsic.hsic_mutex);
-	if (hsic.hsic_stopped == 1) {
-		dev_dbg(dev, "hsic stopped return\n");
-		mutex_unlock(&hsic.hsic_mutex);
-		return 0;
-	}
-	mutex_unlock(&hsic.hsic_mutex);
-
 	retval = usb_hcd_pci_pm_ops.suspend(dev);
 	dev_dbg(dev, "%s <--- retval = %d\n", __func__, retval);
 	return retval;
@@ -1217,15 +1331,8 @@ static int xhci_ush_hcd_pci_resume_noirq(struct device *dev)
 	int                     retval;
 
 	dev_dbg(dev, "%s --->\n", __func__);
-	mutex_lock(&hsic.hsic_mutex);
-	if (hsic.hsic_stopped == 1) {
-		dev_dbg(dev, "hsic stopped return\n");
-		mutex_unlock(&hsic.hsic_mutex);
-		return 0;
-	}
-
 	retval = usb_hcd_pci_pm_ops.resume_noirq(dev);
-	mutex_unlock(&hsic.hsic_mutex);
+	hsic.s3_rt_state = RESUMED;
 	dev_dbg(dev, "%s <--- retval = %d\n", __func__, retval);
 	return retval;
 }
@@ -1236,14 +1343,6 @@ static int xhci_ush_hcd_pci_resume(struct device *dev)
 	int     retval;
 
 	dev_dbg(dev, "%s --->\n", __func__);
-	mutex_lock(&hsic.hsic_mutex);
-	if (hsic.hsic_stopped == 1) {
-		dev_dbg(dev, "hsic stopped return\n");
-		mutex_unlock(&hsic.hsic_mutex);
-		return 0;
-	}
-	mutex_unlock(&hsic.hsic_mutex);
-
 	retval = usb_hcd_pci_pm_ops.resume(dev);
 	dev_dbg(dev, "%s <--- retval = %d\n", __func__, retval);
 	return retval;
@@ -1263,11 +1362,6 @@ static int xhci_ush_hcd_pci_runtime_suspend(struct device *dev)
 	int     retval;
 
 	dev_dbg(dev, "%s --->\n", __func__);
-	if (hsic.hsic_stopped == 1) {
-		dev_dbg(dev, "hsic stopped return\n");
-		return 0;
-	}
-
 	retval = usb_hcd_pci_pm_ops.runtime_suspend(dev);
 	dev_dbg(dev, "%s <--- retval = %d\n", __func__, retval);
 	return retval;
@@ -1280,19 +1374,7 @@ static int xhci_ush_hcd_pci_runtime_resume(struct device *dev)
 	int                     retval;
 
 	dev_dbg(dev, "%s --->\n", __func__);
-	if (hsic.hsic_stopped == 1) {
-		dev_dbg(dev, "hsic stopped return\n");
-		return 0;
-	}
-
 	retval = usb_hcd_pci_pm_ops.runtime_resume(dev);
-	if (hcd->rpm_control) {
-		if (hcd->rpm_resume) {
-			struct device           *rpm_dev = hcd->self.controller;
-			hcd->rpm_resume = 0;
-			pm_runtime_put(rpm_dev);
-		}
-	}
 	dev_dbg(dev, "%s <--- retval = %d\n", __func__, retval);
 	return retval;
 }
@@ -1319,11 +1401,17 @@ static int xhci_pci_reinit(struct xhci_hcd *xhci, struct pci_dev *pdev)
 	return 0;
 }
 
-
-void xhci_ush_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
+static void xhci_ush_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
 {
+	xhci->quirks |= XHCI_SPURIOUS_SUCCESS;
+	/*
+	 * We found two USB Disk cannot pass Enumeration with LPM
+	 * token sent on BYT, so disable LPM here.
+	 */
+	xhci->quirks |= XHCI_LPM_DISABLE_QUIRK;
 	return;
 }
+
 /* called during probe() after chip reset completes */
 static int xhci_ush_pci_setup(struct usb_hcd *hcd)
 {
@@ -1489,32 +1577,6 @@ static struct pci_driver xhci_ush_driver = {
 #endif
 	.shutdown =     usb_hcd_pci_shutdown,
 };
-
-static int ush_hsic_start_host(struct pci_dev  *pdev)
-{
-	int		retval;
-
-	pm_runtime_get_sync(&pdev->dev);
-	enabling_disabling = 1;
-	retval = xhci_ush_pci_probe(pdev, xhci_ush_driver.id_table);
-	if (retval)
-		dev_dbg(&pdev->dev, "Failed to start host\n");
-	enabling_disabling = 0;
-	pm_runtime_put(&pdev->dev);
-
-	return retval;
-}
-
-static int ush_hsic_stop_host(struct pci_dev *pdev)
-{
-	pm_runtime_get_sync(&pdev->dev);
-	enabling_disabling = 1;
-	xhci_ush_pci_remove(pdev);
-	enabling_disabling = 0;
-	pm_runtime_put(&pdev->dev);
-
-	return 0;
-}
 
 int xhci_register_ush_pci(void)
 {

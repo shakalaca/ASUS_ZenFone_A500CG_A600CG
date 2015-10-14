@@ -85,6 +85,30 @@ extern "C" {
 
 #else	/* WIN32 */
 
+#if defined(__QNXNTO__)
+
+#define PDUMP_GET_SCRIPT_STRING()	\
+	IMG_CHAR pszScript[MAX_PDUMP_STRING_LENGTH];		\
+	IMG_UINT32	ui32MaxLen = MAX_PDUMP_STRING_LENGTH-1;	\
+	IMG_HANDLE	hScript = (IMG_HANDLE)pszScript;
+
+#define PDUMP_GET_MSG_STRING()		\
+	IMG_CHAR pszMsg[MAX_PDUMP_STRING_LENGTH];			\
+	IMG_UINT32	ui32MaxLen = MAX_PDUMP_STRING_LENGTH-1;
+
+#define PDUMP_GET_FILE_STRING()		\
+	IMG_CHAR	pszFileName[MAX_PDUMP_STRING_LENGTH];	\
+	IMG_UINT32	ui32MaxLen = MAX_PDUMP_STRING_LENGTH-1;
+
+#define PDUMP_GET_SCRIPT_AND_FILE_STRING()		\
+	IMG_CHAR 	pszScript[MAX_PDUMP_STRING_LENGTH];		\
+	IMG_CHAR	pszFileName[MAX_PDUMP_STRING_LENGTH];	\
+	IMG_UINT32	ui32MaxLenScript = MAX_PDUMP_STRING_LENGTH-1;	\
+	IMG_UINT32	ui32MaxLenFileName = MAX_PDUMP_STRING_LENGTH-1;	\
+	IMG_HANDLE	hScript = (IMG_HANDLE)pszScript;
+
+#else  /* __QNXNTO__ */
+
 	/*
 	 * Linux
 	 */
@@ -150,8 +174,14 @@ extern "C" {
 	 */
 	PVRSRV_ERROR PDumpOSGetFilenameString(IMG_CHAR **ppszFile, IMG_UINT32 *pui32MaxLen);
 
+#endif /* __QNXNTO__ */
 #endif /* WIN32 */
 
+/*
+ * PDump streams (common to all OSes)
+ */
+#define PDUMP_STREAM_PARAM2			0
+#define PDUMP_STREAM_SCRIPT2		1
 
 /*
  * Define macro for processing variable args list in OS-independent
@@ -362,6 +392,14 @@ IMG_VOID PDumpOSLock(IMG_VOID);
  * @brief	Release the global pdump lock
  */
 IMG_VOID PDumpOSUnlock(IMG_VOID);
+
+/*!
+ * @name	PDumpOSGetCtrlState
+ * @brief	Retrieve some state from the debug driver or debug driver stream
+ */
+IMG_UINT32 PDumpOSGetCtrlState(IMG_HANDLE hDbgStream,
+		IMG_UINT32 ui32StateID);
+
 
 #if defined (__cplusplus)
 }

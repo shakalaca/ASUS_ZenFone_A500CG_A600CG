@@ -128,7 +128,8 @@
 #define PW_IOCTL_DO_D_NC_READ _IOR(APWR_IOCTL_MAGIC_NUM, 15, unsigned long *)
 #define PW_IOCTL_FSB_FREQ _IOR(APWR_IOCTL_MAGIC_NUM, 16, unsigned long *)
 #define PW_IOCTL_MSR_ADDRS _IOW(APWR_IOCTL_MAGIC_NUM, 17, struct PWCollector_ioctl_arg *)
-#define PW_IOCTL_MAX_NON_TURBO_RATIO _IOR(APWR_IOCTL_MAGIC_NUM, 18, unsigned long *)
+#define PW_IOCTL_FREQ_RATIOS _IOR(APWR_IOCTL_MAGIC_NUM, 18, unsigned long *)
+#define PW_IOCTL_PLATFORM_RES_CONFIG _IOW(APWR_IOCTL_MAGIC_NUM, 19, struct PWCollector_ioctl_arg *)
 
 /*
  * 32b-compatible version of the above
@@ -158,7 +159,8 @@
     #define PW_IOCTL_DO_D_NC_READ32 _IOR(APWR_IOCTL_MAGIC_NUM, 15, compat_uptr_t)
     #define PW_IOCTL_FSB_FREQ32 _IOR(APWR_IOCTL_MAGIC_NUM, 16, compat_uptr_t)
     #define PW_IOCTL_MSR_ADDRS32 _IOW(APWR_IOCTL_MAGIC_NUM, 17, compat_uptr_t)
-    #define PW_IOCTL_MAX_NON_TURBO_RATIO32 _IOR(APWR_IOCTL_MAGIC_NUM, 18, compat_uptr_t)
+    #define PW_IOCTL_FREQ_RATIOS32 _IOR(APWR_IOCTL_MAGIC_NUM, 18, compat_uptr_t)
+    #define PW_IOCTL_PLATFORM_RES_CONFIG32 _IOW(APWR_IOCTL_MAGIC_NUM, 19, compat_uptr_t)
 #endif // defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
 
 #endif // _PW_IOCTL_H_

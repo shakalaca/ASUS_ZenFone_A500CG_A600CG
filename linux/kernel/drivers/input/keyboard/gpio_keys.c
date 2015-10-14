@@ -64,7 +64,7 @@ static int gpio_keys_request_irq(int gpio, irq_handler_t isr,
 
 	if (gpio_cansleep(gpio))
 		ret = request_threaded_irq(gpio_to_irq(gpio), NULL, isr,
-				flags, name, data);
+				flags | IRQF_ONESHOT, name, data);
 	else
 		ret = request_irq(gpio_to_irq(gpio), isr, flags, name, data);
 	return ret;
@@ -467,7 +467,7 @@ static void gpio_keys_gpio_timer(unsigned long _data)
 static irqreturn_t gpio_keys_gpio_isr(int irq, void *dev_id)
 {
 	struct gpio_button_data *bdata = dev_id;
-	struct gpio_keys_button *button;
+	const struct gpio_keys_button *button;
 	struct input_dev *input;
 	unsigned int type;
 	int state;
@@ -549,10 +549,10 @@ out:
 	return IRQ_HANDLED;
 }
 
-static int __devinit gpio_keys_setup_key(struct platform_device *pdev,
-					 struct input_dev *input,
-					 struct gpio_button_data *bdata,
-					 const struct gpio_keys_button *button)
+static int gpio_keys_setup_key(struct platform_device *pdev,
+				struct input_dev *input,
+				struct gpio_button_data *bdata,
+				const struct gpio_keys_button *button)
 {
 	const char *desc = button->desc ? button->desc : "gpio_keys";
 	struct device *dev = &pdev->dev;
@@ -576,7 +576,7 @@ static int __devinit gpio_keys_setup_key(struct platform_device *pdev,
 		error = gpio_direction_input(button->gpio);
 		if (error < 0) {
 			dev_err(dev,
-				"Failed to configure direction for GPIO %d, error %d\n",
+			"Failed to configure direction for GPIO %d, error %d\n",
 				button->gpio, error);
 			goto fail;
 		}
@@ -686,7 +686,7 @@ static int gpio_keys_get_devtree_pdata(struct device *dev,
 	if (node == NULL)
 		return -ENODEV;
 
-	memset(pdata, 0, sizeof *pdata);
+	memset(pdata, 0, sizeof(*pdata));
 
 	pdata->rep = !!of_get_property(node, "autorepeat", NULL);
 
@@ -699,7 +699,7 @@ static int gpio_keys_get_devtree_pdata(struct device *dev,
 	if (pdata->nbuttons == 0)
 		return -ENODEV;
 
-	buttons = kzalloc(pdata->nbuttons * (sizeof *buttons), GFP_KERNEL);
+	buttons = kzalloc(pdata->nbuttons * sizeof(*buttons), GFP_KERNEL);
 	if (!buttons)
 		return -ENOMEM;
 
@@ -717,7 +717,8 @@ static int gpio_keys_get_devtree_pdata(struct device *dev,
 		buttons[i].active_low = flags & OF_GPIO_ACTIVE_LOW;
 
 		if (of_property_read_u32(pp, "linux,code", &reg)) {
-			dev_err(dev, "Button without keycode: 0x%x\n", buttons[i].gpio);
+			dev_err(dev, "Button without keycode: 0x%x\n",
+				buttons[i].gpio);
 			goto out_fail;
 		}
 		buttons[i].code = reg;
@@ -729,7 +730,8 @@ static int gpio_keys_get_devtree_pdata(struct device *dev,
 		else
 			buttons[i].type = EV_KEY;
 
-		buttons[i].wakeup = !!of_get_property(pp, "gpio-key,wakeup", NULL);
+		buttons[i].wakeup =
+			!!of_get_property(pp, "gpio-key,wakeup", NULL);
 
 		if (of_property_read_u32(pp, "debounce-interval", &reg) == 0)
 			buttons[i].debounce_interval = reg;
@@ -776,7 +778,7 @@ static void gpio_remove_key(struct gpio_button_data *bdata)
 		gpio_free(bdata->button->gpio);
 }
 
-static int __devinit gpio_keys_probe(struct platform_device *pdev)
+static int gpio_keys_probe(struct platform_device *pdev)
 {
 	const struct gpio_keys_platform_data *pdata = pdev->dev.platform_data;
 	struct gpio_keys_drvdata *ddata;
@@ -885,7 +887,7 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 	return error;
 }
 
-static int __devexit gpio_keys_remove(struct platform_device *pdev)
+static int gpio_keys_remove(struct platform_device *pdev)
 {
 	struct gpio_keys_drvdata *ddata = platform_get_drvdata(pdev);
 	struct input_dev *input = ddata->input;
@@ -897,7 +899,7 @@ static int __devexit gpio_keys_remove(struct platform_device *pdev)
 
 	for (i = 0; i < ddata->n_buttons; i++)
 		gpio_remove_key(&ddata->data[i]);
-
+     wake_lock_destroy(&gpio_wake_lock);
 	input_unregister_device(input);
 
 	/*
@@ -995,7 +997,7 @@ MODULE_DEVICE_TABLE(platform, gpio_keys_ids);
 
 static struct platform_driver gpio_keys_device_driver = {
 	.probe		= gpio_keys_probe,
-	.remove		= __devexit_p(gpio_keys_remove),
+	.remove		= gpio_keys_remove,
 	.id_table	= gpio_keys_ids,
 	.driver		= {
 		.name	= "gpio-keys",

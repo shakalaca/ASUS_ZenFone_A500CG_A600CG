@@ -26,7 +26,7 @@
 
 #define SEP_LOG_CUR_COMPONENT SEP_LOG_MASK_SEP_REQUEST
 
-#include <linux/completion.h>
+#include <linux/sched.h>
 /*#include <linux/export.h>*/
 #include "dx_driver.h"
 #include "dx_bitops.h"
@@ -65,7 +65,7 @@ static struct {
 	u8 *host_resp_buf_p;
 	dma_addr_t host_resp_buf_dma;
 	u8 req_counter;
-	struct completion agent_event[DX_SEP_REQUEST_MAX_AGENTS];
+	wait_queue_head_t agent_event[DX_SEP_REQUEST_MAX_AGENTS];
 	bool agent_valid[DX_SEP_REQUEST_MAX_AGENTS];
 	bool agent_busy[DX_SEP_REQUEST_MAX_AGENTS];
 	bool request_pending;
@@ -123,11 +123,11 @@ void dx_sep_req_handler(struct sep_drvdata *drvdata)
 		 * error code. */
 		sep_req_error = DX_SEP_REQUEST_INVALID_REQ_SIZE_ERR;
 
-	if (likely(sep_req_error == DX_SEP_REQUEST_SUCCESS))
-		/* Signal the completion event according to the LUT */
-		complete(&sep_req_state.agent_event[agent_id]);
-
-	else {
+	if (likely(sep_req_error == DX_SEP_REQUEST_SUCCESS)) {
+		/* Signal the wake up event according to the LUT */
+		sep_req_state.agent_busy[agent_id] = true;
+		wake_up_interruptible(&sep_req_state.agent_event[agent_id]);
+	} else {
 		/* Critical error flow */
 
 		/* Build the new GPR3 value out of the req_counter from the
@@ -151,23 +151,23 @@ void dx_sep_req_handler(struct sep_drvdata *drvdata)
  */
 int dx_sep_req_register_agent(u8 agent_id, u32 *max_buf_size)
 {
-	SEP_LOG_DEBUG("Regsiter SeP Request agent (id=%d)\n", agent_id);
+	pr_debug("Regsiter SeP Request agent (id=%d)\n", agent_id);
 
 	/* Validate agent ID is in range */
 	if (agent_id >= DX_SEP_REQUEST_MAX_AGENTS) {
-		SEP_LOG_ERR("Invalid agent ID\n");
+		pr_err("Invalid agent ID\n");
 		return -EINVAL;
 	}
 
 	/* Verify SeP Req Agent ID is not valid */
 	if (sep_req_state.agent_valid[agent_id] == true) {
-		SEP_LOG_ERR("Agent already registered\n");
+		pr_err("Agent already registered\n");
 		return -EINVAL;
 	}
 
 	/* Verify max_buf_size pointer is not NULL */
 	if (max_buf_size == NULL) {
-		SEP_LOG_ERR("max_buf_size is NULL\n");
+		pr_err("max_buf_size is NULL\n");
 		return -EINVAL;
 	}
 
@@ -189,23 +189,23 @@ EXPORT_SYMBOL(dx_sep_req_register_agent);
  */
 int dx_sep_req_unregister_agent(u8 agent_id)
 {
-	SEP_LOG_DEBUG("Unregsiter SeP Request agent (id=%d)\n", agent_id);
+	pr_debug("Unregsiter SeP Request agent (id=%d)\n", agent_id);
 
 	/* Validate agent ID is in range */
 	if (agent_id >= DX_SEP_REQUEST_MAX_AGENTS) {
-		SEP_LOG_ERR("Invalid agent ID\n");
+		pr_err("Invalid agent ID\n");
 		return -EINVAL;
 	}
 
 	/* Verify SeP Req Agent ID is valid */
 	if (sep_req_state.agent_valid[agent_id] == false) {
-		SEP_LOG_ERR("Agent not registered\n");
+		pr_err("Agent not registered\n");
 		return -EINVAL;
 	}
 
 	/* Verify SeP agent is not busy */
 	if (sep_req_state.agent_busy[agent_id] == true) {
-		SEP_LOG_ERR("Agent is busy\n");
+		pr_err("Agent is busy\n");
 		return -EBUSY;
 	}
 
@@ -230,63 +230,62 @@ int dx_sep_req_wait_for_request(u8 agent_id, u8 *sep_req_buf_p,
 {
 	u32 gpr_val;
 
-	SEP_LOG_DEBUG("Wait for sep request\n");
-	SEP_LOG_DEBUG("agent_id=%d sep_req_buf_p=0x%08X timeout=%d\n",
-		      agent_id, (u32) sep_req_buf_p, timeout);
+	pr_debug("Wait for sep request\n");
+	pr_debug("agent_id=%d sep_req_buf_p=0x%p timeout=%d\n",
+		 agent_id, sep_req_buf_p, timeout);
 
 	/* Validate agent ID is in range */
 	if (agent_id >= DX_SEP_REQUEST_MAX_AGENTS) {
-		SEP_LOG_ERR("Invalid agent ID\n");
+		pr_err("Invalid agent ID\n");
 		return -EINVAL;
 	}
 
 	/* Verify SeP Req Agent ID is valid */
 	if (sep_req_state.agent_valid[agent_id] == false) {
-		SEP_LOG_ERR("Agent not registered\n");
+		pr_err("Agent not registered\n");
 		return -EINVAL;
 	}
 
 	/* Verify SeP agent is not busy */
 	if (sep_req_state.agent_busy[agent_id] == true) {
-		SEP_LOG_ERR("Agent is busy\n");
+		pr_err("Agent is busy\n");
 		return -EBUSY;
 	}
 
 	/* Verify that another sep request is not pending */
 	if (sep_req_state.request_pending == true) {
-		SEP_LOG_ERR("Agent is busy\n");
+		pr_err("Agent is busy\n");
 		return -EBUSY;
 	}
 
 	/* Verify sep_req_buf_p pointer is not NULL */
 	if (sep_req_buf_p == NULL) {
-		SEP_LOG_ERR("sep_req_buf_p is NULL\n");
+		pr_err("sep_req_buf_p is NULL\n");
 		return -EINVAL;
 	}
 
 	/* Verify req_buf_size pointer is not NULL */
 	if (req_buf_size == NULL) {
-		SEP_LOG_ERR("req_buf_size is NULL\n");
+		pr_err("req_buf_size is NULL\n");
 		return -EINVAL;
 	}
 
 	/* Verify *req_buf_size is not zero and not bigger than the
 	 * allocated request buffer */
 	if ((*req_buf_size == 0) || (*req_buf_size > DX_SEP_REQUEST_BUF_SIZE)) {
-		SEP_LOG_ERR("Invalid request buffer size\n");
+		pr_err("Invalid request buffer size\n");
 		return -EINVAL;
 	}
 
-	/* Set "agent_busy" field to TRUE */
-	sep_req_state.agent_busy[agent_id] = true;
-
 	/* Wait for incoming request */
-	if (wait_for_completion_timeout(&sep_req_state.agent_event[agent_id],
-					timeout) == 0) {
+	if (wait_event_interruptible_timeout(
+			sep_req_state.agent_event[agent_id],
+			sep_req_state.agent_busy[agent_id] == true,
+			timeout) == 0) {
 		/* operation timed-out */
 		sep_req_state.agent_busy[agent_id] = false;
 
-		SEP_LOG_ERR("Request wait timed-out\n");
+		pr_err("Request wait timed-out\n");
 		return -EAGAIN;
 	}
 
@@ -323,44 +322,44 @@ int dx_sep_req_send_response(u8 agent_id, u8 *host_resp_buf_p,
 {
 	u32 gpr_val;
 
-	SEP_LOG_DEBUG("Send host response\n");
-	SEP_LOG_DEBUG("agent_id=%d host_resp_buf_p=0x%08X resp_buf_size=%d\n",
-		      agent_id, (u32) host_resp_buf_p, resp_buf_size);
+	pr_debug("Send host response\n");
+	pr_debug("agent_id=%d host_resp_buf_p=0x%p resp_buf_size=%d\n",
+		 agent_id, host_resp_buf_p, resp_buf_size);
 
 	/* Validate agent ID is in range */
 	if (agent_id >= DX_SEP_REQUEST_MAX_AGENTS) {
-		SEP_LOG_ERR("Invalid agent ID\n");
+		pr_err("Invalid agent ID\n");
 		return -EINVAL;
 	}
 
 	/* Verify SeP Req Agent ID is valid */
 	if (sep_req_state.agent_valid[agent_id] == false) {
-		SEP_LOG_ERR("Agent not registered\n");
+		pr_err("Agent not registered\n");
 		return -EINVAL;
 	}
 
 	/* Verify SeP agent is busy */
 	if (sep_req_state.agent_busy[agent_id] == false) {
-		SEP_LOG_ERR("Agent is not busy\n");
+		pr_err("Agent is not busy\n");
 		return -EBUSY;
 	}
 
 	/* Verify that a sep request is pending */
 	if (sep_req_state.request_pending == false) {
-		SEP_LOG_ERR("No requests are pending\n");
+		pr_err("No requests are pending\n");
 		return -EBUSY;
 	}
 
 	/* Verify host_resp_buf_p pointer is not NULL */
 	if (host_resp_buf_p == NULL) {
-		SEP_LOG_ERR("host_resp_buf_p is NULL\n");
+		pr_err("host_resp_buf_p is NULL\n");
 		return -EINVAL;
 	}
 
 	/* Verify resp_buf_size is not zero and not bigger than the allocated
 	 * request buffer */
 	if ((resp_buf_size == 0) || (resp_buf_size > DX_SEP_REQUEST_BUF_SIZE)) {
-		SEP_LOG_ERR("Invalid response buffer size\n");
+		pr_err("Invalid response buffer size\n");
 		return -EINVAL;
 	}
 
@@ -427,11 +426,11 @@ void dx_sep_req_enable(struct sep_drvdata *drvdata)
  * dx_sep_req_init() - Initialize the sep request state
  * @drvdata: Driver private data
  */
-int __devinit dx_sep_req_init(struct sep_drvdata *drvdata)
+int dx_sep_req_init(struct sep_drvdata *drvdata)
 {
 	int i;
 
-	SEP_LOG_DEBUG("Initialize SeP Request state\n");
+	pr_debug("Initialize SeP Request state\n");
 
 	sep_req_state.request_pending = false;
 	sep_req_state.req_counter = 0;
@@ -439,7 +438,7 @@ int __devinit dx_sep_req_init(struct sep_drvdata *drvdata)
 	for (i = 0; i < DX_SEP_REQUEST_MAX_AGENTS; i++) {
 		sep_req_state.agent_valid[i] = false;
 		sep_req_state.agent_busy[i] = false;
-		init_completion(&sep_req_state.agent_event[i]);
+		init_waitqueue_head(&sep_req_state.agent_event[i]);
 	}
 
 	/* allocate coherent request buffer */
@@ -448,12 +447,12 @@ int __devinit dx_sep_req_init(struct sep_drvdata *drvdata)
 						 &sep_req_state.
 						 sep_req_buf_dma,
 						 GFP_KERNEL);
-	SEP_LOG_DEBUG("sep_req_buf_dma=0x%08X sep_req_buf_p=0x%p size=0x%08X\n",
+	pr_debug("sep_req_buf_dma=0x%08X sep_req_buf_p=0x%p size=0x%08X\n",
 		      (u32)sep_req_state.sep_req_buf_dma,
 		      sep_req_state.sep_req_buf_p, DX_SEP_REQUEST_BUF_SIZE);
 
 	if (sep_req_state.sep_req_buf_p == NULL) {
-		SEP_LOG_ERR("Unable to allocate coherent request buffer\n");
+		pr_err("Unable to allocate coherent request buffer\n");
 		return -ENOMEM;
 	}
 
@@ -466,13 +465,13 @@ int __devinit dx_sep_req_init(struct sep_drvdata *drvdata)
 						   &sep_req_state.
 						   host_resp_buf_dma,
 						   GFP_KERNEL);
-	SEP_LOG_DEBUG(
+	pr_debug(
 		      "host_resp_buf_dma=0x%08X host_resp_buf_p=0x%p size=0x%08X\n",
 		      (u32)sep_req_state.host_resp_buf_dma,
 		      sep_req_state.host_resp_buf_p, DX_SEP_REQUEST_BUF_SIZE);
 
 	if (sep_req_state.host_resp_buf_p == NULL) {
-		SEP_LOG_ERR("Unable to allocate coherent response buffer\n");
+		pr_err("Unable to allocate coherent response buffer\n");
 		return -ENOMEM;
 	}
 
@@ -497,7 +496,7 @@ void dx_sep_req_fini(struct sep_drvdata *drvdata)
 {
 	int i;
 
-	SEP_LOG_DEBUG("Finalize SeP Request state\n");
+	pr_debug("Finalize SeP Request state\n");
 
 	sep_req_state.request_pending = false;
 	sep_req_state.req_counter = 0;

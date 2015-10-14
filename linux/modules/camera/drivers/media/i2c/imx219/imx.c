@@ -41,8 +41,9 @@
 #include "imx.h"
 #include <asm/intel-mid.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 
-static u8 imx_otp_data[24];
+extern u8 imx_otp_data[24];
 static int binning_sum;
 
 static enum atomisp_bayer_order imx_bayer_order_mapping[] = {
@@ -51,7 +52,6 @@ static enum atomisp_bayer_order imx_bayer_order_mapping[] = {
 	atomisp_bayer_order_gbrg,
 	atomisp_bayer_order_bggr
 };
-
 
 static int
 imx_read_reg(struct i2c_client *client, u16 len, u16 reg, u16 *val)
@@ -104,49 +104,6 @@ error:
 	return err;
 }
 
-static int
-imx_read_otp_data(struct i2c_client *client, u16 len, u16 reg, void *val)
-{
-	struct i2c_msg msg[2];
-	u16 data[IMX_SHORT_MAX] = { 0 };
-	int err;
-
-	if (len > IMX_BYTE_MAX) {
-		dev_err(&client->dev, "%s error, invalid data length\n",
-			__func__);
-		return -EINVAL;
-	}
-
-	memset(msg, 0 , sizeof(msg));
-	memset(data, 0 , sizeof(data));
-
-	msg[0].addr = client->addr;
-	msg[0].flags = 0;
-	msg[0].len = I2C_MSG_LENGTH;
-	msg[0].buf = (u8 *)data;
-	/* high byte goes first */
-	data[0] = cpu_to_be16(reg);
-
-	msg[1].addr = client->addr;
-	msg[1].len = len;
-	msg[1].flags = I2C_M_RD;
-	msg[1].buf = (u8 *)data;
-
-	err = i2c_transfer(client->adapter, msg, 2);
-	if (err != 2) {
-		if (err >= 0)
-			err = -EIO;
-		goto error;
-	}
-
-	memcpy(val, data, len);
-	return 0;
-
-error:
-	dev_err(&client->dev, "read from offset 0x%x error %d", reg, err);
-	return err;
-}
-
 static int imx_i2c_write(struct i2c_client *client, u16 len, u8 *data)
 {
 	struct i2c_msg msg;
@@ -163,7 +120,7 @@ static int imx_i2c_write(struct i2c_client *client, u16 len, u8 *data)
 	return ret == num_msg ? 0 : -EIO;
 }
 
-static int
+int
 imx_write_reg(struct i2c_client *client, u16 data_length, u16 reg, u16 val)
 {
 	int ret;
@@ -274,7 +231,7 @@ __imx_write_reg_is_consecutive(struct i2c_client *client,
 	return ctrl->buffer.addr + ctrl->index == next->sreg;
 }
 
-static int imx_write_reg_array(struct i2c_client *client,
+int imx_write_reg_array(struct i2c_client *client,
 				   const struct imx_reg *reglist)
 {
 	const struct imx_reg *next = reglist;
@@ -313,176 +270,6 @@ static int imx_write_reg_array(struct i2c_client *client,
 	}
 
 	return __imx_flush_reg_array(client, &ctrl);
-}
-
-static int imx_read_otp_reg_array(struct i2c_client *client, u16 size, u16 addr,
-				  u8 *buf)
-{
-	u16 index;
-	int ret;
-
-	for (index = 0; index + IMX_OTP_READ_ONETIME <= size;
-					index += IMX_OTP_READ_ONETIME) {
-		ret = imx_read_otp_data(client, IMX_OTP_READ_ONETIME,
-					addr + index, &buf[index]);
-		if (ret)
-			return ret;
-	}
-	return 0;
-}
-
-static int __imx_otp_read(struct v4l2_subdev *sd, struct imx_af_data *buf)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	int ret;
-	int i=0;
-	u8 read_value[24];
-
-	ret = imx_write_reg_array(client, imx_soft_standby);
-	if (ret) {
-		dev_err(&client->dev, "failed to write standby mode.\n");
-		return ret;
-	}
-
-	ret = imx_write_reg(client, IMX_16BIT, IMX_OTP_WRITE_CLOCK, 0x01E0);
-	if (ret) {
-		dev_err(&client->dev, "failed to write OTP write clock.\n");
-		return ret;
-	}
-
-	ret = imx_write_reg(client, IMX_16BIT, 0x012A, 0x1334);
-	if (ret) {
-		dev_err(&client->dev, "failed to write INCK.\n");
-		return ret;
-	}
-
-	ret = imx_write_reg(client, IMX_8BIT, IMX_OTP_ECC, 0x08);
-	if (ret) {
-		dev_err(&client->dev, "failed to write ECC.\n");
-		return ret;
-	}
-
-	ret = imx_write_reg(client, IMX_8BIT, IMX_OTP_MODE_REG, IMX_OTP_MODE_READ);
-	if (ret) {
-		dev_err(&client->dev, "failed to write read mode.\n");
-		return ret;
-	}
-
-	for(i=2; i>=0; i--) {
-
-		/*set page NO.*/
-		ret = imx_write_reg(client, IMX_8BIT, IMX_OTP_PAGE_REG, i);
-		if (ret) {
-			dev_err(&client->dev, "failed to prepare OTP page\n");
-			return ret;
-		}
-
-		/* Reading the OTP data array */
-		ret = imx_read_otp_reg_array(client, IMX_OTP_PAGE_SIZE,
-			IMX_OTP_START_ADDR, read_value);
-		if (ret) {
-			dev_err(&client->dev, "failed to read OTP data\n");
-			return ret;
-		}
-
-	    	printk("%s Check bank %d 0x%X 0x%X\n", __func__, i, read_value[0], read_value[1]);
-		if((read_value[0]!=0 || read_value[1]!=0) && (read_value[0]!=0xff || read_value[1]!=0xff))
-			break;
-
-		/* For Chicony bank 3(Page0/0x3234 to Page1/0x320b) */
-		if(i == 2) {
-			/*set page NO.*/
-			ret = imx_write_reg(client, IMX_8BIT, IMX_OTP_PAGE_REG, 0);
-			if (ret) {
-				dev_err(&client->dev, "failed to prepare OTP page\n");
-				return ret;
-			}
-
-			/* Reading the OTP data array */
-			ret = imx_read_otp_reg_array(client, 16,
-				IMX_OTP_START_ADDR + 2*IMX_OTP_PAGE_SIZE, read_value);
-			if (ret) {
-				dev_err(&client->dev, "failed to read OTP data\n");
-				return ret;
-			}
-
-			/*set page NO.*/
-			ret = imx_write_reg(client, IMX_8BIT, IMX_OTP_PAGE_REG, 1);
-			if (ret) {
-				dev_err(&client->dev, "failed to prepare OTP page\n");
-				return ret;
-			}
-
-			/* Reading the OTP data array */
-			ret = imx_read_otp_reg_array(client, 8,
-				IMX_OTP_START_ADDR, read_value + 16);
-			if (ret) {
-				dev_err(&client->dev, "failed to read OTP data\n");
-				return ret;
-			}
-
-		    	printk("%s Check bank %d 0x%X 0x%X for Chicony\n", __func__, i, read_value[0], read_value[1]);
-			if((read_value[0]!=0 || read_value[1]!=0) && (read_value[0]!=0xff || read_value[1]!=0xff))
-				break;
-		}
-		/* For Chicony bank 2(Page0/0x321c to Page0/0x3233) */
-		else if(i == 1) {
-			/*set page NO.*/
-			ret = imx_write_reg(client, IMX_8BIT, IMX_OTP_PAGE_REG, 0);
-			if (ret) {
-				dev_err(&client->dev, "failed to prepare OTP page\n");
-				return ret;
-			}
-
-			/* Reading the OTP data array */
-			ret = imx_read_otp_reg_array(client, IMX_OTP_PAGE_SIZE,
-				IMX_OTP_START_ADDR + IMX_OTP_PAGE_SIZE, read_value);
-			if (ret) {
-				dev_err(&client->dev, "failed to read OTP data\n");
-				return ret;
-			}
-
-		    	printk("%s Check bank %d 0x%X 0x%X for Chicony\n", __func__, i, read_value[0], read_value[1]);
-			if((read_value[0]!=0 || read_value[1]!=0) && (read_value[0]!=0xff || read_value[1]!=0xff))
-				break;
-		}
-	}
-
-	memcpy(imx_otp_data, read_value, 24);
-
-	buf->af_inf_pos = read_value[0]<<8 | read_value[1];
-	buf->af_1m_pos = read_value[2]<<8 | read_value[3];
-	buf->af_10cm_pos = read_value[4]<<8 | read_value[5];
-	buf->af_start_curr = read_value[6]<<8 | read_value[7];
-	buf->module_id = read_value[8];
-	buf->vendor_id = read_value[9];
-	buf->default_af_inf_pos = IMX219_DEFAULT_AF_INF;
-	buf->default_af_10cm_pos = IMX219_DEFAULT_AF_10CM;
-	buf->default_af_start = IMX219_DEFAULT_AF_START;
-	buf->default_af_end = IMX219_DEFAULT_AF_END;
-
-	return 0;
-}
-
-static void *imx_otp_read(struct v4l2_subdev *sd)
-{
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct imx_af_data *buf;
-	int ret;
-
-	buf = devm_kzalloc(&client->dev, IMX_OTP_DATA_SIZE, GFP_KERNEL);
-	if (!buf)
-		return ERR_PTR(-ENOMEM);
-
-	ret = __imx_otp_read(sd, buf);
-
-	/* Driver has failed to find valid data */
-	if (ret) {
-		dev_err(&client->dev, "sensor found no valid OTP data\n");
-		return ERR_PTR(ret);
-	}
-
-	return buf;
 }
 
 static int __imx_get_max_fps_index(
@@ -619,8 +406,8 @@ static int imx_g_priv_int_data(struct v4l2_subdev *sd,
 		return PTR_ERR(dev->otp_data);
 	}
 	/* Correct read_size value only if bigger than maximum */
-	if (read_size > IMX_OTP_DATA_SIZE)
-		read_size = IMX_OTP_DATA_SIZE;
+	if (read_size > dev->otp_driver->size)
+		read_size = dev->otp_driver->size;
 
 	ret = copy_to_user(to, dev->otp_data, read_size);
 	if (ret) {
@@ -630,7 +417,7 @@ static int imx_g_priv_int_data(struct v4l2_subdev *sd,
 	}
 out:
 	/* Return correct size */
-	priv->size = IMX_OTP_DATA_SIZE;
+	priv->size = dev->otp_driver->size;
 
 	return 0;
 }
@@ -676,7 +463,6 @@ static long imx_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		return imx_s_exposure(sd, arg);
 	case ATOMISP_IOC_G_SENSOR_PRIV_INT_DATA:
 		return imx_g_priv_int_data(sd, arg);
-// <ChungYi>: Add some ioctl command for DIT test
 	case ATOMISP_TEST_CMD_SET_VCM_POS:
 		input_arg = *(int *)arg;
 		ret = dev->vcm_driver->t_vcm_slew(sd, input_arg);
@@ -684,14 +470,13 @@ static long imx_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		printk("[AsusVCM] Set postion to %d\n",input_arg);
 		return 0;
 	case ATOMISP_TEST_CMD_GET_VCM_POS:
-		ret = dev->vcm_driver->q_focus_abs(sd, &value);
+		ret = dev->vcm_driver->q_focus_abs(sd, &value);	
 		*(int*) arg = value;
 		printk("[AsusVCM] Get VCM postion %d\n",*(int*) arg);
 		return 0;
-// </ChungYi>
     case ATOMISP_IOC_S_BINNING_SUM:
         binning_sum = *(int*)arg;
-		printk("Set low-light mode %d\n", binning_sum);
+        printk("Set low-light mode %d\n", binning_sum);
         return 0;
 	default:
 		return -EINVAL;
@@ -1457,6 +1242,10 @@ static int nearest_resolution_index(struct v4l2_subdev *sd, int w, int h)
 		dist = distance(tmp_res, w, h);
 		if (dist == -1)
 			continue;
+		//Return 2576x1456 only when ISP exactly require 2576x1456(only for 1080p).
+		if((dev->curr_res_table[i].width == 2576 && dev->curr_res_table[i].height == 1456) &&
+				(w != 2576 || h != 1456))
+			continue;
 		if (dist < min_dist) {
 			min_dist = dist;
 			idx = i;
@@ -1771,7 +1560,8 @@ static int imx_s_config(struct v4l2_subdev *sd,
 	dev->sensor_revision = sensor_revision;
 
 	/* Read sensor's OTP data */
-	dev->otp_data = imx_otp_read(sd);
+	dev->otp_data = dev->otp_driver->otp_read(sd);
+
 	/* power off sensor */
 	ret = __imx_s_power(sd, 0);
 	mutex_unlock(&dev->input_lock);
@@ -2067,6 +1857,8 @@ static int imx_remove(struct i2c_client *client)
 	v4l2_device_unregister_subdev(sd);
 	kfree(dev);
 
+	remove_proc_entry("otp", NULL);
+
 	return 0;
 }
 
@@ -2077,28 +1869,42 @@ static void imx_shutdown(struct i2c_client *client)
 
 static int __update_imx_device_settings(struct imx_device *dev, u16 sensor_id)
 {
+
 	dev->mode_tables = &imx219_set;
 	dev->vcm_driver = &imx219_vcm;
+	dev->otp_driver = &imx219_otps;
 
 	return dev->vcm_driver->init(&dev->sd);
 }
 
-static int imx_read_otp_proc(char *page, char **start, off_t off, int count, int *eof, void *data)
+static int imx_otp_proc_show(struct seq_file *s, void *v)
 {
-	int len = 0;
 	int i;
 
-	for(i=0 ; i<20 ; i++)
-	{
-		len += sprintf(page + len, "0x%X", imx_otp_data[i]);
-		if((i+1) % 8 != 0 && (i+1) != 20)
-			len += sprintf(page + len, " ");
-		else
-			len += sprintf(page + len, "\n");
-	}
+        for(i=0 ; i<20 ; i++)
+        {
+                seq_printf(s, "0x%X", imx_otp_data[i]);
+                if((i+1) % 8 != 0 && (i+1) != 20)
+                        seq_printf(s, " ");
+                else
+                        seq_printf(s, "\n");
+        }
 
-	return len;
+	return 0;
 }
+
+static int imx_proc_open(struct inode *inode, struct  file *file)
+{
+	return single_open(file, imx_otp_proc_show, NULL);
+}
+
+static const struct file_operations otp_proc_fops = {
+	.owner = THIS_MODULE,
+	.open = imx_proc_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
 
 static int imx_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
@@ -2122,6 +1928,11 @@ static int imx_probe(struct i2c_client *client,
 
 	v4l2_i2c_subdev_init(&(dev->sd), client, &imx_ops);
 
+	/* Resolution settings depend on sensor type and platform */
+	ret = __update_imx_device_settings(dev, dev->sensor_id);
+	if (ret)
+		goto out_free;
+
 	if (client->dev.platform_data) {
 		ret = imx_s_config(&dev->sd, client->irq,
 				       client->dev.platform_data);
@@ -2138,11 +1949,6 @@ static int imx_probe(struct i2c_client *client,
 		IMX_SUBDEV_PREFIX, dev->sensor_id,
 		i2c_adapter_id(client->adapter), client->addr);
 
-	/* Resolution settings depend on sensor type and platform */
-	ret = __update_imx_device_settings(dev, dev->sensor_id);
-	if (ret)
-		goto out_free;
-
 	dev->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	dev->pad.flags = MEDIA_PAD_FL_SOURCE;
 	dev->format.code = imx_translate_bayer_order(
@@ -2154,7 +1960,7 @@ static int imx_probe(struct i2c_client *client,
 	if (ret)
 		imx_remove(client);
 
-	create_proc_read_entry("otp", 0, NULL, imx_read_otp_proc, NULL);
+	proc_create("otp", 0, NULL, &otp_proc_fops);
 
 	return ret;
 out_free:
@@ -2189,7 +1995,6 @@ static __init int init_imx(void)
 
 static __exit void exit_imx(void)
 {
-	remove_proc_entry("otp", NULL);
 	i2c_del_driver(&imx_driver);
 }
 

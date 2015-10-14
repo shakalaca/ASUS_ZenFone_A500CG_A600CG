@@ -22,12 +22,26 @@ obj-$(CONFIG_SND_CTP_MACHINE_5647) += snd-soc-ctp-machine-5647.o
 # Merrifield board
 snd-merr-saltbay-lm49453-objs := merr_saltbay_lm49453.o
 snd-merr-saltbay-wm8958-objs := merr_saltbay_wm8958.o
-obj-$(CONFIG_SND_MRFLD_MACHINE) += snd-merr-saltbay-lm49453.o snd-merr-saltbay-wm8958.o
+snd-merr-dpcm-wm8958-objs := merr_dpcm_wm8958.o
+
+ifdef CONFIG_SST_MRFLD_DPCM
+	obj-$(CONFIG_SND_MRFLD_MACHINE) += snd-merr-dpcm-wm8958.o
+else
+	obj-$(CONFIG_SND_MRFLD_MACHINE) += snd-merr-saltbay-lm49453.o snd-merr-saltbay-wm8958.o
+endif
+
+# Moorefield board
+obj-$(CONFIG_SND_MOOR_MACHINE) += snd-merr-saltbay-wm8958.o
 
 # Baytrail board
 snd-byt-bl-rt5642-objs := byt_bl_rt5642.o
-obj-$(CONFIG_SND_BYT_MACHINE) += snd-byt-bl-rt5642.o
+snd-byt-cr-aic3100-objs := byt_cr_aic3100.o
+obj-$(CONFIG_SND_BYT_MACHINE) += snd-byt-bl-rt5642.o snd-byt-cr-aic3100.o
 
 ifeq ($(TARGET_BUILD_VARIANT),eng)
 KBUILD_CFLAGS += -DUART_DEBUG
 endif
+
+# Cherrytrail board
+snd-cht-bl-rt5672-objs := cht_bl_rt5672.o
+obj-$(CONFIG_SND_CHT_MACHINE) += snd-cht-bl-rt5672.o

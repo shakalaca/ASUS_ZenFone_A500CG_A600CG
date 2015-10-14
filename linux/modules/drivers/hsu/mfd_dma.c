@@ -19,7 +19,10 @@
 #include <linux/intel_mid_pm.h>
 #include <linux/intel_mid_dma.h>
 #include <linux/irq.h>
+#include <linux/acpi.h>
 #include <asm/intel_mid_hsu.h>
+#include <linux/intel_mid_pm.h>
+#include <linux/pm_qos.h>
 
 #include "mfd.h"
 
@@ -81,7 +84,35 @@ static bool dw_dma_chan_filter(struct dma_chan *chan, void *param)
 {
 	struct dw_dma_priv *dw_dma = param;
 
-	return dw_dma->dmac && (&dw_dma->dmac->dev == chan->device->dev);
+	if (dw_dma->dmac && (&dw_dma->dmac->dev == chan->device->dev))
+		return true;
+	else {
+#ifdef CONFIG_ACPI
+		acpi_handle handle = ACPI_HANDLE(chan->device->dev);
+		struct acpi_device *device;
+		int ret;
+		const char *hid;
+		ret = acpi_bus_get_device(handle, &device);
+		if (ret) {
+			pr_warn("DW HSU: no acpi entry\n");
+			return false;
+		}
+		hid = acpi_device_hid(device);
+		if (!strncmp(hid, "INTL9C60", strlen(hid))) {
+			acpi_status status;
+			unsigned long long tmp;
+			status = acpi_evaluate_integer(handle,
+					"_UID", NULL, &tmp);
+			if (!ACPI_FAILURE(status) && (tmp == 1))
+				return true;
+		}
+		if (!strncmp(hid, "80862286", strlen(hid))) {
+			return true;
+		}
+
+#endif
+		return false;
+	}
 }
 
 /* the RX/TX buffer init should be a common stuff */
@@ -106,8 +137,8 @@ static int dw_dma_init(struct uart_hsu_port *up)
 	 */
 	dw_dma->dmac = pci_get_device(PCI_VENDOR_ID_INTEL, 0x0f06, NULL);
 	if (!dw_dma->dmac) {
-		pr_warn("DW HSU: Can't find LPIO1 DMA controller\n");
-		return -1;
+		/* still have chance to get from ACPI dev */
+		pr_warn("DW HSU: Can't find LPIO1 DMA controller by PCI, try ACPI\n");
 	}
 
 	ret = dma_init_common(up);
@@ -153,6 +184,9 @@ static int dw_dma_init(struct uart_hsu_port *up)
 	/* TX/RX reg share the same addr */
 	dw_dma->dma_addr = up->port.mapbase + UART_RX;
 
+	pm_qos_add_request(&up->qos, PM_QOS_CPU_DMA_LATENCY,
+			PM_QOS_DEFAULT_VALUE);
+
 	dw_dma->up = up;
 	up->dma_inited = 1;
 	return 0;
@@ -187,6 +221,7 @@ static int dw_dma_suspend(struct uart_hsu_port *up)
 
 	txchan->device->device_control(txchan, DMA_PAUSE, 0);
 	rxchan->device->device_control(rxchan, DMA_PAUSE, 0);
+	pm_qos_update_request(&up->qos, PM_QOS_DEFAULT_VALUE);
 	return 0;
 }
 
@@ -202,8 +237,9 @@ static int dw_dma_resume(struct uart_hsu_port *up)
 	txchan = dw_dma->txchan;
 	rxchan = dw_dma->rxchan;
 
-	txchan->device->device_control(txchan, DMA_RESUME, 0);
 	rxchan->device->device_control(rxchan, DMA_RESUME, 0);
+	txchan->device->device_control(txchan, DMA_RESUME, 0);
+	pm_qos_update_request(&up->qos, CSTATE_EXIT_LATENCY_C2);
 	return 0;
 }
 
@@ -214,6 +250,7 @@ static int dw_dma_exit(struct uart_hsu_port *up)
 	struct dma_chan *txchan = dw_dma->txchan;
 	struct dma_chan *rxchan = dw_dma->rxchan;
 
+	pm_qos_remove_request(&up->qos);
 	txchan->device->device_control(txchan, DMA_TERMINATE_ALL, 0);
 	rxchan->device->device_control(rxchan, DMA_TERMINATE_ALL, 0);
 	dma_release_channel(dw_dma->txchan);
@@ -495,9 +532,10 @@ struct hsu_dma_ops dw_dma_ops = {
 	.stop_rx =	dw_dma_stop_rx,
 };
 
-#else
-struct hsu_dma_ops dw_dma_ops;
+struct hsu_dma_ops *pdw_dma_ops = &dw_dma_ops;
 
+#else
+struct hsu_dma_ops *pdw_dma_ops = NULL;
 #endif
 
 /* Intel DMA ops */

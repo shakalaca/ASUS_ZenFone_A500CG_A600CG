@@ -26,7 +26,7 @@
 #include <asm/intel_scu_ipc.h>
 #include <asm/intel_scu_pmic.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include <linux/reboot.h>
 
 /* Wake lock to prevent platform from going to
@@ -36,7 +36,7 @@ static struct wake_lock wakelock;
 #define DRIVER_NAME "pmic_charger"
 #define MSIC_SPWRSRCINT 0x192
 #define MSIC_SUSBDET_MASK_BIT	0x2
-#define MSIC_SBATTDET_MASK_BIT	0x1
+#define MSIC_SBATTDET_MASK_BIT  0x1
 
 static irqreturn_t pmic_charger_thread_handler(int irq, void *devid)
 {
@@ -74,7 +74,7 @@ static irqreturn_t pmic_charger_irq_handler(int irq, void *devid)
 	return IRQ_WAKE_THREAD;
 }
 
-static int __devinit pmic_charger_probe(struct platform_device *pdev)
+static int __init pmic_charger_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	int irq = platform_get_irq(pdev, 0);
@@ -98,7 +98,7 @@ static int __devinit pmic_charger_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devexit pmic_charger_remove(struct platform_device *pdev)
+static int __exit pmic_charger_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	int irq = platform_get_irq(pdev, 0);
@@ -134,7 +134,7 @@ static struct platform_driver pmic_charger_driver = {
 		.pm		= &pmic_charger_pm_ops,
 	},
 	.probe		= pmic_charger_probe,
-	.remove = __devexit_p(pmic_charger_remove),
+	.remove = __exit_p(pmic_charger_remove),
 };
 
 static int __init pmic_charger_module_init(void)

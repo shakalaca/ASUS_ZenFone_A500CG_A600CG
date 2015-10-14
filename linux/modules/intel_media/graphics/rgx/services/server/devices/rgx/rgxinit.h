@@ -83,7 +83,10 @@ PVRSRV_ERROR PVRSRVRGXInitDevPart2KM (PVRSRV_DEVICE_NODE	*psDeviceNode,
 									  IMG_UINT32			ui32KernelCatBaseShift,
 									  IMG_UINT64			ui64KernelCatBaseMask,
 									  IMG_UINT32			ui32DeviceFlags,
-									  RGX_ACTIVEPM_CONF		eActivePMConf);
+									  RGX_ACTIVEPM_CONF		eActivePMConf,
+								 	  DEVMEM_EXPORTCOOKIE	*psFWCodeAllocServerExportCookie,
+								 	  DEVMEM_EXPORTCOOKIE	*psFWDataAllocServerExportCookie,
+								 	  DEVMEM_EXPORTCOOKIE	*psFWCorememAllocServerExportCookie);
 
 IMG_EXPORT
 PVRSRV_ERROR PVRSRVRGXInitAllocFWImgMemKM(PVRSRV_DEVICE_NODE    *psDeviceNode,
@@ -126,7 +129,9 @@ PVRSRV_ERROR PVRSRVRGXInitFirmwareKM(PVRSRV_DEVICE_NODE			*psDeviceNode,
 									    IMG_UINT32					ui32ConfigFlags,
 									    IMG_UINT32					ui32LogType,
 										IMG_UINT32					ui32FilterMode,
-									    RGXFWIF_COMPCHECKS_BVNC     *psClientBVNC);
+									    RGXFWIF_COMPCHECKS_BVNC     *psClientBVNC,
+									    IMG_UINT32 ui32APMLatency,
+									    IMG_UINT32 ui32CoreClockSpeed);
 
 
 /*!

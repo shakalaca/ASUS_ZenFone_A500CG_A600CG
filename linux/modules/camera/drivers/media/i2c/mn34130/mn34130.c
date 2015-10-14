@@ -44,6 +44,7 @@
 #include <asm/intel-mid.h>
 #include "mn34130.h"
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 
 static u8 mn34130_otp_data[24];
 static int currentFPS;
@@ -1692,22 +1693,34 @@ static const struct v4l2_ctrl_config ctrls[] = {
 	}
 };
 
-static int mn34130_read_otp_proc(char *page, char **start, off_t off, int count, int *eof, void *data)
+static int imx_otp_proc_show(struct seq_file *s, void *v)
 {
-        int len = 0;
-        int i;
+       int i;
 
         for(i=0 ; i<20 ; i++)
         {
-                len += sprintf(page + len, "0x%X", mn34130_otp_data[i]);
+                seq_printf(s, "0x%X", mn34130_otp_data[i]);
                 if((i+1) % 8 != 0 && (i+1) != 20)
-                        len += sprintf(page + len, " ");
+                        seq_printf(s, " ");
                 else
-                        len += sprintf(page + len, "\n");
+                        seq_printf(s, "\n");
         }
 
-        return len;
+       return 0;
 }
+
+static int imx_proc_open(struct inode *inode, struct  file *file)
+{
+       return single_open(file, imx_otp_proc_show, NULL);
+}
+
+static const struct file_operations otp_proc_fops = {
+       .owner = THIS_MODULE,
+       .open = imx_proc_open,
+       .read = seq_read,
+       .llseek = seq_lseek,
+       .release = single_release,
+};
 
 static int mn34130_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
@@ -1769,7 +1782,7 @@ static int mn34130_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	create_proc_read_entry("otp", 0, NULL, mn34130_read_otp_proc, NULL);
+	proc_create("otp", 0, NULL, &otp_proc_fops);
 
 	return 0;
 }

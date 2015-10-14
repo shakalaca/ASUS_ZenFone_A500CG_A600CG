@@ -206,6 +206,13 @@ ALL_HOST_CXXFLAGS := \
  -fno-rtti -fno-exceptions \
  $(COMMON_USER_FLAGS) $(COMMON_FLAGS) $(TESTED_HOST_USER_FLAGS)
 
+# Workaround for some target clangs that don't support -O0 w/ PIC.
+#
+ifeq ($(cc-is-clang),true)
+ALL_CFLAGS := $(patsubst -O0,-O1,$(ALL_CFLAGS))
+ALL_CXXFLAGS := $(patsubst -O0,-O1,$(ALL_CXXFLAGS))
+endif
+
 # Kernel C only
 #
 ALL_KBUILD_CFLAGS := $(COMMON_CFLAGS) $(KBUILD_FLAGS) $(TESTED_KBUILD_FLAGS)

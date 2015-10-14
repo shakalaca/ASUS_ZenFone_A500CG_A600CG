@@ -245,8 +245,32 @@ PVRSRVBridgePVRSRVPDumpStopInitPhase(IMG_UINT32 ui32BridgeID,
 
 	return 0;
 }
+#ifdef CONFIG_COMPAT
+/* Bridge in structure for PVRSRVPDumpComment */
+typedef struct compat_PVRSRV_BRIDGE_IN_PVRSRVPDUMPCOMMENT_TAG
+{
+	/* IMG_CHAR * puiComment; */
+	IMG_UINT32 puiComment;
+	IMG_UINT32 ui32Flags;
+} compat_PVRSRV_BRIDGE_IN_PVRSRVPDUMPCOMMENT;
+static IMG_INT
+compat_PVRSRVBridgePVRSRVPDumpComment(IMG_UINT32 ui32BridgeID,
+					 compat_PVRSRV_BRIDGE_IN_PVRSRVPDUMPCOMMENT *psPVRSRVPDumpCommentIN_32,
+					 PVRSRV_BRIDGE_OUT_PVRSRVPDUMPCOMMENT *psPVRSRVPDumpCommentOUT,
+					 CONNECTION_DATA *psConnection)
+{
+	PVRSRV_BRIDGE_IN_PVRSRVPDUMPCOMMENT sPVRSRVPDumpCommentIN;
+	PVRSRV_BRIDGE_IN_PVRSRVPDUMPCOMMENT *psPVRSRVPDumpCommentIN=&sPVRSRVPDumpCommentIN;
 
+	psPVRSRVPDumpCommentIN->puiComment = (IMG_CHAR*)(IMG_UINT64)psPVRSRVPDumpCommentIN_32->puiComment;
+	psPVRSRVPDumpCommentIN->ui32Flags = psPVRSRVPDumpCommentIN_32->ui32Flags;
 
+	return PVRSRVBridgePVRSRVPDumpComment(ui32BridgeID,
+					psPVRSRVPDumpCommentIN,
+					psPVRSRVPDumpCommentOUT,
+					psConnection);
+}
+#endif
 
 /* *************************************************************************** 
  * Server bridge dispatch related glue 
@@ -261,12 +285,15 @@ IMG_VOID UnregisterPDUMPFunctions(IMG_VOID);
 PVRSRV_ERROR RegisterPDUMPFunctions(IMG_VOID)
 {
 	SetDispatchTableEntry(PVRSRV_BRIDGE_PDUMP_PVRSRVPDUMPISCAPTURING, PVRSRVBridgePVRSRVPDumpIsCapturing);
+#ifdef CONFIG_COMPAT
+	SetDispatchTableEntry(PVRSRV_BRIDGE_PDUMP_PVRSRVPDUMPCOMMENT, compat_PVRSRVBridgePVRSRVPDumpComment);
+#else
 	SetDispatchTableEntry(PVRSRV_BRIDGE_PDUMP_PVRSRVPDUMPCOMMENT, PVRSRVBridgePVRSRVPDumpComment);
+#endif
 	SetDispatchTableEntry(PVRSRV_BRIDGE_PDUMP_PVRSRVPDUMPSETFRAME, PVRSRVBridgePVRSRVPDumpSetFrame);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_PDUMP_PVRSRVPDUMPISLASTCAPTUREFRAME, PVRSRVBridgePVRSRVPDumpIsLastCaptureFrame);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_PDUMP_PVRSRVPDUMPSTARTINITPHASE, PVRSRVBridgePVRSRVPDumpStartInitPhase);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_PDUMP_PVRSRVPDUMPSTOPINITPHASE, PVRSRVBridgePVRSRVPDumpStopInitPhase);
-
 	return PVRSRV_OK;
 }
 

@@ -403,7 +403,7 @@ struct adp_status {
 /* OTG Battery Charging capability is used in charger capability detection */
 struct otg_bc_cap {
 	enum usb_charger_type	chrg_type;
-	unsigned int		mA;
+	unsigned int		ma;
 #define CHRG_CURR_UNKNOWN	0
 #define CHRG_CURR_DISCONN	0
 #define CHRG_CURR_SDP_SUSP	2

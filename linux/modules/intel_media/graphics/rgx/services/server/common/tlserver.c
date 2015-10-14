@@ -275,23 +275,24 @@ TLServerAcquireDataKM(PTL_STREAM_DESC psSD,
 			if (eError != PVRSRV_OK)
 			{
 				/* Return timeout or other error condition to the caller who
-				 * can choose to call again if desired */
+				 * can choose to call again if desired. We don't block
+				 * Indefinitely as we want the user mode application to have a
+				 * chance to break out and end if it needs to, so we return the
+				 * time out error code. */
 				PVR_DPF_RETURN_RC(eError);
 			}
 		}
 	}
 
-	// Check we have been woken up because of data OR because
-	// the stream has been destroyed?
+	/* Check we have been woken up because the stream has been destroyed? */
 	if (psNode->psStream == NULL)
 	{
 		PVR_DPF((PVR_DBG_VERBOSE, "TLAcquireDataKM awake, but stream now NULL"));
 		PVR_DPF_RETURN_RC(PVRSRV_ERROR_RESOURCE_UNAVAILABLE);
 	}
 
-	// If non blocking then default tmp values get returned, client code must
-	// handle it. if blocking data should now be available, return offset and
-	// len to user mode caller
+	/* Data available now if we reach here in blocking more or we take the
+	 * values as is in non-blocking mode which might be all zeros. */
 	*puiReadOffset = uiTmpOffset;
 	*puiReadLen = uiTmpLen;
 

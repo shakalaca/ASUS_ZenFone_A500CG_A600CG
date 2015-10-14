@@ -21,7 +21,6 @@
  *
  **************************************************************************/
 
-#ifdef CONFIG_VIDEO_MRFLD
 #define _PSB_MSVDX_EC_H_
 
 #define MSVDX_CMDS_BASE 0x1000
@@ -174,4 +173,3 @@ void psb_msvdx_backup_cmd(struct msvdx_private *msvdx_priv,
 
 void psb_msvdx_mtx_message_dump(struct drm_device *dev);
 void psb_msvdx_do_concealment(struct work_struct *work);
-#endif

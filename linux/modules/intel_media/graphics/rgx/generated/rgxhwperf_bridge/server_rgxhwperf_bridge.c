@@ -74,7 +74,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /* ***************************************************************************
  * Server-side bridge entry points
  */
- 
+
 static IMG_INT
 PVRSRVBridgeRGXCtrlHWPerf(IMG_UINT32 ui32BridgeID,
 					 PVRSRV_BRIDGE_IN_RGXCTRLHWPERF *psRGXCtrlHWPerfIN,
@@ -136,7 +136,7 @@ PVRSRVBridgeRGXConfigEnableHWPerfCounters(IMG_UINT32 ui32BridgeID,
 		if (!psBlockConfigsInt)
 		{
 			psRGXConfigEnableHWPerfCountersOUT->eError = PVRSRV_ERROR_OUT_OF_MEMORY;
-	
+
 			goto RGXConfigEnableHWPerfCounters_exit;
 		}
 	}
@@ -200,7 +200,7 @@ PVRSRVBridgeRGXCtrlHWPerfCounters(IMG_UINT32 ui32BridgeID,
 		if (!ui8BlockIDsInt)
 		{
 			psRGXCtrlHWPerfCountersOUT->eError = PVRSRV_ERROR_OUT_OF_MEMORY;
-	
+
 			goto RGXCtrlHWPerfCounters_exit;
 		}
 	}
@@ -245,12 +245,106 @@ RGXCtrlHWPerfCounters_exit:
 	return 0;
 }
 
+#ifdef CONFIG_COMPAT
+/* Bridge in structure for RGXCtrlHWPerf */
+typedef struct compat_PVRSRV_BRIDGE_IN_RGXCTRLHWPERF_TAG
+{
+	/* IMG_HANDLE hDevNode; */
+	IMG_UINT32 hDevNode;
+	IMG_BOOL bEnable;
+	IMG_UINT64 ui64Mask __attribute__ ((__packed__));
+} compat_PVRSRV_BRIDGE_IN_RGXCTRLHWPERF;
 
 
-/* *************************************************************************** 
- * Server bridge dispatch related glue 
+static IMG_INT
+compat_PVRSRVBridgeRGXCtrlHWPerf(IMG_UINT32 ui32BridgeID,
+					 compat_PVRSRV_BRIDGE_IN_RGXCTRLHWPERF *psRGXCtrlHWPerfIN_32,
+					 PVRSRV_BRIDGE_OUT_RGXCTRLHWPERF *psRGXCtrlHWPerfOUT,
+					 CONNECTION_DATA *psConnection)
+{
+		PVRSRV_BRIDGE_IN_RGXCTRLHWPERF sRGXCtrlHWPerfIN;
+		PVRSRV_BRIDGE_IN_RGXCTRLHWPERF *psRGXCtrlHWPerfIN = &sRGXCtrlHWPerfIN;
+
+		psRGXCtrlHWPerfIN->hDevNode= (IMG_HANDLE)(IMG_UINT64)psRGXCtrlHWPerfIN_32->hDevNode;
+		psRGXCtrlHWPerfIN->bEnable= psRGXCtrlHWPerfIN_32->bEnable;
+		psRGXCtrlHWPerfIN->ui64Mask = psRGXCtrlHWPerfIN_32->ui64Mask ;
+
+		return PVRSRVBridgeRGXCtrlHWPerf(ui32BridgeID,
+					 psRGXCtrlHWPerfIN,
+					 psRGXCtrlHWPerfOUT,
+					 psConnection);
+
+}
+
+/* Bridge in structure for RGXConfigEnableHWPerfCounters */
+typedef struct compat_PVRSRV_BRIDGE_IN_RGXCONFIGENABLEHWPERFCOUNTERS_TAG
+{
+	/* IMG_HANDLE hDevNode; */
+	IMG_UINT32 hDevNode;
+	IMG_UINT32 ui32ArrayLen;
+	/* RGX_HWPERF_CONFIG_CNTBLK * psBlockConfigs; */
+	IMG_UINT32 psBlockConfigs;
+}__attribute__ ((__packed__)) compat_PVRSRV_BRIDGE_IN_RGXCONFIGENABLEHWPERFCOUNTERS;
+
+static IMG_INT
+compat_PVRSRVBridgeRGXConfigEnableHWPerfCounters(IMG_UINT32 ui32BridgeID,
+					 compat_PVRSRV_BRIDGE_IN_RGXCONFIGENABLEHWPERFCOUNTERS *psRGXConfigEnableHWPerfCountersIN_32,
+					 PVRSRV_BRIDGE_OUT_RGXCONFIGENABLEHWPERFCOUNTERS *psRGXConfigEnableHWPerfCountersOUT,
+					 CONNECTION_DATA *psConnection)
+{
+	PVRSRV_BRIDGE_IN_RGXCONFIGENABLEHWPERFCOUNTERS sRGXConfigEnableHWPerfCountersIN;
+	PVRSRV_BRIDGE_IN_RGXCONFIGENABLEHWPERFCOUNTERS *psRGXConfigEnableHWPerfCountersIN = &sRGXConfigEnableHWPerfCountersIN;
+
+    psRGXConfigEnableHWPerfCountersIN->hDevNode = (IMG_HANDLE)(IMG_UINT64)psRGXConfigEnableHWPerfCountersIN_32->hDevNode;
+    psRGXConfigEnableHWPerfCountersIN->ui32ArrayLen = psRGXConfigEnableHWPerfCountersIN_32->ui32ArrayLen;
+    psRGXConfigEnableHWPerfCountersIN->psBlockConfigs = (RGX_HWPERF_CONFIG_CNTBLK *)(IMG_UINT64)psRGXConfigEnableHWPerfCountersIN_32->psBlockConfigs;
+
+    return PVRSRVBridgeRGXConfigEnableHWPerfCounters(ui32BridgeID,
+					psRGXConfigEnableHWPerfCountersIN,
+					psRGXConfigEnableHWPerfCountersOUT,
+					psConnection);
+
+}
+
+/* Bridge in structure for RGXCtrlHWPerfCounters */
+typedef struct compat_PVRSRV_BRIDGE_IN_RGXCTRLHWPERFCOUNTERS_TAG
+{
+	/* IMG_HANDLE hDevNode; */
+	IMG_UINT32 hDevNode;
+	IMG_BOOL bEnable;
+	IMG_UINT32 ui32ArrayLen;
+	/* IMG_UINT8 * pui8BlockIDs; */
+	IMG_UINT32 pui8BlockIDs;
+}__attribute__ ((__packed__)) compat_PVRSRV_BRIDGE_IN_RGXCTRLHWPERFCOUNTERS;
+
+static IMG_INT
+compat_PVRSRVBridgeRGXCtrlHWPerfCounters(IMG_UINT32 ui32BridgeID,
+					 compat_PVRSRV_BRIDGE_IN_RGXCTRLHWPERFCOUNTERS *psRGXCtrlHWPerfCountersIN_32,
+					 PVRSRV_BRIDGE_OUT_RGXCTRLHWPERFCOUNTERS *psRGXCtrlHWPerfCountersOUT,
+					 CONNECTION_DATA *psConnection)
+{
+	PVRSRV_BRIDGE_IN_RGXCTRLHWPERFCOUNTERS sRGXCtrlHWPerfCountersIN;
+	PVRSRV_BRIDGE_IN_RGXCTRLHWPERFCOUNTERS *psRGXCtrlHWPerfCountersIN = &sRGXCtrlHWPerfCountersIN;
+
+	psRGXCtrlHWPerfCountersIN->hDevNode = (IMG_HANDLE)(unsigned long)psRGXCtrlHWPerfCountersIN_32->hDevNode;
+	psRGXCtrlHWPerfCountersIN->bEnable = psRGXCtrlHWPerfCountersIN_32->bEnable;
+	psRGXCtrlHWPerfCountersIN->ui32ArrayLen = psRGXCtrlHWPerfCountersIN_32->ui32ArrayLen;
+	psRGXCtrlHWPerfCountersIN->pui8BlockIDs = (IMG_UINT8 *)(unsigned long)psRGXCtrlHWPerfCountersIN_32->pui8BlockIDs;
+
+    return PVRSRVBridgeRGXCtrlHWPerfCounters(ui32BridgeID,
+                         psRGXCtrlHWPerfCountersIN,
+                         psRGXCtrlHWPerfCountersOUT,
+                         psConnection);
+
+}
+
+
+#endif
+
+/* ***************************************************************************
+ * Server bridge dispatch related glue
  */
- 
+
 PVRSRV_ERROR RegisterRGXHWPERFFunctions(IMG_VOID);
 IMG_VOID UnregisterRGXHWPERFFunctions(IMG_VOID);
 
@@ -259,10 +353,16 @@ IMG_VOID UnregisterRGXHWPERFFunctions(IMG_VOID);
  */
 PVRSRV_ERROR RegisterRGXHWPERFFunctions(IMG_VOID)
 {
+#ifdef CONFIG_COMPAT
+	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCTRLHWPERF, compat_PVRSRVBridgeRGXCtrlHWPerf);
+	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCONFIGENABLEHWPERFCOUNTERS, compat_PVRSRVBridgeRGXConfigEnableHWPerfCounters);
+	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCTRLHWPERFCOUNTERS, compat_PVRSRVBridgeRGXCtrlHWPerfCounters);
+#else
 	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCTRLHWPERF, PVRSRVBridgeRGXCtrlHWPerf);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCONFIGENABLEHWPERFCOUNTERS, PVRSRVBridgeRGXConfigEnableHWPerfCounters);
 	SetDispatchTableEntry(PVRSRV_BRIDGE_RGXHWPERF_RGXCTRLHWPERFCOUNTERS, PVRSRVBridgeRGXCtrlHWPerfCounters);
 
+#endif
 	return PVRSRV_OK;
 }
 

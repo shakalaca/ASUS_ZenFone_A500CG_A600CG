@@ -34,7 +34,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "drmP.h"
+#include <drm/drmP.h>
 #include <linux/poll.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -121,6 +121,9 @@ int drm_open(struct inode *inode, struct file *filp)
 	int minor_id = iminor(inode);
 	struct drm_minor *minor;
 	int retcode = 0;
+	int need_setup = 0;
+	struct address_space *old_mapping;
+	struct address_space *old_imapping;
 
 	minor = idr_find(&drm_minors_idr, minor_id);
 	if (!minor)
@@ -132,23 +135,38 @@ int drm_open(struct inode *inode, struct file *filp)
 	if (drm_device_is_unplugged(dev))
 		return -ENODEV;
 
-	retcode = drm_open_helper(inode, filp, dev);
-	if (!retcode) {
-		atomic_inc(&dev->counts[_DRM_STAT_OPENS]);
-		if (!dev->open_count++)
-			retcode = drm_setup(dev);
-	}
-	if (!retcode) {
-		mutex_lock(&dev->struct_mutex);
-		if (dev->dev_mapping == NULL)
-			dev->dev_mapping = &inode->i_data;
-		/* ihold ensures nobody can remove inode with our i_data */
-		ihold(container_of(dev->dev_mapping, struct inode, i_data));
-		inode->i_mapping = dev->dev_mapping;
-		filp->f_mapping = dev->dev_mapping;
-		mutex_unlock(&dev->struct_mutex);
-	}
+	if (!dev->open_count++)
+		need_setup = 1;
+	mutex_lock(&dev->struct_mutex);
+	old_imapping = inode->i_mapping;
+	old_mapping = dev->dev_mapping;
+	if (old_mapping == NULL)
+		dev->dev_mapping = &inode->i_data;
+	/* ihold ensures nobody can remove inode with our i_data */
+	ihold(container_of(dev->dev_mapping, struct inode, i_data));
+	inode->i_mapping = dev->dev_mapping;
+	filp->f_mapping = dev->dev_mapping;
+	mutex_unlock(&dev->struct_mutex);
 
+	retcode = drm_open_helper(inode, filp, dev);
+	if (retcode)
+		goto err_undo;
+	atomic_inc(&dev->counts[_DRM_STAT_OPENS]);
+	if (need_setup) {
+		retcode = drm_setup(dev);
+		if (retcode)
+			goto err_undo;
+	}
+	return 0;
+
+err_undo:
+	mutex_lock(&dev->struct_mutex);
+	filp->f_mapping = old_imapping;
+	inode->i_mapping = old_imapping;
+	iput(container_of(dev->dev_mapping, struct inode, i_data));
+	dev->dev_mapping = old_mapping;
+	mutex_unlock(&dev->struct_mutex);
+	dev->open_count--;
 	return retcode;
 }
 EXPORT_SYMBOL(drm_open);
@@ -251,19 +269,29 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 	filp->private_data = priv;
 	priv->filp = filp;
 	priv->uid = current_euid();
-	priv->pid = task_pid_nr(current);
+	priv->pid = get_pid(task_pid(current));
 	priv->minor = idr_find(&drm_minors_idr, minor_id);
+	if (!priv->minor) {
+		ret = -ENODEV;
+		goto out_put_pid;
+	}
+
 	priv->ioctl_count = 0;
 	/* for compatibility root is always authenticated */
-#ifdef CONFIG_NO_GPU_AUTHENTICATION
+
+	/*
+	 * HACK: For Android compatibility we don't require CAP_SYS_ADMIN.
+	 *
+	 * Commented line:
+	 * priv->authenticated = capable(CAP_SYS_ADMIN);
+	 */
 	priv->authenticated = 1;
-#else
-	priv->authenticated = capable(CAP_SYS_ADMIN);
-#endif
+
 	priv->lock_count = 0;
 
 	INIT_LIST_HEAD(&priv->lhead);
 	INIT_LIST_HEAD(&priv->fbs);
+	mutex_init(&priv->fbs_lock);
 	INIT_LIST_HEAD(&priv->event_list);
 	init_waitqueue_head(&priv->event_wait);
 	priv->event_space = 4096; /* set aside 4k for event buffer */
@@ -277,7 +305,7 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 	if (dev->driver->open) {
 		ret = dev->driver->open(dev, priv);
 		if (ret < 0)
-			goto out_free;
+			goto out_prime_destroy;
 	}
 
 
@@ -289,7 +317,7 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 		if (!priv->minor->master) {
 			mutex_unlock(&dev->struct_mutex);
 			ret = -ENOMEM;
-			goto out_free;
+			goto out_close;
 		}
 
 		priv->is_master = 1;
@@ -307,7 +335,7 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 				drm_master_put(&priv->minor->master);
 				drm_master_put(&priv->master);
 				mutex_unlock(&dev->struct_mutex);
-				goto out_free;
+				goto out_close;
 			}
 		}
 		mutex_lock(&dev->struct_mutex);
@@ -318,7 +346,7 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 				drm_master_put(&priv->minor->master);
 				drm_master_put(&priv->master);
 				mutex_unlock(&dev->struct_mutex);
-				goto out_free;
+				goto out_close;
 			}
 		}
 		mutex_unlock(&dev->struct_mutex);
@@ -352,7 +380,17 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 #endif
 
 	return 0;
-      out_free:
+
+out_close:
+	if (dev->driver->postclose)
+		dev->driver->postclose(dev, priv);
+out_prime_destroy:
+	if (drm_core_check_feature(dev, DRIVER_PRIME))
+		drm_prime_destroy_file_private(&priv->prime);
+	if (dev->driver->driver_features & DRIVER_GEM)
+		drm_gem_release(dev, priv);
+out_put_pid:
+	put_pid(priv->pid);
 	kfree(priv);
 	filp->private_data = NULL;
 	return ret;
@@ -528,6 +566,7 @@ int drm_release(struct inode *inode, struct file *filp)
 	if (drm_core_check_feature(dev, DRIVER_PRIME))
 		drm_prime_destroy_file_private(&file_priv->prime);
 
+	put_pid(file_priv->pid);
 	kfree(file_priv);
 
 	/* ========================================================

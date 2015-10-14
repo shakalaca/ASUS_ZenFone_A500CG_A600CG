@@ -29,14 +29,13 @@
 #include <linux/acpi_gpio.h>
 #include <linux/regulator/consumer.h>
 #include <linux/i2c/atmel_ts.h>
+#include <linux/early_suspend_sysfs.h>
 #ifdef CONFIG_HAS_EARLYSUSPEND
 #include <linux/earlysuspend.h>
 #endif
 
 #define SUPPORT_STYLUS		0
 #define MXT_FORCE_BOOTLOADER	1
-#define MXT1664S_FAMILY_ID	0xa2
-#define PMIC_GPIO1P3		211
 
 /* Configuration file */
 #define MXT_FW_NAME		"maxtouch.fw"
@@ -212,6 +211,7 @@ struct t9_range {
 
 #define MSLEEP(ms)	usleep_range(ms*1000, ms*1000)
 #define MXT_FRAME_TRY		10
+#define MXT_UNKNOWN_VALUE	-1
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static void mxt_early_suspend(struct early_suspend *es);
@@ -321,37 +321,46 @@ struct mxt_data {
 #endif
 };
 
-enum {
-	MXT_1664S_ID = 0,
-	MXT_3432S_ID = 1,
+struct mxt_panel_info {
+	u8 family_id;
+	u8 variant_id;
+	u8 version;
+	u8 build;
+	u32 info_crc;
+	u32 config_crc;
+	int gpio_switch;
 };
 
-struct mxt_platform_data mxt_pdata[] = {
+struct mxt_panel_info supported_panels[] = {
+	/* 1664S 8 inch panel */
 	{
-		.irqflags = IRQF_TRIGGER_LOW | IRQF_TRIGGER_FALLING,
-		.cfg_name = MXT_CFG_NAME,
-		.info = {
-			.family_id = 162,
-			.variant_id = 16,
-			.version = 0x10,
-			.build = 0xAA,
-			.info_crc = 0xD4BF1D,
-			.config_crc = 0x808EEC,
-		},
-		.hardware_id = MXT_1664S_ID,
+		.family_id = 162,
+		.variant_id = 0,
+		.version = 0x20,
+		.build = 0xAB,
+		.info_crc = 0x969531,
+		.config_crc = 0x96CB66,
+		.gpio_switch = 211,
 	},
+	/* 1664S 10 inch panel */
 	{
-		.irqflags = IRQF_TRIGGER_LOW | IRQF_TRIGGER_FALLING,
-		.cfg_name = MXT_CFG_NAME,
-		.info = {
-			.family_id = 160,
-			.variant_id = 10,
-			.version = 0x20,
-			.build = 0xAB,
-			.info_crc = 0xB86FA4,
-			.config_crc = 0xBBD300,
-		},
-		.hardware_id = MXT_3432S_ID,
+		.family_id = 162,
+		.variant_id = 16,
+		.version = 0x10,
+		.build = 0xAA,
+		.info_crc = 0xD4BF1D,
+		.config_crc = 0x808EEC,
+		.gpio_switch = 211,
+	},
+	/* 3432S 17 inch panel */
+	{
+		.family_id = 160,
+		.variant_id = 10,
+		.version = 0x20,
+		.build = 0xAB,
+		.info_crc = 0xB86FA4,
+		.config_crc = 0xB85700,
+		.gpio_switch = -1,
 	},
 };
 
@@ -522,7 +531,7 @@ static int mxt_debug_msg_init(struct mxt_data *data)
 	}
 	sysfs_bin_attr_init(&data->debug_msg_attr);
 	data->debug_msg_attr.attr.name = "debug_msg";
-	data->debug_msg_attr.attr.mode = 0666;
+	data->debug_msg_attr.attr.mode = 0664;
 	data->debug_msg_attr.read = mxt_debug_msg_read;
 	data->debug_msg_attr.write = mxt_debug_msg_write;
 	data->debug_msg_attr.size = data->T5_msg_size * DEBUG_MSG_MAX;
@@ -858,6 +867,32 @@ retry_write:
 static int mxt_write_reg(struct i2c_client *client, u16 reg, u8 val)
 {
 	return __mxt_write_reg(client, reg, 1, &val);
+}
+
+static bool supported_firmware(struct mxt_data *data, struct mxt_info *info)
+{
+	int i;
+	int size = ARRAY_SIZE(supported_panels);
+	struct i2c_client *client = data->client;
+	struct mxt_panel_info *panel;
+
+	for (i = 0; i < size; i++) {
+		panel = &supported_panels[i];
+		if (panel->family_id == info->family_id &&
+				panel->variant_id == info->variant_id &&
+				panel->version == info->version &&
+				panel->build == info->build) {
+			data->pdata->gpio_switch = panel->gpio_switch;
+			data->pdata->hardware_id = i;
+			dev_info(&client->dev, "%s: Supported panel: %u %u %02X %02X\n",
+					__func__,
+					info->family_id, info->variant_id,
+					info->version, info->build);
+
+			return true;
+		}
+	}
+	return false;
 }
 
 static struct mxt_object *
@@ -1348,6 +1383,7 @@ static int mxt_process_messages_until_invalid(struct mxt_data *data)
 
 	count = data->max_reportid;
 
+	dev_info(dev, "Clear the message buffer to force an invalid.\n");
 	/* Read messages until we force an invalid */
 	do {
 		read = mxt_read_and_process_messages(data, count);
@@ -1487,8 +1523,10 @@ static int mxt_soft_reset(struct mxt_data *data, u8 value)
 	INIT_COMPLETION(data->reset_completion);
 
 	ret = mxt_t6_command(data, MXT_COMMAND_RESET, MXT_RESET_VALUE, false);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "%s: Soft command failed\n", __func__);
 		return ret;
+	}
 
 	ret = mxt_wait_for_completion(data, &data->reset_completion,
 				      MXT_RESET_TIMEOUT);
@@ -1636,7 +1674,7 @@ static void mxt_dump_cfg(struct mxt_data *data,
  *   <SIZE> - 2-byte object size as hex
  *   <CONTENTS> - array of <SIZE> 1-byte hex values
  */
-static int mxt_check_reg_init(struct mxt_data *data)
+static int mxt_check_reg_init(struct mxt_data *data, bool force)
 {
 	struct device *dev = &data->client->dev;
 	struct mxt_info cfg_info;
@@ -1646,7 +1684,7 @@ static int mxt_check_reg_init(struct mxt_data *data)
 	int offset;
 	int data_pos = 0;
 	int byte_offset;
-	int i;
+	int i, hardware_id;
 	int cfg_start_ofs;
 	int valid_cfg_size = 0;
 	u32 info_crc, config_crc, calculated_crc;
@@ -1655,7 +1693,7 @@ static int mxt_check_reg_init(struct mxt_data *data)
 	unsigned int type, instance, size;
 	u8 val;
 	u16 reg;
-	struct mxt_platform_info *platform_info = &data->pdata->info;
+	struct mxt_panel_info *panel;
 
 	if (!data->cfg_name) {
 		dev_info(dev, "Skipping cfg download\n");
@@ -1727,33 +1765,27 @@ static int mxt_check_reg_init(struct mxt_data *data)
 	}
 	data_pos += offset;
 
-	dev_info(dev, "platform: Info CRC 0x%06X, Config CRC 0x%06X\n",
-			platform_info->info_crc,
-			platform_info->config_crc);
-	/* The Info Block CRC is calculated over mxt_info and the object table
-	 * If it does not match then we are trying to load the configuration
-	 * from a different chip or firmware version, so the configuration CRC
-	 * is invalid anyway. */
-	if (info_crc == data->info_crc ||
-			data->info_crc == platform_info->info_crc) {
-		if (config_crc == 0 || data->config_crc == 0) {
-			dev_info(dev, "CRC zero, attempting to apply config\n");
-		} else if (config_crc == data->config_crc ||
-				data->config_crc == platform_info->config_crc) {
-			dev_info(dev, "Config CRC 0x%06X: OK\n",
-					data->config_crc);
-			ret = 0;
-			goto release;
+	dev_info(dev, "Device: Info CRC 0x%06X, Config CRC 0x%06X\n",
+			data->info_crc, data->config_crc);
+	dev_info(dev, "File: Info CRC 0x%06X, Config CRC 0x%06X\n",
+			info_crc, config_crc);
 
-		} else {
-			mxt_dump_cfg(data, cfg, data_pos);
-			dev_info(dev, "Config CRC 0x%06X: does not match file 0x%06X\n",
-					data->config_crc, config_crc);
+	hardware_id = data->pdata->hardware_id;
+	if (hardware_id >= 0 && hardware_id < ARRAY_SIZE(supported_panels)) {
+		if (info_crc == data->info_crc &&
+					config_crc == data->config_crc) {
+			if (config_crc == 0 || data->config_crc == 0)
+				dev_info(dev, "CRC zero, attempting to apply config\n");
+			else {
+				dev_info(dev, "CRC check OK\n");
+				if (!force) {
+					mxt_soft_reset(data, MXT_RESET_VALUE);
+					ret = 0;
+					goto release;
+				}
+
+			}
 		}
-	} else {
-		dev_warn(dev,
-			 "Warning: Info CRC error - device=0x%06X file=0x%06X\n",
-			data->info_crc, info_crc);
 	}
 
 	/* Malloc memory to store configuration */
@@ -2531,31 +2563,29 @@ err_free_mem:
 }
 
 static int mxt_initialize_t9_input_device(struct mxt_data *data);
-static int mxt_configure_objects(struct mxt_data *data);
+static int mxt_configure_objects(struct mxt_data *data, bool force);
 
 static void mxt_check_firmware(struct mxt_data *data)
 {
 	int error = 0;
+	bool retry = false;
 	struct i2c_client *client = data->client;
 	struct mxt_info info = { 0 };
-	struct mxt_platform_info *platform_info = &data->pdata->info;
 
+read_info:
 	error = __mxt_read_reg(client, 0, sizeof(struct mxt_info), &info);
-	if (error || info.family_id != platform_info->family_id ||
-			info.build != platform_info->build) {
+	if (error || !supported_firmware(data, &info)) {
+		if (retry) {
+			dev_err(&client->dev, "%s: check firmware error!\n",
+					__func__);
+			return;
+		}
+
 		if (error) {
 			dev_info(&client->dev, "%s: read firmware info failed\n",
 					__func__);
 		} else {
-			dev_info(&client->dev, "%s: firmware dismatch.\n",
-					__func__);
-			dev_info(&client->dev, "%s: platform: %u %u %02X %02X\n",
-					__func__,
-					platform_info->family_id,
-					platform_info->variant_id,
-					platform_info->version,
-					platform_info->build);
-			dev_info(&client->dev, "%s: device: %u %u %02X %02X\n",
+			dev_info(&client->dev, "%s: Panel not supported: %u %u %02X %02X\n",
 					__func__,
 					info.family_id, info.variant_id,
 					info.version, info.build);
@@ -2566,7 +2596,11 @@ static void mxt_check_firmware(struct mxt_data *data)
 		if (!error) {
 			dev_info(&client->dev, "Firmware update succeeded\n");
 			msleep(MXT_FW_RESET_TIME);
+		} else {
+			dev_err(&client->dev, "Firmware update failed\n");
 		}
+		retry = true;
+		goto read_info;
 	}
 }
 
@@ -2619,14 +2653,14 @@ retry_bootloader:
 	if (error)
 		return error;
 
-	error = mxt_configure_objects(data);
+	error = mxt_configure_objects(data, false);
 	if (error)
 		return error;
 
 	return 0;
 }
 
-static int mxt_configure_objects(struct mxt_data *data)
+static int mxt_configure_objects(struct mxt_data *data, bool force)
 {
 	struct i2c_client *client = data->client;
 	int error;
@@ -2642,7 +2676,7 @@ static int mxt_configure_objects(struct mxt_data *data)
 	}
 
 	/* Check register init values */
-	error = mxt_check_reg_init(data);
+	error = mxt_check_reg_init(data, force);
 	if (error) {
 		dev_warn(&client->dev, "%s: Initialize configuration failed (%d)\n",
 				__func__, error);
@@ -2902,45 +2936,12 @@ release_firmware:
 	return ret;
 }
 
-static int mxt_update_file_name(struct device *dev, char **file_name,
-				const char *buf, size_t count)
-{
-	char *file_name_tmp;
-
-	/* Simple sanity check */
-	if (count > 64) {
-		dev_warn(dev, "File name too long\n");
-		return -EINVAL;
-	}
-
-	file_name_tmp = krealloc(*file_name, count + 1, GFP_KERNEL);
-	if (!file_name_tmp) {
-		dev_warn(dev, "no memory\n");
-		return -ENOMEM;
-	}
-
-	*file_name = file_name_tmp;
-	memcpy(*file_name, buf, count);
-
-	/* Echo into the sysfs entry may append newline at the end of buf */
-	if (buf[count - 1] == '\n')
-		(*file_name)[count - 1] = '\0';
-	else
-		(*file_name)[count] = '\0';
-
-	return 0;
-}
-
 static ssize_t mxt_update_fw_store(struct device *dev,
 					struct device_attribute *attr,
 					const char *buf, size_t count)
 {
 	struct mxt_data *data = dev_get_drvdata(dev);
 	int error;
-
-	error = mxt_update_file_name(dev, &data->fw_name, buf, count);
-	if (error)
-		return error;
 
 	error = mxt_load_fw(dev);
 	if (error) {
@@ -2974,10 +2975,6 @@ static ssize_t mxt_update_cfg_store(struct device *dev,
 		return -EINVAL;
 	}
 
-	ret = mxt_update_file_name(dev, &data->cfg_name, buf, count);
-	if (ret)
-		return ret;
-
 	data->enable_reporting = false;
 	mxt_free_input_device(data);
 
@@ -2992,7 +2989,7 @@ static ssize_t mxt_update_cfg_store(struct device *dev,
 		data->suspended = false;
 	}
 
-	ret = mxt_configure_objects(data);
+	ret = mxt_configure_objects(data, true);
 	if (ret)
 		goto out;
 
@@ -3051,6 +3048,16 @@ static ssize_t mxt_debug_enable_store(struct device *dev,
 		dev_dbg(dev, "debug_enabled write error\n");
 		return -EINVAL;
 	}
+}
+
+static ssize_t mxt_soft_reset_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct mxt_data *data = dev_get_drvdata(dev);
+
+	mxt_soft_reset(data, MXT_RESET_VALUE);
+
+	return count;
 }
 
 static int mxt_check_mem_access_params(struct mxt_data *data, loff_t off,
@@ -3113,6 +3120,7 @@ static DEVICE_ATTR(debug_v2_enable, S_IWUSR | S_IRUSR, NULL,
 static DEVICE_ATTR(debug_notify, S_IRUGO, mxt_debug_notify_show, NULL);
 static DEVICE_ATTR(debug_enable, S_IWUSR | S_IRUSR, mxt_debug_enable_show,
 		mxt_debug_enable_store);
+static DEVICE_ATTR(soft_reset, S_IWUSR, NULL, mxt_soft_reset_store);
 
 static struct attribute *mxt_attrs[] = {
 	&dev_attr_fw_version.attr,
@@ -3123,6 +3131,7 @@ static struct attribute *mxt_attrs[] = {
 	&dev_attr_debug_enable.attr,
 	&dev_attr_debug_v2_enable.attr,
 	&dev_attr_debug_notify.attr,
+	&dev_attr_soft_reset.attr,
 	NULL
 };
 
@@ -3185,6 +3194,51 @@ static void mxt_stop(struct mxt_data *data)
 	mxt_reset_slots(data);
 	data->suspended = true;
 }
+
+static void mxt_suspend(struct mxt_data *data)
+{
+	struct input_dev *input_dev;
+
+	input_dev = data->input_dev;
+
+	mutex_lock(&input_dev->mutex);
+	if (input_dev->users)
+		mxt_stop(data);
+	mutex_unlock(&input_dev->mutex);
+
+	if (data->pdata->gpio_switch >= 0)
+		gpio_set_value_cansleep(data->pdata->gpio_switch, 0);
+}
+
+static void mxt_resume(struct mxt_data *data)
+{
+	struct input_dev *input_dev;
+
+	input_dev = data->input_dev;
+
+	if (data->pdata->gpio_switch >= 0)
+		gpio_set_value_cansleep(data->pdata->gpio_switch, 1);
+
+	mutex_lock(&input_dev->mutex);
+	if (input_dev->users)
+		mxt_start(data);
+	mutex_unlock(&input_dev->mutex);
+}
+
+static ssize_t early_suspend_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct mxt_data *data = dev_get_drvdata(dev);
+
+	if (!strncmp(buf, EARLY_SUSPEND_ON, EARLY_SUSPEND_STATUS_LEN))
+		mxt_suspend(data);
+	else if (!strncmp(buf, EARLY_SUSPEND_OFF, EARLY_SUSPEND_STATUS_LEN))
+		mxt_resume(data);
+
+	return count;
+}
+
+static DEVICE_EARLY_SUSPEND_ATTR(early_suspend_store);
 
 static int mxt_initialize_t9_input_device(struct mxt_data *data)
 {
@@ -3306,45 +3360,38 @@ err_free_mem:
 static int mxt_probe(struct i2c_client *client,
 			       const struct i2c_device_id *id)
 {
-	int error;
+	int error = 0;
 	struct mxt_data *data;
 	struct mxt_platform_data *pdata;
 	struct acpi_gpio_info gpio_info;
-
-	if (!strncmp(client->name, MXT_1664S_NAME, strlen(MXT_1664S_NAME))) {
-		dev_info(&client->dev, "client name: %s\n", client->name);
-		pdata = &mxt_pdata[MXT_1664S_ID];
-	} else if (!strncmp(client->name,
-				MXT_3432S_NAME, strlen(MXT_3432S_NAME))) {
-		dev_info(&client->dev, "client name: %s\n", client->name);
-		pdata = &mxt_pdata[MXT_3432S_ID];
-	} else {
-		dev_err(&client->dev, "hardware type not support!\n");
-		return -EINVAL;
-	}
 
 	data = kzalloc(sizeof(struct mxt_data), GFP_KERNEL);
 	if (!data) {
 		dev_err(&client->dev, "Failed to allocate memory\n");
 		return -ENOMEM;
 	}
+	pdata = kzalloc(sizeof(struct mxt_platform_data), GFP_KERNEL);
+	if (!pdata) {
+		dev_err(&client->dev, "Failed to allocate memory for platform data\n");
+		goto err_free_data;
+	}
 
 	snprintf(data->phys, sizeof(data->phys), "i2c-%u-%04x/input0",
 		 client->adapter->nr, client->addr);
 
+	pdata->irqflags = IRQF_TRIGGER_LOW | IRQF_TRIGGER_FALLING;
+	pdata->cfg_name = MXT_CFG_NAME;
+	pdata->hardware_id = MXT_UNKNOWN_VALUE;
+	pdata->gpio_switch = MXT_UNKNOWN_VALUE;
+	pdata->gpio_reset =
+		acpi_get_gpio_by_index(&client->dev, 0, &gpio_info);
+
+	data->pdata = pdata;
 	data->fw_name = MXT_FW_NAME;
 	data->cfg_name = MXT_CFG_NAME;
-	data->pdata = pdata;
 	data->client = client;
 	data->irq = client->irq;
-	pdata->gpio_reset = acpi_get_gpio_by_index(&client->dev, 0, &gpio_info);
 	i2c_set_clientdata(client, data);
-
-	if (pdata->hardware_id == MXT_1664S_ID) {
-		gpio_request(PMIC_GPIO1P3, "ts_power");
-		gpio_export(PMIC_GPIO1P3, 0);
-		gpio_direction_output(PMIC_GPIO1P3, 1);
-	}
 
 	init_completion(&data->bl_completion);
 	init_completion(&data->reset_completion);
@@ -3366,6 +3413,14 @@ static int mxt_probe(struct i2c_client *client,
 	error = mxt_initialize(data);
 	if (error)
 		goto err_free_irq;
+
+	if (data->pdata->gpio_switch >= 0) {
+		gpio_request(data->pdata->gpio_switch, "ts_power");
+		gpio_export(data->pdata->gpio_switch, 0);
+		gpio_direction_output(data->pdata->gpio_switch, 1);
+	}
+
+	device_create_file(&client->dev, &dev_attr_early_suspend);
 
 	error = sysfs_create_group(&client->dev.kobj, &mxt_attr_group);
 	if (error) {
@@ -3394,6 +3449,9 @@ static int mxt_probe(struct i2c_client *client,
 	data->early_suspend.resume = mxt_late_resume;
 	register_early_suspend(&data->early_suspend);
 #endif
+
+	register_early_suspend_device(&client->dev);
+
 	mxt_start(data);
 
 	return 0;
@@ -3405,6 +3463,8 @@ err_free_object:
 err_free_irq:
 	free_irq(data->irq, data);
 err_free_mem:
+	kfree(data->pdata);
+err_free_data:
 	kfree(data);
 	return error;
 }
@@ -3417,14 +3477,16 @@ static int mxt_remove(struct i2c_client *client)
 		sysfs_remove_bin_file(&client->dev.kobj,
 				      &data->mem_access_attr);
 
+	device_remove_file(&client->dev, &dev_attr_early_suspend);
 	sysfs_remove_group(&client->dev.kobj, &mxt_attr_group);
+	unregister_early_suspend_device(&client->dev);
 	free_irq(data->irq, data);
-	gpio_free(PMIC_GPIO1P3);
+	if (data->pdata->gpio_switch >= 0)
+		gpio_free(data->pdata->gpio_switch);
 	regulator_put(data->reg_avdd);
 	regulator_put(data->reg_vdd);
 	mxt_free_object_table(data);
-	if (!dev_get_platdata(&data->client->dev))
-		kfree(data->pdata);
+	kfree(data->pdata);
 	kfree(data);
 
 	return 0;
@@ -3434,35 +3496,19 @@ static int mxt_remove(struct i2c_client *client)
 static void mxt_early_suspend(struct early_suspend *es)
 {
 	struct mxt_data *data;
-	struct input_dev *input_dev;
 
 	data = container_of(es, struct mxt_data, early_suspend);
-	input_dev = data->input_dev;
 
-	mutex_lock(&input_dev->mutex);
-	if (input_dev->users)
-		mxt_stop(data);
-	mutex_unlock(&input_dev->mutex);
-
-	if (data->pdata->hardware_id == MXT_1664S_ID)
-		gpio_set_value_cansleep(PMIC_GPIO1P3, 0);
+	mxt_suspend(data);
 }
 
 static void mxt_late_resume(struct early_suspend *es)
 {
 	struct mxt_data *data;
-	struct input_dev *input_dev;
 
 	data = container_of(es, struct mxt_data, early_suspend);
-	input_dev = data->input_dev;
 
-	if (data->pdata->hardware_id == MXT_1664S_ID)
-		gpio_set_value_cansleep(PMIC_GPIO1P3, 1);
-
-	mutex_lock(&input_dev->mutex);
-	if (input_dev->users)
-		mxt_start(data);
-	mutex_unlock(&input_dev->mutex);
+	mxt_resume(data);
 }
 #endif
 
@@ -3472,6 +3518,7 @@ static const struct i2c_device_id mxt_id[] = {
 	{ "atmel_mxt_tp", 0 },
 	{ "atmel_mxt_mxt1664S", 0 },
 	{ "mXT224", 0 },
+	{ "ATML1000", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, mxt_id);

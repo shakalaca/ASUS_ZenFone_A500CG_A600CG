@@ -13,8 +13,12 @@
 #define _PLATFORM_CAMERA_H_
 
 #include <linux/atomisp_platform.h>
+#include <asm/intel-mid.h>
 
 extern const struct intel_v4l2_subdev_id v4l2_ids[] __attribute__((weak));
+
+#define IS_BYT (INTEL_MID_BOARD(1, PHONE, BYT) || \
+	INTEL_MID_BOARD(1, TABLET, BYT))
 
 /* MFLD iCDK camera sensor GPIOs */
 
@@ -28,14 +32,11 @@ extern const struct intel_v4l2_subdev_id v4l2_ids[] __attribute__((weak));
 #define GP_CAMERA_0_RESET               "MAIN_CAM_RST#"
 #define GP_CAMERA_1_RESET               "SUB_CAM_RST#"
 
-#define GP_I2C_4_SCL "I2C_4_SCL"
-#define GP_I2C_4_SDA "I2C_4_SDA"
 #define GP_CORE_038 134
 #define GP_CORE_039 135
 #define GP_CORE_077 173
 #define GP_CORE_080 176
 #define GP_CORE_081 177
-
 extern int camera_sensor_gpio(int gpio, char *name, int dir, int value);
 extern int camera_sensor_csi(struct v4l2_subdev *sd, u32 port,
 			u32 lanes, u32 format, u32 bayer_order, int flag);

@@ -41,26 +41,17 @@
 
 #include <linux/list.h>
 #include <linux/usb/gadget.h>
-#if defined(CONFIG_USB_DWC_OTG_XCEIV)
-#include <linux/usb/otg.h>
-#include <linux/usb/dwc_otg3.h>
-#endif
 #include "io.h"
 
 struct dwc3;
 #define to_dwc3_ep(ep)		(container_of(ep, struct dwc3_ep, endpoint))
 #define gadget_to_dwc(g)	(container_of(g, struct dwc3, gadget))
 
-/* charging current */
-#define USB3_I_MAX		0x70
-#define USB3_I_UNIT		0x12
-#define USB2_I_MAX		0xFA
-#define USB2_I_UNIT		0x32
-
-#define USB3_I_MAX_OTG		(USB3_I_MAX << 3)
-#define USB3_I_UNIT_OTG		(USB3_I_UNIT << 3)
-#define USB2_I_MAX_OTG		(USB2_I_MAX << 1)
-#define USB2_I_UNIT_OTG		(USB2_I_UNIT << 1)
+/* max power consumption of the device from the bus */
+#define USB3_I_MAX_OTG		896
+#define USB3_I_UNIT_OTG		144
+#define USB2_I_MAX_OTG		500
+#define USB2_I_UNIT_OTG		100
 
 /* DEPCFG parameter 1 */
 #define DWC3_DEPCFG_INT_NUM(n)		((n) << 0)
@@ -69,6 +60,7 @@ struct dwc3;
 #define DWC3_DEPCFG_XFER_NOT_READY_EN	(1 << 10)
 #define DWC3_DEPCFG_FIFO_ERROR_EN	(1 << 11)
 #define DWC3_DEPCFG_STREAM_EVENT_EN	(1 << 13)
+#define DWC3_DEPCFG_EBC_MODE_EN		(1 << 15)
 #define DWC3_DEPCFG_BINTERVAL_M1(n)	((n) << 16)
 #define DWC3_DEPCFG_STREAM_CAPABLE	(1 << 24)
 #define DWC3_DEPCFG_EP_NUMBER(n)	((n) << 25)
@@ -81,8 +73,12 @@ struct dwc3;
 #define DWC3_DEPCFG_FIFO_NUMBER(n)	((n) << 17)
 #define DWC3_DEPCFG_BURST_SIZE(n)	((n) << 22)
 #define DWC3_DEPCFG_DATA_SEQ_NUM(n)	((n) << 26)
-#define DWC3_DEPCFG_CONFIG_ACTION(n)	((n) << 30)
+/* This applies for core versions earlier than 1.94a */
 #define DWC3_DEPCFG_IGN_SEQ_NUM		(1 << 31)
+/* These apply for core versions 1.94a and later */
+#define DWC3_DEPCFG_ACTION_INIT		(0 << 30)
+#define DWC3_DEPCFG_ACTION_RESTORE	(1 << 30)
+#define DWC3_DEPCFG_ACTION_MODIFY	(2 << 30)
 
 /* DEPXFERCFG parameter 0 */
 #define DWC3_DEPXFERCFG_NUM_XFER_RES(n)	((n) & 0xffff)
@@ -122,24 +118,13 @@ int dwc3_gadget_set_link_state(struct dwc3 *dwc, enum dwc3_link_state state);
 void dwc3_ep0_interrupt(struct dwc3 *dwc,
 		const struct dwc3_event_depevt *event);
 void dwc3_ep0_out_start(struct dwc3 *dwc);
+int dwc3_gadget_ep0_set_halt(struct usb_ep *ep, int value);
 int dwc3_gadget_ep0_queue(struct usb_ep *ep, struct usb_request *request,
 		gfp_t gfp_flags);
 int __dwc3_gadget_ep_set_halt(struct dwc3_ep *dep, int value);
 int dwc3_send_gadget_ep_cmd(struct dwc3 *dwc, unsigned ep,
 		unsigned cmd, struct dwc3_gadget_ep_cmd_params *params);
 int dwc3_send_gadget_generic_command(struct dwc3 *dwc, int cmd, u32 param);
-int dwc3_send_gadget_cmd(struct dwc3 *dwc, unsigned cmd, unsigned param);
-void dwc3_gadget_run_stop(struct dwc3 *dwc, int is_on);
-void dwc3_gadget_keep_conn(struct dwc3 *dwc, int is_on);
-int dwc3_core_init(struct dwc3 *dwc);
-
-#ifdef CONFIG_PM_RUNTIME
-int dwc3_runtime_suspend(struct device *device);
-int dwc3_runtime_resume(struct device *device);
-#else
-#define dwc3_runtime_suspend NULL
-#define dwc3_runtime_resume NULL
-#endif
 
 /**
  * dwc3_gadget_ep_get_transfer_index - Gets transfer index from HW

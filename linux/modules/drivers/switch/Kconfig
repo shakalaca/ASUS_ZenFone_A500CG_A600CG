@@ -1,6 +1,6 @@
 config SWITCH_MID
 	tristate "Jack Switch support"
-	depends on SWITCH
+        depends on SWITCH
 	help
 	  Say Y here to support switch driver for audio jack detection.
 

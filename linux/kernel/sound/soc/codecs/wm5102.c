@@ -581,7 +581,7 @@ static int wm5102_sysclk_ev(struct snd_soc_dapm_widget *w,
 			    struct snd_kcontrol *kcontrol, int event)
 {
 	struct snd_soc_codec *codec = w->codec;
-	struct arizona *arizona = dev_get_drvdata(codec->dev);
+	struct arizona *arizona = dev_get_drvdata(codec->dev->parent);
 	struct regmap *regmap = codec->control_data;
 	const struct reg_default *patch = NULL;
 	int i, patch_size;
@@ -949,12 +949,12 @@ SND_SOC_DAPM_SUPPLY("OPCLK", ARIZONA_OUTPUT_SYSTEM_CLOCK,
 SND_SOC_DAPM_SUPPLY("ASYNCOPCLK", ARIZONA_OUTPUT_ASYNC_CLOCK,
 		    ARIZONA_OPCLK_ASYNC_ENA_SHIFT, 0, NULL, 0),
 
-SND_SOC_DAPM_REGULATOR_SUPPLY("DBVDD2", 0),
-SND_SOC_DAPM_REGULATOR_SUPPLY("DBVDD3", 0),
-SND_SOC_DAPM_REGULATOR_SUPPLY("CPVDD", 20),
-SND_SOC_DAPM_REGULATOR_SUPPLY("MICVDD", 0),
-SND_SOC_DAPM_REGULATOR_SUPPLY("SPKVDDL", 0),
-SND_SOC_DAPM_REGULATOR_SUPPLY("SPKVDDR", 0),
+SND_SOC_DAPM_REGULATOR_SUPPLY("DBVDD2", 0, 0),
+SND_SOC_DAPM_REGULATOR_SUPPLY("DBVDD3", 0, 0),
+SND_SOC_DAPM_REGULATOR_SUPPLY("CPVDD", 20, 0),
+SND_SOC_DAPM_REGULATOR_SUPPLY("MICVDD", 0, SND_SOC_DAPM_REGULATOR_BYPASS),
+SND_SOC_DAPM_REGULATOR_SUPPLY("SPKVDDL", 0, 0),
+SND_SOC_DAPM_REGULATOR_SUPPLY("SPKVDDR", 0, 0),
 
 SND_SOC_DAPM_SIGGEN("TONE"),
 SND_SOC_DAPM_SIGGEN("NOISE"),
@@ -1220,6 +1220,8 @@ SND_SOC_DAPM_OUTPUT("SPKOUTRN"),
 SND_SOC_DAPM_OUTPUT("SPKOUTRP"),
 SND_SOC_DAPM_OUTPUT("SPKDAT1L"),
 SND_SOC_DAPM_OUTPUT("SPKDAT1R"),
+
+SND_SOC_DAPM_OUTPUT("MICSUPP"),
 };
 
 #define ARIZONA_MIXER_INPUT_ROUTES(name)	\
@@ -1302,20 +1304,9 @@ static const struct snd_soc_dapm_route wm5102_dapm_routes[] = {
 	{ "OUT5L", NULL, "SYSCLK" },
 	{ "OUT5R", NULL, "SYSCLK" },
 
-	{ "IN1L", NULL, "SYSCLK" },
-	{ "IN1R", NULL, "SYSCLK" },
-	{ "IN2L", NULL, "SYSCLK" },
-	{ "IN2R", NULL, "SYSCLK" },
-	{ "IN3L", NULL, "SYSCLK" },
-	{ "IN3R", NULL, "SYSCLK" },
-
 	{ "MICBIAS1", NULL, "MICVDD" },
 	{ "MICBIAS2", NULL, "MICVDD" },
 	{ "MICBIAS3", NULL, "MICVDD" },
-
-	{ "Noise Generator", NULL, "SYSCLK" },
-	{ "Tone Generator 1", NULL, "SYSCLK" },
-	{ "Tone Generator 2", NULL, "SYSCLK" },
 
 	{ "Noise Generator", NULL, "NOISE" },
 	{ "Tone Generator 1", NULL, "TONE" },
@@ -1476,9 +1467,7 @@ static const struct snd_soc_dapm_route wm5102_dapm_routes[] = {
 	{ "SPKDAT1L", NULL, "OUT5L" },
 	{ "SPKDAT1R", NULL, "OUT5R" },
 
-	{ "MICBIAS1", NULL, "SYSCLK" },
-	{ "MICBIAS2", NULL, "SYSCLK" },
-	{ "MICBIAS3", NULL, "SYSCLK" },
+	{ "MICSUPP", NULL, "SYSCLK" },
 };
 
 static int wm5102_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
@@ -1584,11 +1573,11 @@ static int wm5102_codec_probe(struct snd_soc_codec *codec)
 	if (ret != 0)
 		return ret;
 
-	arizona_init_spk(codec);
-
-	ret = snd_soc_add_codec_controls(codec, wm_adsp_fw_controls, 2);
+	ret = snd_soc_add_codec_controls(codec, wm_adsp2_fw_controls, 2);
 	if (ret != 0)
 		return ret;
+
+	arizona_init_spk(codec);
 
 	snd_soc_dapm_disable_pin(&codec->dapm, "HAPTICS");
 
@@ -1638,7 +1627,7 @@ static struct snd_soc_codec_driver soc_codec_dev_wm5102 = {
 	.num_dapm_routes = ARRAY_SIZE(wm5102_dapm_routes),
 };
 
-static int __devinit wm5102_probe(struct platform_device *pdev)
+static int wm5102_probe(struct platform_device *pdev)
 {
 	struct arizona *arizona = dev_get_drvdata(pdev->dev.parent);
 	struct wm5102_priv *wm5102;
@@ -1697,7 +1686,7 @@ static int __devinit wm5102_probe(struct platform_device *pdev)
 				      wm5102_dai, ARRAY_SIZE(wm5102_dai));
 }
 
-static int __devexit wm5102_remove(struct platform_device *pdev)
+static int wm5102_remove(struct platform_device *pdev)
 {
 	snd_soc_unregister_codec(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
@@ -1711,7 +1700,7 @@ static struct platform_driver wm5102_codec_driver = {
 		.owner = THIS_MODULE,
 	},
 	.probe = wm5102_probe,
-	.remove = __devexit_p(wm5102_remove),
+	.remove = wm5102_remove,
 };
 
 module_platform_driver(wm5102_codec_driver);

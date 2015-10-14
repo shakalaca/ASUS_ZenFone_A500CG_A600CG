@@ -33,13 +33,15 @@
 
 #include "hrt/hive_isp_css_mm_hrt.h"
 #include "memory_access/memory_access.h"
-#ifdef CONFIG_VIDEO_ATOMISP_CSS20
+#ifdef CSS20
 #include "ia_css.h"
+#ifndef CSS21
 #include "ia_css_accelerate.h"
-#else /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#endif /* !CSS21 */
+#else /* CSS20 */
 #include "sh_css.h"
 #include "sh_css_accelerate.h"
-#endif /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#endif /* CSS20 */
 
 static const struct {
 	unsigned int flag;
@@ -198,7 +200,7 @@ int atomisp_acc_load_to_pipe(struct atomisp_device *isp,
 	acc_fw->flags = user_fw->flags;
 	acc_fw->type = user_fw->type;
 
-#ifdef CONFIG_VIDEO_ATOMISP_CSS20
+#ifdef CSS20
 	/*
 	 * correct isp firmware type in order ISP firmware can be appended
 	 * to correct pipe properly
@@ -218,7 +220,7 @@ int atomisp_acc_load_to_pipe(struct atomisp_device *isp,
 			break;
 		}
 	}
-#endif /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#endif /* CSS20 */
 
 	list_add_tail(&acc_fw->list, &isp->acc.fw);
 	return 0;
@@ -340,7 +342,7 @@ int atomisp_acc_wait(struct atomisp_sub_device *asd, unsigned int *handle)
 int atomisp_acc_map(struct atomisp_device *isp, struct atomisp_acc_map *map)
 {
 	struct atomisp_map *atomisp_map;
-	hrt_vaddress cssptr;
+	ia_css_ptr cssptr;
 	int pgnr;
 
 	if (map->flags || !map->user_ptr || map->css_ptr)
@@ -358,8 +360,8 @@ int atomisp_acc_map(struct atomisp_device *isp, struct atomisp_acc_map *map)
 	}
 
 	pgnr = DIV_ROUND_UP(map->length, PAGE_SIZE);
-	cssptr = (hrt_vaddress)hrt_isp_css_mm_alloc_user_ptr(
-			map->length, (unsigned int)map->user_ptr,
+	cssptr = hrt_isp_css_mm_alloc_user_ptr(
+			map->length, map->user_ptr,
 			pgnr, HRT_USR_PTR, false);
 	if (!cssptr)
 		return -ENOMEM;
@@ -373,8 +375,8 @@ int atomisp_acc_map(struct atomisp_device *isp, struct atomisp_acc_map *map)
 	atomisp_map->length = map->length;
 	list_add(&atomisp_map->list, &isp->acc.memory_maps);
 
-	dev_dbg(isp->dev, "%s: userptr 0x%x, css_address 0x%x, size %d\n",
-		__func__, (unsigned int)map->user_ptr, cssptr, map->length);
+	dev_dbg(isp->dev, "%s: userptr %p, css_address 0x%x, size %d\n",
+		__func__, map->user_ptr, cssptr, map->length);
 	map->css_ptr = cssptr;
 	return 0;
 }
@@ -423,8 +425,9 @@ int atomisp_acc_s_mapped_arg(struct atomisp_device *isp,
 	acc_fw->args[arg->memory].length = arg->length;
 	acc_fw->args[arg->memory].css_ptr = arg->css_ptr;
 
-	dev_dbg(isp->dev, "%s: mem %d, address 0x%x, size %d\n",
-		__func__, arg->memory, (unsigned int)arg->css_ptr, arg->length);
+	dev_dbg(isp->dev, "%s: mem %d, address %p, size %ld\n",
+		__func__, arg->memory, (void *)arg->css_ptr,
+		(unsigned long)arg->length);
 	return 0;
 }
 

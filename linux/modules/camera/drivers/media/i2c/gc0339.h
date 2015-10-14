@@ -337,34 +337,36 @@ struct gc0339_write_ctrl {
  * Please, keep them in ascending order.
  */
 static struct gc0339_res_struct gc0339_res[] = {
+/*
 	{
 	.desc	= "CIF",
 	.res	= GC0339_RES_CIF,
 	.width	= 368,
 	.height	= 304,
-	.fps	= 30,
+	.fps	= 23,
 	.used	= 0,
 	.regs	= NULL,
 	.skip_frames = 1,
 
-	.pixels_per_line = 0x01F0, // consistent with regs arrays
-	.lines_per_frame = 0x014F, // consistent with regs arrays
+	.pixels_per_line = 0x0312, // consistent with regs arrays
+	.lines_per_frame = 0x0213, // consistent with regs arrays
 	.bin_factor_x = 1,
 	.bin_factor_y = 1,
 	.bin_mode = 0,
 	},
+*/
 	{
 	.desc	= "VGA",
 	.res	= GC0339_RES_VGA,
 	.width	= 656,
 	.height	= 496,
-	.fps	= 30,
+	.fps	= 20,
 	.used	= 0,
 	.regs	= NULL,
 	.skip_frames = 2,
 
-	.pixels_per_line = 0x0314, // consistent with regs arrays
-	.lines_per_frame = 0x0213, // consistent with regs arrays
+	.pixels_per_line = 0x0352, // consistent with regs arrays
+	.lines_per_frame = 0x0223, // consistent with regs arrays
 	.bin_factor_x = 1,
 	.bin_factor_y = 1,
 	.bin_mode = 0,

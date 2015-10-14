@@ -749,7 +749,7 @@ IMG_EXPORT PVRSRV_ERROR SGXSubmit2DKM(IMG_HANDLE hDevHandle, PVRSRV_2D_SGX_KICK 
 		ps2DCmd->sDstSyncData.sReadOps2CompleteDevVAddr = psSyncInfo->sReadOps2CompleteDevVAddr;
 
 		/* We can do this immediately as we only have one */
-		psSyncInfo->psSyncData->ui32WriteOpsPending++;
+		SyncTakeWriteOp(psSyncInfo, SYNC_OP_CLASS_TQ_2D);
 	}
 	else
 	{
@@ -762,7 +762,7 @@ IMG_EXPORT PVRSRV_ERROR SGXSubmit2DKM(IMG_HANDLE hDevHandle, PVRSRV_2D_SGX_KICK 
 	for (i = 0; i < psKick->ui32NumSrcSync; i++)
 	{
 		psSyncInfo = psKick->ahSrcSyncInfo[i];
-		psSyncInfo->psSyncData->ui32ReadOpsPending++;
+		SyncTakeReadOp(psSyncInfo, SYNC_OP_CLASS_TQ_2D);
 	}
 
 #if defined(PDUMP)
@@ -831,7 +831,7 @@ IMG_EXPORT PVRSRV_ERROR SGXSubmit2DKM(IMG_HANDLE hDevHandle, PVRSRV_2D_SGX_KICK 
 		for (i = 0; i < psKick->ui32NumSrcSync; i++)
 		{
 			psSyncInfo = psKick->ahSrcSyncInfo[i];
-			SyncTakeReadOp(psSyncInfo, SYNC_OP_CLASS_TQ_2D);
+			psSyncInfo->psSyncData->ui32LastReadOpDumpVal++;
 #if defined(SUPPORT_PDUMP_SYNC_DEBUG)
 			PDUMPCOMMENTWITHFLAGS(PDUMP_FLAGS_PERSISTENT,
 									"TQ2D Src: PDump sync update: uiAddr = 0x%08x, ui32LastReadOpDumpVal = 0x%08x\r\n",
@@ -843,7 +843,7 @@ IMG_EXPORT PVRSRV_ERROR SGXSubmit2DKM(IMG_HANDLE hDevHandle, PVRSRV_2D_SGX_KICK 
 		if (psKick->hDstSyncInfo != IMG_NULL)
 		{
 			psSyncInfo = psKick->hDstSyncInfo;
-			SyncTakeWriteOp(psSyncInfo, SYNC_OP_CLASS_TQ_2D);
+			psSyncInfo->psSyncData->ui32LastOpDumpVal++;
 #if defined(SUPPORT_PDUMP_SYNC_DEBUG)
 			PDUMPCOMMENTWITHFLAGS(PDUMP_FLAGS_PERSISTENT,
 									"TQ2D Dst: PDump sync update: uiAddr = 0x%08x, ui32LastOpDumpVal = 0x%08x\r\n",

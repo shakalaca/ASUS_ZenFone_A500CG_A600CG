@@ -29,7 +29,7 @@
 /**
  * dx_sep_power_init() - Init resources for this module
  */
-void __devinit dx_sep_power_init(struct sep_drvdata *drvdata);
+void dx_sep_power_init(struct sep_drvdata *drvdata);
 
 /**
  * dx_sep_power_exit() - Cleanup resources for this module

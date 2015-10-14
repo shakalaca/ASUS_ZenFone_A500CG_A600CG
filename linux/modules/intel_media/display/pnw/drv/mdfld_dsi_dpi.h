@@ -54,10 +54,14 @@ struct mdfld_dsi_dpi_output {
 #define MDFLD_DSI_DPI_OUTPUT(dsi_encoder) \
 	container_of(dsi_encoder, struct mdfld_dsi_dpi_output, base)
 
+extern struct drm_encoder *encoder_lcd;
+
 /*export functions*/
 extern struct mdfld_dsi_encoder *mdfld_dsi_dpi_init(struct drm_device *dev,
 		struct mdfld_dsi_connector *dsi_connector);
 extern void mdfld_reset_dpi_panel(struct drm_psb_private *dev_priv);
+extern void mdfld_dsi_dpi_set_power(struct drm_encoder *encoder, bool on);
+
 
 extern struct mdfld_dsi_config *panel_reset_dsi_config;
 

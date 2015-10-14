@@ -29,6 +29,32 @@
 #define FAB_ID_SC1					5
 #define FAB_ID_UNKNOWN					6
 
+enum scu_cold_boot_err {
+	ERR_MEM_ERR		= 0xE101,
+	ERR_INST_ERR,
+	ERR_FABRIC_ERR,
+	ERR_SRAM_ECC_ERR	= 0xE104,
+	ERR_NORTH_FUSES_ERR	= 0xE106,
+	ERR_KERNEL_HANG_ERR	= 0xE10A,
+	ERR_KERNEL_WDT_ERR,
+	ERR_SCUWDT_CHAABIWDT,
+	ERR_FABRIC_XML_ERR
+};
+
+enum scu_runtime_err {
+	ERR_PLL_LOCKSLIP_ERR    = 0xE601,
+	ERR_UNDEFINED_L1_ERR    = 0xE603,
+	ERR_PUINT_INT_MBB_TMOUT_ERR,
+	ERR_FUSE_VOLTATK_ERR,
+	ERR_FUSE_VOLT_SAIATK_ERR,
+	ERR_LPE_INT_ERR,
+	ERR_PSH_INT_ERR,
+	ERR_FUSE_INT_ERR,
+	ERR_UNSUPPORTED_IPC2_ERR,
+	ERR_KWDT_IPC_ERR
+};
+
+
 char *fabric_error_lookup(u32 fab_id, u32 error_index, int use_hidword);
 char *get_errortype_str(u16 error_type);
 int errorlog_element_type(u8 id_type);

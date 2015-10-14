@@ -47,7 +47,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 
-/* FIXME: need to create pvrbridge_common.h" */
 #include "pvr_bridge.h"
 
 #define PVRSRV_BRIDGE_SMM_CMD_FIRST			(PVRSRV_BRIDGE_SMM_START)

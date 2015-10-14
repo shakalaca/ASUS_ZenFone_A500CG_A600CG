@@ -42,29 +42,18 @@ static int dw9714_i2c_write(struct i2c_client *client, u16 data)
 
 int dw9714_vcm_power_up(struct v4l2_subdev *sd)
 {
+	int ret;
+
 	/* Enable power */
-	/*ChungYi : 
-	   We don't use this GPIO for power-on VCM,
-	   In A500CG , VCM XSD will connect to VCM VDD. 
-	   Camera IMX111 turn on the power for VCM,
-	   So always return 0 for A500CG.	   
-	   In fact we still need wait for 12ms to meet DW9714 spec.
-	*/
-	//ret = dw9714_dev.platform_data->power_ctrl(sd, 1);
+	ret = dw9714_dev.platform_data->power_ctrl(sd, 1);
 	/* waiting time requested by DW9714A(vcm) */
 	usleep_range(12000, 12500);
-	return 0;
+	return ret;
 }
 
 int dw9714_vcm_power_down(struct v4l2_subdev *sd)
 {
-	/*ChungYi : 
-	   We don't use this GPIO for power-down VCM,
-	   Camera IMX111 turn off the power for VCM.
-	   So always return 0 for A500CG.
-	*/
-	//return dw9714_dev.platform_data->power_ctrl(sd, 0);
-	return 0;
+	return dw9714_dev.platform_data->power_ctrl(sd, 0);
 }
 
 
@@ -74,6 +63,7 @@ int dw9714_t_focus_vcm(struct v4l2_subdev *sd, u16 val)
 	int ret = -EINVAL;
 	u8 mclk = vcm_step_mclk(dw9714_dev.vcm_settings.step_setting);
 	u8 s = vcm_step_s(dw9714_dev.vcm_settings.step_setting);
+
 	/*
 	 * For different mode, VCM_PROTECTION_OFF/ON required by the
 	 * control procedure. For DW9714_DIRECT/DLC mode, slew value is
@@ -146,7 +136,7 @@ int dw9714_t_focus_abs(struct v4l2_subdev *sd, s32 value)
 	int ret;
 
 	value = min(value, DW9714_MAX_FOCUS_POS);
-	ret = dw9714_t_focus_vcm(sd, value);
+	ret = dw9714_t_focus_vcm(sd, DW9714_MAX_FOCUS_POS - value);
 	if (ret == 0) {
 		dw9714_dev.number_of_steps = value - dw9714_dev.focus;
 		dw9714_dev.focus = value;
@@ -222,12 +212,10 @@ int dw9714_vcm_init(struct v4l2_subdev *sd)
 {
 
 	/* set VCM to home position and vcm mode to direct*/
-	dw9714_dev.vcm_mode = DW9714_DLC;
-	dw9714_dev.vcm_settings.update = true;
-	dw9714_dev.vcm_settings.t_src = 0x11;
-	dw9714_dev.vcm_settings.step_setting = 0x02;
-
+	dw9714_dev.vcm_mode = DW9714_DIRECT;
+	dw9714_dev.vcm_settings.update = false;
 	dw9714_dev.platform_data = camera_get_af_platform_data();
 	return (NULL == dw9714_dev.platform_data) ? -ENODEV : 0;
+
 }
 

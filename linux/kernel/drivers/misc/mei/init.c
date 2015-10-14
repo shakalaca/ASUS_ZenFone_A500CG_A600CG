@@ -38,38 +38,10 @@ const char *mei_dev_state_str(int state)
 	MEI_DEV_STATE(POWER_DOWN);
 	MEI_DEV_STATE(POWER_UP);
 	default:
-		return "unkown";
+		return "unknown";
 	}
 #undef MEI_DEV_STATE
 }
-
-void mei_device_init(struct mei_device *dev)
-{
-	/* setup our list array */
-	INIT_LIST_HEAD(&dev->file_list);
-	INIT_LIST_HEAD(&dev->device_list);
-	mutex_init(&dev->device_lock);
-	init_waitqueue_head(&dev->wait_hw_ready);
-	init_waitqueue_head(&dev->wait_recvd_msg);
-	init_waitqueue_head(&dev->wait_stop_wd);
-	dev->dev_state = MEI_DEV_INITIALIZING;
-
-	mei_io_list_init(&dev->read_list);
-	mei_io_list_init(&dev->write_list);
-	mei_io_list_init(&dev->write_waiting_list);
-	mei_io_list_init(&dev->ctrl_wr_list);
-	mei_io_list_init(&dev->ctrl_rd_list);
-
-	INIT_DELAYED_WORK(&dev->timer_work, mei_timer);
-	INIT_WORK(&dev->init_work, mei_host_client_init);
-
-	INIT_LIST_HEAD(&dev->wd_cl.link);
-	INIT_LIST_HEAD(&dev->iamthif_cl.link);
-	mei_io_list_init(&dev->amthif_cmd_list);
-	mei_io_list_init(&dev->amthif_rd_complete_list);
-
-}
-EXPORT_SYMBOL_GPL(mei_device_init);
 
 /**
  * mei_start - initializes host and fw to start work.
@@ -82,7 +54,7 @@ int mei_start(struct mei_device *dev)
 {
 	mutex_lock(&dev->device_lock);
 
-	/* acknowledge interrupt and stop interupts */
+	/* acknowledge interrupt and stop interrupts */
 	mei_clear_interrupts(dev);
 
 	mei_hw_config(dev);
@@ -124,6 +96,20 @@ err:
 EXPORT_SYMBOL_GPL(mei_start);
 
 /**
+ * mei_cancel_work. Cancel mei background jobs
+ *
+ * @dev: the device structure
+ */
+void mei_cancel_work(struct mei_device *dev)
+{
+	cancel_work_sync(&dev->init_work);
+	cancel_work_sync(&dev->reset_work);
+
+	cancel_delayed_work(&dev->timer_work);
+}
+EXPORT_SYMBOL_GPL(mei_cancel_work);
+
+/**
  * mei_reset - resets host and fw.
  *
  * @dev: the device structure
@@ -139,6 +125,10 @@ void mei_reset(struct mei_device *dev, int interrupts_enabled)
 			dev->dev_state != MEI_DEV_POWER_DOWN &&
 			dev->dev_state != MEI_DEV_POWER_UP);
 
+	if (unexpected)
+		dev_warn(&dev->pdev->dev, "unexpected reset: dev_state = %s\n",
+			 mei_dev_state_str(dev->dev_state));
+
 	ret = mei_hw_reset(dev, interrupts_enabled);
 	if (ret) {
 		dev_err(&dev->pdev->dev, "hw reset failed disabling the device\n");
@@ -148,33 +138,35 @@ void mei_reset(struct mei_device *dev, int interrupts_enabled)
 
 	dev->hbm_state = MEI_HBM_IDLE;
 
-	if (dev->dev_state != MEI_DEV_INITIALIZING) {
+	if (dev->dev_state != MEI_DEV_INITIALIZING &&
+	    dev->dev_state != MEI_DEV_POWER_UP) {
 		if (dev->dev_state != MEI_DEV_DISABLED &&
 		    dev->dev_state != MEI_DEV_POWER_DOWN)
 			dev->dev_state = MEI_DEV_RESETTING;
 
+
+		/* remove all waiting requests */
+		mei_cl_all_write_clear(dev);
+
 		mei_cl_all_disconnect(dev);
+
+		/* wake up all readers and writers so they can be interrupted */
+		mei_cl_all_wakeup(dev);
 
 		/* remove entry if already in list */
 		dev_dbg(&dev->pdev->dev, "remove iamthif and wd from the file list.\n");
 		mei_cl_unlink(&dev->wd_cl);
-		if (dev->open_handle_count > 0)
-			dev->open_handle_count--;
 		mei_cl_unlink(&dev->iamthif_cl);
-		if (dev->open_handle_count > 0)
-			dev->open_handle_count--;
-
 		mei_amthif_reset_params(dev);
 		memset(&dev->wr_ext_msg, 0, sizeof(dev->wr_ext_msg));
 	}
 
+	/* we're already in reset, cancel the init timer */
+	dev->init_clients_timer = 0;
+
 	dev->me_clients_num = 0;
 	dev->rd_msg_hdr = 0;
 	dev->wd_pending = false;
-
-	if (unexpected)
-		dev_warn(&dev->pdev->dev, "unexpected reset: dev_state = %s\n",
-			 mei_dev_state_str(dev->dev_state));
 
 	if (!interrupts_enabled) {
 		dev_dbg(&dev->pdev->dev, "intr not enabled end of reset\n");
@@ -193,28 +185,38 @@ void mei_reset(struct mei_device *dev, int interrupts_enabled)
 
 	dev->dev_state = MEI_DEV_INIT_CLIENTS;
 
-	mei_hbm_start_req(dev);
-
-	/* wake up all readings so they can be interrupted */
-	mei_cl_all_read_wakeup(dev);
-
-	/* remove all waiting requests */
-	mei_cl_all_write_clear(dev);
+	ret = mei_hbm_start_req(dev);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "hbm_start failed disabling the device\n");
+		dev->dev_state = MEI_DEV_DISABLED;
+		return;
+	}
 }
 EXPORT_SYMBOL_GPL(mei_reset);
+
+static void mei_reset_work(struct work_struct *work)
+{
+	struct mei_device *dev =
+		container_of(work, struct mei_device,  reset_work);
+
+	mutex_lock(&dev->device_lock);
+
+	mei_reset(dev, true);
+
+	mutex_unlock(&dev->device_lock);
+}
 
 void mei_stop(struct mei_device *dev)
 {
 	dev_dbg(&dev->pdev->dev, "stopping the device.\n");
 
+	mei_cancel_work(dev);
+
+	mei_nfc_host_exit(dev);
 
 	mutex_lock(&dev->device_lock);
 
-	cancel_delayed_work(&dev->timer_work);
-
 	mei_wd_stop(dev);
-
-	mei_nfc_host_exit();
 
 	dev->dev_state = MEI_DEV_POWER_DOWN;
 	mei_reset(dev, 0);
@@ -222,8 +224,6 @@ void mei_stop(struct mei_device *dev)
 	mutex_unlock(&dev->device_lock);
 
 	mei_watchdog_unregister(dev);
-
-	flush_workqueue(dev->wq);
 }
 EXPORT_SYMBOL_GPL(mei_stop);
 
@@ -250,3 +250,42 @@ bool mei_write_is_idle(struct mei_device *dev)
 	return idle;
 }
 EXPORT_SYMBOL_GPL(mei_write_is_idle);
+
+void mei_device_init(struct mei_device *dev)
+{
+	/* setup our list array */
+	INIT_LIST_HEAD(&dev->file_list);
+	INIT_LIST_HEAD(&dev->device_list);
+	mutex_init(&dev->device_lock);
+	init_waitqueue_head(&dev->wait_hw_ready);
+	init_waitqueue_head(&dev->wait_recvd_msg);
+	init_waitqueue_head(&dev->wait_stop_wd);
+	dev->dev_state = MEI_DEV_INITIALIZING;
+
+	mei_io_list_init(&dev->read_list);
+	mei_io_list_init(&dev->write_list);
+	mei_io_list_init(&dev->write_waiting_list);
+	mei_io_list_init(&dev->ctrl_wr_list);
+	mei_io_list_init(&dev->ctrl_rd_list);
+
+	INIT_DELAYED_WORK(&dev->timer_work, mei_timer);
+	INIT_WORK(&dev->init_work, mei_host_client_init);
+	INIT_WORK(&dev->reset_work, mei_reset_work);
+
+	INIT_LIST_HEAD(&dev->wd_cl.link);
+	INIT_LIST_HEAD(&dev->iamthif_cl.link);
+	mei_io_list_init(&dev->amthif_cmd_list);
+	mei_io_list_init(&dev->amthif_rd_complete_list);
+
+	bitmap_zero(dev->host_clients_map, MEI_CLIENTS_MAX);
+	dev->open_handle_count = 0;
+
+	/*
+	 * Reserving the first client ID
+	 * 0: Reserved for MEI Bus Message communications
+	 */
+	bitmap_set(dev->host_clients_map, 0, 1);
+
+	dev->pg_event = MEI_PG_EVENT_IDLE;
+}
+EXPORT_SYMBOL_GPL(mei_device_init);

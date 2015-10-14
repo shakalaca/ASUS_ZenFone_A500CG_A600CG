@@ -32,7 +32,7 @@ struct vibra_info {
 	const char	*name;
 	unsigned long *base_unit;
 	unsigned long *duty_cycle;
-	u8  max_base_unit;
+	unsigned int max_base_unit;
 	u8  max_duty_cycle;
 	int gpio_en;
 	int gpio_pwm;

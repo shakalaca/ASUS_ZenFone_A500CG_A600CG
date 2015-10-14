@@ -48,7 +48,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /* include/ */
 #include "pvrsrv_error.h"
 #include "img_types.h"
-#include "imgpixfmts_km.h"
 #include "pvrsrv_device_types.h"
 
 
@@ -173,16 +172,6 @@ typedef enum _PVRSRV_ROTATION_ {
 
 /*!
  *****************************************************************************
- * Resource locking structure
- *****************************************************************************/
-typedef struct PVRSRV_RESOURCE_TAG
-{
-	volatile IMG_UINT32 ui32Lock;   /*!< the lock around the resource */
-	IMG_UINT32 			ui32ID;     /*!< the ID of the resource */
-}PVRSRV_RESOURCE;
-
-/*!
- *****************************************************************************
  * This structure is used for OS independent registry (profile) access
  *****************************************************************************/
 
@@ -194,21 +183,6 @@ typedef struct _PVRSRV_REGISTRY_INFO
 	IMG_PCHAR			pszBuf;
 	IMG_UINT32			ui32BufSize;
 } PVRSRV_REGISTRY_INFO, *PPVRSRV_REGISTRY_INFO;
-
-#define MAX_BUFFER_DEVICE_NAME_SIZE	(50) /*!< Max size of the buffer device name */
-
-/*! buffer information structure */
-typedef struct BUFFER_INFO_TAG
-{
-	IMG_UINT32 			ui32BufferCount;                            /*!< Number of supported buffers */
-	IMG_UINT32			ui32BufferDeviceID;                         /*!< DeviceID assigned by Services*/
-	IMG_PIXFMT          eIMGPixFmt;                                 /*!< Pixel format of the buffer */
-	IMG_UINT32			ui32ByteStride;                             /*!< Byte stride of the buffer */
-	IMG_UINT32			ui32Width;                                  /*!< Width of the buffer, in pixels */
-	IMG_UINT32			ui32Height;                                 /*!< Height of the buffer, in pixels */
-	IMG_UINT32			ui32Flags;                                  /*!< Flags */
-	IMG_CHAR			szDeviceName[MAX_BUFFER_DEVICE_NAME_SIZE];  /*!< Name of the device */
-} BUFFER_INFO;
 
 #endif /* __SERVICESEXT_H__ */
 /*****************************************************************************

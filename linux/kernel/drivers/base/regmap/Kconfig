@@ -3,9 +3,10 @@
 # subsystems should select the appropriate symbols.
 
 config REGMAP
-	default y if (REGMAP_I2C || REGMAP_SPI)
+	default y if (REGMAP_I2C || REGMAP_SPI || REGMAP_MMIO || REGMAP_IRQ)
 	select LZO_COMPRESS
 	select LZO_DECOMPRESS
+	select IRQ_DOMAIN if REGMAP_IRQ
 	bool
 
 config REGMAP_I2C
@@ -14,13 +15,11 @@ config REGMAP_I2C
 config REGMAP_SPI
 	tristate
 
+config REGMAP_MMIO
+	tristate
+
 config REGMAP_IRQ
 	bool
 
 config REGMAP_ALLOW_WRITE_DEBUGFS
-	bool "Regmap write access to usermode"
-	default n
-	help
-	   WARNING: This allows usermode to write to hardware registers. Writing
-	   to stuff like PMICs is _never_ advised due to obvious side effects, use
-	   at very extreme caution. Is helpful for debugging
+	tristate

@@ -237,6 +237,8 @@ static int arizona_wait_for_boot(struct arizona *arizona)
 		regmap_write(arizona->regmap, ARIZONA_INTERRUPT_STATUS_5,
 			     ARIZONA_BOOT_DONE_STS);
 
+	pm_runtime_mark_last_busy(arizona->dev);
+
 	return ret;
 }
 
@@ -254,7 +256,6 @@ static int arizona_apply_hardware_patch(struct arizona* arizona)
 			ret);
 		return ret;
 	}
-
 	ret = regmap_read(arizona->regmap, ARIZONA_SYSTEM_CLOCK_1, &sysclk);
 	if (ret != 0) {
 		dev_err(arizona->dev, "Failed to cache SYSCLK settings: %d\n",
@@ -271,7 +272,6 @@ static int arizona_apply_hardware_patch(struct arizona* arizona)
 			ret);
 		return ret;
 	}
-
 	ret = arizona_poll_reg(arizona, 25, ARIZONA_INTERRUPT_RAW_STATUS_5,
 			       ARIZONA_FLL1_CLOCK_OK_STS,
 			       ARIZONA_FLL1_CLOCK_OK_STS);
@@ -294,7 +294,6 @@ static int arizona_apply_hardware_patch(struct arizona* arizona)
 			ret);
 		goto err_sysclk;
 	}
-
 	ret = arizona_poll_reg(arizona, 5, ARIZONA_WRITE_SEQUENCER_CTRL_1,
 			       ARIZONA_WSEQ_BUSY, 0);
 	if (ret != 0) {
@@ -340,9 +339,6 @@ static int arizona_runtime_resume(struct device *dev)
 		dev_err(arizona->dev, "Failed to enable DCVDD: %d\n", ret);
 		return ret;
 	}
-
-	if (arizona->pdata.control_init_time)
-		msleep(arizona->pdata.control_init_time);
 
 	regcache_cache_only(arizona->regmap, false);
 
@@ -401,11 +397,11 @@ static int arizona_runtime_suspend(struct device *dev)
 #endif
 
 #ifdef CONFIG_PM_SLEEP
-static int arizona_suspend(struct device *dev)
+static int arizona_resume_noirq(struct device *dev)
 {
 	struct arizona *arizona = dev_get_drvdata(dev);
 
-	dev_dbg(arizona->dev, "Suspend, disabling IRQ\n");
+	dev_dbg(arizona->dev, "Early resume, disabling IRQ\n");
 	disable_irq(arizona->irq);
 
 	return 0;
@@ -415,7 +411,7 @@ static int arizona_resume(struct device *dev)
 {
 	struct arizona *arizona = dev_get_drvdata(dev);
 
-	dev_dbg(arizona->dev, "Resume, reenabling IRQ\n");
+	dev_dbg(arizona->dev, "Late resume, reenabling IRQ\n");
 	enable_irq(arizona->irq);
 
 	return 0;
@@ -426,7 +422,10 @@ const struct dev_pm_ops arizona_pm_ops = {
 	SET_RUNTIME_PM_OPS(arizona_runtime_suspend,
 			   arizona_runtime_resume,
 			   NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(arizona_suspend, arizona_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(NULL, arizona_resume)
+#ifdef CONFIG_PM_SLEEP
+	.resume_noirq = arizona_resume_noirq,
+#endif
 };
 EXPORT_SYMBOL_GPL(arizona_pm_ops);
 
@@ -438,6 +437,7 @@ static struct mfd_cell wm5102_devs[] = {
 	{ .name = "arizona-micsupp" },
 	{ .name = "arizona-extcon" },
 	{ .name = "arizona-gpio" },
+	{ .name = "arizona-haptics" },
 	{ .name = "arizona-pwm" },
 	{ .name = "wm5102-codec" },
 };
@@ -446,11 +446,12 @@ static struct mfd_cell wm5110_devs[] = {
 	{ .name = "arizona-micsupp" },
 	{ .name = "arizona-extcon" },
 	{ .name = "arizona-gpio" },
+	{ .name = "arizona-haptics" },
 	{ .name = "arizona-pwm" },
 	{ .name = "wm5110-codec" },
 };
 
-int __devinit arizona_dev_init(struct arizona *arizona)
+int arizona_dev_init(struct arizona *arizona)
 {
 	struct device *dev = arizona->dev;
 	const char *type_name;
@@ -482,7 +483,7 @@ int __devinit arizona_dev_init(struct arizona *arizona)
 	}
 
 	ret = mfd_add_devices(arizona->dev, -1, early_devs,
-			      ARRAY_SIZE(early_devs), NULL, 0);
+			      ARRAY_SIZE(early_devs), NULL, 0, NULL);
 	if (ret != 0) {
 		dev_err(dev, "Failed to add early children: %d\n", ret);
 		return ret;
@@ -527,9 +528,6 @@ int __devinit arizona_dev_init(struct arizona *arizona)
 		dev_err(dev, "Failed to enable DCVDD: %d\n", ret);
 		goto err_enable;
 	}
-
-	if (arizona->pdata.control_init_time)
-		msleep(arizona->pdata.control_init_time);
 
 	if (arizona->pdata.reset) {
 		gpio_set_value_cansleep(arizona->pdata.reset, 1);
@@ -585,12 +583,21 @@ int __devinit arizona_dev_init(struct arizona *arizona)
 
 	/* If we have a /RESET GPIO we'll already be reset */
 	if (!arizona->pdata.reset) {
+		regcache_mark_dirty(arizona->regmap);
+
 		ret = regmap_write(arizona->regmap, ARIZONA_SOFTWARE_RESET, 0);
 		if (ret != 0) {
 			dev_err(dev, "Failed to reset device: %d\n", ret);
 			goto err_reset;
 		}
+
 		msleep(1);
+
+		ret = regcache_sync(arizona->regmap);
+		if (ret != 0) {
+			dev_err(dev, "Failed to sync device: %d\n", ret);
+			goto err_reset;
+		}
 	}
 
 	switch (arizona->type) {
@@ -644,6 +651,8 @@ int __devinit arizona_dev_init(struct arizona *arizona)
 			     arizona->pdata.gpio_defaults[i]);
 	}
 
+	pm_runtime_set_autosuspend_delay(arizona->dev, 100);
+	pm_runtime_use_autosuspend(arizona->dev);
 	pm_runtime_enable(arizona->dev);
 
 	/* Chip default */
@@ -741,31 +750,6 @@ int __devinit arizona_dev_init(struct arizona *arizona)
 					   arizona->pdata.spk_fmt[i]);
 	}
 
-	/* set virtual IRQs */
-	arizona->virq[0] = arizona->pdata.irq_base;
-	arizona->virq[1] = arizona->pdata.irq_base + ARIZONA_NUM_IRQ;
-
-	switch (arizona->pdata.mic_spk_clamp) {
-	case ARIZONA_MIC_CLAMP_SPKLN:
-		regmap_update_bits(arizona->regmap, ARIZONA_SPK_CTRL_2,
-				   0x3c, 0xc);
-		break;
-	case ARIZONA_MIC_CLAMP_SPKLP:
-		regmap_update_bits(arizona->regmap, ARIZONA_SPK_CTRL_2,
-				   0x3c, 0x1c);
-		break;
-	case ARIZONA_MIC_CLAMP_SPKRN:
-		regmap_update_bits(arizona->regmap, ARIZONA_SPK_CTRL_3,
-				   0x3c, 0xc);
-		break;
-	case ARIZONA_MIC_CLAMP_SPKRP:
-		regmap_update_bits(arizona->regmap, ARIZONA_SPK_CTRL_3,
-				   0x3c, 0x1c);
-		break;
-	default:
-		break;
-	}
-
 	/* Set up for interrupts */
 	ret = arizona_irq_init(arizona);
 	if (ret != 0)
@@ -781,11 +765,11 @@ int __devinit arizona_dev_init(struct arizona *arizona)
 	switch (arizona->type) {
 	case WM5102:
 		ret = mfd_add_devices(arizona->dev, -1, wm5102_devs,
-				      ARRAY_SIZE(wm5102_devs), NULL, 0);
+				      ARRAY_SIZE(wm5102_devs), NULL, 0, NULL);
 		break;
 	case WM5110:
 		ret = mfd_add_devices(arizona->dev, -1, wm5110_devs,
-				      ARRAY_SIZE(wm5110_devs), NULL, 0);
+				      ARRAY_SIZE(wm5110_devs), NULL, 0, NULL);
 		break;
 	}
 
@@ -793,9 +777,6 @@ int __devinit arizona_dev_init(struct arizona *arizona)
 		dev_err(arizona->dev, "Failed to add subdevices: %d\n", ret);
 		goto err_irq;
 	}
-
-	if (arizona->pdata.init_done)
-		arizona->pdata.init_done();
 
 #ifdef CONFIG_PM_RUNTIME
 	regulator_disable(arizona->dcvdd);
@@ -820,7 +801,7 @@ err_early:
 }
 EXPORT_SYMBOL_GPL(arizona_dev_init);
 
-int __devexit arizona_dev_exit(struct arizona *arizona)
+int arizona_dev_exit(struct arizona *arizona)
 {
 	mfd_remove_devices(arizona->dev);
 	arizona_free_irq(arizona, ARIZONA_IRQ_UNDERCLOCKED, arizona);

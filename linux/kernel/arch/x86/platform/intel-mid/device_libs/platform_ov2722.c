@@ -17,12 +17,17 @@
 #include <asm/intel-mid.h>
 #include <media/v4l2-subdev.h>
 #include <linux/mfd/intel_mid_pmic.h>
+
+#ifdef CONFIG_VLV2_PLAT_CLK
 #include <linux/vlv2_plat_clock.h>
+#endif
+
 #include "platform_camera.h"
 #include "platform_ov2722.h"
 
 /* workround - pin defined for byt */
 #define CAMERA_1_RESET 127
+#define CAMERA_1_RESET_CRV2 120
 #define CAMERA_1_PWDN 124
 #ifdef CONFIG_VLV2_PLAT_CLK
 #define OSC_CAM1_CLK 0x1
@@ -46,7 +51,8 @@ static int ov2722_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 {
 	int ret;
 	int pin;
-	if (intel_mid_identify_cpu() != INTEL_MID_CPU_CHIP_VALLEYVIEW2) {
+
+	if (!IS_BYT) {
 		if (gp_camera1_power_down < 0) {
 			ret = camera_sensor_gpio(-1, GP_CAMERA_1_POWER_DOWN,
 					GPIOF_DIR_OUT, 1);
@@ -68,7 +74,11 @@ static int ov2722_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 		 * The GPIO value would be provided by ACPI table, which is
 		 * not implemented currently.
 		 */
-		pin = CAMERA_1_RESET;
+		if (spid.hardware_id == BYT_TABLET_BLK_CRV2)
+			pin = CAMERA_1_RESET_CRV2;
+		else
+			pin = CAMERA_1_RESET;
+
 		if (gp_camera1_reset < 0) {
 			ret = gpio_request(pin, "camera_1_reset");
 			if (ret) {
@@ -102,7 +112,9 @@ static int ov2722_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 		}
 		gp_camera1_power_down = pin;
 
-		if (spid.hardware_id == BYT_TABLET_BLK_8PR0)
+		if (spid.hardware_id == BYT_TABLET_BLK_8PR0 ||
+		    spid.hardware_id == BYT_TABLET_BLK_8PR1 ||
+		    spid.hardware_id == BYT_TABLET_BLK_CRV2)
 			ret = gpio_direction_output(pin, 0);
 		else
 			ret = gpio_direction_output(pin, 1);
@@ -115,7 +127,9 @@ static int ov2722_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 		}
 	}
 	if (flag) {
-		if (spid.hardware_id == BYT_TABLET_BLK_8PR0)
+		if (spid.hardware_id == BYT_TABLET_BLK_8PR0 ||
+		    spid.hardware_id == BYT_TABLET_BLK_8PR1 ||
+		    spid.hardware_id == BYT_TABLET_BLK_CRV2)
 			gpio_set_value(gp_camera1_power_down, 0);
 		else
 			gpio_set_value(gp_camera1_power_down, 1);
@@ -125,7 +139,9 @@ static int ov2722_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 		gpio_set_value(gp_camera1_reset, 1);
 	} else {
 		gpio_set_value(gp_camera1_reset, 0);
-		if (spid.hardware_id == BYT_TABLET_BLK_8PR0)
+		if (spid.hardware_id == BYT_TABLET_BLK_8PR0 ||
+		    spid.hardware_id == BYT_TABLET_BLK_8PR1 ||
+		    spid.hardware_id == BYT_TABLET_BLK_CRV2)
 			gpio_set_value(gp_camera1_power_down, 1);
 		else
 			gpio_set_value(gp_camera1_power_down, 0);
@@ -137,19 +153,21 @@ static int ov2722_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 static int ov2722_flisclk_ctrl(struct v4l2_subdev *sd, int flag)
 {
 	static const unsigned int clock_khz = 19200;
-	int ret = 0;
-	if (intel_mid_identify_cpu() != INTEL_MID_CPU_CHIP_VALLEYVIEW2)
-		return intel_scu_ipc_osc_clk(OSC_CLK_CAM1,
-					     flag ? clock_khz : 0);
 #ifdef CONFIG_VLV2_PLAT_CLK
+	int ret = 0;
 	if (flag) {
 		ret = vlv2_plat_set_clock_freq(OSC_CAM1_CLK, CLK_19P2MHz);
 		if (ret)
 			return ret;
 	}
-	ret = vlv2_plat_configure_clock(OSC_CAM1_CLK, flag);
+	return vlv2_plat_configure_clock(OSC_CAM1_CLK, flag);
+#elif defined(CONFIG_INTEL_SCU_IPC_UTIL)
+	return intel_scu_ipc_osc_clk(OSC_CLK_CAM1,
+				     flag ? clock_khz : 0);
+#else
+	pr_err("ov2722 clock is not set.\n");
+	return 0;
 #endif
-	return ret;
 }
 
 /*
@@ -162,9 +180,6 @@ static int ov2722_power_ctrl(struct v4l2_subdev *sd, int flag)
 
 	if (flag) {
 		if (!camera_vprog1_on) {
-			if (intel_mid_identify_cpu() !=
-			    INTEL_MID_CPU_CHIP_VALLEYVIEW2)
-				ret = intel_scu_ipc_msic_vprog1(1);
 #ifdef CONFIG_CRYSTAL_COVE
 			/*
 			 * This should call VRF APIs.
@@ -176,6 +191,10 @@ static int ov2722_power_ctrl(struct v4l2_subdev *sd, int flag)
 			if (ret)
 				return ret;
 			ret = camera_set_pmic_power(CAMERA_1P8V, true);
+#elif defined(CONFIG_INTEL_SCU_IPC_UTIL)
+			ret = intel_scu_ipc_msic_vprog1(1);
+#else
+			pr_err("ov2722 power is not set.\n");
 #endif
 			if (!ret)
 				camera_vprog1_on = 1;
@@ -183,14 +202,15 @@ static int ov2722_power_ctrl(struct v4l2_subdev *sd, int flag)
 		}
 	} else {
 		if (camera_vprog1_on) {
-			if (intel_mid_identify_cpu() !=
-			    INTEL_MID_CPU_CHIP_VALLEYVIEW2)
-				ret = intel_scu_ipc_msic_vprog1(0);
 #ifdef CONFIG_CRYSTAL_COVE
 			ret = camera_set_pmic_power(CAMERA_2P8V, false);
 			if (ret)
 				return ret;
 			ret = camera_set_pmic_power(CAMERA_1P8V, false);
+#elif defined(CONFIG_INTEL_SCU_IPC_UTIL)
+			ret = intel_scu_ipc_msic_vprog1(0);
+#else
+			pr_err("ov2722 power is not set.\n");
 #endif
 			if (!ret)
 				camera_vprog1_on = 0;

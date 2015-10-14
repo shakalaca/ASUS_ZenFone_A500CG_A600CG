@@ -55,6 +55,7 @@ typedef struct _DC_DISPLAY_INFO_
 	IMG_UINT32		ui32MinDisplayPeriod;
 	IMG_UINT32		ui32MaxDisplayPeriod;
 	IMG_UINT32		ui32MaxPipes;
+	IMG_BOOL		bUnlatchedSupported;
 } DC_DISPLAY_INFO;
 
 typedef struct _DC_BUFFER_IMPORT_INFO_

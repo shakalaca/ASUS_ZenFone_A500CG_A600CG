@@ -127,7 +127,7 @@ static int kernel_memref_to_sw_desc_memref(struct dxdi_kmemref *cur_memref,
 	/* convert DMA direction to enum dma_data_direction */
 	dma_dir = dxdi_data_dir_to_dma_data_dir(cur_memref->dma_direction);
 	if (unlikely(dma_dir == DMA_NONE)) {
-		SEP_LOG_ERR("Invalid DMA direction (%d) for param.\n",
+		pr_err("Invalid DMA direction (%d) for param.\n",
 			    cur_memref->dma_direction);
 		return -EINVAL;
 	}
@@ -137,7 +137,7 @@ static int kernel_memref_to_sw_desc_memref(struct dxdi_kmemref *cur_memref,
 					    NULL, cur_memref->sgl,
 					    cur_memref->nbytes, dma_dir);
 	if (unlikely(!IS_VALID_MEMREF_IDX(memref_idx))) {
-		SEP_LOG_ERR("Failed temp. memory registration (rc=%d)\n",
+		pr_err("Failed temp. memory registration (rc=%d)\n",
 			    memref_idx);
 		return -ENOMEM;
 	}
@@ -173,7 +173,7 @@ static int user_memref_to_sw_desc_memref(struct dxdi_memref *cur_memref,
 	/* convert DMA direction to enum dma_data_direction */
 	dma_dir = dxdi_data_dir_to_dma_data_dir(cur_memref->dma_direction);
 	if (unlikely(dma_dir == DMA_NONE)) {
-		SEP_LOG_ERR("Invalid DMA direction (%d) for param.\n",
+		pr_err("Invalid DMA direction (%d) for param.\n",
 			    cur_memref->dma_direction);
 		return -EINVAL;
 	}
@@ -183,7 +183,7 @@ static int user_memref_to_sw_desc_memref(struct dxdi_memref *cur_memref,
 		*local_dma_obj_pp =
 		    acquire_dma_obj(client_ctx, cur_memref->ref_id);
 		if (unlikely(*local_dma_obj_pp == NULL)) {
-			SEP_LOG_ERR("Failed to acquire DMA obj. at ref_id=%d\n",
+			pr_err("Failed to acquire DMA obj. at ref_id=%d\n",
 				    cur_memref->ref_id);
 			return -EINVAL;
 		}
@@ -213,7 +213,7 @@ static int user_memref_to_sw_desc_memref(struct dxdi_memref *cur_memref,
 					   start_or_offset, NULL,
 					   cur_memref->size, dma_dir);
 		if (unlikely(!IS_VALID_MEMREF_IDX(memref_idx))) {
-			SEP_LOG_ERR("Failed temp. memory " "registration\n");
+			pr_err("Failed temp. memory " "registration\n");
 			return -ENOMEM;
 		}
 		*local_dma_obj_pp = acquire_dma_obj(client_ctx, memref_idx);
@@ -329,7 +329,7 @@ static int dxdi_sepapp_params_to_sw_desc_params(struct sep_client_ctx
 			break;
 
 		default:
-			SEP_LOG_ERR(
+			pr_err(
 				"Invalid parameter type (%d) for #%d\n",
 				params_types[i], i);
 			rc = -EINVAL;
@@ -384,7 +384,7 @@ static int sepapp_session_open(struct sep_op_ctx *op_ctx,
 					    GFP_KERNEL,
 					    &op_ctx->spad_buf_dma_addr);
 	if (unlikely(op_ctx->spad_buf_p == NULL)) {
-		SEP_LOG_ERR(
+		pr_err(
 			    "Failed allocating from spad_buf_pool for SeP Applet Request message\n");
 		INVALIDATE_SESSION_IDX(*session_id);
 		op_ctx->error_info = DXDI_ERROR_NO_RESOURCE;
@@ -404,7 +404,7 @@ static int sepapp_session_open(struct sep_op_ctx *op_ctx,
 		mutex_unlock(&new_session->session_lock);
 	}
 	if (*session_id == MAX_SEPAPP_SESSION_PER_CLIENT_CTX) {
-		SEP_LOG_ERR(
+		pr_err(
 			    "Could not allocate session entry. all %u are in use.\n",
 			    MAX_SEPAPP_SESSION_PER_CLIENT_CTX);
 		INVALIDATE_SESSION_IDX(*session_id);
@@ -493,7 +493,7 @@ int sepapp_session_close(struct sep_op_ctx *op_ctx, int session_id)
 	u16 sep_session_id;
 
 	if (!IS_VALID_SESSION_IDX(session_id)) {
-		SEP_LOG_ERR("Invalid session_id=%d\n", session_id);
+		pr_err("Invalid session_id=%d\n", session_id);
 		return -EINVAL;
 	}
 	op_ctx->op_type = SEP_OP_APP;
@@ -502,7 +502,7 @@ int sepapp_session_close(struct sep_op_ctx *op_ctx, int session_id)
 
 	if (!IS_VALID_SESSION_CTX(session_ctx)) {
 		mutex_unlock(&session_ctx->session_lock);
-		SEP_LOG_ERR("Invalid session ID %d for user %p\n",
+		pr_err("Invalid session ID %d for user %p\n",
 			    session_id, client_ctx);
 		op_ctx->error_info = DXDI_ERROR_BAD_CTX;
 		return -EINVAL;
@@ -510,7 +510,7 @@ int sepapp_session_close(struct sep_op_ctx *op_ctx, int session_id)
 
 	if (session_ctx->ref_cnt > 1) {
 		mutex_unlock(&session_ctx->session_lock);
-		SEP_LOG_ERR("Invoked while still has pending commands!\n");
+		pr_err("Invoked while still has pending commands!\n");
 		op_ctx->error_info = DXDI_ERROR_FATAL;
 		return -EBUSY;
 	}
@@ -533,7 +533,7 @@ int sepapp_session_close(struct sep_op_ctx *op_ctx, int session_id)
 		rc = wait_for_sep_op_result(op_ctx);
 
 	if (unlikely(rc != 0)) {	/* Not supposed to happen */
-		SEP_LOG_ERR(
+		pr_err(
 			    "Failure is SESSION_CLOSE operation for sep_session_id=%u\n",
 			    session_ctx->sep_session_id);
 		op_ctx->error_info = DXDI_ERROR_FATAL;
@@ -564,14 +564,14 @@ static int sepapp_command_invoke(struct sep_op_ctx *op_ctx,
 		     USER_SPAD_SIZE);
 
 	if (!IS_VALID_SESSION_IDX(session_id)) {
-		SEP_LOG_ERR("Invalid session_id=%d\n", session_id);
+		pr_err("Invalid session_id=%d\n", session_id);
 		op_ctx->error_info = DXDI_ERROR_NO_RESOURCE;
 		return -EINVAL;
 	}
 	mutex_lock(&session_ctx->session_lock);
 	if (!IS_VALID_SESSION_CTX(session_ctx)) {
 		mutex_unlock(&session_ctx->session_lock);
-		SEP_LOG_ERR("Invalid session ID %d for user %p\n",
+		pr_err("Invalid session ID %d for user %p\n",
 			    session_id, op_ctx->client_ctx);
 		op_ctx->error_info = DXDI_ERROR_BAD_CTX;
 		return -EINVAL;
@@ -584,7 +584,7 @@ static int sepapp_command_invoke(struct sep_op_ctx *op_ctx,
 					    GFP_KERNEL,
 					    &op_ctx->spad_buf_dma_addr);
 	if (unlikely(op_ctx->spad_buf_p == NULL)) {
-		SEP_LOG_ERR(
+		pr_err(
 			    "Failed allocating from spad_buf_pool for SeP Applet Request message\n");
 		op_ctx->error_info = DXDI_ERROR_NO_RESOURCE;
 		rc = -ENOMEM;
@@ -661,7 +661,7 @@ int sep_ioctl_sepapp_session_open(struct sep_client_ctx *client_ctx,
 
 	/* access permissions to arg was already checked in sep_ioctl */
 	if (__copy_from_user(&params, user_params, input_size)) {
-		SEP_LOG_ERR("Failed reading input parameters");
+		pr_err("Failed reading input parameters");
 		return -EFAULT;
 	}
 
@@ -674,7 +674,7 @@ int sep_ioctl_sepapp_session_open(struct sep_client_ctx *client_ctx,
 	/* Copying back from app_auth_data in case of output of "by value"... */
 	if (__copy_to_user(&user_params->app_auth_data, &params.app_auth_data,
 		       output_size)) {
-		SEP_LOG_ERR("Failed writing input parameters");
+		pr_err("Failed writing input parameters");
 		return -EFAULT;
 	}
 
@@ -735,7 +735,7 @@ int sep_ioctl_sepapp_session_close(struct sep_client_ctx *client_ctx,
 	/* access permissions to arg was already checked in sep_ioctl */
 	rc = __get_user(session_id, &user_params->session_id);
 	if (rc) {
-		SEP_LOG_ERR("Failed reading input parameters");
+		pr_err("Failed reading input parameters");
 		return -EFAULT;
 	}
 
@@ -786,7 +786,7 @@ int sep_ioctl_sepapp_command_invoke(struct sep_client_ctx *client_ctx,
 
 	/* access permissions to arg was already checked in sep_ioctl */
 	if (__copy_from_user(&params, user_params, input_size)) {
-		SEP_LOG_ERR("Failed reading input parameters");
+		pr_err("Failed reading input parameters");
 		return -EFAULT;
 	}
 
@@ -799,7 +799,7 @@ int sep_ioctl_sepapp_command_invoke(struct sep_client_ctx *client_ctx,
 	/* Copying back from command_params in case of output of "by value" */
 	if (__copy_to_user(&user_params->command_params,
 		       &params.command_params, output_size)) {
-		SEP_LOG_ERR("Failed writing input parameters");
+		pr_err("Failed writing input parameters");
 		return -EFAULT;
 	}
 
@@ -890,11 +890,15 @@ int sepapp_image_verify(u8 *addr, ssize_t size, u32 key_index, u32 magic_num)
 	struct dxdi_sepapp_kparams cmd_params;
 	int rc = 0;
 
-	printk(KERN_INFO "image verify: addr %08p size: %d key_index: %08X magic_num: %08X\n",
+	pr_info("image verify: addr 0x%p size: %zd key_index: 0x%08X magic_num: 0x%08X\n",
 		addr, size, key_index, magic_num);
 
 	cmd_params.params_types[0] = DXDI_SEPAPP_PARAM_VAL;
-	cmd_params.params[0].val.data[0] = (u32)addr;
+	/* addr is already a physical address, so this works on
+	 * a system with <= 4GB RAM.
+	 * TODO revisit this if the physical address of IMR can be higher
+	 */
+	cmd_params.params[0].val.data[0] = (unsigned long)addr & (DMA_BIT_MASK(32));
 	cmd_params.params[0].val.data[1] = 0;
 	cmd_params.params[0].val.copy_dir = DXDI_DATA_TO_DEVICE;
 

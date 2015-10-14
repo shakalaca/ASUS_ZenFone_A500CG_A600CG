@@ -27,7 +27,7 @@
 #include "mdfld_dsi_dbi_dsr.h"
 #include "mdfld_dsi_pkg_sender.h"
 
-#define DSR_COUNT 2
+#define DSR_COUNT 15
 
 static int exit_dsr_locked(struct mdfld_dsi_config *dsi_config)
 {
@@ -38,6 +38,8 @@ static int exit_dsr_locked(struct mdfld_dsi_config *dsi_config)
 
 	dev = dsi_config->dev;
 	err =  __dbi_power_on(dsi_config);
+
+	DC_MRFLD_onPowerOn(dsi_config->pipe);
 
 	return err;
 }
@@ -135,7 +137,6 @@ static int enter_dsr_locked(struct mdfld_dsi_config *dsi_config, int level)
 	err = mdfld_dsi_wait_for_fifos_empty(sender);
 	if (err) {
 		DRM_ERROR("mdfld_dsi_dsr: FIFO not empty\n");
-		ospm_power_using_hw_end(OSPM_DISPLAY_ISLAND);
 		return err;
 	}
 
@@ -149,6 +150,8 @@ static int enter_dsr_locked(struct mdfld_dsi_config *dsi_config, int level)
 
 	/*turn off dbi interface put in ulps*/
 	__dbi_power_off(dsi_config);
+
+	DC_MRFLD_onPowerOff(dsi_config->pipe);
 
 	PSB_DEBUG_ENTRY("entered\n");
 	return 0;
@@ -177,19 +180,22 @@ int mdfld_dsi_dsr_update_panel_fb(struct mdfld_dsi_config *dsi_config)
 
 	dsr = dsi_config->dsr;
 
-	/*if no dsr attached, return 0*/
-	if (!dsr)
-		return 0;
+	if (!IS_ANN_A0(dev)) {
+		/*if no dsr attached, return 0*/
+		if (!dsr)
+			return 0;
+	}
 
 	PSB_DEBUG_ENTRY("\n");
 
-	/*ignore it if there are pending fb updates*/
-	if (dsr->pending_fb_updates)
-		goto update_fb_out;
+	if (dsi_config->type == MDFLD_DSI_ENCODER_DPI)
+		return 0;
+	mutex_lock(&dsi_config->context_lock);
 
 	if (!dsi_config->dsi_hw_context.panel_on) {
 		PSB_DEBUG_ENTRY(
 		"if screen off, update fb is not allowed\n");
+		err = -EINVAL;
 		goto update_fb_out;
 	}
 
@@ -211,11 +217,11 @@ int mdfld_dsi_dsr_update_panel_fb(struct mdfld_dsi_config *dsi_config)
 		goto update_fb_out;
 	}
 
-	/*increase pending fb updates*/
-	dsr->pending_fb_updates++;
 	/*clear free count*/
 	dsr->free_count = 0;
+
 update_fb_out:
+	mutex_unlock(&dsi_config->context_lock);
 	return err;
 }
 
@@ -276,8 +282,6 @@ int mdfld_dsi_dsr_report_te(struct mdfld_dsi_config *dsi_config)
 		dsr->dsr_state = dsr_level;
 	}
 report_te_out:
-	/*clear pending fb updates*/
-	dsr->pending_fb_updates = 0;
 	mutex_unlock(&dsi_config->context_lock);
 	return err;
 }
@@ -295,9 +299,9 @@ int mdfld_dsi_dsr_forbid_locked(struct mdfld_dsi_config *dsi_config)
 	dsr = dsi_config->dsr;
 
 	/*if no dsr attached, return 0*/
-	if (!dsr)
+	if (!dsr) {
 		return 0;
-
+	}
 	/*exit dsr if necessary*/
 	if (!dsr->dsr_enabled)
 		goto forbid_out;
@@ -352,14 +356,17 @@ int mdfld_dsi_dsr_allow_locked(struct mdfld_dsi_config *dsi_config)
 	dsr = dsi_config->dsr;
 
 	/*if no dsr attached, return 0*/
-	if (!dsr)
+	if (!dsr) {
 		return 0;
+	}
 
 	if (!dsr->dsr_enabled)
 		goto allow_out;
 
-	if (!dsr->ref_count)
+	if (!dsr->ref_count) {
+		DRM_ERROR("Reference count is 0\n");
 		goto allow_out;
+	}
 
 	PSB_DEBUG_ENTRY("\n");
 
@@ -466,9 +473,6 @@ int mdfld_dsi_dsr_init(struct mdfld_dsi_config *dsi_config)
 
 	/*init free count*/
 	dsr->free_count = 0;
-
-	/*init pending fb updates*/
-	dsr->pending_fb_updates = 0;
 
 	/*init dsr enabled*/
 	dsr->dsr_enabled = 0;

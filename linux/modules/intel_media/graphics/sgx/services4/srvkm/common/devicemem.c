@@ -1981,6 +1981,7 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVWrapExtMemoryKM(IMG_HANDLE				hDevCookie,
   		*/
 		bPhysContig = IMG_FALSE;
 	}
+#if !defined(__QNXNTO__)
 	else
 	{
 		if (psExtSysPAddr)
@@ -1993,6 +1994,8 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVWrapExtMemoryKM(IMG_HANDLE				hDevCookie,
 		}
 		return PVRSRV_ERROR_INVALID_PARAMS;
 	}
+#endif
+
 
 	/* Choose the heap to map to */
 	psDevMemoryInfo = &((BM_CONTEXT*)hDevMemContext)->psDeviceNode->sDevMemoryInfo;

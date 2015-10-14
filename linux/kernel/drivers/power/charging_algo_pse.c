@@ -40,7 +40,7 @@ static int get_tempzone(struct ps_pse_mod_prof *pse_mod_bprof,
 static inline bool __is_battery_full
 	(long volt, long cur, long iterm, unsigned long cv)
 {
-	pr_devel("%s:current=%d pse_mod_bprof->chrg_term_mA =%d voltage_now=%d full_cond=%d",
+	pr_devel("%s:current=%d pse_mod_bprof->chrg_term_ma =%d voltage_now=%d full_cond=%d",
 			__func__, cur, iterm, volt * 100, (FULL_CV_MIN * cv));
 
 	return ((cur > 0) && (cur <= iterm) &&
@@ -57,15 +57,15 @@ static inline bool is_battery_full(struct batt_props bat_prop,
 	*  battery Full. The voltage also verified to avoid false charge
 	*  full detection.
 	*/
-	pr_devel("%s:current=%d pse_mod_bprof->chrg_term_mA =%d bat_prop.voltage_now=%d full_cond=%d",
-		__func__, bat_prop.current_now, (pse_mod_bprof->chrg_term_mA),
+	pr_devel("%s:current=%d pse_mod_bprof->chrg_term_ma =%d bat_prop.voltage_now=%d full_cond=%d",
+		__func__, bat_prop.current_now, (pse_mod_bprof->chrg_term_ma),
 		bat_prop.voltage_now * 100, (FULL_CV_MIN * cv));
 
 	for (i = (MAX_CUR_VOLT_SAMPLES - 1); i >= 0; --i) {
 
 		if (!(__is_battery_full(bat_prop.voltage_now_cache[i],
 				bat_prop.current_now_cache[i],
-				pse_mod_bprof->chrg_term_mA, cv)))
+				pse_mod_bprof->chrg_term_ma, cv)))
 			return false;
 	}
 
@@ -81,7 +81,7 @@ static int  pse_get_bat_thresholds(struct ps_batt_chg_prof  bprof,
 	if ((bprof.chrg_prof_type != PSE_MOD_CHRG_PROF) || (!pse_mod_bprof))
 		return -EINVAL;
 
-	bat_thresh->iterm = pse_mod_bprof->chrg_term_mA;
+	bat_thresh->iterm = pse_mod_bprof->chrg_term_ma;
 	bat_thresh->temp_min = pse_mod_bprof->temp_low_lim;
 	bat_thresh->temp_max = pse_mod_bprof->temp_mon_range[0].temp_up_lim;
 

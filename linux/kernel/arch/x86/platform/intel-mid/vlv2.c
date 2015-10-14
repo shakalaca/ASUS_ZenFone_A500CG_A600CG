@@ -30,8 +30,6 @@
 
 #define PIRQ2IRQ(x)	(x + 16)
 
-extern struct legacy_pic default_legacy_pic;
-
 /* Propagate PCI IRQ# */
 static int vlv2_pci_enable_irq(struct pci_dev *pdev)
 {
@@ -65,6 +63,23 @@ static int vlv2_pci_enable_irq(struct pci_dev *pdev)
 	return 0;
 }
 
+#define VALLEYVIEW2_FAMILY	0x30670
+#define CPUID_MASK		0xffff0
+enum cpuid_regs {
+	CR_EAX = 0,
+	CR_ECX,
+	CR_EDX,
+	CR_EBX
+};
+
+static int is_valleyview()
+{
+	u32 regs[4];
+	cpuid(1, &regs[CR_EAX], &regs[CR_EBX], &regs[CR_ECX], &regs[CR_EDX]);
+
+	return ((regs[CR_EAX] & CPUID_MASK) == VALLEYVIEW2_FAMILY);
+}
+
 /*
  * ACPI DSDT table doesn't have correct PCI interrupt routing information
  * for some devices, so here we have a kernel workaround to fix this issue.
@@ -73,7 +88,12 @@ static int vlv2_pci_enable_irq(struct pci_dev *pdev)
  */
 static int __init vlv2_pci_irq_fixup(void)
 {
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_VALLEYVIEW2) {
+	/* HACK: intel_mid_identify_cpu() is not set yet */
+
+	/* More hack: do cpuid instruction. This will be done here (helper is_valleyview) for now
+	 * as temp w/a until reworked function is provided from Bin Gao.
+	 */
+	if (is_valleyview()) {
 		pr_info("VLV2: fix up PCI interrupt routing\n");
 		pcibios_enable_irq = vlv2_pci_enable_irq;
 	}
@@ -82,103 +102,3 @@ static int __init vlv2_pci_irq_fixup(void)
 }
 fs_initcall(vlv2_pci_irq_fixup);
 
-static unsigned long __init vlv2_calibrate_tsc(void)
-{
-	unsigned long fast_calibrate;
-	u32 lo, hi, ratio, fsb, bus_freq;
-
-	/* *********************** */
-	/* Compute TSC:Ratio * FSB */
-	/* *********************** */
-
-	/* Compute Ratio */
-	rdmsr(MSR_PLATFORM_INFO, lo, hi);
-	pr_debug("IA32 PLATFORM_INFO is 0x%x : %x\n", hi, lo);
-
-	ratio = (lo >> 8) & 0xFF;
-	pr_debug("ratio is %d\n", ratio);
-	if (!ratio) {
-		pr_err("Read a zero ratio, force tsc ratio to 4 ...\n");
-		ratio = 4;
-	}
-
-	/* Compute FSB */
-	rdmsr(MSR_FSB_FREQ, lo, hi);
-	pr_debug("Actual FSB frequency detected by SOC 0x%x : %x\n",
-		hi, lo);
-
-	bus_freq = lo & 0x7;
-	pr_debug("bus_freq = 0x%x\n", bus_freq);
-
-	if (bus_freq == 0)
-		fsb = FSB_FREQ_100SKU;
-	else if (bus_freq == 1)
-		fsb = FSB_FREQ_100SKU;
-	else if (bus_freq == 2)
-		fsb = FSB_FREQ_133SKU;
-	else if (bus_freq == 3)
-		fsb = FSB_FREQ_167SKU;
-	else if (bus_freq == 4)
-		fsb = FSB_FREQ_83SKU;
-	else if (bus_freq == 5)
-		fsb = FSB_FREQ_400SKU;
-	else if (bus_freq == 6)
-		fsb = FSB_FREQ_267SKU;
-	else if (bus_freq == 7)
-		fsb = FSB_FREQ_333SKU;
-	else {
-		BUG();
-		pr_err("Invalid bus_freq! Setting to minimal value!\n");
-		fsb = FSB_FREQ_100SKU;
-	}
-
-	/* TSC = FSB Freq * Resolved HFM Ratio */
-	fast_calibrate = ratio * fsb;
-	pr_debug("calculate tangier tsc %lu KHz\n", fast_calibrate);
-
-	/* ************************************ */
-	/* Calculate Local APIC Timer Frequency */
-	/* ************************************ */
-	lapic_timer_frequency = (fsb * 1000) / HZ;
-
-	pr_debug("Setting lapic_timer_frequency = %d\n",
-		lapic_timer_frequency);
-
-	/* mark tsc clocksource as reliable */
-	set_cpu_cap(&boot_cpu_data, X86_FEATURE_TSC_RELIABLE);
-
-	if (fast_calibrate)
-		return fast_calibrate;
-
-	return 0;
-}
-
-/* Restore x86_init to default */
-static void __init valleyview2_arch_setup(void)
-{
-	x86_init.resources.reserve_resources = reserve_standard_io_resources;
-
-	x86_init.irqs.pre_vector_init		= init_ISA_irqs;
-
-	x86_init.timers.setup_percpu_clockev	= setup_boot_APIC_clock;
-	x86_init.timers.timer_init		= hpet_time_init;
-	x86_init.timers.wallclock_init		= x86_init_noop;
-
-	x86_init.pci.init			= x86_default_pci_init;
-	x86_init.pci.fixup_irqs			= x86_default_pci_fixup_irqs;
-
-	x86_cpuinit.setup_percpu_clockev	= setup_secondary_APIC_clock;
-
-	x86_platform.calibrate_tsc		= vlv2_calibrate_tsc;
-
-	legacy_pic				= &default_legacy_pic;
-}
-
-static struct intel_mid_ops __initdata valleyview2_ops = {
-	.arch_setup = valleyview2_arch_setup,
-};
-
-void __init *get_valleyview2_ops(void)
-{
-	return &valleyview2_ops;
-}

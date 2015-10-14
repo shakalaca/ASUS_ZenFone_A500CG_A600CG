@@ -194,9 +194,11 @@ extern "C" {
 	Flags for PVRSRVModifySyncOps
 	WO_INC		-	Used to increment "WriteOpsPending/complete of sync info"
 	RO_INC		-	Used to increment "ReadOpsPending/complete of sync info"
+	RO2_INC		-	Used to increment "ReadOps2Pending/complete of sync info"
 */
-#define PVRSRV_MODIFYSYNCOPS_FLAGS_WO_INC			0x00000001
-#define PVRSRV_MODIFYSYNCOPS_FLAGS_RO_INC			0x00000002
+#define PVRSRV_MODIFYSYNCOPS_FLAGS_WO_INC				(1U<<0)
+#define PVRSRV_MODIFYSYNCOPS_FLAGS_RO_INC				(1U<<1)
+#define PVRSRV_MODIFYSYNCOPS_FLAGS_RO2_INC				(1U<<2)
 
 /*
 	Flags for Services connection.
@@ -752,15 +754,6 @@ PVRSRV_ERROR PVRSRVChangeDeviceMemoryAttributes(IMG_CONST PVRSRV_DEV_DATA			*psD
 												IMG_UINT32				ui32Attribs);
 
 IMG_IMPORT
-PVRSRV_ERROR IMG_CALLCONV PVRSRVMapDeviceClassMemory (IMG_CONST PVRSRV_DEV_DATA *psDevData,
-										IMG_HANDLE hDevMemContext,
-										IMG_HANDLE hDeviceClassBuffer,
-										PVRSRV_CLIENT_MEM_INFO **ppsMemInfo);
-IMG_IMPORT
-PVRSRV_ERROR IMG_CALLCONV PVRSRVUnmapDeviceClassMemory (IMG_CONST PVRSRV_DEV_DATA *psDevData,
-										PVRSRV_CLIENT_MEM_INFO *psMemInfo);
-
-IMG_IMPORT
 PVRSRV_ERROR IMG_CALLCONV PVRSRVMapPhysToUserSpace(IMG_CONST PVRSRV_DEV_DATA *psDevData,
 									  IMG_SYS_PHYADDR sSysPhysAddr,
 									  IMG_UINT32 uiSizeInBytes,
@@ -848,6 +841,15 @@ IMG_IMPORT PVRSRV_SYNCVAL PVRSRVGetPendingOpSyncVal(PPVRSRV_CLIENT_MEM_INFO psMe
 	PVRSRV_SYNCVAL_MODE eMode);
 
 #if defined(SUPPORT_PVRSRV_DEVICE_CLASS)
+
+IMG_IMPORT
+PVRSRV_ERROR IMG_CALLCONV PVRSRVMapDeviceClassMemory (IMG_CONST PVRSRV_DEV_DATA *psDevData,
+										IMG_HANDLE hDevMemContext,
+										IMG_HANDLE hDeviceClassBuffer,
+										PVRSRV_CLIENT_MEM_INFO **ppsMemInfo);
+IMG_IMPORT
+PVRSRV_ERROR IMG_CALLCONV PVRSRVUnmapDeviceClassMemory (IMG_CONST PVRSRV_DEV_DATA *psDevData,
+										PVRSRV_CLIENT_MEM_INFO *psMemInfo);
 
 /******************************************************************************
  * Common Device Class Enumeration

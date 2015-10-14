@@ -54,6 +54,14 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "device.h"
 
 
+typedef struct _RGX_SERVER_COMMON_CONTEXT_ RGX_SERVER_COMMON_CONTEXT;
+
+typedef struct {
+	DEVMEM_MEMDESC		*psFWFrameworkMemDesc;
+	IMG_DEV_VIRTADDR	*psMCUFenceAddr;
+} RGX_COMMON_CONTEXT_INFO;
+
+
 /*!
  ******************************************************************************
  * Device state flags
@@ -79,11 +87,19 @@ typedef struct _RGX_GPU_DVFS_HIST_
 
 typedef struct _RGXFWIF_GPU_UTIL_STATS_
 {
-	IMG_BOOL				bValid;				/* if TRUE, statistict are valid, otherwise there was not enough data to calculate the ratios */
+	IMG_BOOL				bPoweredOn;			/* if TRUE, device is powered on and statistic are valid. 
+													It might be FALSE if DVFS frequency is not provided by system layer (see RGX_TIMING_INFORMATION::ui32CoreClockSpeed) */
 	IMG_UINT32				ui32GpuStatActive;	/* GPU active  ratio expressed in 0,01% units */
 	IMG_UINT32				ui32GpuStatBlocked; /* GPU blocked ratio expressed in 0,01% units */
 	IMG_UINT32				ui32GpuStatIdle;    /* GPU idle    ratio expressed in 0,01% units */
 } RGXFWIF_GPU_UTIL_STATS;
+
+typedef struct _RGX_REG_CONFIG_
+{
+	IMG_BOOL		bEnabled;
+	RGXFWIF_PWR_EVT		ePowerIslandToPush;
+	IMG_UINT32      	ui32NumRegRecords;
+} RGX_REG_CONFIG;
 
 typedef struct _PVRSRV_STUB_PBDESC_ PVRSRV_STUB_PBDESC;
 
@@ -178,6 +194,10 @@ typedef struct _PVRSRV_RGXDEV_INFO_
 	IMG_BYTE				*psRGXFWIfHWPerfBuf;
 	IMG_UINT32				ui32RGXFWIfHWPerfBufSize; /* in bytes */
 	
+	DEVMEM_MEMDESC			*psRGXFWIfCorememDataStoreMemDesc;
+
+	DEVMEM_MEMDESC			*psRGXFWIfRegCfgMemDesc;
+
 	DEVMEM_MEMDESC			*psRGXFWIfInitMemDesc;
 
 #if defined(RGXFW_ALIGNCHECKS)
@@ -251,17 +271,40 @@ typedef struct _PVRSRV_RGXDEV_INFO_
 	RGX_GPU_DVFS_HIST*      psGpuDVFSHistory;
 	RGXFWIF_GPU_UTIL_STATS	(*pfnGetGpuUtilStats) (PVRSRV_DEVICE_NODE *psDeviceNode);
 
+	/* Register configuration */
+	RGX_REG_CONFIG		sRegCongfig;
+
 	IMG_BOOL				bIgnoreFurtherIRQs;
+	DLLIST_NODE				sMemoryContextList;
+
+	/* Linked lists of contexts on this device */
+	DLLIST_NODE 		sRenderCtxtListHead;
+	DLLIST_NODE 		sComputeCtxtListHead;
+	DLLIST_NODE 		sTransferCtxtListHead;
+	DLLIST_NODE 		sRaytraceCtxtListHead;
+
+#if defined(RGXFW_POWMON_TEST)
+	IMG_HANDLE			hPowerMonitoringThread;	    /*!< Fatal Error Detection thread */
+	IMG_BOOL			bPowMonEnable;
+#endif
 } PVRSRV_RGXDEV_INFO;
 
 
 
 typedef struct _RGX_TIMING_INFORMATION_
 {
-	IMG_UINT32			ui32CoreClockSpeed; /* In HZs */
+	/*! GPU default core clock speed in Hz */
+	IMG_UINT32			ui32CoreClockSpeed;
+
+	/*! Active Power Management: GPU actively requests the host driver to be powered off */
 	IMG_BOOL			bEnableActivePM;
+
+	/*! Enable the GPU to power off internal Power Islands independently from the host driver */
 	IMG_BOOL			bEnableRDPowIsland;
+	
+	/*! Active Power Management: Delay between the GPU idle and the request to the host */
 	IMG_UINT32			ui32ActivePMLatencyms;
+
 } RGX_TIMING_INFORMATION;
 
 typedef struct _RGX_DATA_
@@ -270,6 +313,8 @@ typedef struct _RGX_DATA_
 	RGX_TIMING_INFORMATION	*psRGXTimingInfo;
 	IMG_BOOL bHasTDMetaCodePhysHeap;
 	IMG_UINT32 uiTDMetaCodePhysHeapID;
+	IMG_BOOL bHasTDSecureBufPhysHeap;
+	IMG_UINT32 uiTDSecureBufPhysHeapID;
 } RGX_DATA;
 
 

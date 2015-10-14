@@ -20,7 +20,7 @@ config HSI_NO_MODEM
 	help
 	  modem switch off
 
-source "../modules/drivers/hsi/controllers/Kconfig"
-source "../modules/drivers/hsi/clients/Kconfig"
+source "drivers/external_drivers/drivers/hsi/controllers/Kconfig"
+source "drivers/external_drivers/drivers/hsi/clients/Kconfig"
 
 endif # HSI

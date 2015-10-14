@@ -85,6 +85,7 @@ typedef enum
     PVRSRV_PROCESS_STAT_TYPE_FREELIST_PAGES_INIT,
     PVRSRV_PROCESS_STAT_TYPE_FREELIST_MAX_PAGES,
 
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
     PVRSRV_PROCESS_STAT_TYPE_KMALLOC,
     PVRSRV_PROCESS_STAT_TYPE_MAX_KMALLOC,
     PVRSRV_PROCESS_STAT_TYPE_ALLOC_PAGES,
@@ -93,6 +94,7 @@ typedef enum
     PVRSRV_PROCESS_STAT_TYPE_MAX_IOREMAP,
     PVRSRV_PROCESS_STAT_TYPE_VMAP,
     PVRSRV_PROCESS_STAT_TYPE_MAX_VMAP,
+#endif
 	
 	/* Must be the last enum...*/
 	PVRSRV_PROCESS_STAT_TYPE_COUNT
@@ -116,6 +118,7 @@ static IMG_CHAR*  pszProcessStatFmt[PVRSRV_PROCESS_STAT_TYPE_COUNT] = {
     "FreeListInitialPages            %10d\n", /* PVRSRV_PROCESS_STAT_TYPE_FREELIST_PAGES_INIT */
     "FreeListMaxPages                %10d\n", /* PVRSRV_PROCESS_STAT_TYPE_FREELIST_MAX_PAGES */
 
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
     "MemoryUsageKMalloc              %10d\n", /* PVRSRV_STAT_TYPE_KMALLOC */
     "MemoryUsageKMallocMax           %10d\n", /* PVRSRV_STAT_TYPE_MAX_KMALLOC */
     "MemoryUsageAllocPageMemory      %10d\n", /* PVRSRV_STAT_TYPE_ALLOC_PAGES */
@@ -124,6 +127,7 @@ static IMG_CHAR*  pszProcessStatFmt[PVRSRV_PROCESS_STAT_TYPE_COUNT] = {
     "MemoryUsageIORemapMax           %10d\n", /* PVRSRV_STAT_TYPE_MAX_IOREMAP */
     "MemoryUsageVMap                 %10d\n", /* PVRSRV_STAT_TYPE_VMAP */
     "MemoryUsageVMapMax              %10d\n"  /* PVRSRV_STAT_TYPE_MAX_VMAP */
+#endif
 };
 
 
@@ -231,8 +235,10 @@ typedef struct _PVRSRV_RI_MEMORY_STATS_ {
 	IMG_PVOID                   pvOSRIMemEntryData;
 } PVRSRV_RI_MEMORY_STATS;
 
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 static IMPLEMENT_LIST_INSERT(PVRSRV_MEM_ALLOC_REC)
 static IMPLEMENT_LIST_REMOVE(PVRSRV_MEM_ALLOC_REC)
+#endif
 
 
 /*
@@ -506,7 +512,9 @@ _DestoryProcessStat(PVRSRV_PROCESS_STATS* psProcessStats)
 #if defined(PVR_RI_DEBUG)
 	OSRemoveStatisticEntry(psProcessStats->psRIMemoryStats->pvOSRIMemEntryData);
 #endif
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 	OSRemoveStatisticEntry(psProcessStats->psMemoryStats->pvOSMemEntryData);
+#endif
 	OSRemoveStatisticEntry(psProcessStats->pvOSPidEntryData);
 	OSRemoveStatisticFolder(psProcessStats->pvOSPidFolderData);
 
@@ -528,11 +536,13 @@ _DestoryProcessStat(PVRSRV_PROCESS_STATS* psProcessStats)
 	}
 
 	/* Free the memory statistics... */
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 	while (psProcessStats->psMemoryStats->psMemoryRecords)
 	{
 		List_PVRSRV_MEM_ALLOC_REC_Remove(psProcessStats->psMemoryStats->psMemoryRecords);
 	}
 	OSFreeMem(psProcessStats->psMemoryStats);
+#endif
 
 	/* Free the memory... */
 	OSFreeMem(psProcessStats);
@@ -724,6 +734,14 @@ PVRSRVStatsRegisterProcess(IMG_HANDLE* phProcessStats)
 
 	OSMemSet(psProcessStats, 0, sizeof(PVRSRV_PROCESS_STATS));
 
+	psProcessStats->eStructureType  = PVRSRV_STAT_STRUCTURE_PROCESS;
+	psProcessStats->pid             = currentPid;
+	psProcessStats->ui32RefCount    = 1;
+
+	psProcessStats->i32StatValue[PVRSRV_PROCESS_STAT_TYPE_CONNECTIONS]     = 1;
+	psProcessStats->i32StatValue[PVRSRV_PROCESS_STAT_TYPE_MAX_CONNECTIONS] = 1;
+
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 	psProcessStats->psMemoryStats = OSAllocMem(sizeof(PVRSRV_MEMORY_STATS));
 	if (psProcessStats->psMemoryStats == IMG_NULL)
 	{
@@ -733,15 +751,8 @@ PVRSRVStatsRegisterProcess(IMG_HANDLE* phProcessStats)
 	}
 
 	OSMemSet(psProcessStats->psMemoryStats, 0, sizeof(PVRSRV_MEMORY_STATS));
-
-	psProcessStats->eStructureType  = PVRSRV_STAT_STRUCTURE_PROCESS;
-	psProcessStats->pid             = currentPid;
-	psProcessStats->ui32RefCount    = 1;
-
-	psProcessStats->i32StatValue[PVRSRV_PROCESS_STAT_TYPE_CONNECTIONS]     = 1;
-	psProcessStats->i32StatValue[PVRSRV_PROCESS_STAT_TYPE_MAX_CONNECTIONS] = 1;
-
 	psProcessStats->psMemoryStats->eStructureType = PVRSRV_STAT_STRUCTURE_MEMORY;
+#endif
 
 #if defined(PVR_RI_DEBUG)
 	psProcessStats->psRIMemoryStats = OSAllocMem(sizeof(PVRSRV_RI_MEMORY_STATS));
@@ -773,10 +784,13 @@ PVRSRVStatsRegisterProcess(IMG_HANDLE* phProcessStats)
 	                                                           PVRSRVStatsObtainElement,
 	                                                           (IMG_PVOID) psProcessStats);
 
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 	psProcessStats->psMemoryStats->pvOSMemEntryData = OSCreateStatisticEntry("mem_area",
 	                                                           psProcessStats->pvOSPidFolderData,
 	                                                           PVRSRVStatsObtainElement,
 	                                                           (IMG_PVOID) psProcessStats->psMemoryStats);
+#endif
+
 #if defined(PVR_RI_DEBUG)
 	psProcessStats->psRIMemoryStats->pvOSRIMemEntryData = OSCreateStatisticEntry("ri_mem_area",
 	                                                           psProcessStats->pvOSPidFolderData,
@@ -830,6 +844,7 @@ PVRSRVStatsAddMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE eAllocType,
                              IMG_SIZE_T uiBytes,
                              IMG_PVOID pvPrivateData)
 {
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 	IMG_PID                currentPid = OSGetCurrentProcessIDKM();
     PVRSRV_MEM_ALLOC_REC*  psRecord   = IMG_NULL;
     PVRSRV_PROCESS_STATS*  psProcessStats;
@@ -930,6 +945,13 @@ PVRSRVStatsAddMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE eAllocType,
 	}
 
 	OSLockRelease(psLinkedListLock);
+#else
+PVR_UNREFERENCED_PARAMETER(eAllocType);
+PVR_UNREFERENCED_PARAMETER(pvCpuVAddr);
+PVR_UNREFERENCED_PARAMETER(sCpuPAddr);
+PVR_UNREFERENCED_PARAMETER(uiBytes);
+PVR_UNREFERENCED_PARAMETER(pvPrivateData);
+#endif
 } /* PVRSRVStatsAddMemAllocRecord */
 
 
@@ -937,6 +959,7 @@ IMG_VOID
 PVRSRVStatsRemoveMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE eAllocType,
                                 IMG_VOID *pvCpuVAddr)
 {
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 	IMG_PID                currentPid = OSGetCurrentProcessIDKM();
 	PVRSRV_MEM_ALLOC_REC*  psRecord   = IMG_NULL;
     PVRSRV_PROCESS_STATS*  psProcessStats;
@@ -1056,6 +1079,10 @@ PVRSRVStatsRemoveMemAllocRecord(PVRSRV_MEM_ALLOC_TYPE eAllocType,
 	{
 		OSFreeMem(psRecord);
 	}
+#else
+PVR_UNREFERENCED_PARAMETER(eAllocType);
+PVR_UNREFERENCED_PARAMETER(pvCpuVAddr);
+#endif
 } /* PVRSRVStatsRemoveMemAllocRecord */
 
 
@@ -1188,6 +1215,7 @@ _ObtainProcessStatistic(PVRSRV_PROCESS_STATS* psProcessStats,
 } /* _ObtainProcessStatistic */
 
 
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 /*************************************************************************/ /*!
 @Function       _ObtainMemoryStatistic
 @Description    Returns a specific statistic number for a memory area.
@@ -1315,6 +1343,7 @@ _ObtainMemoryStatistic(PVRSRV_MEMORY_STATS* psMemoryStats,
 
 	return found;
 } /* _ObtainMemoryStatistic */
+#endif
 
 
 #if defined(PVR_RI_DEBUG)
@@ -1390,6 +1419,7 @@ PVRSRVStatsObtainElement(IMG_PVOID pvStatPtr, IMG_UINT32 ui32StatNumber,
 		return _ObtainProcessStatistic(psProcessStats, ui32StatNumber,
 									   pi32StatData, ppszStatFmtText);
 	}
+#if defined(PVRSRV_ENABLE_MEMORY_STATS)
 	else if (*peStructureType == PVRSRV_STAT_STRUCTURE_MEMORY)
 	{
 		PVRSRV_MEMORY_STATS*  psMemoryStats = (PVRSRV_MEMORY_STATS*) pvStatPtr;
@@ -1397,6 +1427,7 @@ PVRSRVStatsObtainElement(IMG_PVOID pvStatPtr, IMG_UINT32 ui32StatNumber,
 		return _ObtainMemoryStatistic(psMemoryStats, ui32StatNumber,
 									  pi32StatData, ppszStatFmtText);
 	}
+#endif
 #if defined(PVR_RI_DEBUG)
 	else if (*peStructureType == PVRSRV_STAT_STRUCTURE_RIMEMORY)
 	{

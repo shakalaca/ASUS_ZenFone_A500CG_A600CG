@@ -10,13 +10,16 @@
  * of the License.
  */
 
+#include <linux/gpio.h>
 #include <linux/pci.h>
 #include <asm/intel-mid.h>
 #include <asm/intel_scu_ipc.h>
+#include <asm/spid.h>
 #include <linux/dma-mapping.h>
 
-#ifdef CONFIG_USB_DWC_OTG_XCEIV
-#include <linux/usb/dwc_otg3.h>
+#ifdef CONFIG_USB_DWC3_OTG
+#include <linux/usb/dwc3-intel-mid.h>
+static struct intel_dwc_otg_pdata dwc_otg_pdata;
 
 static bool dwc_otg_get_usbspecoverride(void)
 {
@@ -32,41 +35,75 @@ static bool dwc_otg_get_usbspecoverride(void)
 	return usb_spec_override;
 }
 
+/* Read SCCB_USB_CFG.bit14 to get the current phy select setting */
+static enum usb_phy_intf get_usb2_phy_type(void)
+{
+	void __iomem *addr;
+	u32 val;
 
-static struct intel_dwc_otg_pdata dwc_otg_pdata;
+	addr = ioremap_nocache(SCCB_USB_CFG, 4);
+	val = readl(addr) & SCCB_USB_CFG_SELECT_ULPI;
+	iounmap(addr);
+
+	if (val)
+		return USB2_PHY_ULPI;
+	else
+		return USB2_PHY_UTMI;
+}
+
 static struct intel_dwc_otg_pdata *get_otg_platform_data(struct pci_dev *pdev)
 {
 	switch (pdev->device) {
-	case PCI_DEVICE_ID_INTEL_MRFLD_OTG:
-		if (intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_HVP)
+	case PCI_DEVICE_ID_INTEL_MRFL_DWC3_OTG:
+		if (INTEL_MID_BOARD(1, PHONE, MOFD)) {
+			dwc_otg_pdata.pmic_type = SHADY_COVE;
+			dwc_otg_pdata.charger_detect_enable = 0;
+			dwc_otg_pdata.usb2_phy_type = get_usb2_phy_type();
+			if (dwc_otg_pdata.usb2_phy_type == USB2_PHY_ULPI)
+				dwc_otg_pdata.charger_detect_enable = 1;
+
+		} else if (INTEL_MID_BOARD(1, PHONE, MRFL)) {
+			dwc_otg_pdata.pmic_type = BASIN_COVE;
+			dwc_otg_pdata.charger_detect_enable = 1;
+
+			dwc_otg_pdata.charging_compliance =
+				dwc_otg_get_usbspecoverride();
+			dwc_otg_pdata.usb2_phy_type = USB2_PHY_ULPI;
+
+		} else if (intel_mid_identify_sim() ==
+				INTEL_MID_CPU_SIMULATION_HVP) {
+			dwc_otg_pdata.pmic_type = NO_PMIC;
 			dwc_otg_pdata.is_hvp = 1;
-
-		dwc_otg_pdata.charging_compliance =
-			dwc_otg_get_usbspecoverride();
-
-		/* The dwc3 hibernation mode with D3hot can't be work.
-		 * So enable SW workaround for it until silicon fix.
-		 */
+			dwc_otg_pdata.charger_detect_enable = 0;
+			dwc_otg_pdata.usb2_phy_type = USB2_PHY_ULPI;
+		}
 		return &dwc_otg_pdata;
 	case PCI_DEVICE_ID_INTEL_BYT_OTG:
-		dwc_otg_pdata.is_hvp = 1;
-		dwc_otg_pdata.no_device_mode = 0;
-		dwc_otg_pdata.no_host_mode = 1;
-		dwc_otg_pdata.is_byt = 1;
-
 		/* FIXME: Hardcode now, but need to use ACPI table for GPIO */
 		if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, RVP3) ||
 			INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, RVP3)) {
-			pr_info("This is BYT RVP\n");
 			dwc_otg_pdata.gpio_cs = 156;
 			dwc_otg_pdata.gpio_reset = 144;
-		} else if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 10PR11) ||
-			INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 10PR11)) {
-			pr_info("This is BYT FFRD10 PRx\n");
+			dwc_otg_pdata.ti_phy_vs1 = 0x4f;
+		} else if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR0) ||
+			INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR0)) {
 			dwc_otg_pdata.gpio_cs = 54;
 			dwc_otg_pdata.gpio_reset = 144;
+			dwc_otg_pdata.ti_phy_vs1 = 0x4f;
+		} else if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR1) ||
+			INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR1)) {
+			dwc_otg_pdata.gpio_cs = 54;
+			dwc_otg_pdata.gpio_reset = 144;
+			dwc_otg_pdata.ti_phy_vs1 = 0x7f;
+			dwc_otg_pdata.sdp_charging = 1;
+		} else if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, CRV2) ||
+			INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, CRV2)) {
+			dwc_otg_pdata.gpio_cs = 54;
+			dwc_otg_pdata.gpio_reset = 144;
+			dwc_otg_pdata.ti_phy_vs1 = 0x7f;
+			dwc_otg_pdata.gpio_id = 156;
+			dwc_otg_pdata.sdp_charging = 1;
 		}
-
 		return &dwc_otg_pdata;
 	default:
 		break;
@@ -74,7 +111,6 @@ static struct intel_dwc_otg_pdata *get_otg_platform_data(struct pci_dev *pdev)
 
 	return NULL;
 }
-
 #endif
 
 #ifdef CONFIG_USB_PENWELL_OTG
@@ -124,7 +160,7 @@ static struct intel_mid_otg_pdata *get_otg_platform_data(struct pci_dev *pdev)
 }
 #endif
 
-static void __devinit otg_pci_early_quirks(struct pci_dev *pci_dev)
+static void otg_pci_early_quirks(struct pci_dev *pci_dev)
 {
 	pci_dev->dev.platform_data = get_otg_platform_data(pci_dev);
 }
@@ -133,7 +169,7 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MFD_OTG,
 			otg_pci_early_quirks);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CLV_OTG,
 			otg_pci_early_quirks);
-DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MRFLD_OTG,
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MRFL_DWC3_OTG,
 			otg_pci_early_quirks);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BYT_OTG,
 			otg_pci_early_quirks);

@@ -58,9 +58,8 @@
 	((mlli_tables1)->user_memref == (mlli_tables2)->user_memref)
 
 /* Clean struct client_dma_buffer buffer info */
-#define CLEAN_DMA_BUFFER_INFO(_client_dma_buf_p) do {                     \
-	memset(_client_dma_buf_p, 0, sizeof(struct client_dma_buffer));   \
-} while (0)
+#define CLEAN_DMA_BUFFER_INFO(_client_dma_buf_p) \
+	memset(_client_dma_buf_p, 0, sizeof(struct client_dma_buffer))
 
 /**
  * struct client_dma_buffer - Client DMA buffer object

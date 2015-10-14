@@ -788,9 +788,8 @@ static otm_hdmi_ret_t __hdmi_context_init(void *context, struct pci_dev *pdev)
 	if (rc != OTM_HDMI_SUCCESS)
 		goto exit;
 
-	pr_debug("About to call initialize HAL members and io_address "
-			"is 0x%x\n",
-			(unsigned int)ctx->io_address);
+	pr_debug("About to call initialize HAL members and io_address is %p\n",
+		 ctx->io_address);
 
 	/* Initialize HAL; It's important that ALL entries are initialized!!! */
 	ctx->dev.log_entry = log_entry;
@@ -798,8 +797,7 @@ static otm_hdmi_ret_t __hdmi_context_init(void *context, struct pci_dev *pdev)
 	ctx->dev.poll_timer = &ctx->hal_timer;
 	ctx->dev.poll_start = __poll_start;
 	ctx->dev.poll_timeout = __poll_timeout;
-	ctx->dev.io_address = (unsigned int)ctx->io_address;
-	ctx->dev.io_address = (unsigned int)ctx->io_address;
+	ctx->dev.io_address = ctx->io_address;
 
 	ctx->dev.uhandle = ctx->io_address;
 
@@ -893,6 +891,12 @@ bool otm_hdmi_hdcp_power_islands_on()
 void otm_hdmi_power_islands_off()
 {
 	ps_hdmi_power_islands_off();
+}
+
+/* enable/disable IRQ and CPD_HPD */
+bool otm_hdmi_enable_hpd(bool enable)
+{
+	return ps_hdmi_enable_hpd(enable);
 }
 
 /* control HDMI vblank interrupt */
@@ -1002,7 +1006,7 @@ otm_hdmi_ret_t otm_hdmi_device_init(void **context, struct pci_dev *pdev)
 	}
 	memset(ctx, 0, sizeof(hdmi_context_t));
 
-	pr_debug("HDMI Context created = 0x%08x\n", (unsigned int)ctx);
+	pr_debug("HDMI Context created = %p\n", ctx);
 
 	/* Init HDMI context */
 	rc = __hdmi_context_init(ctx, pdev);

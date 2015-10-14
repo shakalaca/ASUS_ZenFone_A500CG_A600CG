@@ -65,6 +65,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "sync_server.h"
 
 /* pdump headers */
+#include "pdump_osfunc.h"
 #include "pdump_km.h"
 #include "pdump_int.h"
 
@@ -384,14 +385,9 @@ PVRSRV_ERROR PDumpIsCaptureFrameKM(IMG_BOOL *bIsCapturing)
 		*bIsCapturing = IMG_TRUE;
 	}
 	else
-#if defined(SUPPORT_PDUMP_MULTI_PROCESS)
-	if( _PDumpIsProcessActive() )
 	{
 		*bIsCapturing = PDumpOSIsCaptureFrameKM();
 	}
-#else
-	*bIsCapturing = PDumpOSIsCaptureFrameKM();
-#endif
 
 	return PVRSRV_OK;
 }
@@ -460,12 +456,7 @@ PVRSRV_ERROR PDumpSetFrameKM(CONNECTION_DATA *psConnection, IMG_UINT32 ui32Frame
 	
 	PDUMPCOMMENT("Set pdump frame %u (pre)", ui32Frame);
 
-#if defined(SUPPORT_PDUMP_MULTI_PROCESS)
-	if( _PDumpIsProcessActive() )
-#endif
-	{
-		eError = _PDumpSetFrameKM(psConnection, ui32Frame);
-	}
+	eError = _PDumpSetFrameKM(psConnection, ui32Frame);
 
 	PDUMPCOMMENT("Set pdump frame %u (post)", ui32Frame);
 	
@@ -1166,114 +1157,6 @@ PVRSRV_ERROR PDumpReadRegKM		(	IMG_CHAR *pszPDumpRegName,
 	return PVRSRV_OK;
 }
 
-/*****************************************************************************
- @name		PDumpSignatureRegister
- @brief		Dumps a single signature register
- @param 	psDevId - device ID
- @param 	ui32Address	- The register address
- @param		ui32Size - The amount of data to be dumped in bytes
- @param		pui32FileOffset - Offset of dump in output file
- @param		ui32Flags - Flags
- @return	none
-*****************************************************************************/
-static PVRSRV_ERROR PDumpSignatureRegister	(PVRSRV_DEVICE_IDENTIFIER *psDevId,
-									 IMG_CHAR	*pszFileName,
-									 IMG_UINT32		ui32Address,
-									 IMG_UINT32		ui32Size,
-									 IMG_UINT32		*pui32FileOffset,
-									 IMG_UINT32		ui32Flags)
-{
-	PVRSRV_ERROR eErr;
-	PDUMP_GET_SCRIPT_STRING();
-
-	eErr = PDumpOSBufprintf(hScript,
-			ui32MaxLen,
-			"SAB :%s:0x%08X 0x%08X %s",
-			psDevId->pszPDumpRegName,
-			ui32Address,
-			*pui32FileOffset,
-			pszFileName);
-	if(eErr != PVRSRV_OK)
-	{
-		return eErr;
-	}
-
-	PDUMP_LOCK();
-	PDumpOSWriteString2(hScript, ui32Flags);
-	PDUMP_UNLOCK();
-	*pui32FileOffset += ui32Size;
-	return PVRSRV_OK;
-}
-
-/*****************************************************************************
- @name		PDumpRegisterRange
- @brief		Dumps a list of signature registers to a file
- @param		psDevId - device ID
- @param		pszFileName - target filename for dump
- @param		pui32Registers - register list
- @param		ui32NumRegisters - number of regs to dump
- @param		pui32FileOffset - file offset
- @param		ui32Size - size of write in bytes
- @param		ui32Flags - pdump flags
- @return	none
- *****************************************************************************/
-static IMG_VOID PDumpRegisterRange(PVRSRV_DEVICE_IDENTIFIER *psDevId,
-									IMG_CHAR *pszFileName,
-									IMG_UINT32 *pui32Registers,
-									IMG_UINT32  ui32NumRegisters,
-									IMG_UINT32 *pui32FileOffset,
-									IMG_UINT32	ui32Size,
-									IMG_UINT32	ui32Flags)
-{
-	IMG_UINT32 i;
-	for (i = 0; i < ui32NumRegisters; i++)
-	{
-		PDumpSignatureRegister(psDevId, pszFileName, pui32Registers[i], ui32Size, pui32FileOffset, ui32Flags);
-	}
-}
-
-/*****************************************************************************
- @name		PDumpCounterRegisters
- @brief		Dumps the performance counters
- @param		psDevId - device id info
- @param		ui32DumpFrameNum - frame number
- @param		bLastFrame
- @param		pui32Registers - register list
- @param		ui32NumRegisters - number of regs to dump
- @return	Error
-*****************************************************************************/
-PVRSRV_ERROR PDumpCounterRegisters (PVRSRV_DEVICE_IDENTIFIER *psDevId,
-								IMG_UINT32 ui32DumpFrameNum,
-								IMG_BOOL	bLastFrame,
-								IMG_UINT32 *pui32Registers,
-								IMG_UINT32 ui32NumRegisters)
-{
-	PVRSRV_ERROR eErr;
-	IMG_UINT32	ui32FileOffset, ui32Flags;
-
-	PDUMP_GET_FILE_STRING();
-
-	ui32Flags = bLastFrame ? PDUMP_FLAGS_LASTFRAME : 0UL;
-	ui32FileOffset = 0UL;
-
-	PDumpCommentWithFlags(ui32Flags, "-- Dump counter registers");
-	eErr = PDumpOSSprintf(pszFileName, ui32MaxLen, "out%u.perf", ui32DumpFrameNum);
-	if(eErr != PVRSRV_OK)
-	{
-		return eErr;
-	}
-
-	PDumpRegisterRange(psDevId,
-						pszFileName,
-						pui32Registers,
-						ui32NumRegisters,
-						&ui32FileOffset,
-						sizeof(IMG_UINT32),
-						ui32Flags);
-
-	return PVRSRV_OK;
-}
-
 
 /*****************************************************************************
  @name		PDumpRegRead32
@@ -1706,10 +1589,21 @@ PVRSRV_ERROR PDumpTRG(IMG_CHAR *pszMemSpace,
  * Description    : Called by the debugdrv to tell Services that pdump has
  * 					connected
  **************************************************************************/
-IMG_EXPORT IMG_VOID PDumpConnectionNotify(IMG_VOID)
+IMG_EXPORT IMG_VOID PDumpConnectionNotify(IMG_CHAR* pszStreamName)
 {
 	PVRSRV_DATA			*psPVRSRVData = PVRSRVGetPVRSRVData();
 	PVRSRV_DEVICE_NODE	*psThis;
+
+	/* Check the stream name so we only perform the notify actions once per
+	 * pdump client connect, not twice as before.
+	 */
+	if ((pszStreamName == IMG_NULL) ||
+		(OSStringCompare(pszStreamName, PDUMP_SCRIPT_STREAM_NAME) != 0))
+	{
+		return;
+	}
+	/* else do stuff needed on PDump client connection to the script stream */
+
 	PVR_DPF((PVR_DBG_WARNING, "PDump has connected."));
 	
 	/* Loop over all known devices */
@@ -1823,7 +1717,6 @@ IMG_UINT32 DbgWrite(PDBG_STREAM psStream, IMG_UINT8 *pui8Data, IMG_UINT32 ui32BC
 {
 	IMG_UINT32	ui32BytesWritten = 0;
 	IMG_UINT32	ui32Off = 0;
-	PDBG_STREAM_CONTROL psCtrl = psStream->psCtrl;
 
 	/* Return immediately if marked as "never" */
 	if ((ui32Flags & PDUMP_FLAGS_NEVER) != 0)
@@ -1831,21 +1724,11 @@ IMG_UINT32 DbgWrite(PDBG_STREAM psStream, IMG_UINT8 *pui8Data, IMG_UINT32 ui32BC
 		return ui32BCount;
 	}
 
-#if defined(SUPPORT_PDUMP_MULTI_PROCESS)
-	/* Return if process is not marked for pdumping, unless it's persistent.
-	 */
-	if ( (_PDumpIsProcessActive() == IMG_FALSE ) &&
-		 ((ui32Flags & PDUMP_FLAGS_PERSISTENT) == 0) )
-	{
-		return ui32BCount;
-	}
-#endif
-
 	/* Send persistent data first ...
 	 * If we're still initialising the params will be captured to the
 	 * init stream in the call to pfnDBGDrivWrite2 below.
 	 */
-	if ( ((ui32Flags & PDUMP_FLAGS_PERSISTENT) != 0) && (psCtrl->bInitPhaseComplete) )
+	if ( ((ui32Flags & PDUMP_FLAGS_PERSISTENT) != 0) && PDumpOSGetCtrlState(psStream, DBG_GET_STATE_INIT_PHASE_COMPLETE))
 	{
 		while (ui32BCount > 0)
 		{
@@ -1855,7 +1738,7 @@ IMG_UINT32 DbgWrite(PDBG_STREAM psStream, IMG_UINT8 *pui8Data, IMG_UINT32 ui32BC
 			*/
 				ui32BytesWritten = PDumpOSDebugDriverWrite(	psStream,
 															PDUMP_WRITE_MODE_PERSISTENT,
-															&pui8Data[ui32Off], ui32BCount, 1, 0);
+															&pui8Data[ui32Off], ui32BCount, DEBUG_LEVEL_0, 0);
 
 			if (ui32BytesWritten == 0)
 			{
@@ -1870,7 +1753,7 @@ IMG_UINT32 DbgWrite(PDBG_STREAM psStream, IMG_UINT8 *pui8Data, IMG_UINT32 ui32BC
 			else
 			{
 				PVR_DPF((PVR_DBG_ERROR, "DbgWrite: Failed to send persistent data"));
-				if( (psCtrl->ui32Flags & DEBUG_FLAGS_READONLY) != 0)
+				if( PDumpOSGetCtrlState(psStream, DBG_GET_STATE_FLAG_IS_READONLY) )
 				{
 					/* suspend pdump to prevent flooding kernel log buffer */
 					PDumpSuspendKM();
@@ -1890,10 +1773,7 @@ IMG_UINT32 DbgWrite(PDBG_STREAM psStream, IMG_UINT8 *pui8Data, IMG_UINT32 ui32BC
 			/*
 				If pdump client (or its equivalent) isn't running then throw continuous data away.
 			*/
-			if (((psCtrl->ui32CapMode & DEBUG_CAPMODE_FRAMED) != 0) &&
-				 (psCtrl->ui32Start == 0xFFFFFFFFU) &&
-				 (psCtrl->ui32End == 0xFFFFFFFFU) &&
-				  psCtrl->bInitPhaseComplete)
+			if ( PDumpOSGetCtrlState(psStream, DBG_GET_STATE_THROW_DATA_AWAY) )
 			{
 				ui32BytesWritten = ui32BCount;
 			}
@@ -1901,30 +1781,22 @@ IMG_UINT32 DbgWrite(PDBG_STREAM psStream, IMG_UINT8 *pui8Data, IMG_UINT32 ui32BC
 			{
 				ui32BytesWritten = PDumpOSDebugDriverWrite(	psStream, 
 															PDUMP_WRITE_MODE_CONTINUOUS,
-															&pui8Data[ui32Off], ui32BCount, 1, 0);
+															&pui8Data[ui32Off], ui32BCount, DEBUG_LEVEL_0, 0);
 			}
 		}
 		else
 		{
 			if (ui32Flags & PDUMP_FLAGS_LASTFRAME)
 			{
-				IMG_UINT32	ui32DbgFlags;
-	
-				ui32DbgFlags = 0;
-				if (ui32Flags & PDUMP_FLAGS_RESETLFBUFFER)
-				{
-					ui32DbgFlags |= WRITELF_FLAGS_RESETBUF;
-				}
-	
 				ui32BytesWritten = PDumpOSDebugDriverWrite(	psStream,
 															PDUMP_WRITE_MODE_LASTFRAME,
-															&pui8Data[ui32Off], ui32BCount, 1, ui32DbgFlags);
+															&pui8Data[ui32Off], ui32BCount, DEBUG_LEVEL_0, 0);
 			}
 			else
 			{
 				ui32BytesWritten = PDumpOSDebugDriverWrite(	psStream, 
 															PDUMP_WRITE_MODE_BINCM,
-															&pui8Data[ui32Off], ui32BCount, 1, 0);
+															&pui8Data[ui32Off], ui32BCount, DEBUG_LEVEL_0, 0);
 			}
 		}
 
@@ -1970,6 +1842,31 @@ IMG_VOID PDumpUnlockKM(IMG_VOID)
 {
 	PDumpOSUnlock();
 }
+
+#if defined(PVR_TESTING_UTILS)
+extern IMG_VOID PDumpOSDumpState(IMG_VOID);
+
+#if !defined(LINUX)
+IMG_VOID PDumpOSDumpState(IMG_VOID)
+{
+}
+#endif
+
+IMG_VOID PDumpCommonDumpState(IMG_VOID);
+IMG_VOID PDumpCommonDumpState(IMG_VOID)
+{
+	IMG_UINT32* ui32HashData = (IMG_UINT32*)g_psPersistentHash;
+
+	PVR_LOG(("--- PDUMP COMMON: isSuspended ( %d )",
+			PDumpIsSuspended() ));
+
+	PVR_LOG(("--- PDUMP COMMON: g_psPersistentHash( %p ) uSize( %d ) uCount( %d )",
+			g_psPersistentHash, ui32HashData[0], ui32HashData[1]) );
+
+	PDumpOSDumpState();
+}
+#endif
+
 
 PVRSRV_ERROR PDumpRegisterConnection(SYNC_CONNECTION_DATA *psSyncConnectionData,
 									 PDUMP_CONNECTION_DATA **ppsPDumpConnectionData)

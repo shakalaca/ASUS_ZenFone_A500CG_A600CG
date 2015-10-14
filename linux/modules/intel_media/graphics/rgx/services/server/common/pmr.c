@@ -54,7 +54,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */ /**************************************************************************/
 
 #include "img_types.h"
-#include "pdumpdefs.h"
 #include "pvr_debug.h"
 #include "pvrsrv_error.h"
 
@@ -75,7 +74,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #endif
 
 #if defined(PVR_RI_DEBUG)
-#include "client_ri_bridge.h"
+#include "ri_server.h"
 #endif 
 
 /* ourselves */
@@ -362,6 +361,10 @@ _PMRCreate(PMR_SIZE_T uiLogicalSize,
         psPMR->uiKey = psContext->uiNextKey;
         psPMR->uiSerialNum = psContext->uiNextSerialNum;
 
+#if defined(PVR_RI_DEBUG)
+        psPMR->hRIHandle = IMG_NULL;
+#endif
+
 		OSLockAcquire(psContext->hLock);
         psContext->uiNextKey = (0x80200003 * psContext->uiNextKey)
             ^ (0xf00f0081 * (IMG_UINTPTR_T)pvLinAddr);
@@ -433,7 +436,10 @@ _UnrefAndMaybeDestroy(PMR *psPMR)
             PVRSRV_ERROR eError;
 
 			/* Delete RI entry */
-			eError = BridgeRIDeletePMREntry (IMG_NULL, psPMR->hRIHandle);
+            if (psPMR->hRIHandle)
+            {
+            	eError = RIDeletePMREntryKM (psPMR->hRIHandle);
+            }
 		}
 #endif /* if defined(PVR_RI_DEBUG) */
 		psCtx = psPMR->psContext;
@@ -501,16 +507,6 @@ PMRCreatePMR(PHYS_HEAP *psPhysHeap,
 
     *ppsPMRPtr = psPMR;
 
-#if defined(PVR_RI_DEBUG)
-	{
-		/* Attach RI information */
-		eError = BridgeRIWritePMREntry (IMG_NULL,
-										psPMR,
-										(IMG_CHAR *)pszPDumpFlavour,
-										uiLogicalSize,
-										&psPMR->hRIHandle);
-	}
-#endif  /* if defined(PVR_RI_DEBUG) */
 
 	if (phPDumpAllocInfo)
 	{
@@ -841,6 +837,18 @@ PVRSRV_ERROR PMRSecureUnimportPMR(PMR *psPMR)
 {
 	_UnrefAndMaybeDestroy(psPMR);
 	return PVRSRV_OK;
+}
+#endif
+
+#if defined(PVR_RI_DEBUG)
+PVRSRV_ERROR
+PMRStoreRIHandle(PMR *psPMR,
+				 IMG_PVOID hRIHandle)
+{
+    PVR_ASSERT(psPMR != IMG_NULL);
+
+    psPMR->hRIHandle = hRIHandle;
+    return PVRSRV_OK;
 }
 #endif
 
@@ -1661,7 +1669,10 @@ PMRPDumpLoadMem(PMR *psPMR,
 													&aszSymbolicName[0],
 													&uiPDumpSymbolicOffset,
 													&uiNextSymName);
-	        PVR_ASSERT(eError == PVRSRV_OK);
+                if(eError != PVRSRV_OK)
+                {
+                    goto err_unlock_phys;
+                }
 	
 	        /* Reads enough to fill buffer, or until next chunk,
 	           or until end of PMR, whichever comes first */
@@ -1670,7 +1681,10 @@ PMRPDumpLoadMem(PMR *psPMR,
 											pcBuffer,
 											TRUNCATE_64BITS_TO_SIZE_T(MIN3(uiBufSz, uiSize, ui32Remain)),
 											&uiNumBytes);
-	        PVR_ASSERT(eError == PVRSRV_OK);
+                if(eError != PVRSRV_OK)
+                {
+                    goto err_unlock_phys;
+                }
 	        PVR_ASSERT(uiNumBytes > 0);
 	
 	        eError = PDumpWriteBuffer(pcBuffer,
@@ -1679,7 +1693,10 @@ PMRPDumpLoadMem(PMR *psPMR,
 	                                  &aszParamStreamFilename[0],
 	                                  sizeof(aszParamStreamFilename),
 	                                  &uiParamStreamFileOffset);
-	        PVR_ASSERT(eError == PVRSRV_OK);
+                if(eError != PVRSRV_OK)
+                {
+                    goto err_unlock_phys;
+                }
 	
 	        eError = PDumpPMRLDB(aszMemspaceName,
 	                             aszSymbolicName,
@@ -1688,7 +1705,11 @@ PMRPDumpLoadMem(PMR *psPMR,
 	                             aszParamStreamFilename,
 	                             uiParamStreamFileOffset,
 	                             uiPDumpFlags);
-	        PVR_ASSERT(eError == PVRSRV_OK);
+
+                if(eError != PVRSRV_OK)
+                {
+                    goto err_unlock_phys;
+                }
 		}
 		else
 		{
@@ -1701,12 +1722,15 @@ PMRPDumpLoadMem(PMR *psPMR,
         uiSize -= uiNumBytes;
     }
 
+err_unlock_phys:
+    PVR_ASSERT(eError == PVRSRV_OK);
+
     eError = PMRUnlockSysPhysAddresses(psPMR);
     PVR_ASSERT(eError == PVRSRV_OK);
 
     OSFreeMem(pcBuffer);
 
-    return PVRSRV_OK;
+    return eError;
 }
 
 

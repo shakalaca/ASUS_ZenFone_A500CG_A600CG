@@ -91,6 +91,13 @@
 #define PAX_IOCTL_RESERVE_ALL    _IO (PAX_IOC_MAGIC, 3)
 #define PAX_IOCTL_UNRESERVE      _IO (PAX_IOC_MAGIC, 4)
 
+#if defined(HAVE_COMPAT_IOCTL) && defined(DRV_EM64T)
+#define PAX_IOCTL_COMPAT_INFO           _IOW(PAX_IOC_MAGIC, 1, compat_uptr_t)
+#define PAX_IOCTL_COMPAT_STATUS         _IOW(PAX_IOC_MAGIC, 2, compat_uptr_t)
+#define PAX_IOCTL_COMPAT_RESERVE_ALL    _IO (PAX_IOC_MAGIC, 3)
+#define PAX_IOCTL_COMPAT_UNRESERVE      _IO (PAX_IOC_MAGIC, 4)
+#endif
+
 #elif defined(DRV_OS_FREEBSD)
 
 #define PAX_DEVICE_NAME          "/dev/" PAX_NAME

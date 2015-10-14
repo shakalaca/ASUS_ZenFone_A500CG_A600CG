@@ -117,16 +117,13 @@ static struct intel_mid_thermal_platform_data pdata[] = {
 	},
 };
 
-#ifdef CONFIG_INTEL_BYT_THERMAL
 static int set_byt_platform_thermal_data(void)
 {
 	return intel_mid_pmic_set_pdata(BYT_THERM_DEV_NAME,
 				&pdata[byt_thermal],
 				sizeof(pdata[byt_thermal]));
 }
-#endif
 
-#ifdef CONFIG_INTEL_BYT_EC_THERMAL
 static int set_byt_ec_platform_thermal_data(void)
 {
 	struct platform_device *pdev;
@@ -142,19 +139,24 @@ static int set_byt_ec_platform_thermal_data(void)
 	pdev->dev.platform_data = &pdata[byt_ec_thermal];
 	return 0;
 }
-#endif
 
 static int __init byt_platform_thermal_init(void)
 {
 	int ret = -EINVAL;
 
-#ifdef CONFIG_INTEL_BYT_THERMAL
+	if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR0) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR0) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR1) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR1) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 10PR11) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 10PR11))
 		ret = set_byt_platform_thermal_data();
-#elif CONFIG_INTEL_BYT_EC_THERMAL
+	else if (INTEL_MID_BOARD(3, TABLET, BYT, BLB, PRO, CRBV3) ||
+			INTEL_MID_BOARD(3, TABLET, BYT, BLB, ENG, CRBV3))
 		ret = set_byt_ec_platform_thermal_data();
-#else
+	else
 		pr_err("Cannot detect exact BYT platform\n");
-#endif
+
 	if (ret)
 		pr_err("Configuring platform data failed:%d\n", ret);
 	return ret;

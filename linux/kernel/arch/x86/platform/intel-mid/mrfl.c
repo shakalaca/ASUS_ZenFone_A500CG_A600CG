@@ -13,28 +13,19 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/interrupt.h>
-#include <linux/sfi.h>
 #include <linux/irq.h>
 #include <linux/module.h>
-#include <linux/delay.h>
-#include <linux/intel_mid_pm.h>
 #include <linux/power_supply.h>
-#include <linux/power/intel_mid_powersupply.h>
 #include <linux/power/battery_id.h>
 #include <asm/setup.h>
 #include <asm/intel-mid.h>
 #include <asm/processor.h>
-#include <asm/intel_scu_ipc.h>
 
 #define APIC_DIVISOR 16
-#define RSTC_IO_PORT_ADDR 0xcf9
-#define RSTC_COLD_BOOT 0x4
+#define MRFL_I2_TERM_MA 120
 
 enum intel_mid_sim_type __intel_mid_sim_platform;
 EXPORT_SYMBOL_GPL(__intel_mid_sim_platform);
-
-struct plat_battery_config  *plat_batt_config;
-EXPORT_SYMBOL(plat_batt_config);
 
 static void (*intel_mid_timer_init)(void);
 static struct ps_pse_mod_prof *battery_chrg_profile;
@@ -49,16 +40,26 @@ static struct intel_mid_ops tangier_ops = {
 
 static unsigned long __init tangier_calibrate_tsc(void)
 {
-
 	/* [REVERT ME] fast timer calibration method to be defined */
 	if ((intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_VP) ||
-		(intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_HVP)) {
-		lapic_timer_frequency = 50000;
+	    (intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_HVP)) {
+		/*
+		 * CRC K310 has issues with the lapic timer freq value
+		 * 50000, the jiffies running ten times faster than
+		 * required value
+		 */
+		if (intel_mid_identify_cpu() ==
+				INTEL_MID_CPU_CHIP_CARBONCANYON) {
+			lapic_timer_frequency = 500000;
+		} else {
+			lapic_timer_frequency = 50000;
+		}
+
 		return 1000000;
 	}
 
 	if ((intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_SLE) ||
-		(intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_NONE)) {
+	    (intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_NONE)) {
 
 		unsigned long fast_calibrate;
 		u32 lo, hi, ratio, fsb, bus_freq;
@@ -87,7 +88,7 @@ static unsigned long __init tangier_calibrate_tsc(void)
 		pr_debug("bus_freq = 0x%x\n", bus_freq);
 
 		if (bus_freq == 0)
-			fsb = FSB_FREQ_100SKU;
+			fsb = FSB_FREQ_83SKU;
 		else if (bus_freq == 1)
 			fsb = FSB_FREQ_100SKU;
 		else if (bus_freq == 2)
@@ -146,34 +147,11 @@ static int __init set_simulation_platform(char *str)
 }
 early_param("mrfld_simulation", set_simulation_platform);
 
-static int __init get_plat_batt_config(void)
-{
-	int ret;
-	plat_batt_config = kzalloc(sizeof(struct plat_battery_config),
-				GFP_KERNEL);
-	if (!plat_batt_config) {
-		pr_err("%s : Error in allocating plat_battery_config\n",
-			__func__);
-		return -ENOMEM;
-	}
-	ret = intel_scu_ipc_read_mip((u8 *) plat_batt_config,
-		sizeof(struct plat_battery_config), BATT_SMIP_BASE_OFFSET, 1);
-	if (ret) {
-		pr_err("%s(): Err in reading platform battery configuration\n",
-			__func__);
-		kfree(plat_batt_config);
-		plat_batt_config = NULL;
-	}
-	return ret;
-}
-/* FIXME: SMIP access is failing. So disabling the SMIP read */
-/*rootfs_initcall(get_plat_batt_config); */
-
 static void __init tangier_time_init(void)
 {
 	/* [REVERT ME] ARAT capability not set in VP. Force setting */
 	if (intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_VP ||
-		intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_HVP)
+	    intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_HVP)
 		set_cpu_cap(&boot_cpu_data, X86_FEATURE_ARAT);
 
 	if (intel_mid_timer_init)
@@ -201,7 +179,11 @@ static void set_batt_chrg_prof(struct ps_pse_mod_prof *batt_prof,
 	batt_prof->battery_type = pentry->battery_type;
 	batt_prof->capacity = pentry->capacity;
 	batt_prof->voltage_max = pentry->voltage_max;
-	batt_prof->chrg_term_mA = pentry->chrg_term_mA;
+	if ((pentry->batt_id[0] == 'I') && (pentry->batt_id[1] == '2'))
+		batt_prof->chrg_term_ma = MRFL_I2_TERM_MA;
+	else
+		batt_prof->chrg_term_ma = pentry->chrg_term_ma;
+
 	batt_prof->low_batt_mV = pentry->low_batt_mV;
 	batt_prof->disch_tmp_ul = pentry->disch_tmp_ul;
 	batt_prof->disch_tmp_ll = pentry->disch_tmp_ll;
@@ -212,7 +194,7 @@ static void set_batt_chrg_prof(struct ps_pse_mod_prof *batt_prof,
 			memcpy(&batt_prof->temp_mon_range[j],
 			       &pentry->temp_mon_range[i],
 			       sizeof(struct ps_temp_chg_table));
-			j++ ;
+			j++;
 		}
 	}
 	batt_prof->temp_mon_ranges = j;
@@ -229,7 +211,9 @@ static int __init mrfl_platform_init(void)
 	table = get_oem0_table();
 
 	if (!(INTEL_MID_BOARD(1, PHONE, MRFL) ||
-	      INTEL_MID_BOARD(1, TABLET, MRFL)))
+	      INTEL_MID_BOARD(1, TABLET, MRFL) ||
+		INTEL_MID_BOARD(1, PHONE, MOFD) ||
+		 INTEL_MID_BOARD(1, TABLET, MOFD)))
 		return 0;
 
 	if (!table)
@@ -278,13 +262,19 @@ static int __init mrfl_platform_init(void)
 }
 arch_initcall_sync(mrfl_platform_init);
 
-void *get_tangier_ops(void)
+void *get_tangier_ops()
 {
 	return &tangier_ops;
 }
 
 /* piggy back on anniedale ops right now */
 void *get_anniedale_ops()
+{
+	return &tangier_ops;
+}
+
+/* piggy back on anniedale ops right now */
+void *get_carboncanyon_ops()
 {
 	return &tangier_ops;
 }

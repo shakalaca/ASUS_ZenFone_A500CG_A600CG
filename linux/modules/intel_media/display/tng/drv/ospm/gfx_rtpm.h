@@ -42,5 +42,6 @@ int rtpm_resume(struct device *dev);
 int rtpm_idle(struct device *dev);
 int rtpm_allow(struct drm_device *dev);
 void rtpm_forbid(struct drm_device *dev);
-
+void rtpm_suspend_pci(void);
+void rtpm_resume_pci(void);
 #endif /* _INTEL_MEDIA_RUNTIME_PM_H_ */

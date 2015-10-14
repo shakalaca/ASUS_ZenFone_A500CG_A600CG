@@ -2,9 +2,8 @@
 #define XHCI_USH_HSIC_PCI_h
 
 #include <linux/usb.h>
+#include <linux/wakelock.h>
 
-#define USH_HSIC_AUX1_GPIO       136
-#define USH_HSIC_WAKEUP_GPIO     152
 #define HSIC_HUB_RESET_TIME   10
 #define HSIC_ENABLE_SIZE      2
 #define HSIC_DURATION_SIZE    7
@@ -19,10 +18,23 @@
 #define USH_PCI_ID           0x0F35
 #define USH_REENUM_DELAY     600000
 
+enum wlock_state {
+	UNLOCKED,
+	LOCKED
+};
+
+enum s3_state {
+	RESUMED,
+	RESUMING,
+	SUSPENDED,
+	SUSPENDING
+};
+
 struct ush_hsic_priv {
 	struct delayed_work  hsic_aux;
 	wait_queue_head_t    aux_wq;
 	struct mutex         hsic_mutex;
+	struct mutex         wlock_mutex;
 	unsigned             hsic_mutex_init:1;
 	unsigned             aux_wq_init:1;
 	unsigned             hsic_aux_irq_enable:1;
@@ -30,7 +42,7 @@ struct ush_hsic_priv {
 	unsigned             hsic_aux_finish:1;
 	unsigned             hsic_enable_created:1;
 	unsigned             hsic_lock_init:1;
-	unsigned             hsic_stopped:1;
+	unsigned             port_disconnect:1;
 
 	unsigned             remoteWakeup_enable;
 	unsigned             autosuspend_enable;
@@ -40,11 +52,18 @@ struct ush_hsic_priv {
 	unsigned             bus_inactivityDuration;
 	unsigned             reenumeration_delay;
 	spinlock_t           hsic_lock;
+	struct	wake_lock    resume_wake_lock;
 	/* Root hub device */
 	struct usb_device           *rh_dev;
 	struct usb_device           *modem_dev;
 	struct workqueue_struct     *work_queue;
 	struct work_struct          wakeup_work;
+	struct notifier_block       hsicdev_nb;
+	struct notifier_block       hsic_pm_nb;
+	struct notifier_block       hsic_s3_entry_nb;
+	struct wake_lock            s3_wake_lock;
+	enum wlock_state            s3_wlock_state;
+	enum wlock_state            s3_rt_state;
 };
 
 enum {
@@ -52,6 +71,13 @@ enum {
 	REMOVE
 };
 
-void hsic_notify(struct usb_device *udev, unsigned action);
+struct ush_hsic_pdata {
+	unsigned has_modem:1;     /* has modem or not */
+	unsigned enabled:1;       /* enable flag */
+	int aux_gpio;
+	int wakeup_gpio;
+};
 
+static int hsic_notify(struct notifier_block *self,
+		unsigned long action, void *dev);
 #endif

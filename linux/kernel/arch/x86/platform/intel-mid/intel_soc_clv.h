@@ -17,7 +17,7 @@
  *
  */
 
-#ifdef CONFIG_INTEL_ATOM_CLV_POWER
+#ifdef CONFIG_REMOVEME_INTEL_ATOM_CLV_POWER
 
 #define   PM_SUPPORT				0x21
 

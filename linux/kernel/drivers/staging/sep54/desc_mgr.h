@@ -146,7 +146,7 @@ int desc_q_enqueue(void *q_h, struct sep_sw_desc *desc_p, bool may_backlog);
  * \param q_h Descriptor queue handle
  * \param cookie Invalidate descriptors with this cookie
  */
-void desc_q_mark_invalid_cookie(void *q_h, u32 cookie);
+void desc_q_mark_invalid_cookie(void *q_h, void *cookie);
 
 /*!
  * Dequeue and process any completed descriptors in the queue

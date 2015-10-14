@@ -40,7 +40,7 @@
 #include <asm/mce.h>
 #include <asm/processor.h>
 #include <asm/cpu_device_id.h>
-#include <linux/intel_mid_pm.h>
+#include <linux/tkb.h>
 
 #define DRVNAME	"coretemp"
 
@@ -63,16 +63,6 @@ MODULE_PARM_DESC(tjmax, "TjMax value in degrees Celsius");
 #define TO_PHYS_ID(cpu)		(cpu_data(cpu).phys_proc_id)
 #define TO_CORE_ID(cpu)		(cpu_data(cpu).cpu_core_id)
 #define TO_ATTR_NO(cpu)		(TO_CORE_ID(cpu) + BASE_SYSFS_ATTR_NO)
-
- /*
-  * SOC DTS Registers:
-  * These registers/values are Documented in the Penwell Thermal
-  * Management HAS.
-  */
-#define PUNIT_PORT		0x04
-#define PUNIT_TEMP_REG		0xB1
-#define SOC_TJMAX		90
-#define SOC_CALIB_TEMP		84
 
 #ifdef CONFIG_SMP
 #define for_each_sibling(i, cpu)	for_each_cpu(i, cpu_sibling_mask(cpu))
@@ -118,7 +108,7 @@ struct platform_data {
 	u16 phys_proc_id;
 	struct temp_data *core_data[MAX_CORE_DATA];
 	struct device_attribute name_attr;
-	struct device_attribute soc_temp_attr;
+
 };
 
 struct pdev_entry {
@@ -133,26 +123,6 @@ static DEFINE_MUTEX(pdev_list_mutex);
 #ifdef CONFIG_SENSORS_CORETEMP_INTERRUPT
 static DEFINE_PER_CPU(struct delayed_work, core_threshold_work);
 #endif
-
-static ssize_t show_soc_temp(struct device *dev,
-			 struct device_attribute *devattr, char *buf)
-{
-	int temp;
-	u32 soc_temp_offset;
-
-	/* Read 32 bits of 0xB1 register */
-	soc_temp_offset = intel_mid_msgbus_read32(PUNIT_PORT, PUNIT_TEMP_REG);
-
-	/* Lower 8 bits denote the temperature offset */
-	soc_temp_offset &= 0xFF;
-
-	/* Calculate the temperature from the offset */
-	temp = SOC_TJMAX + SOC_CALIB_TEMP - soc_temp_offset;
-
-	/* Show the temperature in milli degree celsius */
-	return sprintf(buf, "%d\n", temp * 1000);
-}
-
 static ssize_t show_name(struct device *dev,
 			struct device_attribute *devattr, char *buf)
 {
@@ -211,9 +181,15 @@ static ssize_t store_tx(struct device *dev,
 	u32 eax, edx;
 	unsigned long val;
 	int diff;
+	int temp;
 
 	if (kstrtoul(buf, 10, &val))
 		return -EINVAL;
+
+#ifdef CONFIG_SENSORS_CORETEMP_INTERRUPT
+	temp = tkb_get_coretemp_thr(attr->index, val, mask);
+	val = temp;
+#endif
 
 	/*
 	 * Thermal threshold mask is 7 bits wide. Values are entered in terms
@@ -307,9 +283,15 @@ static ssize_t show_ttarget(struct device *dev,
 	return sprintf(buf, "%d\n", pdata->core_data[attr->index]->ttarget);
 }
 
-static void update_temp(struct temp_data *tdata)
+static ssize_t show_temp(struct device *dev,
+			struct device_attribute *devattr, char *buf)
 {
 	u32 eax, edx;
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct platform_data *pdata = dev_get_drvdata(dev);
+	struct temp_data *tdata = pdata->core_data[attr->index];
+
+	printk(KERN_INFO "%s: enter, index = %d\n", __func__, attr->index);
 
 	mutex_lock(&tdata->update_lock);
 
@@ -327,16 +309,10 @@ static void update_temp(struct temp_data *tdata)
 	}
 
 	mutex_unlock(&tdata->update_lock);
-}
 
-static ssize_t show_temp(struct device *dev,
-			struct device_attribute *devattr, char *buf)
-{
-	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
-	struct platform_data *pdata = dev_get_drvdata(dev);
-	struct temp_data *tdata = pdata->core_data[attr->index];
+	tkb_update_coretemp(attr->index, tdata->temp);
 
-	update_temp(tdata);
+	printk(KERN_INFO "%s: return temp = %d\n", __func__, tdata->temp);
 
 	return tdata->valid ? sprintf(buf, "%d\n", tdata->temp) : -EAGAIN;
 }
@@ -489,10 +465,6 @@ static int __cpuinit get_tjmax(struct cpuinfo_x86 *c, u32 id,
 		 * If the TjMax is not plausible, an assumption
 		 * will be used
 		 */
-		/* TODO: Remove the below workaround in TNG/VLV2 B0 stepping */
-		if (c->x86_model == 0x4a || c->x86_model == 0x37) {
-			return 90000;
-		}
 		if (val) {
 			dev_dbg(dev, "TjMax is %d degrees C\n", val);
 			return val * 1000;
@@ -539,10 +511,47 @@ static int coretemp_interrupt(__u64 msr_val)
 	return 0;
 }
 
+void core_threshold_set(int low_thr, int high_thr)
+{
+	u32 eax, edx;
+	unsigned int cpu = smp_processor_id();
+	int indx = TO_ATTR_NO(cpu);
+	int diff;
+	struct platform_device *pdev = coretemp_get_pdev(cpu);
+	struct platform_data *pdata = platform_get_drvdata(pdev);
+	struct temp_data *tdata = pdata->core_data[indx];
+	u32 mask;
+	int shift;
+
+	        /* configure low threshold */
+	diff = (tdata->tjmax - low_thr) / 1000;
+	mask = THERM_MASK_THRESHOLD0;
+	shift = THERM_SHIFT_THRESHOLD0;
+
+	mutex_lock(&tdata->update_lock);
+	rdmsr_on_cpu(tdata->cpu, tdata->intrpt_reg, &eax, &edx);
+	eax = (eax & ~mask) | (diff << shift);
+	wrmsr_on_cpu(tdata->cpu, tdata->intrpt_reg, eax, edx);
+	mutex_unlock(&tdata->update_lock);
+
+
+	/* configure high threshold */
+	diff = (tdata->tjmax - high_thr) / 1000;
+	mask = THERM_MASK_THRESHOLD1;
+	shift = THERM_SHIFT_THRESHOLD1;
+
+	mutex_lock(&tdata->update_lock);
+	rdmsr_on_cpu(tdata->cpu, tdata->intrpt_reg, &eax, &edx);
+	eax = (eax & ~mask) | (diff << shift);
+	wrmsr_on_cpu(tdata->cpu, tdata->intrpt_reg, eax, edx);
+	mutex_unlock(&tdata->update_lock);
+
+}
 static void core_threshold_work_fn(struct work_struct *work)
 {
 	u32 eax, edx;
-	int thresh, event;
+	int t0, t1, temp;
+	int event = -1, thresh = -1;
 	char *thermal_event[5];
 	bool notify = false;
 	unsigned int cpu = smp_processor_id();
@@ -550,6 +559,9 @@ static void core_threshold_work_fn(struct work_struct *work)
 	struct platform_device *pdev = coretemp_get_pdev(cpu);
 	struct platform_data *pdata = platform_get_drvdata(pdev);
 	struct temp_data *tdata = pdata->core_data[indx];
+	bool is_thermal_service_triggered;
+	int tkb_enabled;
+	int low_thr, high_thr;
 
 	if (!tdata) {
 		pr_err("Could not retrieve temp_data\n");
@@ -565,7 +577,9 @@ static void core_threshold_work_fn(struct work_struct *work)
 		eax = eax & ~THERM_LOG_THRESHOLD0;
 		wrmsr_on_cpu(cpu, MSR_IA32_THERM_STATUS, eax, edx);
 
-		notify = true;
+		/* Notify only when we go below the lower threshold */
+		if (event != 1)
+			notify = true;
 
 	} else if (eax & THERM_LOG_THRESHOLD1) {
 		thresh = 1;
@@ -575,34 +589,57 @@ static void core_threshold_work_fn(struct work_struct *work)
 		eax = eax & ~THERM_LOG_THRESHOLD1;
 		wrmsr_on_cpu(cpu, MSR_IA32_THERM_STATUS, eax, edx);
 
-		notify = true;
+		/* Notify only when we go above the upper threshold */
+		if (event != 0)
+			notify = true;
 	}
-
-	if (!notify)
-		return;
 
 	/*
 	 * Read the current Temperature and send it to user land;
 	 * so that the user space can avoid a sysfs read.
 	 */
-	update_temp(tdata);
+	temp = tdata->tjmax - ((eax >> 16) & 0x7f) * 1000;
 
-	pr_info("Thermal Event: sensor: Core %u, cur_temp: %d, event: %d, level: %d\n",
-			tdata->cpu_core_id, tdata->temp, event, thresh);
+	/* Read the threshold registers (only) to print threshold values. */
+	rdmsr_on_cpu(cpu, MSR_IA32_THERM_INTERRUPT, &eax, &edx);
+	t0 = tdata->tjmax - ((eax & THERM_MASK_THRESHOLD0) >> THERM_SHIFT_THRESHOLD0) * 1000;
+	t1 = tdata->tjmax - ((eax & THERM_MASK_THRESHOLD1) >> THERM_SHIFT_THRESHOLD1) * 1000;
 
-	thermal_event[0] = kasprintf(GFP_KERNEL, "NAME=Core %u",
-						tdata->cpu_core_id);
-	thermal_event[1] = kasprintf(GFP_KERNEL, "TEMP=%d", tdata->temp);
-	thermal_event[2] = kasprintf(GFP_KERNEL, "EVENT=%d", event);
-	thermal_event[3] = kasprintf(GFP_KERNEL, "LEVEL=%d", thresh);
-	thermal_event[4] = NULL;
+	if (!notify) {
+		pr_debug("Thermal Event: Sensor: Core %u, cur_temp: %d,\
+			event: %d, level: %d, t0: %d, t1: %d\n",
+			tdata->cpu_core_id, temp, event, thresh, t0, t1);
+		return;
+	} else {
+		pr_info("Thermal Event: Sensor: Core %u, cur_temp: %d,\
+			event: %d, level: %d, t0: %d, t1: %d\n",
+			tdata->cpu_core_id, temp, event, thresh, t0, t1);
+	}
 
-	kobject_uevent_env(&pdev->dev.kobj, KOBJ_CHANGE, thermal_event);
+	is_thermal_service_triggered = tkb_coretemp_trigger(
+			indx, tdata->temp, event, &low_thr, &high_thr, &tkb_enabled);
 
-	kfree(thermal_event[3]);
-	kfree(thermal_event[2]);
-	kfree(thermal_event[1]);
-	kfree(thermal_event[0]);
+	if(is_thermal_service_triggered) {
+
+		thermal_event[0] = kasprintf(GFP_KERNEL, "NAME=Core %u",
+			tdata->cpu_core_id);
+		thermal_event[1] = kasprintf(GFP_KERNEL,
+			"TEMP=%d", tdata->temp);
+		thermal_event[2] = kasprintf(GFP_KERNEL, "EVENT=%d", event);
+		thermal_event[3] = kasprintf(GFP_KERNEL, "LEVEL=%d", thresh);
+		thermal_event[4] = NULL;
+
+		kobject_uevent_env(&pdev->dev.kobj, KOBJ_CHANGE, thermal_event);
+
+		kfree(thermal_event[3]);
+		kfree(thermal_event[2]);
+		kfree(thermal_event[1]);
+		kfree(thermal_event[0]);
+	}
+
+	if(tkb_enabled) {
+		core_threshold_set(low_thr, high_thr);
+	}
 }
 
 static void configure_apic(void *info)
@@ -669,15 +706,6 @@ static int create_name_attr(struct platform_data *pdata,
 	return device_create_file(dev, &pdata->name_attr);
 }
 
-static int create_soc_temp_attr(struct platform_data *pdata, struct device *dev)
-{
-	sysfs_attr_init(&pdata->soc_temp_attr.attr);
-	pdata->soc_temp_attr.attr.name = "soc_temp_input";
-	pdata->soc_temp_attr.attr.mode = S_IRUGO;
-	pdata->soc_temp_attr.show = show_soc_temp;
-	return device_create_file(dev, &pdata->soc_temp_attr);
-}
-
 static int __cpuinit create_core_attrs(struct temp_data *tdata,
 			struct device *dev, int attr_no, bool have_ttarget)
 {
@@ -726,6 +754,7 @@ exit_free:
 	}
 	return err;
 }
+
 
 static int __cpuinit chk_ucode_version(unsigned int cpu)
 {
@@ -895,10 +924,6 @@ static int coretemp_probe(struct platform_device *pdev)
 	if (err)
 		goto exit_free;
 
-	err = create_soc_temp_attr(pdata, &pdev->dev);
-	if (err)
-		goto exit_name;
-
 	pdata->phys_proc_id = pdev->id;
 	platform_set_drvdata(pdev, pdata);
 
@@ -906,12 +931,10 @@ static int coretemp_probe(struct platform_device *pdev)
 	if (IS_ERR(pdata->hwmon_dev)) {
 		err = PTR_ERR(pdata->hwmon_dev);
 		dev_err(&pdev->dev, "Class registration failed (%d)\n", err);
-		goto exit_soc_temp;
+		goto exit_name;
 	}
 	return 0;
 
-exit_soc_temp:
-	device_remove_file(&pdev->dev, &pdata->soc_temp_attr);
 exit_name:
 	device_remove_file(&pdev->dev, &pdata->name_attr);
 	platform_set_drvdata(pdev, NULL);
@@ -929,7 +952,6 @@ static int coretemp_remove(struct platform_device *pdev)
 		if (pdata->core_data[i])
 			coretemp_remove_core(pdata, &pdev->dev, i);
 
-	device_remove_file(&pdev->dev, &pdata->soc_temp_attr);
 	device_remove_file(&pdev->dev, &pdata->name_attr);
 	hwmon_device_unregister(pdata->hwmon_dev);
 	platform_set_drvdata(pdev, NULL);

@@ -51,7 +51,7 @@
 #ifndef _PSB_DPST_FUNC_H_
 #define _PSB_DPST_FUNC_H_
 
-#include <psb_drm.h>
+#include "psb_drm.h"
 #include <dispmgrnl.h>
 #include <psb_umevents.h>
 

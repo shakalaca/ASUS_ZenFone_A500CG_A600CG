@@ -60,8 +60,7 @@ static void try_to_suspend(struct work_struct *work)
 {
 	unsigned int initial_count, final_count;
 
-	if (!pm_get_wakeup_count(&initial_count, true) ||
-	    !alarm_pm_wake_check())
+	if (!pm_get_wakeup_count(&initial_count, true))
 		goto queue_again;
 
 	mutex_lock(&suspend_lock);
@@ -217,11 +216,6 @@ void request_suspend_state(suspend_state_t new_state)
 			ktime_to_ns(ktime_get()),
 			tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 			tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
-
-                if(new_state != PM_SUSPEND_ON)
-                        pr_info("[UTS] System Suspend\n");
-                else if(!((prev_state == 0) && (new_state == 0)))
-                        pr_info("[UTS] System Resume\n");
 	}
 	if (!old_sleep && new_state != PM_SUSPEND_ON) {
 		state |= SUSPEND_REQUESTED;

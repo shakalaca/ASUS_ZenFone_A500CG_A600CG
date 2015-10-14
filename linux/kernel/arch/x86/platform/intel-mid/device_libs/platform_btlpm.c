@@ -15,11 +15,8 @@
 #include <asm/intel-mid.h>
 #include <linux/gpio.h>
 
-#ifdef BCM2076_UART_PORT3
-#define UART_PORT_NO 3 /* Bluetooth is using UART port number 3 */
-#else if BCM2076_UART_PORT0
 #define UART_PORT_NO 0 /* Bluetooth is using UART port number 0 */
-#endif
+
 #define LPM_ON
 
 static struct bcm_bt_lpm_platform_data bcm_bt_lpm_pdata = {

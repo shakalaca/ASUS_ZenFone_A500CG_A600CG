@@ -13,5 +13,4 @@
 #define _PLATFORM_MPU3050_H_
 
 extern void *mpu3050_platform_data(void *info) __attribute__((weak));
-extern void *gyro_platform_data(void *info) __attribute__((weak));
 #endif

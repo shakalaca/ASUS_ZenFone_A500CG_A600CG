@@ -143,7 +143,7 @@ enum {
 /* Host High-level Interrupt Enable Register
  *
  * Resides in PCI memory space. This is the top hierarchy for
- * interrupts from SeC to host, aggregating bothinterrupts that
+ * interrupts from SeC to host, aggregating both interrupts that
  * arrive through HICR registers as well as interrupts
  * that arrive via IPC.
  */
@@ -237,9 +237,9 @@ enum {
 #define BRIDGE_IPC_OUTPUT_PAYLOAD_REG    0x20C0
 
 /* SeC Interrupt Cause Register - Host Aliveness Request
- * This register is both an ICR to SeC andit is also exposed
+ * This register is both an ICR to SeC and it is also exposed
  * in the host-visible PCI memory space.
- * The registe is used by host to request SeC aliveness.
+ * The register is used by host to request SeC aliveness.
  */
 #define SICR_HOST_ALIVENESS_REQ_REG      0x214C
 #define   SICR_HOST_ALIVENESS_REQ_REQUESTED    BIT(0)
@@ -250,7 +250,7 @@ enum {
  * This register is both an ICR to SeC and it is also exposed
  * in the host-visible PCI memory space.
  * This register is used by the host's SeC driver uses in order
- * to synchornize with SeC about IPC interface state.
+ * to synchronize with SeC about IPC interface state.
  */
 #define SICR_HOST_IPC_READINESS_REQ_REG  0x2150
 
@@ -276,8 +276,8 @@ enum {
 
 /*  MEI IPC Message payload size 64 bytes */
 #define PAYLOAD_SIZE        64
-/* MAX sizez for SATT range 32MB */
-#define SATT_RANGE_MAX	    (32 << 20)
+/* MAX size for SATT range 32MB */
+#define SATT_RANGE_MAX      (32 << 20)
 
 #endif /* _MEI_HW_TXE_REGS_H_ */
 

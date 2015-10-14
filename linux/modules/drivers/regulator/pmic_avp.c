@@ -69,7 +69,7 @@ static int reg_debug;
 			MY_NAME , ## arg)
 
 const u16 reg_addr_offset[] = { VPROG1CNT_ADDR, VPROG2CNT_ADDR, VEMMC1CNT_ADDR,
-						VEMMC2CNT_ADDR, VCCSDIOCNT_ADDR };
+						VEMMC2CNT_ADDR };
 /**
 * intel_pmic_reg_is_enabled - To check if the regulator is enabled
 * @rdev:    regulator_dev structure
@@ -114,9 +114,6 @@ static int intel_pmic_reg_enable(struct regulator_dev *rdev)
 	u8  reg;
 	int ret;
 
-    if (pmic_info && pmic_info->before_vreg_on)
-		ret = (pmic_info->before_vreg_on)(rdev);
-
 	pmic_dbg("This is enable function for %s\n", rdev->desc->name);
 	ret = intel_msic_reg_read(pmic_info->pmic_reg, &reg);
 	if (ret) {
@@ -124,11 +121,8 @@ static int intel_pmic_reg_enable(struct regulator_dev *rdev)
 					"error %08x\n", ret);
 		return INTEL_REGULATOR_ERR;
 	}
-	ret = intel_msic_reg_write(pmic_info->pmic_reg,
+	return intel_msic_reg_write(pmic_info->pmic_reg,
 				((reg & REG_CTRL_MASK) | MSIC_REG_ON));
-	if (!ret && pmic_info && pmic_info->after_vreg_on)
-		ret = (pmic_info->after_vreg_on)(rdev);
-	return ret;
 }
 /**
 * intel_pmic_reg_disable - To disable the regulator
@@ -144,22 +138,14 @@ static int intel_pmic_reg_disable(struct regulator_dev *rdev)
 
 	pmic_dbg("This is intel_pmic_reg_disable function for %s\n",
 				rdev->desc->name);
-	if (pmic_info && pmic_info->before_vreg_off) {
-		ret = (pmic_info->before_vreg_off)(rdev);
-		if (ret)
-			return ret;
-	}
 	ret = intel_msic_reg_read(pmic_info->pmic_reg, &reg);
 	if (ret) {
 		pmic_err("intel_msic_reg_read returns"
 					"error %08x\n", ret);
 		return INTEL_REGULATOR_ERR;
 	}
-	ret = intel_msic_reg_write(pmic_info->pmic_reg,
-                               ((reg & REG_CTRL_MASK) | MSIC_REG_OFF));
-	if (!ret && pmic_info && pmic_info->after_vreg_off)
-		ret = (pmic_info->after_vreg_off)(rdev);
-	return ret;
+	return intel_msic_reg_write(pmic_info->pmic_reg,
+		((reg & REG_CTRL_MASK) | MSIC_REG_OFF));
 }
 /**
 * intel_pmic_reg_listvoltage - Return the voltage value,this is called
@@ -380,14 +366,6 @@ static struct regulator_desc intel_pmic_desc[] = {
 		.id = VEMMC2,
 		.ops = &intel_pmic_ops,
 		.n_voltages = ARRAY_SIZE(VEMMC2_VSEL_table),
-		.type = REGULATOR_VOLTAGE,
-		.owner = THIS_MODULE,
-	},
-	{
-		.name = "vccsdio",
-		.id = VCCSDIO,
-		.ops = &intel_pmic_ops,
-		.n_voltages = ARRAY_SIZE(VCCSDIO_VSEL_table),
 		.type = REGULATOR_VOLTAGE,
 		.owner = THIS_MODULE,
 	},

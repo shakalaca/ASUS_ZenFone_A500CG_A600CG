@@ -16,7 +16,7 @@
 #include <linux/gpio.h>
 #include <linux/mfd/intel_msic.h>
 #include <asm/intel-mid.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include "platform_msic.h"
 #include "platform_msic_gpio.h"
 
@@ -27,13 +27,14 @@ void __init *msic_gpio_platform_data(void *info)
 	static struct intel_msic_gpio_pdata msic_gpio_pdata;
 	int ret;
 	int gpio;
+	struct resource res;
 
 	pdev = platform_device_alloc(MSIC_GPIO_DEVICE_NAME, -1);
 
 	if (!pdev) {
 		pr_err("out of memory for SFI platform dev %s\n",
 					MSIC_GPIO_DEVICE_NAME);
-		goto out;
+		return NULL;
 	}
 
 	gpio = get_gpio_by_name("msic_gpio_base");
@@ -51,10 +52,11 @@ void __init *msic_gpio_platform_data(void *info)
 		msic_gpio_pdata.gpio0_hv_ctli = 0x75;
 	} else if (INTEL_MID_BOARD(1, PHONE, MRFL)) {
 		/* Basincove PMIC GPIO has total 8 GPIO pins,
-		 * GPIO[5:2] support 1.8V, GPIO[7:6] support 1.8V and 3.3V,
+		 * GPIO[5:2,0] support 1.8V, GPIO[7:6,1] support 1.8V and 3.3V,
 		 * We group GPIO[5:2] to low voltage and GPIO[7:6] to
-		 * high voltage, which won't affect the driver usage but easy
-		 * for the driver sharing among multiple platforms.
+		 * high voltage. Because the CTL registers are contiguous,
+		 * this grouping method doesn't affect the driver usage but
+		 * easy for the driver sharing among multiple platforms.
 		 */
 		msic_gpio_pdata.ngpio_lv = 6;
 		msic_gpio_pdata.ngpio_hv = 2;
@@ -62,6 +64,13 @@ void __init *msic_gpio_platform_data(void *info)
 		msic_gpio_pdata.gpio0_lv_ctli = 0x8E;
 		msic_gpio_pdata.gpio0_hv_ctlo = 0x84;
 		msic_gpio_pdata.gpio0_hv_ctli = 0x94;
+	} else if (INTEL_MID_BOARD(1, PHONE, MOFD)) {
+		msic_gpio_pdata.ngpio_lv = 6;
+		msic_gpio_pdata.ngpio_hv = 2;
+		msic_gpio_pdata.gpio0_lv_ctlo = 0x107E;
+		msic_gpio_pdata.gpio0_lv_ctli = 0x108E;
+		msic_gpio_pdata.gpio0_hv_ctlo = 0x1084;
+		msic_gpio_pdata.gpio0_hv_ctli = 0x1094;
 	}
 
 	msic_gpio_pdata.can_sleep = 1;
@@ -73,13 +82,15 @@ void __init *msic_gpio_platform_data(void *info)
 	if (ret) {
 		pr_err("failed to add msic gpio platform device\n");
 		platform_device_put(pdev);
-		goto out;
+		return NULL;
 	}
 
-	install_irq_resource(pdev, entry->irq);
+	res.name = "IRQ",
+	res.flags = IORESOURCE_IRQ,
+	res.start = entry->irq;
+	platform_device_add_resources(pdev, &res, 1);
 
 	register_rpmsg_service("rpmsg_msic_gpio", RPROC_SCU, RP_MSIC_GPIO);
 
-out:
 	return &msic_gpio_pdata;
 }

@@ -66,7 +66,8 @@ IMG_BOOL RGXIsDevicePowered(PVRSRV_DEVICE_NODE *psDeviceNode)
 PVRSRV_ERROR RGXRunScript(PVRSRV_RGXDEV_INFO	*psDevInfo,
 						 RGX_INIT_COMMAND		*psScript,
 						 IMG_UINT32				ui32NumCommands,
-						 IMG_UINT32				ui32PdumpFlags)
+						 IMG_UINT32				ui32PdumpFlags,
+						 DUMPDEBUG_PRINTF_FUNC  *pfnDumpDebugPrintf)
 {
 	IMG_UINT32 ui32PC;
 	RGX_INIT_COMMAND *psComm;
@@ -85,14 +86,28 @@ PVRSRV_ERROR RGXRunScript(PVRSRV_RGXDEV_INFO	*psDevInfo,
 			{
 				IMG_UINT32	ui32RegVal;
 				ui32RegVal = OSReadHWReg32(psDevInfo->pvRegsBaseKM,  psComm->sDBGReadHWReg.ui32Offset);
-				PVR_LOG(("%s: 0x%08X", psComm->sDBGReadHWReg.aszName, ui32RegVal));
+				if (pfnDumpDebugPrintf)
+				{
+					pfnDumpDebugPrintf("%s: 0x%08X", psComm->sDBGReadHWReg.aszName, ui32RegVal);
+				}
+				else
+				{
+					PVR_LOG(("%s: 0x%08X", psComm->sDBGReadHWReg.aszName, ui32RegVal));
+				}
 				break;
 			}
 			case RGX_INIT_OP_DBG_READ64_HW_REG:
 			{
 				IMG_UINT64	ui64RegVal;
 				ui64RegVal = OSReadHWReg64(psDevInfo->pvRegsBaseKM, psComm->sDBGReadHWReg.ui32Offset);
-				PVR_LOG(("%s: 0x%016llX", psComm->sDBGReadHWReg.aszName, ui64RegVal));
+				if (pfnDumpDebugPrintf)
+				{
+					pfnDumpDebugPrintf("%s: 0x%016llX", psComm->sDBGReadHWReg.aszName, ui64RegVal);
+				}
+				else
+				{
+					PVR_LOG(("%s: 0x%016llX", psComm->sDBGReadHWReg.aszName, ui64RegVal));
+				}
 				break;
 			}
 			case RGX_INIT_OP_WRITE_HW_REG:
@@ -136,7 +151,7 @@ PVRSRV_ERROR RGXRunScript(PVRSRV_RGXDEV_INFO	*psDevInfo,
 				else
 				{
 					PVR_DPF((PVR_DBG_WARNING, 
-					   "RGXRunScript: Skipping Poll for Reg (0x%x). Condition is Reg (0x%x) ANDed with mask 0x%x equal to 0x%x but found value 0x%x instead.",
+					   "RGXRunScript: Skipping Poll for Reg (0x%x) because the condition is not met (Reg 0x%x ANDed with mask 0x%x equal to 0x%x but value 0x%x found instead).",
 					   psComm->sCondPollHWReg.ui32Offset,
 					   psComm->sCondPollHWReg.ui32CondOffset,
 					   psComm->sCondPollHWReg.ui32CondMask,
@@ -242,11 +257,25 @@ PVRSRV_ERROR RGXRunScript(PVRSRV_RGXDEV_INFO	*psDevInfo,
 				ui32RegVal3 = OSReadHWReg32(psDevInfo->pvRegsBaseKM,  psComm->sDBGCalc.ui32Offset3);
 				if (ui32RegVal1 + ui32RegVal2 > ui32RegVal3)
 				{
-					PVR_LOG(("%s: 0x%08X", psComm->sDBGCalc.aszName, ui32RegVal1 + ui32RegVal2 - ui32RegVal3));
+					if (pfnDumpDebugPrintf)
+					{
+						pfnDumpDebugPrintf("%s: 0x%08X", psComm->sDBGCalc.aszName, ui32RegVal1 + ui32RegVal2 - ui32RegVal3);
+					}
+					else
+					{
+						PVR_LOG(("%s: 0x%08X", psComm->sDBGCalc.aszName, ui32RegVal1 + ui32RegVal2 - ui32RegVal3));
+					}
 				}
 				else
 				{
-					PVR_LOG(("%s: 0x%08X", psComm->sDBGCalc.aszName, 0));
+					if (pfnDumpDebugPrintf)
+					{
+						pfnDumpDebugPrintf("%s: 0x%08X", psComm->sDBGCalc.aszName, 0);
+					}
+					else
+					{
+						PVR_LOG(("%s: 0x%08X", psComm->sDBGCalc.aszName, 0));
+					}
 				}
 				break;
 			}
@@ -257,7 +286,14 @@ PVRSRV_ERROR RGXRunScript(PVRSRV_RGXDEV_INFO	*psDevInfo,
 			}
 			case RGX_INIT_OP_DBG_STRING:
 			{
-				PVR_LOG(("%s", psComm->sDBGString.aszString));
+				if (pfnDumpDebugPrintf)
+				{
+					pfnDumpDebugPrintf("%s", psComm->sDBGString.aszString);
+				}
+				else
+				{
+					PVR_LOG(("%s", psComm->sDBGString.aszString));
+				}
 				break;
 			}
 			case RGX_INIT_OP_HALT:

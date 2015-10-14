@@ -298,20 +298,7 @@ static int mrst_set_alarm(struct device *dev, struct rtc_wkalrm *t)
 		/* Adjust for the 1972/1900 */
 		writeb(year-72, oshob_addr+OSHOB_YEAR_OFFSET);
 	}
-	spin_unlock_irq(&rtc_lock);
 
-	/* In moorestown vrtc used to be powered off & was not a wake source
-	 * in Standby. In penwell vRTC is kept on even during standby.
-	 * hence this ipc message need not be sent
-	 */
-	if (__intel_mid_cpu_chip == INTEL_MID_CPU_CHIP_LINCROFT) {
-		ret = rpmsg_send_simple_command(vrtc_mrst_instance,
-					IPCMSG_VRTC, IPC_CMD_VRTC_SETALARM);
-		if (ret)
-			return ret;
-	}
-
-	spin_lock_irq(&rtc_lock);
 	if (t->enabled)
 		mrst_irq_enable(mrst, RTC_AIE);
 
@@ -432,7 +419,7 @@ static irqreturn_t mrst_rtc_irq(int irq, void *p)
 
 		return IRQ_HANDLED;
 	} else {
-		printk(KERN_ERR "vRTC: error in IRQ handler\n");
+		pr_err("vRTC: error in IRQ handler\n");
 		return IRQ_NONE;
 	}
 }
@@ -463,6 +450,9 @@ vrtc_mrst_do_probe(struct device *dev, struct resource *iomem, int rtc_irq)
 	mrst_rtc.dev = dev;
 	dev_set_drvdata(dev, &mrst_rtc);
 
+	/* make RTC device wake capable from sleep */
+	device_init_wakeup(dev, true);
+
 	mrst_rtc.rtc = rtc_device_register(driver_name, dev,
 				&mrst_rtc_ops, THIS_MODULE);
 	if (IS_ERR(mrst_rtc.rtc)) {
@@ -473,7 +463,6 @@ vrtc_mrst_do_probe(struct device *dev, struct resource *iomem, int rtc_irq)
 	rename_region(iomem, dev_name(&mrst_rtc.rtc->dev));
 
 	spin_lock_irq(&rtc_lock);
-	mrst_irq_disable(&mrst_rtc, RTC_PIE | RTC_AIE);
 	rtc_control = vrtc_cmos_read(RTC_CONTROL);
 	spin_unlock_irq(&rtc_lock);
 
@@ -490,9 +479,6 @@ vrtc_mrst_do_probe(struct device *dev, struct resource *iomem, int rtc_irq)
 			goto cleanup1;
 		}
 	}
-
-	/* make RTC device wake capable from sleep */
-	device_init_wakeup(dev, true);
 
 	if ((__intel_mid_cpu_chip == INTEL_MID_CPU_CHIP_PENWELL) ||
 	    (__intel_mid_cpu_chip == INTEL_MID_CPU_CHIP_CLOVERVIEW)) {
@@ -663,10 +649,6 @@ static int vrtc_mrst_platform_remove(struct platform_device *pdev)
 
 static void vrtc_mrst_platform_shutdown(struct platform_device *pdev)
 {
-	if (system_state == SYSTEM_POWER_OFF && !mrst_poweroff(&pdev->dev))
-		return;
-
-	rtc_mrst_do_shutdown();
 }
 
 MODULE_ALIAS("platform:vrtc_mrst");

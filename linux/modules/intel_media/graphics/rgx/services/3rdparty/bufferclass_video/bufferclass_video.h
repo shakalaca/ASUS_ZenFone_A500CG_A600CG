@@ -27,13 +27,28 @@
 #define __BC_VIDEO_H__
 
 #include "img_defs.h"
-#include "servicesext.h"
 #include "bufferclass_interface.h"
+#include "imgpixfmts_km.h"
 
 #if defined(__cplusplus)
 extern "C"
 {
 #endif
+
+	#define MAX_BUFFER_DEVICE_NAME_SIZE	(50) /*!< Max size of the buffer device name */
+
+	/*! buffer information structure */
+	typedef struct BUFFER_INFO_TAG
+	{
+		unsigned int	ui32BufferCount;     /*!< Number of supported buffers */
+		unsigned int	ui32BufferDeviceID;  /*!< DeviceID assigned by Services*/
+		IMG_PIXFMT		eIMGPixFmt;          /*!< Pixel format of the buffer */
+		unsigned int	ui32ByteStride;      /*!< Byte stride of the buffer */
+		unsigned int	ui32Width;           /*!< Width of the buffer, in pixels */
+		unsigned int	ui32Height;          /*!< Height of the buffer, in pixels */
+		unsigned int	ui32Flags;           /*!< Flags */
+		char			szDeviceName[MAX_BUFFER_DEVICE_NAME_SIZE];  /*!< Name of the device */
+	} BUFFER_INFO;
 
 	enum BC_memory
 	{

@@ -10,10 +10,10 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/delay.h>
 #include <linux/gcd.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
-#include <linux/delay.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/tlv.h>
@@ -189,50 +189,17 @@ static const struct snd_soc_dapm_widget arizona_spkr =
 			   ARIZONA_OUT4R_ENA_SHIFT, 0, NULL, 0, arizona_spk_ev,
 			   SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU);
 
-static const struct snd_soc_dapm_widget arizona_spkl_dummy =
-	SND_SOC_DAPM_PGA("OUT4L", SND_SOC_NOPM, 0, 0, NULL, 0);
-
-static const struct snd_soc_dapm_widget arizona_spkr_dummy =
-	SND_SOC_DAPM_PGA("OUT4R", SND_SOC_NOPM, 0, 0, NULL, 0);
-
 int arizona_init_spk(struct snd_soc_codec *codec)
 {
 	struct arizona_priv *priv = snd_soc_codec_get_drvdata(codec);
 	struct arizona *arizona = priv->arizona;
-	bool spkl = true;
-	bool spkr = true;
 	int ret;
 
-	switch (arizona->pdata.mic_spk_clamp) {
-	case ARIZONA_MIC_CLAMP_SPKLN:
-	case ARIZONA_MIC_CLAMP_SPKLP:
-		spkl = false;
-		break;
-	case ARIZONA_MIC_CLAMP_SPKRN:
-	case ARIZONA_MIC_CLAMP_SPKRP:
-		spkr = false;
-		break;
-	default:
-		break;
-	}
-
-	if (spkl)
-		ret = snd_soc_dapm_new_controls(&codec->dapm,
-						&arizona_spkl, 1);
-	else
-		ret = snd_soc_dapm_new_controls(&codec->dapm,
-						&arizona_spkl_dummy, 1);
-
+	ret = snd_soc_dapm_new_controls(&codec->dapm, &arizona_spkl, 1);
 	if (ret != 0)
 		return ret;
 
-	if (spkr)
-		ret = snd_soc_dapm_new_controls(&codec->dapm,
-						&arizona_spkr, 1);
-	else
-		ret = snd_soc_dapm_new_controls(&codec->dapm,
-						&arizona_spkr_dummy, 1);
-
+	ret = snd_soc_dapm_new_controls(&codec->dapm, &arizona_spkr, 1);
 	if (ret != 0)
 		return ret;
 
@@ -562,9 +529,9 @@ static void arizona_in_set_vu(struct snd_soc_codec *codec, int ena)
 		val = 0;
 
 	for (i = 0; i < priv->num_inputs; i++)
-		regmap_update_bits(priv->arizona->regmap,
-				   ARIZONA_ADC_DIGITAL_VOLUME_1L + (i * 4),
-				   ARIZONA_IN_VU, val);
+		snd_soc_update_bits(codec,
+				    ARIZONA_ADC_DIGITAL_VOLUME_1L + (i * 4),
+				    ARIZONA_IN_VU, val);
 }
 
 int arizona_in_ev(struct snd_soc_dapm_widget *w, struct snd_kcontrol *kcontrol,
@@ -909,7 +876,7 @@ static const int arizona_48k_bclk_rates[] = {
 	24576000,
 };
 
-static unsigned int arizona_48k_rates[] = {
+static const unsigned int arizona_48k_rates[] = {
 	12000,
 	24000,
 	48000,
@@ -927,7 +894,7 @@ static unsigned int arizona_48k_rates[] = {
 	512000,
 };
 
-static struct snd_pcm_hw_constraint_list arizona_48k_constraint = {
+static const struct snd_pcm_hw_constraint_list arizona_48k_constraint = {
 	.count	= ARRAY_SIZE(arizona_48k_rates),
 	.list	= arizona_48k_rates,
 };
@@ -954,7 +921,7 @@ static const int arizona_44k1_bclk_rates[] = {
 	22579200,
 };
 
-static unsigned int arizona_44k1_rates[] = {
+static const unsigned int arizona_44k1_rates[] = {
 	11025,
 	22050,
 	44100,
@@ -964,7 +931,7 @@ static unsigned int arizona_44k1_rates[] = {
 	705600,
 };
 
-static struct snd_pcm_hw_constraint_list arizona_44k1_constraint = {
+static const struct snd_pcm_hw_constraint_list arizona_44k1_constraint = {
 	.count	= ARRAY_SIZE(arizona_44k1_rates),
 	.list	= arizona_44k1_rates,
 };
@@ -1002,7 +969,7 @@ static int arizona_startup(struct snd_pcm_substream *substream,
 	struct snd_soc_codec *codec = dai->codec;
 	struct arizona_priv *priv = snd_soc_codec_get_drvdata(codec);
 	struct arizona_dai_priv *dai_priv = &priv->dai[dai->id - 1];
-	struct snd_pcm_hw_constraint_list *constraint;
+	const struct snd_pcm_hw_constraint_list *constraint;
 	unsigned int base_rate;
 
 	switch (dai_priv->clk) {
@@ -1187,31 +1154,20 @@ static int arizona_dai_set_sysclk(struct snd_soc_dai *dai,
 		return -EBUSY;
 	}
 
+	dev_dbg(codec->dev, "Setting AIF%d to %s\n", dai->id + 1,
+		arizona_dai_clk_str(clk_id));
+
 	memset(&routes, 0, sizeof(routes));
 	routes[0].sink = dai->driver->capture.stream_name;
 	routes[1].sink = dai->driver->playback.stream_name;
 
-	switch (clk_id) {
-	case ARIZONA_CLK_SYSCLK:
-		routes[0].source = arizona_dai_clk_str(dai_priv->clk);
-		routes[1].source = arizona_dai_clk_str(dai_priv->clk);
-		snd_soc_dapm_del_routes(&codec->dapm, routes,
-					ARRAY_SIZE(routes));
-		break;
-	default:
-		break;
-	}
+	routes[0].source = arizona_dai_clk_str(dai_priv->clk);
+	routes[1].source = arizona_dai_clk_str(dai_priv->clk);
+	snd_soc_dapm_del_routes(&codec->dapm, routes, ARRAY_SIZE(routes));
 
-	switch (clk_id) {
-	case ARIZONA_CLK_ASYNCCLK:
-		routes[0].source = arizona_dai_clk_str(clk_id);
-		routes[1].source = arizona_dai_clk_str(clk_id);
-		snd_soc_dapm_add_routes(&codec->dapm, routes,
-					ARRAY_SIZE(routes));
-		break;
-	default:
-		break;
-	}
+	routes[0].source = arizona_dai_clk_str(clk_id);
+	routes[1].source = arizona_dai_clk_str(clk_id);
+	snd_soc_dapm_add_routes(&codec->dapm, routes, ARRAY_SIZE(routes));
 
 	dai_priv->clk = clk_id;
 
@@ -1451,25 +1407,21 @@ static void arizona_enable_fll(struct arizona_fll *fll,
 {
 	struct arizona *arizona = fll->arizona;
 	int ret;
-	bool use_sync = false;
 
 	/*
 	 * If we have both REFCLK and SYNCCLK then enable both,
 	 * otherwise apply the SYNCCLK settings to REFCLK.
 	 */
-	if (fll->ref_src >= 0 && fll->ref_freq &&
-	    fll->ref_src != fll->sync_src) {
+	if (fll->ref_src >= 0 && fll->ref_src != fll->sync_src) {
 		regmap_update_bits(arizona->regmap, fll->base + 5,
 				   ARIZONA_FLL1_OUTDIV_MASK,
 				   ref->outdiv << ARIZONA_FLL1_OUTDIV_SHIFT);
 
 		arizona_apply_fll(arizona, fll->base, ref, fll->ref_src,
 				  false);
-		if (fll->sync_src >= 0) {
+		if (fll->sync_src >= 0)
 			arizona_apply_fll(arizona, fll->base + 0x10, sync,
 					  fll->sync_src, true);
-			use_sync = true;
-		}
 	} else if (fll->sync_src >= 0) {
 		regmap_update_bits(arizona->regmap, fll->base + 5,
 				   ARIZONA_FLL1_OUTDIV_MASK,
@@ -1489,7 +1441,7 @@ static void arizona_enable_fll(struct arizona_fll *fll,
 	 * Increase the bandwidth if we're not using a low frequency
 	 * sync source.
 	 */
-	if (use_sync && fll->sync_freq > 100000)
+	if (fll->sync_src >= 0 && fll->sync_freq > 100000)
 		regmap_update_bits(arizona->regmap, fll->base + 0x17,
 				   ARIZONA_FLL1_SYNC_BW, 0);
 	else
@@ -1504,7 +1456,8 @@ static void arizona_enable_fll(struct arizona_fll *fll,
 
 	regmap_update_bits(arizona->regmap, fll->base + 1,
 			   ARIZONA_FLL1_ENA, ARIZONA_FLL1_ENA);
-	if (use_sync)
+	if (fll->ref_src >= 0 && fll->sync_src >= 0 &&
+	    fll->ref_src != fll->sync_src)
 		regmap_update_bits(arizona->regmap, fll->base + 0x11,
 				   ARIZONA_FLL1_SYNC_ENA,
 				   ARIZONA_FLL1_SYNC_ENA);
@@ -1526,7 +1479,7 @@ static void arizona_disable_fll(struct arizona_fll *fll)
 			   ARIZONA_FLL1_SYNC_ENA, 0);
 
 	if (change)
-		pm_runtime_put_sync(arizona->dev);
+		pm_runtime_put_autosuspend(arizona->dev);
 }
 
 int arizona_set_fll_refclk(struct arizona_fll *fll, int source,
@@ -1538,12 +1491,10 @@ int arizona_set_fll_refclk(struct arizona_fll *fll, int source,
 	if (fll->ref_src == source && fll->ref_freq == Fref)
 		return 0;
 
-	if (fll->fout) {
-		if (Fref > 0) {
-			ret = arizona_calc_fll(fll, &ref, Fref, fll->fout);
-			if (ret != 0)
-				return ret;
-		}
+	if (fll->fout && Fref > 0) {
+		ret = arizona_calc_fll(fll, &ref, Fref, fll->fout);
+		if (ret != 0)
+			return ret;
 
 		if (fll->sync_src >= 0) {
 			ret = arizona_calc_fll(fll, &sync, fll->sync_freq,
@@ -1556,7 +1507,7 @@ int arizona_set_fll_refclk(struct arizona_fll *fll, int source,
 	fll->ref_src = source;
 	fll->ref_freq = Fref;
 
-	if (fll->fout) {
+	if (fll->fout && Fref > 0) {
 		arizona_enable_fll(fll, &ref, &sync);
 	}
 

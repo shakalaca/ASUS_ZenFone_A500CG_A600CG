@@ -46,7 +46,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "ttrace.h"
 
 #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
 #include <linux/sw_sync.h>
 #else
 #include <sw_sync.h>
@@ -74,11 +74,18 @@ static struct sync_fence *AllocQueueFence(struct sw_sync_timeline *psTimeline, I
 /*
  * The number of commands of each type which can be in flight at once.
  */
+
+#define DC_MAX_SUPPORTED_QUEUES			1
 #if defined(SUPPORT_DC_CMDCOMPLETE_WHEN_NO_LONGER_DISPLAYED)
-#define DC_NUM_COMMANDS_PER_TYPE		2
+#define DC_NUM_COMMANDS_PER_QUEUE              2
 #else
-#define DC_NUM_COMMANDS_PER_TYPE		1
+#define DC_NUM_COMMANDS_PER_QUEUE              1
 #endif
+
+#define DC_NUM_COMMANDS_PER_TYPE (DC_NUM_COMMANDS_PER_QUEUE * DC_MAX_SUPPORTED_QUEUES)
+
+static IMG_UINT32 ui32NoOfSwapchainCreated = 0;
+
 
 #define DC_NUM_CMDS_COMPLETE_HISTORY  40 /*must be multiple of 4*/
 /*
@@ -509,6 +516,12 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateCommandQueueKM(IMG_SIZE_T uQueueSize,
 	PVRSRV_ERROR		eError;
 	IMG_HANDLE			hMemBlock;
 
+	if (ui32NoOfSwapchainCreated >= DC_NUM_COMMANDS_PER_TYPE)
+	{
+		PVR_DPF((PVR_DBG_ERROR,"PVRSRVCreateCommandQueueKM: Swapchain already exists, increament DC_MAX_SUPPORTED_QUEUES to support more than one swapchain"));
+		return PVRSRV_ERROR_FLIP_CHAIN_EXISTS;
+	}
+
 	SysAcquireData(&psSysData);
 
 	/* allocate an internal queue info structure */
@@ -583,6 +596,8 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVCreateCommandQueueKM(IMG_SIZE_T uQueueSize,
 	}
 
 	*ppsQueueInfo = psQueueInfo;
+
+	ui32NoOfSwapchainCreated++;
 
 	return PVRSRV_OK;
 
@@ -661,6 +676,8 @@ PVRSRV_ERROR IMG_CALLCONV PVRSRVDestroyCommandQueueKM(PVRSRV_QUEUE_INFO *psQueue
 	{
 		goto ErrorExit;
 	}
+
+	ui32NoOfSwapchainCreated--;
 
 #if defined(PVR_ANDROID_NATIVE_WINDOW_HAS_SYNC)
 	sync_timeline_destroy(psQueueInfo->pvTimeline);

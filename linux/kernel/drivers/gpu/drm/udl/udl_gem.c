@@ -6,7 +6,7 @@
  * more details.
  */
 
-#include "drmP.h"
+#include <drm/drmP.h>
 #include "udl_drv.h"
 #include <linux/shmem_fs.h>
 #include <linux/dma-buf.h>
@@ -137,7 +137,7 @@ static int udl_gem_get_pages(struct udl_gem_object *obj, gfp_t gfpmask)
 	if (obj->pages == NULL)
 		return -ENOMEM;
 
-	inode = obj->base.filp->f_path.dentry->d_inode;
+	inode = file_inode(obj->base.filp);
 	mapping = inode->i_mapping;
 	gfpmask |= mapping_gfp_mask(mapping);
 
@@ -181,11 +181,6 @@ int udl_gem_vmap(struct udl_gem_object *obj)
 	int ret;
 
 	if (obj->base.import_attach) {
-		ret = dma_buf_begin_cpu_access(obj->base.import_attach->dmabuf,
-					       0, obj->base.size, DMA_BIDIRECTIONAL);
-		if (ret)
-			return -EINVAL;
-
 		obj->vmapping = dma_buf_vmap(obj->base.import_attach->dmabuf);
 		if (!obj->vmapping)
 			return -ENOMEM;
@@ -206,8 +201,6 @@ void udl_gem_vunmap(struct udl_gem_object *obj)
 {
 	if (obj->base.import_attach) {
 		dma_buf_vunmap(obj->base.import_attach->dmabuf, obj->vmapping);
-		dma_buf_end_cpu_access(obj->base.import_attach->dmabuf, 0,
-				       obj->base.size, DMA_BIDIRECTIONAL);
 		return;
 	}
 
@@ -310,6 +303,8 @@ struct drm_gem_object *udl_gem_prime_import(struct drm_device *dev,
 	if (IS_ERR(attach))
 		return ERR_CAST(attach);
 
+	get_dma_buf(dma_buf);
+
 	sg = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
 	if (IS_ERR(sg)) {
 		ret = PTR_ERR(sg);
@@ -329,5 +324,7 @@ fail_unmap:
 	dma_buf_unmap_attachment(attach, sg, DMA_BIDIRECTIONAL);
 fail_detach:
 	dma_buf_detach(dma_buf, attach);
+	dma_buf_put(dma_buf);
+
 	return ERR_PTR(ret);
 }

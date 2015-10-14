@@ -397,7 +397,7 @@ otm_hdmi_ret_t ipil_hdmi_crtc_mode_set_program_dspregs(hdmi_device_t *dev,
 				hdmi_write32(IPIL_PFIT_CONTROL,
 					     IPIL_PFIT_ENABLE |
 					     IPIL_PFIT_PIPE_SELECT_B |
-					     IPIL_PFIT_SCALING_PILLARBOX);
+					     IPIL_PFIT_SCALING_AUTO);
 			}
 		} else
 			hdmi_write32(IPIL_PFIT_CONTROL,
@@ -607,8 +607,7 @@ otm_hdmi_ret_t ipil_hdmi_crtc_mode_set_program_pipeconf(hdmi_device_t *dev)
 	dspcntr |= IPIL_DSP_PLANE_ENABLE;
 
 	/* setup pipeconf */
-	pipeconf = IPIL_PIPEACONF_ENABLE;
-
+	pipeconf = hdmi_read32(IPIL_PIPEBCONF) | IPIL_PIPEACONF_ENABLE;
 
 	hdmi_write32(IPIL_PIPEBCONF, pipeconf);
 	hdmi_read32(IPIL_PIPEBCONF);
@@ -664,9 +663,9 @@ otm_hdmi_ret_t ipil_hdmi_enc_mode_set(hdmi_device_t *dev,
 	/* Hdmi specification define that 640x480: full range
 	* other timing: limited range when RGB output */
 	if (adjusted_mode->width == 640 && adjusted_mode->height == 480)
-		hdmib |= IPIL_HDMIB_COLOR_RANGE_SELECT;
-	else
 		hdmib &= ~IPIL_HDMIB_COLOR_RANGE_SELECT;
+	else
+		hdmib |= IPIL_HDMIB_COLOR_RANGE_SELECT;
 
 	/* set output polarity */
 	phsync = !!(adjusted_mode->mode_info_flags & PD_HSYNC_HIGH);

@@ -14,11 +14,13 @@
 /* #define VERBOSE_DEBUG */
 
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/gfp.h>
 #include <linux/device.h>
 #include <linux/ctype.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
+#include <linux/if_vlan.h>
 
 #include "u_ether.h"
 
@@ -48,7 +50,6 @@
 
 struct eth_dev {
 	/* lock is held while accessing port_usb
-	 * or updating its backlink port_usb->ioport
 	 */
 	spinlock_t		lock;
 	struct gether		*port_usb;
@@ -83,19 +84,13 @@ struct eth_dev {
 
 #define DEFAULT_QLEN	2	/* double buffering by default */
 
-
-#ifdef CONFIG_USB_GADGET_DUALSPEED
-
 static unsigned qmult = 8;
 module_param(qmult, uint, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(qmult, "queue length multiplier at high/super speed");
 
-#else	/* full speed (low speed doesn't do bulk) */
-#define qmult		1
-#endif
-
 /* Add padding space before the NET_IP_ALIGN to ensure the address of data
-buffer align on 64B */
+ * buffer align on 64B
+ */
 #define DMA_ALIGN_64    64
 #define DMA_IP_ALIGN_PAD   (DMA_ALIGN_64 - NET_IP_ALIGN)
 
@@ -169,12 +164,12 @@ static int ueth_change_mtu(struct net_device *net, int new_mtu)
 
 static void eth_get_drvinfo(struct net_device *net, struct ethtool_drvinfo *p)
 {
-	struct eth_dev	*dev = netdev_priv(net);
+	struct eth_dev *dev = netdev_priv(net);
 
-	strlcpy(p->driver, "g_ether", sizeof p->driver);
-	strlcpy(p->version, UETH__VERSION, sizeof p->version);
-	strlcpy(p->fw_version, dev->gadget->name, sizeof p->fw_version);
-	strlcpy(p->bus_info, dev_name(&dev->gadget->dev), sizeof p->bus_info);
+	strlcpy(p->driver, "g_ether", sizeof(p->driver));
+	strlcpy(p->version, UETH__VERSION, sizeof(p->version));
+	strlcpy(p->fw_version, dev->gadget->name, sizeof(p->fw_version));
+	strlcpy(p->bus_info, dev_name(&dev->gadget->dev), sizeof(p->bus_info));
 }
 
 /* REVISIT can also support:
@@ -304,7 +299,7 @@ static void rx_complete(struct usb_ep *ep, struct usb_request *req)
 		while (skb2) {
 			if (status < 0
 					|| ETH_HLEN > skb2->len
-					|| skb2->len > ETH_FRAME_LEN) {
+					|| skb2->len > VLAN_ETH_FRAME_LEN) {
 				dev->net->stats.rx_errors++;
 				dev->net->stats.rx_length_errors++;
 				DBG(dev, "rx length %d\n", skb2->len);
@@ -733,42 +728,22 @@ static int get_ether_addr(const char *str, u8 *dev_addr)
 		if (is_valid_ether_addr(dev_addr))
 			return 0;
 	}
-	random_ether_addr(dev_addr);
+	eth_random_addr(dev_addr);
 	return 1;
 }
-
-static struct eth_dev *the_dev;
 
 static const struct net_device_ops eth_netdev_ops = {
 	.ndo_open		= eth_open,
 	.ndo_stop		= eth_stop,
 	.ndo_start_xmit		= eth_start_xmit,
 	.ndo_change_mtu		= ueth_change_mtu,
-	.ndo_set_mac_address	= eth_mac_addr,
+	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
 
 static struct device_type gadget_type = {
 	.name	= "gadget",
 };
-
-/**
- * gether_setup - initialize one ethernet-over-usb link
- * @g: gadget to associated with these links
- * @ethaddr: NULL, or a buffer in which the ethernet address of the
- *	host side of the link is recorded
- * Context: may sleep
- *
- * This sets up the single network link that may be exported by a
- * gadget driver using this framework.  The link layer addresses are
- * set up using module parameters.
- *
- * Returns negative errno, or zero on success
- */
-int gether_setup(struct usb_gadget *g, u8 ethaddr[ETH_ALEN])
-{
-	return gether_setup_name(g, ethaddr, "usb");
-}
 
 /**
  * gether_setup_name - initialize one ethernet-over-usb link
@@ -784,19 +759,16 @@ int gether_setup(struct usb_gadget *g, u8 ethaddr[ETH_ALEN])
  *
  * Returns negative errno, or zero on success
  */
-int gether_setup_name(struct usb_gadget *g, u8 ethaddr[ETH_ALEN],
+struct eth_dev *gether_setup_name(struct usb_gadget *g, u8 ethaddr[ETH_ALEN],
 		const char *netname)
 {
 	struct eth_dev		*dev;
 	struct net_device	*net;
 	int			status;
 
-	if (the_dev)
-		return -EBUSY;
-
 	net = alloc_etherdev(sizeof *dev);
 	if (!net)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 
 	dev = netdev_priv(net);
 	spin_lock_init(&dev->lock);
@@ -833,11 +805,10 @@ int gether_setup_name(struct usb_gadget *g, u8 ethaddr[ETH_ALEN],
 	if (status < 0) {
 		dev_dbg(&g->dev, "register_netdev failed, %d\n", status);
 		free_netdev(net);
+		dev = ERR_PTR(status);
 	} else {
 		INFO(dev, "MAC %pM\n", net->dev_addr);
 		INFO(dev, "HOST MAC %pM\n", dev->host_mac);
-
-		the_dev = dev;
 
 		/* two kinds of host-initiated state changes:
 		 *  - iff DATA transfer is active, carrier is "on"
@@ -846,7 +817,7 @@ int gether_setup_name(struct usb_gadget *g, u8 ethaddr[ETH_ALEN],
 		netif_carrier_off(net);
 	}
 
-	return status;
+	return dev;
 }
 
 /**
@@ -855,18 +826,15 @@ int gether_setup_name(struct usb_gadget *g, u8 ethaddr[ETH_ALEN],
  *
  * This is called to free all resources allocated by @gether_setup().
  */
-void gether_cleanup(void)
+void gether_cleanup(struct eth_dev *dev)
 {
-	if (!the_dev)
+	if (!dev)
 		return;
 
-	unregister_netdev(the_dev->net);
-	flush_work_sync(&the_dev->work);
-	free_netdev(the_dev->net);
-
-	the_dev = NULL;
+	unregister_netdev(dev->net);
+	flush_work(&dev->work);
+	free_netdev(dev->net);
 }
-
 
 /**
  * gether_connect - notify network layer that USB link is active
@@ -886,7 +854,7 @@ void gether_cleanup(void)
  */
 struct net_device *gether_connect(struct gether *link)
 {
-	struct eth_dev		*dev = the_dev;
+	struct eth_dev		*dev = link->ioport;
 	int			result = 0;
 
 	if (!dev)
@@ -921,7 +889,6 @@ struct net_device *gether_connect(struct gether *link)
 
 		spin_lock(&dev->lock);
 		dev->port_usb = link;
-		link->ioport = dev;
 		if (netif_running(dev->net)) {
 			if (link->open)
 				link->open(link);
@@ -1015,6 +982,5 @@ void gether_disconnect(struct gether *link)
 
 	spin_lock(&dev->lock);
 	dev->port_usb = NULL;
-	link->ioport = NULL;
 	spin_unlock(&dev->lock);
 }

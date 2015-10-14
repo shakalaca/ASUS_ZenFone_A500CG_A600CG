@@ -62,6 +62,7 @@ void mdfld_vsync_delay_work(struct work_struct *work)
 #endif
 
 struct mdfld_dsi_config *panel_reset_dsi_config;
+struct drm_encoder *encoder_lcd = NULL;
 
 extern ospm_suspend_display(struct pci_dev *pdev);
 extern ospm_resume_display(struct pci_dev *pdev);
@@ -470,7 +471,6 @@ reset_recovery:
 		REG_WRITE(regs->dspsize_reg, ctx->dspsize);
 	REG_WRITE(regs->dspsurf_reg, ctx->dspsurf);
 	REG_WRITE(regs->dsplinoff_reg, ctx->dsplinoff);
-
 	REG_WRITE(regs->vgacntr_reg, ctx->vgacntr);
 
 	/*restore color_coef (chrome) */
@@ -728,6 +728,7 @@ static int __dpi_panel_power_off(struct mdfld_dsi_config *dsi_config,
 	 * Different panel may have different ways to have
 	 * panel turned off. Support it!
 	 */
+
 	if (p_funcs && p_funcs->power_off) {
 		if (p_funcs->power_off(dsi_config)) {
 			DRM_ERROR("Failed to power off panel\n");
@@ -735,6 +736,7 @@ static int __dpi_panel_power_off(struct mdfld_dsi_config *dsi_config,
 			goto power_off_err;
 		}
 	}
+
 #ifdef BKL_EN_WKAD
 	cancel_delayed_work_sync(&vsync_delay_work);
 #endif
@@ -1416,7 +1418,7 @@ struct mdfld_dsi_encoder *mdfld_dsi_dpi_init(struct drm_device *dev,
 	drm_encoder_init(dev,
 			encoder,
 			&dsi_dpi_generic_encoder_funcs,
-			DRM_MODE_ENCODER_MIPI);
+			DRM_MODE_ENCODER_DSI);
 	drm_encoder_helper_add(encoder,
 			&dsi_dpi_generic_encoder_helper_funcs);
 	
@@ -1448,6 +1450,8 @@ struct mdfld_dsi_encoder *mdfld_dsi_dpi_init(struct drm_device *dev,
 	}
 #endif
 	panel_reset_dsi_config = dsi_config;
+	encoder_lcd = encoder;
+
 	PSB_DEBUG_ENTRY("successfully\n");
 
 	return &dpi_output->base;

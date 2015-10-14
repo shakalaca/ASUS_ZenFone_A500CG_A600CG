@@ -24,7 +24,7 @@
  */
 
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ":%s: " fmt, __func__
 
 #define DEBUG 1
 
@@ -35,11 +35,10 @@
 #include <linux/gpio.h>
 #include <linux/rpmsg.h>
 #include <linux/mod_devicetable.h>
-#include <asm/intel_mid_gpadc.h>
 #include <asm/intel_scu_pmic.h>
 #include <asm/intel_scu_ipcutil.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 #include <asm/platform_ctp_audio.h>
 #include <sound/pcm.h>
 #include <sound/jack.h>
@@ -48,11 +47,43 @@
 #include <linux/input.h>
 
 /* Headset jack detection gpios func(s) */
-#define HPDETECT_POLL_INTERVAL  msecs_to_jiffies(250)  /* 750ms */
+#define HPDETECT_POLL_INTERVAL  msecs_to_jiffies(380)  /* 750ms */
 #define HS_DET_RETRY	1
 
 /* TC_Hsu : Add for report headset status to mid layer */
 extern void mid_headset_report(int state);
+
+static struct class* headset_class;
+static struct device* headset_dev;
+int headset_state;
+
+static ssize_t state_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int ret;
+
+	ret = sprintf(buf, "%d\n", headset_state);
+	return ret;
+}
+
+static ssize_t name_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	int ret;
+
+        if (headset_state == 2) {
+              ret = sprintf(buf, "%s\n", "headsets_no_mic_insert");
+        }
+        else if (headset_state == 1) {
+              ret = sprintf(buf, "%s\n", "headsets_with_mic_insert");
+        }
+        else {
+              ret = sprintf(buf, "%s\n", "headsets_pull_out");
+        }
+
+	return ret;
+}
+
+DEVICE_ATTR(headset_state, 0444, state_show, NULL);
+DEVICE_ATTR(headset_name, 0444, name_show, NULL);
 
 struct snd_soc_card snd_soc_card_ctp = {
 	.set_bias_level = ctp_set_bias_level,
@@ -381,10 +412,8 @@ static inline void set_bp_interrupt(struct ctp_mc_private *ctx, bool enable)
 void cancel_all_work(struct ctp_mc_private *ctx)
 {
 	struct snd_soc_jack_gpio *gpio;
-
 	cancel_delayed_work_sync(&ctx->jack_work_insert);
 	cancel_delayed_work_sync(&ctx->jack_work_remove);
-
 	gpio = &hs_gpio[CTP_BTN_GPIO];
 	cancel_delayed_work_sync(&gpio->work);
 }
@@ -484,12 +513,24 @@ void headset_insert_poll(struct work_struct *work)
 					HPDETECT_POLL_INTERVAL);
 	}
 
-	if (status == SND_JACK_HEADPHONE)
+	/*  Android 4.4
+	if (!atomic_read(&ctx->hs_det_retry) &&
+			status == SND_JACK_HEADPHONE)
+		set_mic_bias(jack, "MIC2 Bias", false);
+	*/
+
+	if (status == SND_JACK_HEADPHONE){
 		mid_headset_report(2); /* headset without mic plug-in. */
-	else if (status == SND_JACK_HEADSET)
+		headset_state = 2;
+	}
+	else if (status == SND_JACK_HEADSET){
 		mid_headset_report(1); /* headset wich mic plug-in. */
-	else
+		headset_state = 1;
+	}
+	else{
 		mid_headset_report(0); /* headset plug-out. */
+		headset_state = 0;
+	}
 	pr_debug("%s: status 0x%x\n", __func__, status);
 }
 
@@ -501,6 +542,7 @@ void headset_remove_poll(struct work_struct *work)
 	struct snd_soc_codec *codec = jack->codec;
 	struct ctp_mc_private *ctx =
 		container_of(jack, struct ctp_mc_private, ctp_jack);
+
 	int enable, status;
 	unsigned int mask = SND_JACK_HEADSET | SND_JACK_BTN_0;
 /*
@@ -523,6 +565,7 @@ void headset_remove_poll(struct work_struct *work)
 		snd_soc_jack_report(jack, status, mask);
 
 	mid_headset_report(0); /* Report to mid layer, no headset plug-in. */
+	headset_state =0;
 	pr_debug("%s: status 0x%x\n", __func__, status);
 }
 
@@ -716,7 +759,7 @@ static void snd_ctp_unregister_jack(struct ctp_mc_private *ctx,
 	snd_soc_jack_free_gpios(&ctx->ctp_jack, 2, ctx->hs_gpio_ops);
 }
 
-static int __devexit snd_ctp_mc_remove(struct platform_device *pdev)
+static int snd_ctp_mc_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *soc_card = platform_get_drvdata(pdev);
 	struct ctp_mc_private *ctx = snd_soc_card_get_drvdata(soc_card);
@@ -743,8 +786,8 @@ static int snd_ctp_jack_init(struct snd_soc_pcm_runtime *runtime,
 						bool jack_supported)
 {
 	int ret, irq;
-	struct snd_soc_jack_gpio *gpio = &hs_gpio[CTP_BTN_GPIO];
 	struct ctp_mc_private *ctx = snd_soc_card_get_drvdata(runtime->card);
+	struct snd_soc_jack_gpio *gpio = &hs_gpio[CTP_BTN_GPIO];
 	struct snd_soc_codec *codec = runtime->codec;
 
 	if (!jack_supported)
@@ -761,13 +804,11 @@ static int snd_ctp_jack_init(struct snd_soc_pcm_runtime *runtime,
 		pr_err("jack creation failed\n");
 		return ret;
 	}
-
 	ret = snd_soc_jack_add_gpios(&ctx->ctp_jack, 2, ctx->hs_gpio_ops);
 	if (ret) {
 		pr_err("adding jack GPIO failed\n");
 		return ret;
 	}
-
 	irq = gpio_to_irq(gpio->gpio);
 	if (irq < 0) {
 		pr_err("%d:Failed to map gpio_to_irq\n", irq);
@@ -781,7 +822,6 @@ static int snd_ctp_jack_init(struct snd_soc_pcm_runtime *runtime,
 	/* Disable Button_press interrupt if no Headset */
 	pr_err("Disable %d interrupt line\n", irq);
 	disable_irq_nosync(irq);
-
 	atomic_set(&ctx->bpirq_flag, 0);
 	atomic_set(&ctx->hs_det_retry, HS_DET_RETRY);
 	return 0;
@@ -806,7 +846,6 @@ int snd_ctp_register_jack_data(struct platform_device *pdev,
 {
 	struct ctp_audio_platform_data *pdata = pdev->dev.platform_data;
 	int ret_val = 0;
-
 	if (!ctx->ops->jack_support)
 		return 0;
 #ifdef CONFIG_HAS_WAKELOCK
@@ -832,7 +871,6 @@ int snd_ctp_register_jack_data(struct platform_device *pdev,
 			hs_gpio[CTP_HSDET_GPIO].gpio,
 			hs_gpio[CTP_BTN_GPIO].gpio);
 	}
-
 	ctx->hs_gpio_ops = hs_gpio;
 	return 0;
 }
@@ -932,7 +970,7 @@ static struct platform_driver snd_ctp_mc_driver = {
 		.pm   = &snd_ctp_mc_pm_ops,
 	},
 	.probe = snd_ctp_mc_probe,
-	.remove = __devexit_p(snd_ctp_mc_remove),
+	.remove = snd_ctp_mc_remove,
 	.shutdown = snd_ctp_mc_shutdown,
 	.id_table = ctp_audio_ids,
 };
@@ -954,6 +992,21 @@ static int snd_clv_rpmsg_probe(struct rpmsg_channel *rpdev)
 	int ret = 0;
 
 	pr_info("In %s\n", __func__);
+
+	headset_class = class_create(THIS_MODULE, "uart_headset");
+	headset_dev = device_create(headset_class, NULL, 0, "%s", "headset_detect");
+
+	ret = device_create_file(headset_dev, &dev_attr_headset_state);
+
+	if(ret){
+		device_unregister(headset_dev);
+	}
+
+	ret = device_create_file(headset_dev, &dev_attr_headset_name);
+
+	if(ret){
+		device_unregister(headset_dev);
+	}
 
 	if (rpdev == NULL) {
 		pr_err("rpmsg channel not created\n");

@@ -52,16 +52,16 @@ static int mrfld_pmu_init(void)
 	mid_pmu_cxt->os_sss[0] = (SSMSK(D0I3_MASK, PMU_RESERVED_LSS_03)	|
 				SSMSK(D0I3_MASK, PMU_HSI_LSS_05)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_07)	|
+				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_11)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_12)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_13)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_14)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_15));
 
-	/* Put LSS8 and LSS11 as unused on  PRh */
+	/* Put LSS8 as unused on PRh */
 	if (INTEL_MID_BOARD(3, PHONE, MRFL, BB, PRO, PRHA)) {
 		mid_pmu_cxt->os_sss[0] |= \
-			(SSMSK(D0I3_MASK, PMU_USB_MPH_LSS_08)|
-			SSMSK(D0I3_MASK, PMU_AUDIO_DMA0_11));
+			SSMSK(D0I3_MASK, PMU_USB_MPH_LSS_08);
 	}
 
 	mid_pmu_cxt->os_sss[1] = (SSMSK(D0I3_MASK, PMU_RESERVED_LSS_16-16)|
@@ -81,26 +81,34 @@ static int mrfld_pmu_init(void)
 	residency[SYS_STATE_S0I1] = ioremap_nocache(S0I1_RES_ADDR, sizeof(u64));
 	if (residency[SYS_STATE_S0I1] == NULL)
 		goto err1;
+	residency[SYS_STATE_LPMP3] = ioremap_nocache(LPMP3_RES_ADDR,
+								sizeof(u64));
+	if (residency[SYS_STATE_LPMP3] == NULL)
+		goto err2;
 	residency[SYS_STATE_S0I2] = ioremap_nocache(S0I2_RES_ADDR, sizeof(u64));
 	if (residency[SYS_STATE_S0I2] == NULL)
-		goto err2;
+		goto err3;
 	residency[SYS_STATE_S0I3] = ioremap_nocache(S0I3_RES_ADDR, sizeof(u64));
 	if (residency[SYS_STATE_S0I3] == NULL)
-		goto err3;
+		goto err4;
 
 	/* Map S0ix iteration counters */
 	s0ix_counter[SYS_STATE_S0I1] = ioremap_nocache(S0I1_COUNT_ADDR,
 								sizeof(u32));
 	if (s0ix_counter[SYS_STATE_S0I1] == NULL)
-		goto err4;
+		goto err5;
+	s0ix_counter[SYS_STATE_LPMP3] = ioremap_nocache(LPMP3_COUNT_ADDR,
+								sizeof(u32));
+	if (s0ix_counter[SYS_STATE_LPMP3] == NULL)
+		goto err6;
 	s0ix_counter[SYS_STATE_S0I2] = ioremap_nocache(S0I2_COUNT_ADDR,
 								sizeof(u32));
 	if (s0ix_counter[SYS_STATE_S0I2] == NULL)
-		goto err5;
+		goto err7;
 	s0ix_counter[SYS_STATE_S0I3] = ioremap_nocache(S0I3_COUNT_ADDR,
 								sizeof(u32));
 	if (s0ix_counter[SYS_STATE_S0I3] == NULL)
-		goto err6;
+		goto err8;
 	/* Keep PSH LSS's 00, 33, 34 in D0i0 if PM is disabled */
 	if (!enable_s0ix && !enable_s3) {
 		mid_pmu_cxt->os_sss[2] &=
@@ -116,27 +124,90 @@ static int mrfld_pmu_init(void)
 
 	return PMU_SUCCESS;
 
-err6:
+err8:
 	iounmap(s0ix_counter[SYS_STATE_S0I3]);
 	s0ix_counter[SYS_STATE_S0I3] = NULL;
-err5:
+err7:
 	iounmap(s0ix_counter[SYS_STATE_S0I2]);
 	s0ix_counter[SYS_STATE_S0I2] = NULL;
-err4:
+err6:
+	iounmap(s0ix_counter[SYS_STATE_LPMP3]);
+	s0ix_counter[SYS_STATE_LPMP3] = NULL;
+err5:
 	iounmap(s0ix_counter[SYS_STATE_S0I1]);
 	s0ix_counter[SYS_STATE_S0I1] = NULL;
-err3:
+err4:
 	iounmap(residency[SYS_STATE_S0I3]);
 	residency[SYS_STATE_S0I3] = NULL;
-err2:
+err3:
 	iounmap(residency[SYS_STATE_S0I2]);
 	residency[SYS_STATE_S0I2] = NULL;
+err2:
+	iounmap(residency[SYS_STATE_LPMP3]);
+	residency[SYS_STATE_LPMP3] = NULL;
 err1:
 	iounmap(residency[SYS_STATE_S0I1]);
 	residency[SYS_STATE_S0I1] = NULL;
 
 	pr_err("Cannot map memory to read S0ix residency and count\n");
 	return PMU_FAILED;
+}
+
+/* This function checks north complex (NC) and
+ * south complex (SC) device status in MRFLD.
+ * returns TRUE if all NC and SC devices are in d0i3
+ * else FALSE.
+ */
+static bool mrfld_nc_sc_status_check(void)
+{
+	int i;
+	u32 val, nc_pwr_sts;
+	struct pmu_ss_states cur_pmsss;
+	bool nc_status, sc_status;
+
+	/* assuming nc and sc are good */
+	nc_status = true;
+	sc_status = true;
+
+	/* Check south complex device status */
+	pmu_read_sss(&cur_pmsss);
+
+	if (!(((cur_pmsss.pmu2_states[0] & S0IX_TARGET_SSS0_MASK) ==
+					 S0IX_TARGET_SSS0) &&
+		((cur_pmsss.pmu2_states[1] & S0IX_TARGET_SSS1_MASK) ==
+					 S0IX_TARGET_SSS1) &&
+		((cur_pmsss.pmu2_states[2] & S0IX_TARGET_SSS2_MASK) ==
+					 S0IX_TARGET_SSS2) &&
+		((cur_pmsss.pmu2_states[3] & S0IX_TARGET_SSS3_MASK) ==
+					 (S0IX_TARGET_SSS3)))) {
+		sc_status = false;
+		pr_warn("SC device/devices not in d0i3!!\n");
+		for (i = 0; i < 4; i++)
+			pr_warn("pmu2_states[%d] = %08lX\n", i,
+					cur_pmsss.pmu2_states[i]);
+	}
+
+	if (sc_status) {
+		/* Check north complex status */
+		nc_pwr_sts =
+			 intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS);
+		/* loop through the status to see if any of nc power island
+		 * is not in D0i3 state
+		 */
+		for (i = 0; i < mrfl_no_of_nc_devices; i++) {
+			val = nc_pwr_sts & 3;
+			if (val != 3) {
+				nc_status = false;
+				pr_warn("NC device (%s) is not in d0i3!!\n",
+							mrfl_nc_devices[i]);
+				pr_warn("nc_pm_sss = %08X\n", nc_pwr_sts);
+				break;
+			}
+			nc_pwr_sts >>= BITS_PER_LSS;
+		}
+	}
+
+	return nc_status & sc_status;
 }
 
 /* FIXME: Need to start the counter only if debug is
@@ -165,16 +236,16 @@ void platform_update_all_lss_states(struct pmu_ss_states *pmu_config,
 				(SSMSK(D0I3_MASK, PMU_RESERVED_LSS_03)	|
 				SSMSK(D0I3_MASK, PMU_HSI_LSS_05)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_07)	|
+				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_11)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_12)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_13)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_14)	|
 				SSMSK(D0I3_MASK, PMU_RESERVED_LSS_15));
 
-	/* Put LSS8 and LSS11 as unused on  PRh */
+	/* Put LSS8 as unused on PRh */
 	if (INTEL_MID_BOARD(3, PHONE, MRFL, BB, PRO, PRHA)) {
 		pmu_config->pmu2_states[0] |= \
-			(SSMSK(D0I3_MASK, PMU_USB_MPH_LSS_08)|
-			SSMSK(D0I3_MASK, PMU_AUDIO_DMA0_11));
+			SSMSK(D0I3_MASK, PMU_USB_MPH_LSS_08);
 	}
 
 	pmu_config->pmu2_states[1] =
@@ -330,58 +401,6 @@ static int mrfld_nc_set_power_state(int islands, int state_type,
 	}
 
 	return ret;
-}
-
-/* This function checks north complex (NC) and
- * south complex (SC) device status in MRFLD.
- * returns TRUE if all NC and SC devices are in d0i3
- * else FALSE.
- */
-static bool mrfld_nc_sc_status_check(void)
-{
-	int i;
-	u32 val, nc_pwr_sts;
-	struct pmu_ss_states cur_pmsss;
-	bool nc_status, sc_status;
-
-	/* assuming nc and sc are good */
-	nc_status = true;
-	sc_status = true;
-
-	/* Check south complex device status */
-	pmu_read_sss(&cur_pmsss);
-
-	if (!(((cur_pmsss.pmu2_states[0] & S0IX_TARGET_SSS0_MASK) ==
-					 S0IX_TARGET_SSS0) &&
-		((cur_pmsss.pmu2_states[1] & S0IX_TARGET_SSS1_MASK) ==
-					 S0IX_TARGET_SSS1) &&
-		((cur_pmsss.pmu2_states[2] & S0IX_TARGET_SSS2_MASK) ==
-					 S0IX_TARGET_SSS2) &&
-		((cur_pmsss.pmu2_states[3] & S0IX_TARGET_SSS3_MASK) ==
-					 (S0IX_TARGET_SSS3)))) {
-		sc_status = false;
-		pr_warn("SC device/devices not in d0i3!!\n");
-	}
-
-	if (sc_status) {
-		/* Check north complex status */
-		nc_pwr_sts =
-			 intel_mid_msgbus_read32(PUNIT_PORT, NC_PM_SSS);
-		/* loop through the status to see if any of nc power island
-		 * is not in D0i3 state
-		 */
-		for (i = 0; i < mrfl_no_of_nc_devices; i++) {
-			val = nc_pwr_sts & 3;
-			if (val != 3) {
-				nc_status = false;
-				pr_warn("NC device/devices is not in D0i3!!\n");
-				break;
-			}
-			nc_pwr_sts >>= BITS_PER_LSS;
-		}
-	}
-
-	return nc_status & sc_status;
 }
 
 void s0ix_complete(void)

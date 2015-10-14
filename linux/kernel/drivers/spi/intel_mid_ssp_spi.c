@@ -53,7 +53,6 @@ MODULE_AUTHOR("Ken Mills");
 MODULE_DESCRIPTION("Bulverde SSP core SPI contoller");
 MODULE_LICENSE("GPL");
 
-static const struct pci_device_id pci_ids[];
 static int ssp_timing_wr;
 
 #ifdef DUMP_RX
@@ -80,6 +79,36 @@ static void dump_trailer(const struct device *dev, char *buf, int len, int sz)
 		   len-tlen2, len - 1, msg);
 }
 #endif
+
+static inline u8 ssp_cfg_get_mode(u8 ssp_cfg)
+{
+	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER ||
+	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE ||
+	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON)
+		return (ssp_cfg) & 0x03;
+	else
+		return (ssp_cfg) & 0x07;
+}
+
+static inline u8 ssp_cfg_get_spi_bus_nb(u8 ssp_cfg)
+{
+	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER ||
+	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE ||
+	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON)
+		return ((ssp_cfg) >> 2) & 0x07;
+	else
+		return ((ssp_cfg) >> 3) & 0x07;
+}
+
+static inline u8 ssp_cfg_is_spi_slave(u8 ssp_cfg)
+{
+	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER ||
+	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE ||
+	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON)
+		return (ssp_cfg) & 0x20;
+	else
+		return (ssp_cfg) & 0x40;
+}
 
 static inline u32 is_tx_fifo_empty(struct ssp_drv_context *sspc)
 {
@@ -278,10 +307,15 @@ static void intel_mid_ssp_spi_dma_done(void *arg)
 	struct device *dev = &sspc->pdev->dev;
 	void *reg = sspc->ioaddr;
 
-	if (cb_param->direction == TX_DIRECTION)
+	if (cb_param->direction == TX_DIRECTION) {
+		dma_sync_single_for_cpu(dev, sspc->tx_dma,
+			sspc->len, DMA_TO_DEVICE);
 		sspc->txdma_done = 1;
-	else
+	} else {
 		sspc->rxdma_done = 1;
+		dma_sync_single_for_cpu(dev, sspc->rx_dma,
+			sspc->len, DMA_FROM_DEVICE);
+	}
 
 	dev_dbg(dev, "DMA callback for direction %d [RX done:%d] [TX done:%d]\n",
 		cb_param->direction, sspc->rxdma_done,
@@ -321,19 +355,27 @@ static void intel_mid_ssp_spi_dma_init(struct ssp_drv_context *sspc)
 	ds->direction = DMA_FROM_DEVICE;
 	rxs->hs_mode = LNW_DMA_HW_HS;
 	rxs->cfg_mode = LNW_DMA_PER_TO_MEM;
-	ds->dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+	ds->dst_addr_width = sspc->n_bytes;
 	ds->src_addr_width = sspc->n_bytes;
+
+	if (sspc->quirks & QUIRKS_PLATFORM_BYT) {
+		/*These are fixed HW info from Baytrail datasheet*/
+		rxs->device_instance = 1; /*DMA Req line*/
+	} else if (sspc->quirks & QUIRKS_PLATFORM_MRFL)
+		rxs->device_instance = sspc->master->bus_num;
+	else
+		rxs->device_instance = 0;
 
 	/* Use a DMA burst according to the FIFO thresholds */
 	if (sspc->rx_fifo_threshold == 8) {
-		ds->src_maxburst = 8;
-		ds->dst_maxburst = 8;
+		ds->src_maxburst = LNW_DMA_MSIZE_8;
+		ds->dst_maxburst = LNW_DMA_MSIZE_8;
 	} else if (sspc->rx_fifo_threshold == 4) {
-		ds->src_maxburst = 4;
-		ds->dst_maxburst = 4;
+		ds->src_maxburst = LNW_DMA_MSIZE_4;
+		ds->dst_maxburst = LNW_DMA_MSIZE_4;
 	} else {
-		ds->src_maxburst = 1;
-		ds->dst_maxburst = 1;
+		ds->src_maxburst = LNW_DMA_MSIZE_1;
+		ds->dst_maxburst = LNW_DMA_MSIZE_1;
 	}
 
 	/* Configure TX channel parameters */
@@ -343,19 +385,27 @@ static void intel_mid_ssp_spi_dma_init(struct ssp_drv_context *sspc)
 	ds->direction = DMA_TO_DEVICE;
 	txs->hs_mode = LNW_DMA_HW_HS;
 	txs->cfg_mode = LNW_DMA_MEM_TO_PER;
-	ds->src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+	ds->src_addr_width = sspc->n_bytes;
 	ds->dst_addr_width = sspc->n_bytes;
+
+	if (sspc->quirks & QUIRKS_PLATFORM_BYT) {
+		/*These are fixed HW info from Baytrail datasheet*/
+		txs->device_instance = 0;/*DMA Req Line*/
+	} else if (sspc->quirks & QUIRKS_PLATFORM_MRFL)
+		txs->device_instance = sspc->master->bus_num;
+	else
+		txs->device_instance = 0;
 
 	/* Use a DMA burst according to the FIFO thresholds */
 	if (sspc->rx_fifo_threshold == 8) {
-		ds->src_maxburst = 8;
-		ds->dst_maxburst = 8;
+		ds->src_maxburst = LNW_DMA_MSIZE_8;
+		ds->dst_maxburst = LNW_DMA_MSIZE_8;
 	} else if (sspc->rx_fifo_threshold == 4) {
-		ds->src_maxburst = 4;
-		ds->dst_maxburst = 4;
+		ds->src_maxburst = LNW_DMA_MSIZE_4;
+		ds->dst_maxburst = LNW_DMA_MSIZE_4;
 	} else {
-		ds->src_maxburst = 1;
-		ds->dst_maxburst = 1;
+		ds->src_maxburst = LNW_DMA_MSIZE_1;
+		ds->dst_maxburst = LNW_DMA_MSIZE_1;
 	}
 
 	/* Nothing more to do if already initialized */
@@ -365,6 +415,10 @@ static void intel_mid_ssp_spi_dma_init(struct ssp_drv_context *sspc)
 	/* Use DMAC1 */
 	if (sspc->quirks & QUIRKS_PLATFORM_MRST)
 		device_id = PCI_MRST_DMAC1_ID;
+	else if (sspc->quirks & QUIRKS_PLATFORM_BYT)
+		device_id = PCI_BYT_DMAC1_ID;
+	else if (sspc->quirks & QUIRKS_PLATFORM_MRFL)
+		device_id = PCI_MRFL_DMAC_ID;
 	else
 		device_id = PCI_MDFL_DMAC1_ID;
 
@@ -495,6 +549,12 @@ static void dma_transfer(struct ssp_drv_context *sspc)
 			dev_err(dev, "ERROR : sspc->rx_dma is null!\n");
 	}
 
+	sspc->dmas_rx.dma_slave.src_addr = ssdr_addr;
+	rxchan->device->device_control(rxchan, DMA_SLAVE_CONFIG,
+		(unsigned long)&(sspc->dmas_rx.dma_slave));
+	dma_sync_single_for_device(dev, sspc->rx_dma,
+		sspc->len, DMA_FROM_DEVICE);
+
 	rxdesc = rxchan->device->device_prep_dma_memcpy
 		(rxchan,			/* DMA Channel */
 		sspc->rx_dma,			/* DAR */
@@ -512,6 +572,12 @@ static void dma_transfer(struct ssp_drv_context *sspc)
 	}
 
 	/* 3. prepare the TX dma transfer */
+	sspc->dmas_tx.dma_slave.dst_addr = ssdr_addr;
+	txchan->device->device_control(txchan, DMA_SLAVE_CONFIG,
+		(unsigned long)&(sspc->dmas_tx.dma_slave));
+	dma_sync_single_for_device(dev, sspc->tx_dma,
+		sspc->len, DMA_TO_DEVICE);
+
 	if (sspc->tx_dma) {
 		txdesc = txchan->device->device_prep_dma_memcpy
 			(txchan,			/* DMA Channel */
@@ -532,7 +598,7 @@ static void dma_transfer(struct ssp_drv_context *sspc)
 		return;
 	}
 
-	dev_info(dev, "DMA transfer len:%d len_dma_tx:%d len_dma_rx:%d\n",
+	dev_dbg(dev, "DMA transfer len:%d len_dma_tx:%d len_dma_rx:%d\n",
 		sspc->len, sspc->len_dma_tx, sspc->len_dma_rx);
 
 	if (rxdesc || txdesc) {
@@ -664,6 +730,9 @@ static void int_transfer_complete(struct ssp_drv_context *sspc)
 	dump_trailer(dev, sspc->rx, sspc->len, 16);
 #endif
 
+	if (sspc->cs_control)
+		sspc->cs_control(CS_DEASSERT);
+
 	dev_dbg(dev, "End of transfer. SSSR:%08X\n", read_SSSR(reg));
 	msg = sspc->cur_msg;
 	if (likely(msg->complete))
@@ -687,6 +756,9 @@ static void poll_transfer_complete(struct ssp_drv_context *sspc)
 	sspc->cur_msg->actual_length += sspc->len - (sspc->rx_end - sspc->rx);
 
 	sspc->cur_msg->status = 0;
+	if (sspc->cs_control)
+		sspc->cs_control(CS_DEASSERT);
+
 	msg = sspc->cur_msg;
 	if (likely(msg->complete))
 		msg->complete(msg->context);
@@ -707,18 +779,10 @@ static irqreturn_t ssp_int(int irq, void *dev_id)
 	struct ssp_drv_context *sspc = dev_id;
 	void *reg = sspc->ioaddr;
 	struct device *dev = &sspc->pdev->dev;
-	u32 status;
-
-	if (sspc->pdev->current_state != PCI_D0) {
-		dev_err(dev, "Device suspended; pci_dev->current_state = %d\n",
-			sspc->pdev->current_state);
-		return IRQ_HANDLED;
-	}
-
-	status = read_SSSR(reg);
+	u32 status = read_SSSR(reg);
 
 	/* It should never be our interrupt since SSP will */
-	/* only trigs interrupt for under/over run.        */
+	/* only trigs interrupt for under/over run.*/
 	if (likely(!(status & sspc->mask_sr)))
 		return IRQ_NONE;
 
@@ -796,7 +860,7 @@ static void start_bitbanging(struct ssp_drv_context *sspc)
 	struct chip_data *chip = spi_get_ctldata(sspc->cur_msg->spi);
 	cr0 = chip->cr0;
 
-	dev_warn(dev, "In %s : Starting bit banging\n",\
+	dev_warn(dev, "In %s : Starting bit banging\n",
 		__func__);
 	if (read_SSSR(reg) & SSP_NOT_SYNC)
 		dev_warn(dev, "SSP clock desynchronized.\n");
@@ -850,9 +914,12 @@ static void start_bitbanging(struct ssp_drv_context *sspc)
 	write_I2CCTRL(0x01070038, i2c_reg);
 }
 
-static unsigned int ssp_get_clk_div(int speed)
+static unsigned int ssp_get_clk_div(struct ssp_drv_context *sspc, int speed)
 {
-	return max(100000000 / speed, 4) - 1;
+	if (sspc->quirks & QUIRKS_PLATFORM_MRFL)
+		return max(25000000 / speed, 4) - 1;
+	else
+		return max(100000000 / speed, 4) - 1;
 }
 
 /**
@@ -884,6 +951,7 @@ static int handle_message(struct ssp_drv_context *sspc)
 	u32 cr1;
 	struct device *dev = &sspc->pdev->dev;
 	struct spi_message *msg = sspc->cur_msg;
+	u32 clk_div;
 
 	chip = spi_get_ctldata(msg->spi);
 
@@ -914,6 +982,8 @@ static int handle_message(struct ssp_drv_context *sspc)
 	sspc->len = transfer->len;
 	sspc->write = chip->write;
 	sspc->read = chip->read;
+	sspc->cs_control = chip->cs_control;
+	sspc->cs_change = transfer->cs_change;
 
 	if (likely(chip->dma_enabled)) {
 		sspc->dma_mapped = map_dma_buffers(sspc);
@@ -928,7 +998,8 @@ static int handle_message(struct ssp_drv_context *sspc)
 
 	/* [REVERT ME] Bug in status register clear for Tangier simulation */
 	if ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) ||
-	    (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)) {
+	    (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+	    (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON)) {
 		if ((intel_mid_identify_sim() != INTEL_MID_CPU_SIMULATION_VP &&
 		    (intel_mid_identify_sim() != INTEL_MID_CPU_SIMULATION_HVP)))
 			write_SSSR(sspc->clear_sr, reg);
@@ -959,10 +1030,16 @@ static int handle_message(struct ssp_drv_context *sspc)
 		sspc->len, sspc->n_bytes, chip->cr0, cr1);
 
 	/* first set CR1 */
-	write_SSCR1(cr1, reg);
+	if (intel_mid_identify_sim() != INTEL_MID_CPU_SIMULATION_SLE)
+		write_SSCR1(cr1, reg);
 
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER)
+	if ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) ||
+		(intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE))
 		write_SSFS((1 << chip->chip_select), reg);
+
+	/* recalculate the frequency for each transfer */
+	clk_div = ssp_get_clk_div(sspc, transfer->speed_hz);
+	chip->cr0 |= clk_div << 8;
 
 	/* Do bitbanging only if SSP not-enabled or not-synchronized */
 	if (unlikely(((read_SSSR(reg) & SSP_NOT_SYNC) ||
@@ -971,16 +1048,25 @@ static int handle_message(struct ssp_drv_context *sspc)
 			start_bitbanging(sspc);
 	} else {
 		/* (re)start the SSP */
-		if (ssp_timing_wr) {
-			chip->cr0 = 0x00C0000F;
-			write_SSCR0(chip->cr0, reg);
-			chip->cr0 = 0x00C12C0F;
-			write_SSCR0(chip->cr0, reg);
-			chip->cr0 = 0x00C12C8F;
-			write_SSCR0(chip->cr0, reg);
-		} else
-			write_SSCR0(chip->cr0, reg);
+		if (intel_mid_identify_sim() != INTEL_MID_CPU_SIMULATION_SLE) {
+			if (ssp_timing_wr) {
+				dev_dbg(dev, "original cr0 before reset:%x",
+					chip->cr0);
+				/*we should not disable TUM and RIM interrup*/
+				write_SSCR0(0x0000000F, reg);
+				chip->cr0 &= ~(SSCR0_SSE);
+				dev_dbg(dev, "reset ssp:cr0:%x", chip->cr0);
+				write_SSCR0(chip->cr0, reg);
+				chip->cr0 |= SSCR0_SSE;
+				dev_dbg(dev, "reset ssp:cr0:%x", chip->cr0);
+				write_SSCR0(chip->cr0, reg);
+			} else
+				write_SSCR0(chip->cr0, reg);
+		}
 	}
+
+	if (sspc->cs_control)
+		sspc->cs_control(CS_ASSERT);
 
 	if (likely(chip->dma_enabled)) {
 		if (unlikely(sspc->quirks & QUIRKS_USE_PM_QOS))
@@ -1072,6 +1158,7 @@ static int setup(struct spi_device *spi)
 			chip->cr1 |= SSCR1_LBM;
 
 		chip->dma_enabled = chip_info->dma_enabled;
+		chip->cs_control = chip_info->cs_control;
 
 	} else {
 		/* if no chip_info provided by protocol driver, */
@@ -1091,6 +1178,11 @@ static int setup(struct spi_device *spi)
 	else if (burst_size == IMSS_FIFO_BURST_4)
 		sspc->rx_fifo_threshold = 4;
 	else
+		sspc->rx_fifo_threshold = 1;
+	/*FIXME:this is workaround.
+	On MRST, in DMA mode, it is very strang that RX fifo can't reach
+	burst size.*/
+	if (sspc->quirks & QUIRKS_PLATFORM_MRFL && chip->dma_enabled)
 		sspc->rx_fifo_threshold = 1;
 	tx_fifo_threshold = SPI_FIFO_SIZE - sspc->rx_fifo_threshold;
 	chip->cr1 |= (SSCR1_RxTresh(sspc->rx_fifo_threshold) &
@@ -1132,9 +1224,10 @@ static int setup(struct spi_device *spi)
 
 	if ((sspc->quirks & QUIRKS_SPI_SLAVE_CLOCK_MODE) == 0) {
 		chip->speed_hz = spi->max_speed_hz;
-		clk_div = ssp_get_clk_div(chip->speed_hz);
-		if (!ssp_timing_wr)
-			chip->cr0 |= clk_div << 8;
+		clk_div = ssp_get_clk_div(sspc, chip->speed_hz);
+		chip->cr0 |= clk_div << 8;
+		dev_dbg(&spi->dev, "spi->max_speed_hz:%d clk_div:%x cr0:%x",
+			spi->max_speed_hz, clk_div, chip->cr0);
 	}
 	chip->bits_per_word = spi->bits_per_word;
 	chip->chip_select = spi->chip_select;
@@ -1212,9 +1305,24 @@ static int intel_mid_ssp_spi_probe(struct pci_dev *pdev,
 		goto err_abort_probe;
 	}
 
-	if (SSP_CFG_GET_MODE(ssp_cfg) != SSP_CFG_SPI_MODE_ID) {
+	if (ssp_cfg_get_mode(ssp_cfg) != SSP_CFG_SPI_MODE_ID) {
 		dev_info(dev, "Unsupported SSP mode (%02xh)\n", ssp_cfg);
 		goto err_abort_probe;
+	}
+
+	/*
+	* KKSANAG
+	* Remove registering SSP6(pci:0000:00:07.2)
+	* or it will cause tons of unprovoked interrupts
+	* This issue will be fixed in RTL. Then no need of this
+	* fix
+	*/
+	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON) {
+		dev_info(dev, "The devfn (%0xh)\n", pdev->devfn);
+		if (0x2 == (pdev->devfn & 0x03)) {
+			dev_info(dev, "The SSP6 needs to be disabled, causing spurious interrupts\n");
+			goto err_abort_probe;
+		}
 	}
 
 	dev_info(dev, "found PCI SSP controller (ID: %04xh:%04xh cfg: %02xh)\n",
@@ -1244,16 +1352,16 @@ static int intel_mid_ssp_spi_probe(struct pci_dev *pdev,
 		/* Apply bit banging workarround on MRST */
 		sspc->quirks |= QUIRKS_BIT_BANGING;
 		/* MRST slave mode workarrounds */
-		if (SSP_CFG_IS_SPI_SLAVE(ssp_cfg))
+		if (ssp_cfg_is_spi_slave(ssp_cfg))
 			sspc->quirks |= QUIRKS_USE_PM_QOS |
 					QUIRKS_SRAM_ADDITIONAL_CPY;
 	}
 	sspc->quirks |= QUIRKS_DMA_USE_NO_TRAIL;
-	if (SSP_CFG_IS_SPI_SLAVE(ssp_cfg))
+	if (ssp_cfg_is_spi_slave(ssp_cfg))
 		sspc->quirks |= QUIRKS_SPI_SLAVE_CLOCK_MODE;
 
 	master->mode_bits = SPI_CPOL | SPI_CPHA;
-	master->bus_num = SSP_CFG_GET_SPI_BUS_NB(ssp_cfg);
+	master->bus_num = ssp_cfg_get_spi_bus_nb(ssp_cfg);
 	master->num_chipselect = 4;
 	master->cleanup = cleanup;
 	master->setup = setup;
@@ -1300,7 +1408,8 @@ static int intel_mid_ssp_spi_probe(struct pci_dev *pdev,
 	status = request_irq(sspc->irq, ssp_int, IRQF_SHARED,
 		"intel_mid_ssp_spi", sspc);
 
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) {
+	if ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) ||
+		(intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)) {
 		if ((intel_mid_identify_sim() ==
 				INTEL_MID_CPU_SIMULATION_SLE) ||
 		    (intel_mid_identify_sim() ==
@@ -1310,7 +1419,8 @@ static int intel_mid_ssp_spi_probe(struct pci_dev *pdev,
 			 * also required in Si. */
 			disable_irq_nosync(sspc->irq);
 		}
-		if (intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_NONE)
+		if ((intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_NONE) ||
+		    (intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_SLE))
 			ssp_timing_wr = 1;
 	}
 
@@ -1383,7 +1493,7 @@ err_abort_probe:
  * intel_mid_ssp_spi_remove() - driver remove procedure
  * @pdev:	Pointer to the pci_dev struct
  */
-static void __devexit intel_mid_ssp_spi_remove(struct pci_dev *pdev)
+static void intel_mid_ssp_spi_remove(struct pci_dev *pdev)
 {
 	struct ssp_drv_context *sspc = pci_get_drvdata(pdev);
 
@@ -1392,15 +1502,23 @@ static void __devexit intel_mid_ssp_spi_remove(struct pci_dev *pdev)
 
 	pm_runtime_forbid(&pdev->dev);
 	pm_runtime_get_noresume(&pdev->dev);
+
+	if (sspc->dma_wq)
+		destroy_workqueue(sspc->dma_wq);
+	if (sspc->workqueue)
+		destroy_workqueue(sspc->workqueue);
+
 	/* Release IRQ */
 	free_irq(sspc->irq, sspc);
 
-	iounmap(sspc->ioaddr);
-	if (sspc->quirks & QUIRKS_BIT_BANGING)
+	if (sspc->ioaddr)
+		iounmap(sspc->ioaddr);
+	if (sspc->quirks & QUIRKS_BIT_BANGING && sspc->I2C_ioaddr)
 		iounmap(sspc->I2C_ioaddr);
 
 	/* disconnect from the SPI framework */
-	spi_unregister_master(sspc->master);
+	if (sspc->master)
+		spi_unregister_master(sspc->master);
 
 	pci_set_drvdata(pdev, NULL);
 	pci_release_region(pdev, 0);
@@ -1490,7 +1608,7 @@ static int intel_mid_ssp_spi_runtime_idle(struct device *dev)
 #endif /* CONFIG_PM */
 
 
-static const struct pci_device_id pci_ids[] __devinitdata = {
+static DEFINE_PCI_DEVICE_TABLE(pci_ids) = {
 	/* MRST SSP0 */
 	{ PCI_VDEVICE(INTEL, 0x0815), QUIRKS_PLATFORM_MRST},
 	/* MDFL SSP0 */
@@ -1500,7 +1618,9 @@ static const struct pci_device_id pci_ids[] __devinitdata = {
 	/* MDFL SSP3 */
 	{ PCI_VDEVICE(INTEL, 0x0816), QUIRKS_PLATFORM_MDFL},
 	/* MRFL SSP5 */
-	{ PCI_VDEVICE(INTEL, 0x1194), 0},
+	{ PCI_VDEVICE(INTEL, 0x1194), QUIRKS_PLATFORM_MRFL},
+	/* BYT SSP3 */
+	{ PCI_VDEVICE(INTEL, 0x0f0e), QUIRKS_PLATFORM_BYT},
 	{},
 };
 
@@ -1516,7 +1636,7 @@ static struct pci_driver intel_mid_ssp_spi_driver = {
 	.name =		DRIVER_NAME,
 	.id_table =	pci_ids,
 	.probe =	intel_mid_ssp_spi_probe,
-	.remove =	__devexit_p(intel_mid_ssp_spi_remove),
+	.remove =	intel_mid_ssp_spi_remove,
 	.driver =	{
 		.pm	= &intel_mid_ssp_spi_pm_ops,
 	},

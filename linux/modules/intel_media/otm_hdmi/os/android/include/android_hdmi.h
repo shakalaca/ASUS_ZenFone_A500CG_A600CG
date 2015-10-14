@@ -91,6 +91,7 @@ struct android_hdmi_priv {
 	bool need_encoder_restore;
 	struct delayed_work enc_work;
 	struct delayed_work hdmi_delayed_wq;
+	struct work_struct suspend_wq;
 	void *data;
 
 	bool hdmi_suspended;

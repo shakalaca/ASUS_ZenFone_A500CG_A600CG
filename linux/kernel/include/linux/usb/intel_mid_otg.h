@@ -192,13 +192,13 @@ struct intel_mid_otg_xceiv *otg_to_mid_xceiv(struct usb_phy *otg)
 #define MID_OTG_NOTIFY_HOSTREMOVE	0x0008
 #define MID_OTG_NOTIFY_CLIENTADD	0x0009
 #define MID_OTG_NOTIFY_CLIENTREMOVE	0x000a
-#define	MID_OTG_NOTIFY_CRESET		0x000b
+#define MID_OTG_NOTIFY_CRESET		0x000b
 
-#define	MID_OTG_NOTIFY_TEST_SRP_REQD	0x0101
-#define	MID_OTG_NOTIFY_TEST_VBUS_OFF	0x0102
-#define	MID_OTG_NOTIFY_TEST		0x0103
-#define	MID_OTG_NOTIFY_TEST_MODE_START	0x0104
-#define	MID_OTG_NOTIFY_TEST_MODE_STOP	0x0105
+#define MID_OTG_NOTIFY_TEST_SRP_REQD	0x0101
+#define MID_OTG_NOTIFY_TEST_VBUS_OFF	0x0102
+#define MID_OTG_NOTIFY_TEST		0x0103
+#define MID_OTG_NOTIFY_TEST_MODE_START	0x0104
+#define MID_OTG_NOTIFY_TEST_MODE_STOP	0x0105
 
 static inline int
 intel_mid_otg_register_notifier(struct intel_mid_otg_xceiv *iotg,

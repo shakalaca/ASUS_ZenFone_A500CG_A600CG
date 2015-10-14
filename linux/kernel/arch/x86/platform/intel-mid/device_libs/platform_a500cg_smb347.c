@@ -37,6 +37,7 @@ static struct smb347_charger_platform_data smb347_pdata = {
 					| SMB347_SOFT_TEMP_COMPENSATE_VOLTAGE,
 	.charge_current_compensation	= 900000,
 	.use_mains			= true,
+	.use_usb				= true,
 #if 0
 	.enable_control			= SMB347_CHG_ENABLE_PIN_ACTIVE_LOW,
 	.otg_control			= SMB347_OTG_CONTROL_SW,

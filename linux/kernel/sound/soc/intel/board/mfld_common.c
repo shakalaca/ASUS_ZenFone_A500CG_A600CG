@@ -288,8 +288,6 @@ void mfld_jack_disable_mic_bias_gen(struct snd_soc_codec *codec, char *mic)
 Code related to thermal probe accessory follows
 */
 
-extern void mid_user_notify(int state);
-
 /* Initialization function for thermal probe; success or failure does not
    impact the rest of the system (except right channel audio if
    tp_en_gpio is invalid).So return type is void
@@ -432,10 +430,6 @@ bool mfld_therm_probe_on_connect(struct snd_soc_jack *jack)
 		tp_status = true;
 		if (tp_data_ptr->tp_status != tp_status) {
 			tp_data_ptr->tp_status = tp_status;
-#ifdef CONFIG_SWITCH_MID_USER_NOTIFY
-			/*Notify userspace about thermal prove event*/
-			mid_user_notify(1);
-#endif
 			pr_debug("thermal probe connected\n");
 		}
 	}
@@ -467,10 +461,6 @@ bool mfld_therm_probe_on_removal(struct snd_soc_jack *jack)
 	/* If thermal probe was removed, notify userspace */
 	if (tp_data_ptr->tp_status == true) {
 		tp_data_ptr->tp_status = false;
-#ifdef CONFIG_SWITCH_MID_USER_NOTIFY
-		/*Notify userspace about thermal prove event*/
-		mid_user_notify(0);
-#endif
 		pr_debug("thermal probe removed\n");
 		ret = true;
 	}

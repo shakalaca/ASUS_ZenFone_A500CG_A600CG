@@ -8,14 +8,8 @@ if SWITCH
 
 config SWITCH_GPIO
 	tristate "GPIO Swith support"
-	depends on GENERIC_GPIO
+	depends on GPIOLIB
 	help
 	  Say Y here to enable GPIO based switch support.
-
-config SWITCH_ARIZONA
-	tristate "Arizona Switch support"
-	depends on MFD_ARIZONA
-	help
-	  Say Y here to enable Arizona switch support.
 
 endif # SWITCH

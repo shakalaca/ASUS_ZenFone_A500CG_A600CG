@@ -42,8 +42,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #ifndef _RGXCONFIG_KM_1_V_2_5_H_
 #define _RGXCONFIG_KM_1_V_2_5_H_
 
-/***** Automatically generated file (8/8/2013 3:03:22 PM): Do not edit manually ********************/
-/***** Timestamp:  (8/8/2013 3:03:22 PM)************************************************************/
+/***** Automatically generated file (11/21/2013 4:54:28 PM): Do not edit manually ********************/
+/***** Timestamp:  (11/21/2013 4:54:28 PM)************************************************************/
 
 #define RGX_BNC_KM_B 1
 #define RGX_BNC_KM_N 2
@@ -52,11 +52,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /******************************************************************************
  * DDK Defines
  *****************************************************************************/
+#define RGX_FEATURE_NUM_CLUSTERS (2)
 #define RGX_FEATURE_SLC_SIZE_IN_BYTES (128*1024)
 #define RGX_FEATURE_PHYS_BUS_WIDTH (40)
 #define RGX_FEATURE_AXI_ACELITE 
 #define RGX_FEATURE_SLC_CACHE_LINE_SIZE_BITS (512)
 #define RGX_FEATURE_VIRTUAL_ADDRESS_SPACE_BITS (40)
+#define RGX_FEATURE_META (MTP218)
 
 
 #endif /* _RGXCONFIG_1_V_2_5_H_ */

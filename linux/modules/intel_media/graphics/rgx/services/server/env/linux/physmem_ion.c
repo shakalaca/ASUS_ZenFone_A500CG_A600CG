@@ -56,10 +56,15 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pmr_impl.h"
 #include "physmem_ion.h"
 #include "ion_sys.h"
+#include "hash.h"
 
 /* Includes required to get the connection data */
 #include "connection_server.h"
 #include "env_connection.h"
+
+#if defined(PVR_RI_DEBUG)
+#include "ri_server.h"
+#endif
 
 #include <linux/err.h>
 #include <linux/slab.h>
@@ -81,6 +86,11 @@ typedef struct _PMR_ION_DATA_ {
 	IMG_BOOL bPDumpMalloced;
 	IMG_HANDLE hPDumpAllocInfo;
 } PMR_ION_DATA;
+
+/* Start size of the g_psIonBufferHash hash table */
+#define ION_BUFFER_HASH_SIZE 20
+HASH_TABLE *g_psIonBufferHash = IMG_NULL;
+IMG_UINT32 g_ui32HashRefCount = 0;
 
 /*****************************************************************************
  *                       Ion specific functions                              *
@@ -168,6 +178,15 @@ IMG_VOID IonPhysAddrRelease(PMR_ION_DATA *psPrivData)
 	kfree(psPrivData->pasDevPhysAddr);
 }
 
+static IMG_BOOL _IonKeyCompare(IMG_SIZE_T uKeySize, IMG_VOID *pKey1, IMG_VOID *pKey2)
+{
+	IMG_DEV_PHYADDR *psKey1 = pKey1;
+	IMG_DEV_PHYADDR *psKey2 = pKey2;
+	PVR_ASSERT(uKeySize == sizeof(IMG_DEV_PHYADDR));
+	
+	return psKey1->uiAddr == psKey2->uiAddr;
+}
+
 /*****************************************************************************
  *                       PMR callback functions                              *
  *****************************************************************************/
@@ -207,6 +226,14 @@ PMRFinalizeIon(PMR_IMPL_PRIVDATA pvPriv)
 	PMR_ION_DATA *psPrivData = IMG_NULL;
 
 	psPrivData = pvPriv;
+
+	HASH_Remove_Extended(g_psIonBufferHash, &psPrivData->pasDevPhysAddr[0]);
+	g_ui32HashRefCount--;
+	if (g_ui32HashRefCount == 0)
+	{
+		HASH_Delete(g_psIonBufferHash);
+		g_psIonBufferHash = IMG_NULL;
+	}
 
 	if (psPrivData->bPDumpMalloced)
 	{
@@ -467,6 +494,49 @@ PhysmemImportIon(CONNECTION_DATA *psConnection,
 		goto fail_acquire;
 	}
 
+	if (g_psIonBufferHash == IMG_NULL)
+	{
+		/*
+			As different processes may import the same ION buffer we need to
+			create a hash table so we don't generate a duplicate PMR but
+			rather just take a reference on an existing one.
+		*/
+		g_psIonBufferHash = HASH_Create_Extended(ION_BUFFER_HASH_SIZE, sizeof(psPrivData->pasDevPhysAddr[0]), HASH_Func_Default, _IonKeyCompare);
+		if (g_psIonBufferHash == IMG_NULL)
+		{
+			eError = PVRSRV_ERROR_OUT_OF_MEMORY;
+		}
+	}
+	else
+	{
+		/*
+			We have a hash table so check if have already seen this
+			this ion buffer before
+		*/
+		psPMR = (PMR *) HASH_Retrieve_Extended(g_psIonBufferHash, &psPrivData->pasDevPhysAddr[0]);
+		if (psPMR != IMG_NULL)
+		{
+			/*
+				We already know about this ion buffer but we had to do a bunch
+				for work to determine that so here we have to undo it
+			*/
+			IonPhysAddrRelease(psPrivData);
+			ion_free(psPrivData->psIonClient, psPrivData->psIonHandle);
+			EnvDataIonClientRelease(psPrivData->psIonData);
+			PhysHeapRelease(psPrivData->psPhysHeap);
+			kfree(psPrivData);
+			
+			/* Reuse the PMR we already created */
+			PMRRefPMR(psPMR);
+
+			*ppsPMRPtr = psPMR;
+			psPrivData = PMRGetPrivateDataHack(psPMR, &_sPMRIonFuncTab);
+			*puiSize = psPrivData->uiSize;
+			*puiAlign = PAGE_SIZE;
+			return PVRSRV_OK;
+		}
+	}
+
 	if (bZero || bPoisonOnAlloc)
 	{
 		IMG_PVOID pvKernAddr;
@@ -522,8 +592,20 @@ PhysmemImportIon(CONNECTION_DATA *psConnection,
 		goto fail_pmrcreate;
 	}
 
+#if defined(PVR_RI_DEBUG)
+	{
+		eError = RIWritePMREntryKM (psPMR,
+									"ION",
+									psPrivData->uiSize);
+	}
+#endif
+
 	psPrivData->hPDumpAllocInfo = hPDumpAllocInfo;
 	psPrivData->bPDumpMalloced = IMG_TRUE;
+
+	/* First time we've seen this ion buffer so store it in the hash table */
+	HASH_Insert_Extended(g_psIonBufferHash, &psPrivData->pasDevPhysAddr[0], (IMG_UINTPTR_T) psPMR);
+	g_ui32HashRefCount++;
 
 	*ppsPMRPtr = psPMR;
 	*puiSize = psPrivData->uiSize;
@@ -536,6 +618,7 @@ fail_kernelmap:
 fail_acquire:
 	ion_free(psPrivData->psIonClient, psPrivData->psIonHandle);
 fail_ionimport:
+	EnvDataIonClientRelease(psPrivData->psIonData);
 	PhysHeapRelease(psPrivData->psPhysHeap);
 fail_physheap:
 	kfree(psPrivData);

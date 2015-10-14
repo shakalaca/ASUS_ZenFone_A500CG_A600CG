@@ -149,26 +149,6 @@ static struct usb_endpoint_descriptor hs_as_in_ep_desc  = {
 	.bInterval =		4, /* poll 1 per millisecond */
 };
 
-static struct usb_endpoint_descriptor ss_as_in_ep_desc  = {
-	.bLength =		USB_DT_ENDPOINT_AUDIO_SIZE,
-	.bDescriptorType =	USB_DT_ENDPOINT,
-	.bEndpointAddress =	USB_DIR_IN,
-	.bmAttributes =		USB_ENDPOINT_SYNC_SYNC
-				| USB_ENDPOINT_XFER_ISOC,
-	.wMaxPacketSize =	__constant_cpu_to_le16(IN_EP_MAX_PACKET_SIZE),
-	.bInterval =		4, /* poll 1 per millisecond */
-};
-
-static struct usb_ss_ep_comp_descriptor ss_as_in_comp_desc = {
-	.bLength =		sizeof ss_as_in_comp_desc,
-	.bDescriptorType =	USB_DT_SS_ENDPOINT_COMP,
-
-	/* the following 3 values can be tweaked if necessary */
-	/* .bMaxBurst =		0, */
-	/* .bmAttributes =	0, */
-	.wBytesPerInterval =	__constant_cpu_to_le16(IN_EP_MAX_PACKET_SIZE),
-};
-
 /* Standard ISO IN Endpoint Descriptor for highspeed */
 static struct usb_endpoint_descriptor fs_as_in_ep_desc  = {
 	.bLength =		USB_DT_ENDPOINT_AUDIO_SIZE,
@@ -205,26 +185,6 @@ static struct usb_descriptor_header *hs_audio_desc[] = {
 	(struct usb_descriptor_header *)&as_type_i_desc,
 
 	(struct usb_descriptor_header *)&hs_as_in_ep_desc,
-	(struct usb_descriptor_header *)&as_iso_in_desc,
-	NULL,
-};
-
-static struct usb_descriptor_header *ss_audio_desc[] = {
-	(struct usb_descriptor_header *)&ac_interface_desc,
-	(struct usb_descriptor_header *)&ac_header_desc,
-
-	(struct usb_descriptor_header *)&input_terminal_desc,
-	(struct usb_descriptor_header *)&output_terminal_desc,
-	(struct usb_descriptor_header *)&feature_unit_desc,
-
-	(struct usb_descriptor_header *)&as_interface_alt_0_desc,
-	(struct usb_descriptor_header *)&as_interface_alt_1_desc,
-	(struct usb_descriptor_header *)&as_header_desc,
-
-	(struct usb_descriptor_header *)&as_type_i_desc,
-
-	(struct usb_descriptor_header *)&ss_as_in_ep_desc,
-	(struct usb_descriptor_header *)&ss_as_in_comp_desc,
 	(struct usb_descriptor_header *)&as_iso_in_desc,
 	NULL,
 };
@@ -583,11 +543,16 @@ static int audio_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 
 	pr_debug("audio_set_alt intf %d, alt %d\n", intf, alt);
 
-	ret = config_ep_by_speed(cdev->gadget, f, audio->in_ep);
-	if (ret)
-		return ret;
+	if (intf == as_interface_alt_1_desc.bInterfaceNumber &&
+		alt == 1 && !audio->in_ep->driver_data) {
+		ret = config_ep_by_speed(cdev->gadget, f, audio->in_ep);
+		if (ret)
+			return ret;
 
-	usb_ep_enable(audio->in_ep);
+		usb_ep_enable(audio->in_ep);
+		audio->in_ep->driver_data = audio;
+	}
+
 	return 0;
 }
 
@@ -597,6 +562,8 @@ static void audio_disable(struct usb_function *f)
 
 	pr_debug("audio_disable\n");
 	usb_ep_disable(audio->in_ep);
+
+	audio->in_ep->driver_data = NULL;
 }
 
 /*-------------------------------------------------------------------------*/
@@ -654,13 +621,8 @@ audio_bind(struct usb_configuration *c, struct usb_function *f)
 		hs_as_in_ep_desc.bEndpointAddress =
 			fs_as_in_ep_desc.bEndpointAddress;
 
-	if (gadget_is_superspeed(c->cdev->gadget))
-		ss_as_in_ep_desc.bEndpointAddress =
-			fs_as_in_ep_desc.bEndpointAddress;
-
-	f->descriptors = fs_audio_desc;
+	f->fs_descriptors = fs_audio_desc;
 	f->hs_descriptors = hs_audio_desc;
-	f->ss_descriptors = ss_audio_desc;
 
 	for (i = 0, status = 0; i < IN_EP_REQ_COUNT && status == 0; i++) {
 		req = audio_request_new(ep, IN_EP_MAX_PACKET_SIZE);
@@ -804,7 +766,6 @@ static int audio_pcm_playback_trigger(struct snd_pcm_substream *substream,
 
 	return ret;
 }
-
 
 static struct audio_dev _audio_dev = {
 	.func = {

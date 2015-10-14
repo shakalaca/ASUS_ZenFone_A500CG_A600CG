@@ -37,6 +37,7 @@
 #include <linux/earlysuspend.h>
 #include <linux/miscdevice.h>
 #include <linux/i2c/apds990x.h>
+#include <linux/early_suspend_sysfs.h>
 
 /* Register map */
 #define APDS990X_ENABLE	 0x00 /* Enable of states and interrupts */
@@ -1325,11 +1326,8 @@ static const struct file_operations als_fops = {
 	.llseek = no_llseek,
 };
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
-static void apds990x_early_suspend(struct early_suspend *h)
+static void apds990x_early_suspend_handler(struct apds990x_chip *chip)
 {
-	struct apds990x_chip *chip = container_of(h, struct apds990x_chip, es);
-
 	dev_dbg(&chip->client->dev, "enter %s\n", __func__);
 
 	mutex_lock(&chip->mutex);
@@ -1338,16 +1336,29 @@ static void apds990x_early_suspend(struct early_suspend *h)
 	mutex_unlock(&chip->mutex);
 }
 
-static void apds990x_late_resume(struct early_suspend *h)
+static void apds990x_late_resume_handler(struct apds990x_chip *chip)
 {
-	struct apds990x_chip *chip = container_of(h, struct apds990x_chip, es);
-
 	dev_dbg(&chip->client->dev, "enter %s\n", __func__);
 
 	mutex_lock(&chip->mutex);
 	chip->lux_wait_fresh_res = true;
 	apds990x_switch(chip, chip->alsps_switch);
 	mutex_unlock(&chip->mutex);
+}
+
+#ifdef CONFIG_HAS_EARLYSUSPEND
+static void apds990x_early_suspend(struct early_suspend *h)
+{
+	struct apds990x_chip *chip = container_of(h, struct apds990x_chip, es);
+
+	apds990x_early_suspend_handler(chip);
+}
+
+static void apds990x_late_resume(struct early_suspend *h)
+{
+	struct apds990x_chip *chip = container_of(h, struct apds990x_chip, es);
+
+	apds990x_late_resume_handler(chip);
 }
 #endif
 
@@ -1460,6 +1471,21 @@ static void apds990x_init_params(struct apds990x_chip *chip)
 	chip->prox_data = APDS_PS_INIT_DATA;
 }
 
+static ssize_t early_suspend_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct apds990x_chip *chip =  dev_get_drvdata(dev);
+
+	if (!strncmp(buf, EARLY_SUSPEND_ON, EARLY_SUSPEND_STATUS_LEN))
+		apds990x_early_suspend_handler(chip);
+	else if (!strncmp(buf, EARLY_SUSPEND_OFF, EARLY_SUSPEND_STATUS_LEN))
+		apds990x_late_resume_handler(chip);
+
+	return count;
+}
+
+static DEVICE_EARLY_SUSPEND_ATTR(early_suspend_store);
+
 static int apds990x_probe(struct i2c_client *client,
 				const struct i2c_device_id *id)
 {
@@ -1537,6 +1563,8 @@ static int apds990x_probe(struct i2c_client *client,
 	}
 	enable_irq_wake(client->irq);
 
+	device_create_file(&client->dev, &dev_attr_early_suspend);
+
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	chip->es.level = EARLY_SUSPEND_LEVEL_DISABLE_FB + 10;
 	chip->es.suspend = apds990x_early_suspend;
@@ -1545,6 +1573,8 @@ static int apds990x_probe(struct i2c_client *client,
 #endif
 	apds990x_force_a_refresh(chip);
 	apds990x_force_p_refresh(chip);
+
+	register_early_suspend_device(&client->dev);
 
 	return err;
 fail5:
@@ -1568,6 +1598,8 @@ static int apds990x_remove(struct i2c_client *client)
 
 	disable_irq_wake(client->irq);
 	free_irq(client->irq, chip);
+	unregister_early_suspend_device(&client->dev);
+	device_remove_file(&client->dev, &dev_attr_early_suspend);
 	sysfs_remove_group(&chip->client->dev.kobj,
 			apds990x_attribute_group);
 	misc_deregister(&chip->ps_dev);

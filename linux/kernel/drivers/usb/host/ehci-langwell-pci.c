@@ -1,7 +1,7 @@
 /*
  * Intel MID Platform Langwell/Penwell OTG EHCI Controller PCI Bus Glue.
  *
- * Copyright (c) 2008 - 2011, Intel Corporation.
+ * Copyright (c) 2008 - 2013, Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License 2 as published by the
@@ -24,31 +24,31 @@
 
 static int usb_otg_suspend(struct usb_hcd *hcd)
 {
-	struct usb_phy *otg;
-	struct intel_mid_otg_xceiv *iotg;
+	struct usb_phy			*otg;
+	struct intel_mid_otg_xceiv	*iotg;
 
-	otg = usb_get_transceiver();
+	otg = usb_get_phy(USB_PHY_TYPE_USB2);
 	if (otg == NULL) {
-		printk(KERN_ERR	"%s Failed to get otg transceiver\n", __func__);
+		pr_err("%s: failed to get otg transceiver\n", __func__);
 		return -EINVAL;
 	}
 	iotg = otg_to_mid_xceiv(otg);
-	printk(KERN_INFO "%s OTG HNP update suspend\n", __func__);
+	pr_info("%s: OTG HNP update suspend\n", __func__);
 
 	atomic_notifier_call_chain(&iotg->iotg_notifier,
 				MID_OTG_NOTIFY_HSUSPEND, iotg);
-	usb_put_transceiver(otg);
+	usb_put_phy(otg);
 	return 0;
 }
 
 static int usb_otg_resume(struct usb_hcd *hcd)
 {
-	struct usb_phy *otg;
-	struct intel_mid_otg_xceiv *iotg;
+	struct usb_phy			*otg;
+	struct intel_mid_otg_xceiv	*iotg;
 
-	otg = usb_get_transceiver();
+	otg = usb_get_phy(USB_PHY_TYPE_USB2);
 	if (otg == NULL) {
-		printk(KERN_ERR "%s Failed to get otg transceiver\n", __func__);
+		pr_err("%s: failed to get otg transceiver\n", __func__);
 		return -EINVAL;
 	}
 	iotg = otg_to_mid_xceiv(otg);
@@ -56,73 +56,21 @@ static int usb_otg_resume(struct usb_hcd *hcd)
 
 	atomic_notifier_call_chain(&iotg->iotg_notifier,
 				MID_OTG_NOTIFY_HRESUME, iotg);
-	usb_put_transceiver(otg);
+	usb_put_phy(otg);
 	return 0;
-}
-
-/* the root hub will call this callback when device added/removed */
-static void otg_notify(struct usb_device *udev, unsigned action)
-{
-	struct usb_phy *otg;
-	struct intel_mid_otg_xceiv *iotg;
-
-	/* Ignore root hub add/remove event */
-	if (!udev->parent) {
-		pr_debug("%s Ignore root hub otg_notify\n", __func__);
-		return;
-	}
-
-	/* Ignore USB devices on external hub */
-	if (udev->parent && udev->parent->parent)
-		return;
-
-	otg = usb_get_transceiver();
-	if (otg == NULL) {
-		printk(KERN_ERR "%s Failed to get otg transceiver\n", __func__);
-		return;
-	}
-	iotg = otg_to_mid_xceiv(otg);
-
-	switch (action) {
-	case USB_DEVICE_ADD:
-		pr_debug("Notify OTG HNP add device\n");
-		atomic_notifier_call_chain(&iotg->iotg_notifier,
-					MID_OTG_NOTIFY_CONNECT, iotg);
-		break;
-	case USB_DEVICE_REMOVE:
-		pr_debug("Notify OTG HNP delete device\n");
-		atomic_notifier_call_chain(&iotg->iotg_notifier,
-					MID_OTG_NOTIFY_DISCONN, iotg);
-		break;
-	case USB_OTG_TESTDEV:
-		pr_debug("Notify OTG test device\n");
-		atomic_notifier_call_chain(&iotg->iotg_notifier,
-					MID_OTG_NOTIFY_TEST, iotg);
-		break;
-	case USB_OTG_TESTDEV_VBUSOFF:
-		pr_debug("Notify OTG test device, Vbusoff mode\n");
-		atomic_notifier_call_chain(&iotg->iotg_notifier,
-					MID_OTG_NOTIFY_TEST_VBUS_OFF, iotg);
-		break;
-	default:
-		usb_put_transceiver(otg);
-		return ;
-	}
-	usb_put_transceiver(otg);
-	return;
 }
 
 static int ehci_mid_probe(struct pci_dev *pdev,
 				const struct pci_device_id *id)
 {
-	struct hc_driver *driver;
-	struct usb_phy *otg;
-	struct intel_mid_otg_xceiv *iotg;
-	struct intel_mid_otg_pdata *otg_pdata;
-	struct usb_hcd *hcd;
-	struct ehci_hcd *ehci;
-	int irq;
-	int retval;
+	struct hc_driver		*driver;
+	struct usb_phy			*otg;
+	struct intel_mid_otg_xceiv	*iotg;
+	struct intel_mid_otg_pdata	*otg_pdata;
+	struct usb_hcd			*hcd;
+	struct ehci_hcd			*ehci;
+	int				irq;
+	int				retval;
 
 	pr_debug("initializing Intel MID USB OTG Host Controller\n");
 
@@ -148,11 +96,9 @@ static int ehci_mid_probe(struct pci_dev *pdev,
 	/* this will be called in ehci_bus_suspend and ehci_bus_resume */
 	ehci->otg_suspend = usb_otg_suspend;
 	ehci->otg_resume = usb_otg_resume;
-	/* this will be called by root hub code */
-	hcd->otg_notify = otg_notify;
-	otg = usb_get_transceiver();
+	otg = usb_get_phy(USB_PHY_TYPE_USB2);
 	if (otg == NULL) {
-		printk(KERN_ERR "%s Failed to get otg transceiver\n", __func__);
+		pr_err("%s:  failed to get otg transceiver\n", __func__);
 		retval = -EINVAL;
 		goto err1;
 	}
@@ -186,7 +132,7 @@ static int ehci_mid_probe(struct pci_dev *pdev,
 	retval = otg_set_host(otg->otg, &hcd->self);
 	if (!otg->otg->default_a)
 		hcd->self.is_b_host = 1;
-	usb_put_transceiver(otg);
+	usb_put_phy(otg);
 	return retval;
 
 err2:
@@ -256,7 +202,7 @@ static int ehci_mid_stop_host(struct intel_mid_otg_xceiv *iotg)
 #ifdef CONFIG_PM_SLEEP
 static int ehci_mid_suspend_host(struct intel_mid_otg_xceiv *iotg)
 {
-	int	retval;
+	int		retval;
 
 	if (iotg == NULL)
 		return -EINVAL;
@@ -274,7 +220,7 @@ static int ehci_mid_suspend_host(struct intel_mid_otg_xceiv *iotg)
 
 static int ehci_mid_suspend_noirq_host(struct intel_mid_otg_xceiv *iotg)
 {
-	int	retval;
+	int		retval;
 
 	if (iotg == NULL)
 		return -EINVAL;
@@ -293,7 +239,7 @@ static int ehci_mid_suspend_noirq_host(struct intel_mid_otg_xceiv *iotg)
 
 static int ehci_mid_resume_host(struct intel_mid_otg_xceiv *iotg)
 {
-	int	retval;
+	int		retval;
 
 	if (iotg == NULL)
 		return -EINVAL;
@@ -310,7 +256,7 @@ static int ehci_mid_resume_host(struct intel_mid_otg_xceiv *iotg)
 
 static int ehci_mid_resume_noirq_host(struct intel_mid_otg_xceiv *iotg)
 {
-	int	retval;
+	int		retval;
 
 	if (iotg == NULL)
 		return -EINVAL;
@@ -396,7 +342,7 @@ static int intel_mid_ehci_driver_register(struct pci_driver *host_driver)
 	struct usb_phy			*otg;
 	struct intel_mid_otg_xceiv	*iotg;
 
-	otg = usb_get_transceiver();
+	otg = usb_get_phy(USB_PHY_TYPE_USB2);
 	if (otg == NULL || host_driver == NULL)
 		return -EINVAL;
 
@@ -411,15 +357,11 @@ static int intel_mid_ehci_driver_register(struct pci_driver *host_driver)
 	iotg->resume_host = ehci_mid_resume_host;
 	iotg->resume_noirq_host = ehci_mid_resume_noirq_host;
 
-#ifdef CONFIG_USB_SUSPEND
-	wake_lock_init(&iotg->wake_lock, WAKE_LOCK_SUSPEND, "ehci_wake_lock");
-#endif
-
 	/* notify host driver is registered */
 	atomic_notifier_call_chain(&iotg->iotg_notifier,
 				MID_OTG_NOTIFY_HOSTADD, iotg);
 
-	usb_put_transceiver(otg);
+	usb_put_phy(otg);
 
 	return 0;
 }
@@ -429,9 +371,9 @@ static void intel_mid_ehci_driver_unregister(struct pci_driver *host_driver)
 	struct usb_phy			*otg;
 	struct intel_mid_otg_xceiv	*iotg;
 
-	otg = usb_get_transceiver();
+	otg = usb_get_phy(USB_PHY_TYPE_USB2);
 	if (otg == NULL)
-		return ;
+		return;
 
 	iotg = otg_to_mid_xceiv(otg);
 	iotg->start_host = NULL;
@@ -439,14 +381,10 @@ static void intel_mid_ehci_driver_unregister(struct pci_driver *host_driver)
 	iotg->runtime_suspend_host = NULL;
 	iotg->runtime_resume_host = NULL;
 
-#ifdef CONFIG_USB_SUSPEND
-	wake_lock_destroy(&iotg->wake_lock);
-#endif
-
 	/* notify host driver is unregistered */
 	atomic_notifier_call_chain(&iotg->iotg_notifier,
 				MID_OTG_NOTIFY_HOSTREMOVE, iotg);
 
-	usb_put_transceiver(otg);
+	usb_put_phy(otg);
 }
 

@@ -39,8 +39,11 @@
 #include <linux/sched.h>
 #include <linux/workqueue.h>
 #include <linux/wait.h>
+#include <linux/input.h>
 #include <linux/acpi.h>
+#include <linux/acpi_gpio.h>
 #include <asm/intel_byt_ec.h>
+#include <asm/intel_byt_buttons.h>
 
 #define EC_SPACE_SIZE 256
 
@@ -60,7 +63,7 @@
 
 #define BYT_EC_MAX_SCI_QUEUE		32
 
-
+static void byt_ec_add_devices(void);
 static BLOCKING_NOTIFIER_HEAD(byt_ec_evt_notifier_list);
 
 struct ec_chip_info {
@@ -354,25 +357,85 @@ static irqreturn_t ec_intr_thread_handler(int id, void *dev)
 
 static void byt_enable_acpi_mode(struct ec_chip_info *chip)
 {
-	int ret;
 
 	ec_write_cmd(chip, BYT_EC_ACPI_ENABLE);
 	/* add 100mSec delay */
 	mdelay(100);
 
-	return 0;
+	return;
 }
 
 static void byt_disable_acpi_mode(struct ec_chip_info *chip)
 {
-	int ret;
 
 	ec_write_cmd(chip, BYT_EC_ACPI_DISABLE);
 	/* add 100mSec delay */
 	mdelay(100);
 
-	return 0;
+	return;
 }
+
+/* EC buttons platform data */
+static struct byt_keys_button byt_m_nrpt_buttons[] = {
+	{ KEY_POWER,		EV_KEY,	"Power_btn", 1 },
+	{ },
+};
+
+static struct byt_keys_button byt_m_rpt_buttons[] = {
+	{ KEY_VOLUMEUP,		EV_KEY,	"Volume_up", 1 },
+	{ KEY_VOLUMEDOWN,	EV_KEY,	"Volume_down", 1 },
+	{ KEY_HOME,		EV_KEY,	"Home_btn", 1 },
+};
+
+static struct byt_keys_platform_data byt_key_pdata[2] = {
+	{
+		.buttons = byt_m_nrpt_buttons,
+		.nbuttons = 1,
+		.rep = 0,
+	}, {
+		.buttons = byt_m_rpt_buttons,
+		.nbuttons = 3,
+		.rep = 1,
+	},
+};
+
+static int byt_ec_create_device(const char *name, void *pdata)
+{
+	int ret = 0;
+	struct platform_device *pdev = NULL;
+
+	pdev = platform_device_alloc(name, -1);
+	if (!pdev) {
+		pr_err("out of memory for platform dev %s\n", name);
+		goto dev_add_error;
+	}
+
+	pdev->dev.platform_data = pdata;
+	ret = platform_device_add(pdev);
+	if (ret) {
+		pr_err("failed to add %s platform device\n", name);
+		platform_device_put(pdev);
+	}
+
+dev_add_error:
+
+	return ret;
+}
+
+static void byt_ec_add_devices()
+{
+	/* Add battery device */
+	byt_ec_create_device("ec_battery", NULL);
+
+	/* Add button devices */
+	byt_ec_create_device("byt_m_nrpt_btns", &byt_key_pdata[0]);
+	byt_ec_create_device("byt_m_rpt_btns", &byt_key_pdata[1]);
+
+	/* Add thermal device bellow */
+
+	return;
+}
+
 
 void byt_ec_evt_register_notify(struct notifier_block *nb)
 {
@@ -389,7 +452,7 @@ EXPORT_SYMBOL(byt_ec_evt_unregister_notify);
 static int byt_ec_probe(struct platform_device *pdev)
 {
 	struct ec_chip_info *chip;
-	int ret, i;
+	int ret;
 	u8 val, stat;
 
 	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
@@ -403,7 +466,7 @@ static int byt_ec_probe(struct platform_device *pdev)
 	mutex_init(&chip->io_lock);
 	init_waitqueue_head(&chip->wait);
 
-	chip->gpio = 0x0;
+	chip->gpio = acpi_get_gpio_by_index(&pdev->dev, 0, NULL);
 	chip->data_addr = 0x62;
 	chip->cmd_addr = 0x66;
 
@@ -443,7 +506,7 @@ static int byt_ec_probe(struct platform_device *pdev)
 	chip->irq = gpio_to_irq(chip->gpio);
 	ret = request_threaded_irq(chip->irq, NULL,
 					ec_intr_thread_handler,
-					IRQF_TRIGGER_FALLING,
+					IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 					"byt-ec", chip);
 	if (ret) {
 		dev_warn(&chip->pdev->dev,
@@ -454,6 +517,8 @@ static int byt_ec_probe(struct platform_device *pdev)
 	}
 
 	chip_ptr = chip;
+	byt_ec_add_devices();
+
 	return 0;
 }
 
@@ -470,18 +535,24 @@ static int byt_ec_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static struct acpi_device_id byt_ec_acpi_match[] = {
+	{ "BYTEC001", 0 },
+	{ },
+};
+MODULE_DEVICE_TABLE(acpi, byt_ec_acpi_match);
+
+
 static struct platform_driver byt_ec_driver = {
 	.probe = byt_ec_probe,
 	.remove = byt_ec_remove,
 	.driver = {
 		.name = "byt-ec",
+		.acpi_match_table = ACPI_PTR(byt_ec_acpi_match),
 	},
 };
 
 static int __init byt_ec_init(void)
 {
-	struct platform_device *pdev = NULL;
-	void *pdata = NULL;
 	int ret = 0;
 
 	ret = platform_driver_register(&byt_ec_driver);
@@ -490,27 +561,7 @@ static int __init byt_ec_init(void)
 					"byt-ec");
 		return ret;
 	}
-
-	pdev = platform_device_alloc("byt-ec", -1);
-	if (!pdev) {
-		pr_err("out of memory for platform dev %s\n",
-					"byt-ec");
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	pdev->dev.platform_data = pdata;
-	ret = platform_device_add(pdev);
-	if (ret) {
-		pr_err("failed to add battery platform device\n");
-		platform_device_put(pdev);
-		goto out;
-	}
-
 	return 0;
-out:
-	platform_driver_unregister(&byt_ec_driver);
-	return ret;
 }
 fs_initcall(byt_ec_init);
 

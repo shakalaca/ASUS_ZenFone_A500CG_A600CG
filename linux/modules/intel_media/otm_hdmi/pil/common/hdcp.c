@@ -230,6 +230,13 @@ static bool hdcp_enable_condition_ready(void)
 	    hdcp_context->display_power_on == true)
 		return true;
 
+	if (hdcp_context == NULL) {
+		pr_err("hdcp: hdcp_context is NULL\n");
+	} else {
+		pr_err("hdcp: condition not ready, required %d, hpd %d\n",
+			hdcp_context->is_required, hdcp_context->hpd);
+	}
+
 	return false;
 }
 
@@ -564,6 +571,9 @@ static void hdcp_reset(void)
 {
 	pr_debug("hdcp: reset\n");
 
+	/* blank TV screen */
+	ipil_enable_planes_on_pipe(1, false);
+
 	/* Stop HDCP */
 	if (hdcp_context->is_phase1_enabled == true ||
 	    hdcp_context->force_reset == true) {
@@ -684,8 +694,10 @@ static bool hdcp_stage1_authentication(bool *is_repeater)
 	retry = 40;
 	if (hdcp_context->hdmi) {
 		while (retry--) {
-			if (hdcp_read_bstatus(&bstatus.value) == false)
+			if (hdcp_read_bstatus(&bstatus.value) == false) {
+				pr_err("hdcp: failed to read bstatus\n");
 				return false;
+			}
 			if (bstatus.hdmi_mode)
 				break;
 			msleep(50);
@@ -693,41 +705,56 @@ static bool hdcp_stage1_authentication(bool *is_repeater)
 		}
 	}
 
+	if (retry == 0)
+		pr_err("hdcp: sink is not in HDMI mode\n");
+
 	pr_debug("hdcp: bstatus: %04x\n", bstatus.value);
 
 	/* Read BKSV */
-	if (hdcp_read_bksv(bksv, HDCP_KSV_SIZE) == false)
+	if (hdcp_read_bksv(bksv, HDCP_KSV_SIZE) == false) {
+		pr_err("hdcp: failed to read bksv\n");
 		return false;
+	}
 	pr_debug("hdcp: bksv: %02x%02x%02x%02x%02x\n",
 		bksv[0], bksv[1], bksv[2], bksv[3], bksv[4]);
 
 	/* Read An */
-	if (ipil_hdcp_get_an(an, HDCP_AN_SIZE) == false)
+	if (ipil_hdcp_get_an(an, HDCP_AN_SIZE) == false) {
+		pr_err("hdcp: failed to get an\n");
 		return false;
+	}
 	pr_debug("hdcp: an: %02x%02x%02x%02x%02x%02x%02x%02x\n",
 		an[0], an[1], an[2], an[3], an[4], an[5], an[6], an[7]);
 
 	/* Read AKSV */
-	if (hdcp_get_aksv(aksv, HDCP_KSV_SIZE) == false)
+	if (hdcp_get_aksv(aksv, HDCP_KSV_SIZE) == false) {
+		pr_err("hdcp: failed to get aksv\n");
 		return false;
+	}
 	pr_debug("hdcp: aksv: %02x%02x%02x%02x%02x\n",
 			aksv[0], aksv[1], aksv[2], aksv[3], aksv[4]);
 
 	/* Write An AKSV to Downstream Rx */
 	if (hdcp_send_an_aksv(an, HDCP_AN_SIZE, aksv, HDCP_KSV_SIZE)
-						== false)
+						== false) {
+		pr_err("hdcp: failed to send an and aksv\n");
 		return false;
+	}
 	pr_debug("hdcp: sent an aksv\n");
 
 	/* Read BKSV */
-	if (hdcp_read_bksv(bksv, HDCP_KSV_SIZE) == false)
+	if (hdcp_read_bksv(bksv, HDCP_KSV_SIZE) == false) {
+		pr_err("hdcp: failed to read bksv\n");
 		return false;
+	}
 	pr_debug("hdcp: bksv: %02x%02x%02x%02x%02x\n",
 			bksv[0], bksv[1], bksv[2], bksv[3], bksv[4]);
 
 	/* Read BCAPS */
-	if (hdcp_read_bcaps(&bcaps.value) == false)
+	if (hdcp_read_bcaps(&bcaps.value) == false) {
+		pr_err("hdcp: failed to read bcaps\n");
 		return false;
+	}
 	pr_debug("hdcp: bcaps: %x\n", bcaps.value);
 
 
@@ -735,18 +762,24 @@ static bool hdcp_stage1_authentication(bool *is_repeater)
 	*is_repeater = bcaps.is_repeater;
 
 	/* Set Repeater Bit */
-	if (ipil_hdcp_set_repeater(bcaps.is_repeater) == false)
+	if (ipil_hdcp_set_repeater(bcaps.is_repeater) == false) {
+		pr_err("hdcp: failed to set repeater bit\n");
 		return false;
+	}
 
 	/* Write BKSV to Self (hdcp tx) */
-	if (ipil_hdcp_set_bksv(bksv) == false)
+	if (ipil_hdcp_set_bksv(bksv) == false) {
+		pr_err("hdcp: failed to write bksv to self\n");
 		return false;
+	}
 
 	pr_debug("hdcp: set repeater & bksv\n");
 
 	/* Start Authentication i.e. computations using hdcp keys */
-	if (ipil_hdcp_start_authentication() == false)
+	if (ipil_hdcp_start_authentication() == false) {
+		pr_err("hdcp: failed to start authentication\n");
 		return false;
+	}
 
 	pr_debug("hdcp: auth started\n");
 
@@ -762,24 +795,33 @@ static bool hdcp_stage1_authentication(bool *is_repeater)
 		retry--;
 	} while (retry);
 
-	if (retry == 0 && ipil_hdcp_is_r0_ready() == false)
+	if (retry == 0 && ipil_hdcp_is_r0_ready() == false) {
+		pr_err("hdcp: R0 is not ready\n");
 		return false;
+	}
 
 	pr_debug("hdcp: tx_r0 ready\n");
 
 	/* Read Ro' from Receiver hdcp rx */
-	if (hdcp_read_rx_r0(&rx_r0) == false)
+	if (hdcp_read_rx_r0(&rx_r0) == false) {
+		pr_err("hdcp: failed to read R0 from receiver\n");
 		return false;
+	}
+
 	pr_debug("hdcp: rx_r0 = %04x\n", rx_r0);
 
 	/* Check if R0 Matches */
-	if (ipil_hdcp_does_ri_match(rx_r0) == false)
+	if (ipil_hdcp_does_ri_match(rx_r0) == false) {
+		pr_err("hdcp: R0 does not match\n");
 		return false;
+	}
 	pr_debug("hdcp: R0 matched\n");
 
 	/* Enable Encryption & Check status */
-	if (ipil_hdcp_enable_encryption() == false)
+	if (ipil_hdcp_enable_encryption() == false) {
+		pr_err("hdcp: failed to enable encryption\n");
 		return false;
+	}
 	pr_debug("hdcp: encryption enabled\n");
 
 	hdcp_context->is_phase1_enabled = true;
@@ -898,8 +940,10 @@ static bool hdcp_start(void)
 {
 	bool is_repeater = false;
 
-	/* Make sure TMDS is available */
-	msleep(hdcp_context->hdcp_delay);
+	/* Make sure TMDS is available
+	 * Remove this delay since HWC already has the delay
+	 */
+	/* msleep(hdcp_context->hdcp_delay); */
 
 	pr_debug("hdcp: start\n");
 
@@ -910,12 +954,16 @@ static bool hdcp_start(void)
 	ipil_enable_planes_on_pipe(1, false);
 
 	/* Check HDCP Status */
-	if (ipil_hdcp_is_ready() == false)
+	if (ipil_hdcp_is_ready() == false) {
+		pr_err("hdcp: hdcp is not ready\n");
 		return false;
+	}
 
 	/* start 1st stage of hdcp authentication */
-	if (hdcp_stage1_authentication(&is_repeater) == false)
+	if (hdcp_stage1_authentication(&is_repeater) == false) {
+		pr_debug("hdcp: stage 1 authentication fails\n");
 		return false;
+	}
 
 	/* un-blank TV screen */
 	ipil_enable_planes_on_pipe(1, true);
@@ -935,8 +983,10 @@ static bool hdcp_start(void)
 	pr_debug("hdcp: starting periodic Ri check\n");
 
 	/* Schedule Ri check after 2 sec*/
-	if (hdcp_stage3_schedule_ri_check(false) == false)
+	if (hdcp_stage3_schedule_ri_check(false) == false) {
+		pr_err("hdcp: fail to schedule Ri check\n");
 		return false;
+	}
 
 	return true;
 }
@@ -1094,8 +1144,8 @@ static void hdcp_task_event_handler(struct work_struct *work)
 		}
 #endif
 		if (hdcp_enable_condition_ready() == true &&
-		    hdcp_context->is_phase1_enabled == false &&
-		    hdcp_start() == false) {
+			hdcp_context->is_phase1_enabled == false &&
+			hdcp_start() == false) {
 			reset_hdcp = true;
 			hdcp_context->force_reset = true;
 			pr_debug("hdcp: failed to start hdcp\n");
@@ -1105,7 +1155,7 @@ static void hdcp_task_event_handler(struct work_struct *work)
 	case HDCP_RI_CHECK:
 		/*pr_debug("hdcp: RI CHECK\n");*/
 		if (msg_data == NULL ||
-		    *(unsigned int *)msg_data != hdcp_context->auth_id)
+			*(unsigned int *)msg_data != hdcp_context->auth_id)
 			/*pr_debug("hdcp: auth count %d mismatch %d\n",
 				*(unsigned int *)msg_data,
 				hdcp_context->auth_id);*/
@@ -1122,7 +1172,7 @@ static void hdcp_task_event_handler(struct work_struct *work)
 	case HDCP_REPEATER_CHECK:
 		pr_debug("hdcp: repeater check\n");
 		if (msg_data == NULL ||
-		    *(unsigned int *)msg_data != hdcp_context->auth_id)
+			*(unsigned int *)msg_data != hdcp_context->auth_id)
 			/*pr_debug("hdcp: auth count %d mismatch %d\n",
 				*(unsigned int *)msg_data,
 				hdcp_context->auth_id);*/
@@ -1512,7 +1562,13 @@ bool otm_hdmi_hdcp_disable(hdmi_context_t *hdmi_context)
 	wq_send_message(msg, NULL);
 
 	/* Cleanup WorkQueue */
-	flush_workqueue(hdcp_context->hdcp_wq);
+	/*flush_workqueue(hdcp_context->hdcp_wq);*/
+
+	/* Wait until hdcp is disabled.
+	 * No need to wait for workqueue flushed since it may block for 2sec
+	 * */
+	while (hdcp_context->is_phase1_enabled)
+		msleep(1);
 
 	hdcp_context->is_required = false;
 
@@ -1592,7 +1648,7 @@ bool otm_hdmi_hdcp_init(hdmi_context_t *hdmi_context,
 	hdcp_context->ddc_read_write = ddc_rd_wr;
 
 	/* Find hdcp delay
-	 * If attribute not set, default to 500ms
+	 * If attribute not set, default to 200ms
 	 */
 	rc = otm_hdmi_get_attribute(hdmi_context,
 				OTM_HDMI_ATTR_ID_HDCP_DELAY,
@@ -1600,7 +1656,7 @@ bool otm_hdmi_hdcp_init(hdmi_context_t *hdmi_context,
 
 	hdcp_context->hdcp_delay = (rc == OTM_HDMI_SUCCESS) ?
 			hdmi_attr.content._uint.value :
-			500;
+			200;
 
 	/* perform any hardware initializations */
 	if (ipil_hdcp_init() == true) {

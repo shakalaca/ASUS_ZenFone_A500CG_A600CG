@@ -127,6 +127,13 @@ void hmm_bo_device_exit(struct hmm_bo_device *bdev)
 #endif
 }
 
+void hmm_bo_device_cleanup_mmu_l2(struct hmm_bo_device *bdev)
+{
+	check_bodev_null_return_void(bdev);
+
+	isp_mmu_clean_l2(&bdev->mmu);
+}
+
 int hmm_bo_device_inited(struct hmm_bo_device *bdev)
 {
 	check_bodev_null_return(bdev, -EINVAL);
@@ -139,7 +146,7 @@ int hmm_bo_device_inited(struct hmm_bo_device *bdev)
  * return NULL if no such buffer object found.
  */
 struct hmm_buffer_object *hmm_bo_device_search_start(struct hmm_bo_device *bdev,
-						     unsigned int vaddr)
+						     ia_css_ptr vaddr)
 {
 	struct list_head *pos;
 	struct hmm_buffer_object *bo;
@@ -185,6 +192,31 @@ struct hmm_buffer_object *hmm_bo_device_search_in_range(struct hmm_bo_device
 		if (!hmm_bo_vm_allocated(bo))
 			continue;
 		if (in_range(bo->vm_node->start, bo->vm_node->size, vaddr))
+			goto found;
+	}
+	spin_unlock_irqrestore(&bdev->list_lock, flags);
+	return NULL;
+found:
+	spin_unlock_irqrestore(&bdev->list_lock, flags);
+	return bo;
+}
+
+struct hmm_buffer_object *
+hmm_bo_device_search_vmap_start(struct hmm_bo_device *bdev, const void *vaddr)
+{
+	struct list_head *pos;
+	struct hmm_buffer_object *bo;
+	unsigned long flags;
+
+	check_bodev_null_return(bdev, NULL);
+
+	spin_lock_irqsave(&bdev->list_lock, flags);
+	list_for_each(pos, &bdev->active_bo_list) {
+		bo = list_to_hmm_bo(pos);
+		/* pass bo which has no vm_node allocated */
+		if (!hmm_bo_vm_allocated(bo))
+			continue;
+		if (bo->vmap_addr == vaddr)
 			goto found;
 	}
 	spin_unlock_irqrestore(&bdev->list_lock, flags);

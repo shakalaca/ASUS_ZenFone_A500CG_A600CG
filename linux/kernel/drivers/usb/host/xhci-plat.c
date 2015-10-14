@@ -24,7 +24,7 @@ static void xhci_plat_quirks(struct device *dev, struct xhci_hcd *xhci)
 	 * here that the generic code does not try to make a pci_dev from our
 	 * dev struct in order to setup MSI
 	 */
-	xhci->quirks |= XHCI_BROKEN_MSI;
+	xhci->quirks |= XHCI_PLAT;
 }
 
 /* called during probe() after chip reset completes */
@@ -179,6 +179,7 @@ static int xhci_plat_remove(struct platform_device *dev)
 
 	usb_remove_hcd(hcd);
 	iounmap(hcd->regs);
+	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
 	usb_put_hcd(hcd);
 	kfree(xhci);
 
@@ -194,12 +195,23 @@ static struct platform_driver usb_xhci_driver = {
 };
 MODULE_ALIAS("platform:xhci-hcd");
 
+#ifdef CONFIG_USB_DWC3_HOST_INTEL
+#include "../dwc3/dwc3-host-intel.c"
+#endif
+
 int xhci_register_plat(void)
 {
+#ifdef CONFIG_USB_DWC3_HOST_INTEL
+	return platform_driver_register(&dwc3_xhci_driver);
+#endif
 	return platform_driver_register(&usb_xhci_driver);
 }
 
 void xhci_unregister_plat(void)
 {
+#ifdef CONFIG_USB_DWC3_HOST_INTEL
+	platform_driver_unregister(&dwc3_xhci_driver);
+	return;
+#endif
 	platform_driver_unregister(&usb_xhci_driver);
 }

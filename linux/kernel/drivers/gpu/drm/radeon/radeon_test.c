@@ -26,16 +26,31 @@
 #include "radeon_reg.h"
 #include "radeon.h"
 
+#define RADEON_TEST_COPY_BLIT 1
+#define RADEON_TEST_COPY_DMA  0
+
 
 /* Test BO GTT->VRAM and VRAM->GTT GPU copies across the whole GTT aperture */
-void radeon_test_moves(struct radeon_device *rdev)
+static void radeon_do_test_moves(struct radeon_device *rdev, int flag)
 {
 	struct radeon_bo *vram_obj = NULL;
 	struct radeon_bo **gtt_obj = NULL;
 	struct radeon_fence *fence = NULL;
 	uint64_t gtt_addr, vram_addr;
-	unsigned i, n, size;
-	int r;
+	unsigned n, size;
+	int i, r, ring;
+
+	switch (flag) {
+	case RADEON_TEST_COPY_DMA:
+		ring = radeon_copy_dma_ring_index(rdev);
+		break;
+	case RADEON_TEST_COPY_BLIT:
+		ring = radeon_copy_blit_ring_index(rdev);
+		break;
+	default:
+		DRM_ERROR("Unknown copy method\n");
+		return;
+	}
 
 	size = 1024 * 1024;
 
@@ -106,7 +121,10 @@ void radeon_test_moves(struct radeon_device *rdev)
 
 		radeon_bo_kunmap(gtt_obj[i]);
 
-		r = radeon_copy(rdev, gtt_addr, vram_addr, size / RADEON_GPU_PAGE_SIZE, &fence);
+		if (ring == R600_RING_TYPE_DMA_INDEX)
+			r = radeon_copy_dma(rdev, gtt_addr, vram_addr, size / RADEON_GPU_PAGE_SIZE, &fence);
+		else
+			r = radeon_copy_blit(rdev, gtt_addr, vram_addr, size / RADEON_GPU_PAGE_SIZE, &fence);
 		if (r) {
 			DRM_ERROR("Failed GTT->VRAM copy %d\n", i);
 			goto out_cleanup;
@@ -149,7 +167,10 @@ void radeon_test_moves(struct radeon_device *rdev)
 
 		radeon_bo_kunmap(vram_obj);
 
-		r = radeon_copy(rdev, vram_addr, gtt_addr, size / RADEON_GPU_PAGE_SIZE, &fence);
+		if (ring == R600_RING_TYPE_DMA_INDEX)
+			r = radeon_copy_dma(rdev, vram_addr, gtt_addr, size / RADEON_GPU_PAGE_SIZE, &fence);
+		else
+			r = radeon_copy_blit(rdev, vram_addr, gtt_addr, size / RADEON_GPU_PAGE_SIZE, &fence);
 		if (r) {
 			DRM_ERROR("Failed VRAM->GTT copy %d\n", i);
 			goto out_cleanup;
@@ -223,6 +244,44 @@ out_cleanup:
 	}
 }
 
+void radeon_test_moves(struct radeon_device *rdev)
+{
+	if (rdev->asic->copy.dma)
+		radeon_do_test_moves(rdev, RADEON_TEST_COPY_DMA);
+	if (rdev->asic->copy.blit)
+		radeon_do_test_moves(rdev, RADEON_TEST_COPY_BLIT);
+}
+
+static int radeon_test_create_and_emit_fence(struct radeon_device *rdev,
+					     struct radeon_ring *ring,
+					     struct radeon_fence **fence)
+{
+	int r;
+
+	if (ring->idx == R600_RING_TYPE_UVD_INDEX) {
+		r = radeon_uvd_get_create_msg(rdev, ring->idx, 1, NULL);
+		if (r) {
+			DRM_ERROR("Failed to get dummy create msg\n");
+			return r;
+		}
+
+		r = radeon_uvd_get_destroy_msg(rdev, ring->idx, 1, fence);
+		if (r) {
+			DRM_ERROR("Failed to get dummy destroy msg\n");
+			return r;
+		}
+	} else {
+		r = radeon_ring_lock(rdev, ring, 64);
+		if (r) {
+			DRM_ERROR("Failed to lock ring A %d\n", ring->idx);
+			return r;
+		}
+		radeon_fence_emit(rdev, fence, ring->idx);
+		radeon_ring_unlock_commit(rdev, ring);
+	}
+	return 0;
+}
+
 void radeon_test_ring_sync(struct radeon_device *rdev,
 			   struct radeon_ring *ringA,
 			   struct radeon_ring *ringB)
@@ -243,20 +302,23 @@ void radeon_test_ring_sync(struct radeon_device *rdev,
 		goto out_cleanup;
 	}
 	radeon_semaphore_emit_wait(rdev, ringA->idx, semaphore);
-	r = radeon_fence_emit(rdev, &fence1, ringA->idx);
+	radeon_ring_unlock_commit(rdev, ringA);
+
+	r = radeon_test_create_and_emit_fence(rdev, ringA, &fence1);
+	if (r)
+		goto out_cleanup;
+
+	r = radeon_ring_lock(rdev, ringA, 64);
 	if (r) {
-		DRM_ERROR("Failed to emit fence 1\n");
-		radeon_ring_unlock_undo(rdev, ringA);
+		DRM_ERROR("Failed to lock ring A %d\n", ringA->idx);
 		goto out_cleanup;
 	}
 	radeon_semaphore_emit_wait(rdev, ringA->idx, semaphore);
-	r = radeon_fence_emit(rdev, &fence2, ringA->idx);
-	if (r) {
-		DRM_ERROR("Failed to emit fence 2\n");
-		radeon_ring_unlock_undo(rdev, ringA);
-		goto out_cleanup;
-	}
 	radeon_ring_unlock_commit(rdev, ringA);
+
+	r = radeon_test_create_and_emit_fence(rdev, ringA, &fence2);
+	if (r)
+		goto out_cleanup;
 
 	mdelay(1000);
 
@@ -313,7 +375,7 @@ out_cleanup:
 		printk(KERN_WARNING "Error while testing ring sync (%d).\n", r);
 }
 
-void radeon_test_ring_sync2(struct radeon_device *rdev,
+static void radeon_test_ring_sync2(struct radeon_device *rdev,
 			    struct radeon_ring *ringA,
 			    struct radeon_ring *ringB,
 			    struct radeon_ring *ringC)
@@ -335,13 +397,11 @@ void radeon_test_ring_sync2(struct radeon_device *rdev,
 		goto out_cleanup;
 	}
 	radeon_semaphore_emit_wait(rdev, ringA->idx, semaphore);
-	r = radeon_fence_emit(rdev, &fenceA, ringA->idx);
-	if (r) {
-		DRM_ERROR("Failed to emit sync fence 1\n");
-		radeon_ring_unlock_undo(rdev, ringA);
-		goto out_cleanup;
-	}
 	radeon_ring_unlock_commit(rdev, ringA);
+
+	r = radeon_test_create_and_emit_fence(rdev, ringA, &fenceA);
+	if (r)
+		goto out_cleanup;
 
 	r = radeon_ring_lock(rdev, ringB, 64);
 	if (r) {
@@ -349,13 +409,10 @@ void radeon_test_ring_sync2(struct radeon_device *rdev,
 		goto out_cleanup;
 	}
 	radeon_semaphore_emit_wait(rdev, ringB->idx, semaphore);
-	r = radeon_fence_emit(rdev, &fenceB, ringB->idx);
-	if (r) {
-		DRM_ERROR("Failed to create sync fence 2\n");
-		radeon_ring_unlock_undo(rdev, ringB);
-		goto out_cleanup;
-	}
 	radeon_ring_unlock_commit(rdev, ringB);
+	r = radeon_test_create_and_emit_fence(rdev, ringB, &fenceB);
+	if (r)
+		goto out_cleanup;
 
 	mdelay(1000);
 
@@ -364,7 +421,7 @@ void radeon_test_ring_sync2(struct radeon_device *rdev,
 		goto out_cleanup;
 	}
 	if (radeon_fence_signaled(fenceB)) {
-		DRM_ERROR("Fence A signaled without waiting for semaphore.\n");
+		DRM_ERROR("Fence B signaled without waiting for semaphore.\n");
 		goto out_cleanup;
 	}
 

@@ -1,4 +1,4 @@
-/* Release Version: ci_master_byt_20130823_2200 */
+/* Release Version: ci_master_byt_20130916_2228 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  *
@@ -694,15 +694,15 @@ struct ia_css_gc_config {
 };
 
 struct ia_css_dvs_6axis_config {
-	unsigned int exp_id;
-	uint32_t width_y;
-	uint32_t height_y;
-	uint32_t width_uv;
-	uint32_t height_uv;
-	uint32_t *xcoords_y;
-	uint32_t *ycoords_y;
-	uint32_t *xcoords_uv;
-	uint32_t *ycoords_uv;   
+	uint32_t exp_id;	/**< Exposure id for this coordinate set */
+	uint32_t width_y;	/**< Number of horizontal Y coordinates */
+	uint32_t height_y;	/**< Number of vertical Y coordinates */
+	uint32_t width_uv;	/**< Number of horizontal UV coordinates */
+	uint32_t height_uv;	/**< Number of vertical UV coordinates */
+	uint32_t *xcoords_y;	/**< The horizonal Y coordinates */
+	uint32_t *ycoords_y;	/**< The vertical Y coordinates */
+	uint32_t *xcoords_uv;	/**< The horizonal UV coordinates */
+	uint32_t *ycoords_uv;   /**< The vertical UV coordinates */
 };
 
 /** Advanced Noise Reduction configuration.

@@ -22,9 +22,9 @@
 #include <linux/slab.h>
 #include <linux/virtio_ring.h>
 #include <linux/virtio_ids.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 
 #include <asm/intel_scu_ipc.h>
-#include <asm/intel_mid_remoteproc.h>
 #include <asm/scu_ipc_rpmsg.h>
 #include <asm/intel-mid.h>
 
@@ -142,10 +142,10 @@ static int scu_ipc_vrtc_command(void *tx_buf)
 	tx_msg = (struct tx_ipc_msg *)tx_buf;
 
 	switch (tx_msg->cmd) {
-	case IPCMSG_GET_HOBADDR:
+	case RP_GET_HOBADDR:
 		ret = scu_ipc_command(tx_buf);
 		break;
-	case IPCMSG_VRTC:
+	case RP_VRTC:
 		ret = scu_ipc_simple_command(tx_buf);
 		break;
 	default:
@@ -164,10 +164,11 @@ static int scu_ipc_fw_logging_command(void *tx_buf)
 	tx_msg = (struct tx_ipc_msg *)tx_buf;
 
 	switch (tx_msg->cmd) {
-	case IPCMSG_GET_HOBADDR:
+	case RP_GET_HOBADDR:
 		ret = scu_ipc_command(tx_buf);
 		break;
-	case IPCMSG_CLEAR_FABERROR:
+	case RP_CLEAR_FABERROR:
+	case RP_SCULOG_CTRL:
 		ret = scu_ipc_simple_command(tx_buf);
 		break;
 	default:
@@ -209,7 +210,8 @@ int scu_ipc_rpmsg_handle(void *rx_buf, void *tx_buf, u32 *r_len, u32 *s_len)
 		tmp_msg->status = scu_ipc_command(tx_msg);
 		break;
 	case RP_SET_WATCHDOG:
-		if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER)
+		if ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) ||
+			(intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE))
 			tmp_msg->status = scu_ipc_raw_command(tx_msg);
 		else
 			tmp_msg->status = scu_ipc_command(tx_msg);
@@ -256,7 +258,8 @@ static void intel_rproc_scu_kick(struct rproc *rproc, int vqid)
 	int ret;
 	struct intel_mid_rproc *iproc;
 	struct rproc_vdev *rvdev;
-	struct device *dev = rproc->dev;
+	struct device *dev = rproc->dev.parent;
+	static unsigned long ns_info_all_received;
 
 	iproc = (struct intel_mid_rproc *)rproc->priv;
 
@@ -268,19 +271,21 @@ static void intel_rproc_scu_kick(struct rproc *rproc, int vqid)
 
 	switch (idx) {
 	case RX_VRING:
-		if (iproc->ns_enabled &&
-			!list_is_last(&iproc->ns_info->node, &nslist->list)) {
+		if (iproc->ns_enabled && !ns_info_all_received) {
+			/* push messages with ns_info for ALL available
+			name services in the list (nslist) into
+			rx buffers. */
 			list_for_each_entry_continue(iproc->ns_info,
 				&nslist->list, node) {
 				ret = intel_mid_rproc_ns_handle(iproc,
-						iproc->ns_info);
+					iproc->ns_info);
 				if (ret) {
 					dev_err(dev, "ns handle error\n");
 					return;
 				}
-				break;
 			}
 
+			ns_info_all_received = 1;
 			intel_mid_rproc_vq_interrupt(rproc, vqid);
 		}
 		break;
@@ -314,12 +319,20 @@ static void intel_rproc_scu_kick(struct rproc *rproc, int vqid)
 /* power up the remote processor */
 static int intel_rproc_scu_start(struct rproc *rproc)
 {
+	struct intel_mid_rproc *iproc;
+
+	pr_info("Started intel scu remote processor\n");
+	iproc = (struct intel_mid_rproc *)rproc->priv;
+	intel_mid_rproc_vring_init(rproc, &iproc->rx_vring, RX_VRING);
+	intel_mid_rproc_vring_init(rproc, &iproc->tx_vring, TX_VRING);
+
 	return 0;
 }
 
 /* power off the remote processor */
 static int intel_rproc_scu_stop(struct rproc *rproc)
 {
+	pr_info("Stopped intel scu remote processor\n");
 	return 0;
 }
 
@@ -329,7 +342,7 @@ static struct rproc_ops intel_rproc_scu_ops = {
 	.kick		= intel_rproc_scu_kick,
 };
 
-static int __devinit intel_rproc_scu_probe(struct platform_device *pdev)
+static int intel_rproc_scu_probe(struct platform_device *pdev)
 {
 	struct intel_mid_rproc_pdata *pdata = pdev->dev.platform_data;
 	struct intel_mid_rproc *iproc;
@@ -353,7 +366,7 @@ static int __devinit intel_rproc_scu_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, rproc);
 
-	ret = rproc_register(rproc);
+	ret = rproc_add(rproc);
 	if (ret)
 		goto free_rproc;
 
@@ -368,8 +381,6 @@ static int __devinit intel_rproc_scu_probe(struct platform_device *pdev)
 	}
 
 	/* Initialize intel_rproc_scu private data */
-	intel_mid_rproc_vring_init(rproc, &iproc->rx_vring, RX_VRING);
-	intel_mid_rproc_vring_init(rproc, &iproc->tx_vring, TX_VRING);
 	strncpy(iproc->name, pdev->id_entry->name, sizeof(iproc->name) - 1);
 	iproc->type = pdev->id_entry->driver_data;
 	iproc->r_vring_last_used = 0;
@@ -382,18 +393,21 @@ static int __devinit intel_rproc_scu_probe(struct platform_device *pdev)
 	return 0;
 
 free_rproc:
-	rproc_free(rproc);
+	rproc_put(rproc);
 	return ret;
 }
 
-static int __devexit intel_rproc_scu_remove(struct platform_device *pdev)
+static int intel_rproc_scu_remove(struct platform_device *pdev)
 {
 	struct rproc *rproc = platform_get_drvdata(pdev);
 
 	if (nslist)
 		rpmsg_ns_del_list(nslist);
 
-	return rproc_unregister(rproc);
+	rproc_del(rproc);
+	rproc_put(rproc);
+
+	return 0;
 }
 
 static const struct platform_device_id intel_rproc_scu_id_table[] = {
@@ -403,7 +417,7 @@ static const struct platform_device_id intel_rproc_scu_id_table[] = {
 
 static struct platform_driver intel_rproc_scu_driver = {
 	.probe = intel_rproc_scu_probe,
-	.remove = __devexit_p(intel_rproc_scu_remove),
+	.remove = intel_rproc_scu_remove,
 	.driver = {
 		.name = "intel_rproc_scu",
 		.owner = THIS_MODULE,

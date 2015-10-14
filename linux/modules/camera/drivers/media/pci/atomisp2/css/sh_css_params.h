@@ -201,6 +201,9 @@ sh_css_set_nr_config(const struct sh_css_nr_config *nr_config);
 void
 sh_css_get_nr_config(const struct sh_css_nr_config **nr_config);
 
+void
+sh_css_set_ext_nr_config(const struct sh_css_ext_nr_config *ext_nr_config);
+
 /* Edge Enhancement */
 void
 sh_css_set_ee_config(const struct sh_css_ee_config *ee_config);

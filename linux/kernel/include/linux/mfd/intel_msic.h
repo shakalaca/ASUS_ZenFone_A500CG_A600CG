@@ -419,6 +419,8 @@ struct intel_msic_gpio_pdata {
  */
 struct intel_msic_vdd_pdata {
 	unsigned	msi;
+	/* is set if device is ctp */
+	u8 is_clvp;
 	/* 1 = VCRIT, 2 = WARNB, 4 = WARNA */
 	u8 disable_unused_comparator;
 };

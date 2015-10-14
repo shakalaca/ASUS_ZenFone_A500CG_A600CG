@@ -90,6 +90,7 @@
 
 //#define ASUS_TOUCH_PALM_NODE	//<ASUS_Proc+>
 #define ASUS_TOUCH_PROXIMITY_NODE	//<ASUS_Proximity+>
+//#define ASUS_TOUCH_DTP_WAKEUP	//<ASUS_DTP+>
 
 extern int Read_PROJ_ID(void);
 extern int Read_TP_ID(void);
@@ -148,6 +149,16 @@ static ssize_t synaptics_rmi4_glove_mode_show(struct device *dev,
 static ssize_t synaptics_rmi4_glove_mode_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count);
 //<ASUS_Glove->
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+static ssize_t synaptics_rmi4_dclick_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+
+static ssize_t synaptics_rmi4_dclick_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count);
+#endif
+//<ASUS_DTP->
 
 struct synaptics_rmi4_f01_device_status {
 	union {
@@ -258,6 +269,17 @@ struct synaptics_rmi4_f12_ctrl_8 {
 			unsigned char num_of_tx;
 		};
 		unsigned char data[14];
+	};
+};
+
+struct synaptics_rmi4_f12_ctrl_20 {
+	union {
+		struct {
+			unsigned char x_suppression;
+			unsigned char y_suppression;
+			unsigned char report_flags;
+		};
+		unsigned char data[3];
 	};
 };
 
@@ -396,16 +418,56 @@ static struct device_attribute attrs[] = {
 			synaptics_rmi4_glove_mode_show,
 			synaptics_rmi4_glove_mode_store),
 //<ASUS_Glove->
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	__ATTR(dclick_mode, (S_IRUGO | S_IWUSR | S_IWGRP),
+			synaptics_rmi4_dclick_mode_show,
+			synaptics_rmi4_dclick_mode_store),
+#endif
+//<ASUS_DTP->
 };
 
 static struct input_dev* find_ps_input_dev_ptr;	//<ASUS_Palm+>
 static unsigned int find_ps_input_dev = 0;	//<ASUS_Palm+>
+
+//<ASUS_Proc+>
 #ifdef ASUS_TOUCH_PALM_NODE
-static unsigned int touch_palm_at_phone = 0; 	//<ASUS_Proc+>
+static int tp_proc_read(char *buf, char **start, off_t offset, int request, int *eof, void *data);
+static int tp_proc_write(struct file *file, const char *buffer, unsigned long count, void *data);
+
+static unsigned int touch_palm_at_phone = 0;
+
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+static const struct file_operations tp_proc_fops = {
+	.owner = THIS_MODULE,
+	.read = tp_proc_read,
+	.write = tp_proc_write,
+};
 #endif
+#endif
+//<ASUS_Proc->
+
+//<ASUS_Proximity+>
 #ifdef ASUS_TOUCH_PROXIMITY_NODE
-static unsigned int touch_proximity_at_phone = 0;//<ASUS_Proximity+>
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+static ssize_t tp_proximity_proc_read(struct file *file, char __user *buf, size_t count, loff_t *ppos);
+static ssize_t tp_proximity_proc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos);
+#else
+static int tp_proximity_proc_read(char *buf, char **start, off_t offset, int request, int *eof, void *data);
+static int tp_proximity_proc_write(struct file *file, const char *buffer, unsigned long count, void *data);
 #endif
+
+static unsigned int touch_proximity_at_phone = 0;
+
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+static const struct file_operations tp_proximity_proc_fops = {
+	.owner = THIS_MODULE,
+	.read = tp_proximity_proc_read,
+	.write = tp_proximity_proc_write,
+};
+#endif
+#endif
+//<ASUS_Proximity->
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 static ssize_t synaptics_rmi4_full_pm_cycle_show(struct device *dev,
@@ -700,6 +762,56 @@ static int tp_proc_write(struct file *file, const char *buffer,
 
 //<ASUS_Proximity+>
 #ifdef ASUS_TOUCH_PROXIMITY_NODE
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+static ssize_t tp_proximity_proc_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+	{
+	char *str;
+	int len;
+
+	if (touch_proximity_at_phone == 1) {		//No Touch
+		printk("[Synaptics] Touch is disabled now\n");
+		str = "Touch is disabled now\n";
+	} else if (touch_proximity_at_phone == 0) {	//Touch
+		printk("[Synaptics] Touch is enabled now\n");
+		str = "Touch is enabled now\n";
+	}
+
+	len = strlen(str);
+	copy_to_user(buf, str, len);
+	if (*ppos == 0)
+ 		*ppos += len;
+	else
+		len = 0;
+	return len;
+}
+static ssize_t tp_proximity_proc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+{
+	char str[128];
+	if (count > PAGE_SIZE) //procfs write and read has PAGE_SIZE limit
+		count = 128;
+
+        if (copy_from_user(str, buf, count))
+	{
+		printk("copy_from_user failed!\n");
+		return -EFAULT;
+        }
+
+	if (count > 1)
+	{
+		str[count-1] = '\0';
+	}
+
+	if ((int)(str[0]) == (1+48)) {		//No Touch
+		touch_proximity_at_phone = 1;
+		printk("[Synaptics] Disable Touch\n");
+	} else {				//Touch
+		touch_proximity_at_phone = 0;
+		printk("[Synaptics] Enable Touch\n");
+	}
+
+	return count;
+}
+#else
 static int tp_proximity_proc_read(char *buf, char **start, off_t offset, int request,
 				     int *eof, void *data)
 {
@@ -730,7 +842,36 @@ static int tp_proximity_proc_write(struct file *file, const char *buffer,
 	return count;
 }
 #endif
+#endif
 //<ASUS_Proximity->
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+static ssize_t synaptics_rmi4_dclick_mode_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			rmi4_data->dclick_mode);
+}
+
+static ssize_t synaptics_rmi4_dclick_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int input;
+	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+
+	if (sscanf(buf, "%u", &input) != 1)
+		return -EINVAL;
+
+	rmi4_data->dclick_mode = input;
+	printk("[Synaptics] dclick mode: %d\n", rmi4_data->dclick_mode);
+
+	return count;
+}
+#endif
+//<ASUS_DTP->
 
  /**
  * synaptics_rmi4_f11_abs_report()
@@ -913,11 +1054,85 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 	static unsigned char fingers_already_present;
 #endif
 	int palm_detect = 0;	//<ASUS_Palm+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	struct synaptics_rmi4_f12_ctrl_20 ctrl_20;	//<ASUS_DTP+>
+#endif
 
 	fingers_to_process = fhandler->num_of_data_points;
 	data_addr = fhandler->full_addr.data_base;
 	extra_data = (struct synaptics_rmi4_f12_extra_data *)fhandler->extra;
 	size_of_2d_data = sizeof(struct synaptics_rmi4_f12_finger_data);
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	if (rmi4_data->dclick_mode == 1  && touch_proximity_at_phone == 0) {
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				data_addr + extra_data->data4_offset,
+				extra_data->data4_data,
+				extra_data->data4_size);
+		if (retval < 0)
+			return 0;
+
+		//dev_dbg(rmi4_data->pdev->dev.parent, "%s: data4_offset:0x%x\n", __func__, data_addr + extra_data->data4_offset);
+		dev_dbg(rmi4_data->pdev->dev.parent, "%s: data4_data[0]:%d\n", __func__, extra_data->data4_data[0]);	//Gesture Type
+		//dev_dbg(rmi4_data->pdev->dev.parent, "%s: data4_data[1]:%d\n", __func__, extra_data->data4_data[1]);
+		//dev_dbg(rmi4_data->pdev->dev.parent, "%s: data4_data[2]:%d\n", __func__, extra_data->data4_data[2]);
+		//dev_dbg(rmi4_data->pdev->dev.parent, "%s: data4_data[3]:%d\n", __func__, extra_data->data4_data[3]);
+		//dev_dbg(rmi4_data->pdev->dev.parent, "%s: data4_data[4]:%d\n", __func__, extra_data->data4_data[4]);
+
+		if (extra_data->data4_data[0] != 0) {
+			retval = synaptics_rmi4_reg_read(rmi4_data,
+					rmi4_data->f12_ctrl20_base_addr,
+					ctrl_20.data,
+					sizeof(ctrl_20.data));
+			if (retval < 0)
+				return 0;
+
+			//dev_dbg(rmi4_data->pdev->dev.parent, "%s: f12_ctrl20_base_addr:0x%x\n", __func__, rmi4_data->f12_ctrl20_base_addr);
+			dev_dbg(rmi4_data->pdev->dev.parent, "%s: ctrl_20.report_flags:%d\n", __func__, ctrl_20.report_flags);	//Report Wakeup Gestures Only
+
+			ctrl_20.report_flags &= 0xFD;
+
+			retval = synaptics_rmi4_reg_write(rmi4_data,
+					rmi4_data->f12_ctrl20_base_addr,
+					&ctrl_20.data,
+					sizeof(ctrl_20.data));
+			if (retval < 0)
+				return 0;
+
+			synaptics_rmi4_free_fingers(rmi4_data);
+
+			printk("[Synaptics] Wakeup by double tap\n");
+
+			input_report_key(rmi4_data->input_dev, KEY_POWER, 1);
+			input_report_key(rmi4_data->input_dev, KEY_POWER, 0);
+			input_sync(rmi4_data->input_dev);
+			return 0;
+		}
+	} else {
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				ctrl_20.data,
+				sizeof(ctrl_20.data));
+		if (retval < 0)
+			return 0;
+
+		//dev_dbg(rmi4_data->pdev->dev.parent, "%s: f12_ctrl20_base_addr:0x%x\n", __func__, rmi4_data->f12_ctrl20_base_addr);
+		dev_dbg(rmi4_data->pdev->dev.parent, "%s: ctrl_20.report_flags:%d\n", __func__, ctrl_20.report_flags);	//Report Wakeup Gestures Only
+
+		if (ctrl_20.report_flags & 0x02 != 0) {
+			ctrl_20.report_flags &= 0xFD;
+
+			retval = synaptics_rmi4_reg_write(rmi4_data,
+					rmi4_data->f12_ctrl20_base_addr,
+					&ctrl_20.data,
+					sizeof(ctrl_20.data));
+			if (retval < 0)
+				return 0;
+		}
+	}
+#endif
+//<ASUS_DTP->
 
 	/* Determine the total number of fingers to process */
 	if (extra_data->data15_size) {
@@ -1566,6 +1781,7 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 	unsigned char size_of_2d_data;
 	unsigned char size_of_query8;
 	unsigned char ctrl_8_offset;
+	unsigned char ctrl_20_offset;
 	unsigned char ctrl_23_offset;
 	unsigned char ctrl_26_offset;
 	unsigned char ctrl_28_offset;
@@ -1574,6 +1790,7 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 	struct synaptics_rmi4_f12_query_5 query_5;
 	struct synaptics_rmi4_f12_query_8 query_8;
 	struct synaptics_rmi4_f12_ctrl_8 ctrl_8;
+	struct synaptics_rmi4_f12_ctrl_20 ctrl_20;
 	struct synaptics_rmi4_f12_ctrl_23 ctrl_23;
 
 	fhandler->fn_number = fd->fn_number;
@@ -1597,6 +1814,20 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 			query_5.ctrl5_is_present +
 			query_5.ctrl6_is_present +
 			query_5.ctrl7_is_present;
+
+	ctrl_20_offset = ctrl_8_offset +
+			query_5.ctrl8_is_present +
+			query_5.ctrl9_is_present +
+			query_5.ctrl10_is_present +
+			query_5.ctrl11_is_present +
+			query_5.ctrl12_is_present +
+			query_5.ctrl13_is_present +
+			query_5.ctrl14_is_present +
+			query_5.ctrl15_is_present +
+			query_5.ctrl16_is_present +
+			query_5.ctrl17_is_present +
+			query_5.ctrl18_is_present +
+			query_5.ctrl19_is_present;
 
 	ctrl_23_offset = ctrl_8_offset +
 			query_5.ctrl8_is_present +
@@ -1627,6 +1858,8 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 			query_5.ctrl26_is_present +
 			query_5.ctrl27_is_present;
 
+	rmi4_data->f12_ctrl20_base_addr = fhandler->full_addr.ctrl_base + ctrl_20_offset;
+
 //<ASUS_Glove2+>
 	rmi4_data->f12_ctrl23_base_addr = fhandler->full_addr.ctrl_base + ctrl_23_offset;
 	rmi4_data->f12_ctrl26_base_addr = fhandler->full_addr.ctrl_base + ctrl_26_offset;
@@ -1647,6 +1880,18 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 	rmi4_data->num_of_fingers = num_of_fingers;
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
+			fhandler->full_addr.ctrl_base + ctrl_20_offset,
+			ctrl_20.data,
+			sizeof(ctrl_20.data));
+
+	ctrl_20.report_flags &= 0xFD;
+
+	retval = synaptics_rmi4_reg_write(rmi4_data,
+			fhandler->full_addr.ctrl_base + ctrl_20_offset,
+			&ctrl_20.data,
+			sizeof(ctrl_20.data));
+
+	retval = synaptics_rmi4_reg_read(rmi4_data,
 			fhandler->full_addr.query_base + 7,
 			&size_of_query8,
 			sizeof(size_of_query8));
@@ -1662,6 +1907,12 @@ static int synaptics_rmi4_f12_init(struct synaptics_rmi4_data *rmi4_data,
 
 	/* Determine the presence of the Data0 register */
 	extra_data->data1_offset = query_8.data0_is_present;
+
+	extra_data->data4_offset = query_8.data0_is_present +
+				query_8.data1_is_present +
+				query_8.data2_is_present +
+				query_8.data3_is_present;
+	extra_data->data4_size = 5;
 
 	if ((size_of_query8 >= 3) && (query_8.data15_is_present)) {
 		extra_data->data15_offset = query_8.data0_is_present +
@@ -2360,9 +2611,17 @@ static void synaptics_rmi4_set_params(struct synaptics_rmi4_data *rmi4_data)
 			5566, 0, 0);
 //<ASUS_Glove_Distance->
 
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 8, 8))
+#ifdef TYPE_B_PROTOCOL
+	input_mt_init_slots(rmi4_data->input_dev,
+			rmi4_data->num_of_fingers,
+			0);
+#endif
+#else
 #ifdef TYPE_B_PROTOCOL
 	input_mt_init_slots(rmi4_data->input_dev,
 			rmi4_data->num_of_fingers);
+#endif
 #endif
 
 	f1a = NULL;
@@ -2428,6 +2687,12 @@ static int synaptics_rmi4_set_input_dev(struct synaptics_rmi4_data *rmi4_data)
 	set_bit(KEY_BACK, rmi4_data->input_dev->keybit);
 	set_bit(KEY_HOME, rmi4_data->input_dev->keybit);
 //<ASUS_virtual_key->
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	set_bit(KEY_POWER, rmi4_data->input_dev->keybit);
+#endif
+//<ASUS_DTP->
 
 	if (rmi4_data->hw_if->board_data->swap_axes) {
 		temp = rmi4_data->sensor_max_x;
@@ -3018,6 +3283,13 @@ static int __devinit synaptics_rmi4_probe(struct platform_device *pdev)
 		goto err_enable_irq;
 	}
 
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	irq_set_irq_wake(rmi4_data->irq, 1);
+	wake_lock_init(&rmi4_data->wake_lock, WAKE_LOCK_SUSPEND, "synaptics_touch_wake_lock");
+#endif
+//<ASUS_DTP->
+
 	if (!exp_data.initialized) {
 		mutex_init(&exp_data.mutex);
 		INIT_LIST_HEAD(&exp_data.list);
@@ -3045,32 +3317,44 @@ static int __devinit synaptics_rmi4_probe(struct platform_device *pdev)
 
 //<ASUS_Proc+>
 #ifdef ASUS_TOUCH_PALM_NODE
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+	tp_proc = proc_create("asus_touch_palm_status", 0664, NULL, &tp_proc_fops);
+#else
 	tp_proc = create_proc_entry("asus_touch_palm_status", 0664, NULL);
+#endif
 	if (!tp_proc) {
 		dev_err(&pdev->dev,
 				"%s: Failed to create proc node\n",
 				__func__);
 		goto err_sysfs;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
 	} else {
 		tp_proc->write_proc = tp_proc_write;
 		tp_proc->read_proc = tp_proc_read;
 		tp_proc->data = NULL;
+#endif
 	}
 #endif
 //<ASUS_Proc->
 
 //<ASUS_Proximity+>
 #ifdef ASUS_TOUCH_PROXIMITY_NODE
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+	tp_proximity_proc = proc_create("asus_touch_proximity_status", 0664, NULL, &tp_proximity_proc_fops);
+#else
 	tp_proximity_proc = create_proc_entry("asus_touch_proximity_status", 0664, NULL);
+#endif
 	if (!tp_proximity_proc) {
 		dev_err(&pdev->dev,
 				"%s: Failed to create proc proximity node\n",
 				__func__);
 		goto err_sysfs;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
 	} else {
 		tp_proximity_proc->write_proc = tp_proximity_proc_write;
 		tp_proximity_proc->read_proc = tp_proximity_proc_read;
 		tp_proximity_proc->data = NULL;
+#endif
 	}
 #endif
 //<ASUS_Proximity->
@@ -3098,6 +3382,10 @@ err_sysfs:
 	destroy_workqueue(exp_data.workqueue);
 
 	synaptics_rmi4_irq_enable(rmi4_data, false);
+
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	wake_lock_destroy(&rmi4_data->wake_lock);
+#endif
 
 err_enable_irq:
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -3205,8 +3493,12 @@ static int __devexit synaptics_rmi4_remove(struct platform_device *pdev)
 //<ASUS_Proc->
 
 //<ASUS_Proximity+>
-#ifdef ASUS_TOUCH_PALM_NODE
+#ifdef ASUS_TOUCH_PROXIMITY_NODE
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
+	proc_remove("asus_touch_proximity_status");
+#else
 	remove_proc_entry("asus_touch_proximity_status", NULL);
+#endif
 #endif
 //<ASUS_Proximity->
 
@@ -3322,6 +3614,45 @@ static void synaptics_rmi4_early_suspend(struct early_suspend *h)
 			container_of(h, struct synaptics_rmi4_data,
 			early_suspend);
 
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	int retval;
+	struct synaptics_rmi4_f12_ctrl_20 ctrl_20;
+
+	if (rmi4_data->dclick_mode == 1) {
+		wake_lock(&rmi4_data->wake_lock);		
+
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				ctrl_20.data,
+				sizeof(ctrl_20.data));
+
+		dev_dbg(rmi4_data->pdev->dev.parent, "%s: ctrl_20.report_flags:%d\n", __func__, ctrl_20.report_flags);	//Report Wakeup Gestures Only
+
+		ctrl_20.report_flags |= 0x02;
+
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				&ctrl_20.data,
+				sizeof(ctrl_20.data));
+
+		synaptics_rmi4_free_fingers(rmi4_data);
+
+		mutex_lock(&exp_data.mutex);
+		if (!list_empty(&exp_data.list)) {
+			list_for_each_entry(exp_fhandler, &exp_data.list, link)
+				if (exp_fhandler->exp_fn->early_suspend != NULL)
+					exp_fhandler->exp_fn->early_suspend(rmi4_data);
+		}
+		mutex_unlock(&exp_data.mutex);
+
+		wake_unlock(&rmi4_data->wake_lock);
+
+		return;
+	} else {
+#endif
+//<ASUS_DTP->
+
 //<ASUS_Proc+>
 #ifdef ASUS_TOUCH_PALM_NODE
 	if (touch_palm_at_phone == 1) {
@@ -3354,6 +3685,12 @@ static void synaptics_rmi4_early_suspend(struct early_suspend *h)
 		synaptics_rmi4_suspend(&(rmi4_data->input_dev->dev));
 
 	return;
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	}
+#endif
+//<ASUS_DTP->
 }
 
  /**
@@ -3372,6 +3709,57 @@ static void synaptics_rmi4_late_resume(struct early_suspend *h)
 	struct synaptics_rmi4_data *rmi4_data =
 			container_of(h, struct synaptics_rmi4_data,
 			early_suspend);
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	struct synaptics_rmi4_f12_ctrl_20 ctrl_20;
+
+	if (rmi4_data->dclick_mode == 1) {
+		wake_lock(&rmi4_data->wake_lock);
+
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				ctrl_20.data,
+				sizeof(ctrl_20.data));
+
+		dev_dbg(rmi4_data->pdev->dev.parent, "%s: ctrl_20.report_flags:%d\n", __func__, ctrl_20.report_flags);	//Report Wakeup Gestures Only
+
+		ctrl_20.report_flags &= 0xFD;
+
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				&ctrl_20.data,
+				sizeof(ctrl_20.data));
+
+		mutex_lock(&exp_data.mutex);
+		if (!list_empty(&exp_data.list)) {
+			list_for_each_entry(exp_fhandler, &exp_data.list, link)
+				if (exp_fhandler->exp_fn->late_resume != NULL)
+					exp_fhandler->exp_fn->late_resume(rmi4_data);
+		}
+		mutex_unlock(&exp_data.mutex);
+
+		wake_unlock(&rmi4_data->wake_lock);
+
+		return;
+	} else {
+
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				ctrl_20.data,
+				sizeof(ctrl_20.data));
+
+		dev_dbg(rmi4_data->pdev->dev.parent, "%s: ctrl_20.report_flags:%d\n", __func__, ctrl_20.report_flags);	//Report Wakeup Gestures Only
+
+		ctrl_20.report_flags &= 0xFD;
+
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				&ctrl_20.data,
+				sizeof(ctrl_20.data));
+
+#endif
+//<ASUS_DTP->
 
 //<ASUS_Proc+>
 #ifdef ASUS_TOUCH_PALM_NODE
@@ -3409,6 +3797,12 @@ static void synaptics_rmi4_late_resume(struct early_suspend *h)
 	rmi4_data->touch_stopped = false;
 
 	return;
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	}
+#endif
+//<ASUS_DTP->
 }
 #endif
 
@@ -3426,6 +3820,45 @@ static int synaptics_rmi4_suspend(struct device *dev)
 {
 	struct synaptics_rmi4_exp_fhandler *exp_fhandler;
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	int retval;
+	struct synaptics_rmi4_f12_ctrl_20 ctrl_20;
+
+	if (rmi4_data->dclick_mode == 1) {
+//		wake_lock(&rmi4_data->wake_lock);
+/*
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				ctrl_20.data,
+				sizeof(ctrl_20.data));
+
+		dev_dbg(rmi4_data->pdev->dev.parent, "%s: ctrl_20.report_flags:%d\n", __func__, ctrl_20.report_flags);	//Report Wakeup Gestures Only
+
+		ctrl_20.report_flags |= 0x02;
+
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				&ctrl_20.data,
+				sizeof(ctrl_20.data));
+*/
+		synaptics_rmi4_free_fingers(rmi4_data);
+
+		mutex_lock(&exp_data.mutex);
+		if (!list_empty(&exp_data.list)) {
+			list_for_each_entry(exp_fhandler, &exp_data.list, link)
+				if (exp_fhandler->exp_fn->suspend != NULL)
+					exp_fhandler->exp_fn->suspend(rmi4_data);
+		}
+		mutex_unlock(&exp_data.mutex);
+
+//		wake_unlock(&rmi4_data->wake_lock);
+
+		return;
+	} else {
+#endif
+//<ASUS_DTP->
 
 	if (rmi4_data->staying_awake)
 		return 0;
@@ -3449,6 +3882,12 @@ static int synaptics_rmi4_suspend(struct device *dev)
 		regulator_disable(rmi4_data->regulator);
 
 	return 0;
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	}
+#endif
+//<ASUS_DTP->
 }
 
  /**
@@ -3468,6 +3907,57 @@ static int synaptics_rmi4_resume(struct device *dev)
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
 	const struct synaptics_dsx_board_data *bdata =
 			rmi4_data->hw_if->board_data;
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	struct synaptics_rmi4_f12_ctrl_20 ctrl_20;
+
+	if (rmi4_data->dclick_mode == 1) {
+//		wake_lock(&rmi4_data->wake_lock);
+/*
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				ctrl_20.data,
+				sizeof(ctrl_20.data));
+
+		dev_dbg(rmi4_data->pdev->dev.parent, "%s: ctrl_20.report_flags:%d\n", __func__, ctrl_20.report_flags);	//Report Wakeup Gestures Only
+
+		ctrl_20.report_flags &= 0xFD;
+
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				&ctrl_20.data,
+				sizeof(ctrl_20.data));
+*/
+		mutex_lock(&exp_data.mutex);
+		if (!list_empty(&exp_data.list)) {
+			list_for_each_entry(exp_fhandler, &exp_data.list, link)
+				if (exp_fhandler->exp_fn->resume != NULL)
+					exp_fhandler->exp_fn->resume(rmi4_data);
+		}
+		mutex_unlock(&exp_data.mutex);
+
+//		wake_unlock(&rmi4_data->wake_lock);
+
+		return;
+	} else {
+/*
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				ctrl_20.data,
+				sizeof(ctrl_20.data));
+
+		dev_dbg(rmi4_data->pdev->dev.parent, "%s: ctrl_20.report_flags:%d\n", __func__, ctrl_20.report_flags);	//Report Wakeup Gestures Only
+
+		ctrl_20.report_flags &= 0xFD;
+
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+				rmi4_data->f12_ctrl20_base_addr,
+				&ctrl_20.data,
+				sizeof(ctrl_20.data));
+*/
+#endif
+//<ASUS_DTP->
 
 	if (rmi4_data->staying_awake)
 		return 0;
@@ -3499,6 +3989,12 @@ static int synaptics_rmi4_resume(struct device *dev)
 	rmi4_data->touch_stopped = false;
 
 	return 0;
+
+//<ASUS_DTP+>
+#ifdef ASUS_TOUCH_DTP_WAKEUP
+	}
+#endif
+//<ASUS_DTP->
 }
 
 static const struct dev_pm_ops synaptics_rmi4_dev_pm_ops = {

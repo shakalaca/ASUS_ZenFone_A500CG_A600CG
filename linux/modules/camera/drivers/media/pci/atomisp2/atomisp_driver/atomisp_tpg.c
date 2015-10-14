@@ -26,9 +26,9 @@
 #include "atomisp_internal.h"
 #include "atomisp_tpg.h"
 
-#ifndef CONFIG_VIDEO_ATOMISP_CSS20
+#ifndef CSS20
 #include "sh_css.h"
-#endif /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#endif /* CSS20 */
 
 static int tpg_s_stream(struct v4l2_subdev *sd, int enable)
 {
@@ -71,7 +71,8 @@ static int tpg_enum_mbus_fmt(struct v4l2_subdev *sd, unsigned int index,
 static int tpg_try_mbus_fmt(struct v4l2_subdev *sd,
 			       struct v4l2_mbus_framefmt *fmt)
 {
-	/*to fake*/
+	/* only raw8 grbg is supported by TPG */
+	fmt->code = V4L2_MBUS_FMT_SGRBG8_1X8;
 	return 0;
 }
 
@@ -85,7 +86,8 @@ static int tpg_g_mbus_fmt(struct v4l2_subdev *sd,
 static int tpg_s_mbus_fmt(struct v4l2_subdev *sd,
 			     struct v4l2_mbus_framefmt *fmt)
 {
-	/*to fake*/
+	/* only raw8 grbg is supported by TPG */
+	fmt->code = V4L2_MBUS_FMT_SGRBG8_1X8;
 	return 0;
 }
 
@@ -123,7 +125,7 @@ static int tpg_s_ctrl(struct v4l2_subdev *sd, struct v4l2_control *ctrl)
 
 static int tpg_s_power(struct v4l2_subdev *sd, int on)
 {
-#ifndef CONFIG_VIDEO_ATOMISP_CSS20
+#ifndef CSS20
 	int x_delta = -2;
 	int y_delta = 3;
 	unsigned int x_mask  = (1 << 4) - 1;
@@ -135,7 +137,7 @@ static int tpg_s_power(struct v4l2_subdev *sd, int on)
 	sh_css_input_configure_port(MIPI_PORT0_ID, 2, 0xffff4);
 	sh_css_tpg_configure(x_mask, x_delta, y_mask, y_delta, xy_mask);
 	sh_css_input_set_mode(SH_CSS_INPUT_MODE_TPG);
-#endif /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#endif /* CSS20 */
 
 	return 0;
 }

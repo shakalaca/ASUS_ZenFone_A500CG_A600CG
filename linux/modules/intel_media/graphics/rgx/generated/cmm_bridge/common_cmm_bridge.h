@@ -48,14 +48,16 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "devicemem_typedefs.h"
 
 
-/* FIXME: need to create pvrbridge_common.h" */
 #include "pvr_bridge.h"
 
 #define PVRSRV_BRIDGE_CMM_CMD_FIRST			(PVRSRV_BRIDGE_CMM_START)
 #define PVRSRV_BRIDGE_CMM_PMRWRITEPMPAGELIST			PVRSRV_IOWR(PVRSRV_BRIDGE_CMM_CMD_FIRST+0)
 #define PVRSRV_BRIDGE_CMM_PMRWRITEVFPPAGELIST			PVRSRV_IOWR(PVRSRV_BRIDGE_CMM_CMD_FIRST+1)
 #define PVRSRV_BRIDGE_CMM_PMRUNWRITEPMPAGELIST			PVRSRV_IOWR(PVRSRV_BRIDGE_CMM_CMD_FIRST+2)
-#define PVRSRV_BRIDGE_CMM_CMD_LAST			(PVRSRV_BRIDGE_CMM_CMD_FIRST+2)
+#define PVRSRV_BRIDGE_CMM_DEVMEMINTCTXEXPORT			PVRSRV_IOWR(PVRSRV_BRIDGE_CMM_CMD_FIRST+3)
+#define PVRSRV_BRIDGE_CMM_DEVMEMINTCTXUNEXPORT			PVRSRV_IOWR(PVRSRV_BRIDGE_CMM_CMD_FIRST+4)
+#define PVRSRV_BRIDGE_CMM_DEVMEMINTCTXIMPORT			PVRSRV_IOWR(PVRSRV_BRIDGE_CMM_CMD_FIRST+5)
+#define PVRSRV_BRIDGE_CMM_CMD_LAST			(PVRSRV_BRIDGE_CMM_CMD_FIRST+5)
 
 
 /*******************************************
@@ -118,5 +120,59 @@ typedef struct PVRSRV_BRIDGE_OUT_PMRUNWRITEPMPAGELIST_TAG
 {
 	PVRSRV_ERROR eError;
 } PVRSRV_BRIDGE_OUT_PMRUNWRITEPMPAGELIST;
+
+/*******************************************
+            DevmemIntCtxExport          
+ *******************************************/
+
+/* Bridge in structure for DevmemIntCtxExport */
+typedef struct PVRSRV_BRIDGE_IN_DEVMEMINTCTXEXPORT_TAG
+{
+	IMG_HANDLE hDevMemServerContext;
+} PVRSRV_BRIDGE_IN_DEVMEMINTCTXEXPORT;
+
+
+/* Bridge out structure for DevmemIntCtxExport */
+typedef struct PVRSRV_BRIDGE_OUT_DEVMEMINTCTXEXPORT_TAG
+{
+	IMG_HANDLE hDevMemIntCtxExport;
+	PVRSRV_ERROR eError;
+} PVRSRV_BRIDGE_OUT_DEVMEMINTCTXEXPORT;
+
+/*******************************************
+            DevmemIntCtxUnexport          
+ *******************************************/
+
+/* Bridge in structure for DevmemIntCtxUnexport */
+typedef struct PVRSRV_BRIDGE_IN_DEVMEMINTCTXUNEXPORT_TAG
+{
+	IMG_HANDLE hDevMemIntCtxExport;
+} PVRSRV_BRIDGE_IN_DEVMEMINTCTXUNEXPORT;
+
+
+/* Bridge out structure for DevmemIntCtxUnexport */
+typedef struct PVRSRV_BRIDGE_OUT_DEVMEMINTCTXUNEXPORT_TAG
+{
+	PVRSRV_ERROR eError;
+} PVRSRV_BRIDGE_OUT_DEVMEMINTCTXUNEXPORT;
+
+/*******************************************
+            DevmemIntCtxImport          
+ *******************************************/
+
+/* Bridge in structure for DevmemIntCtxImport */
+typedef struct PVRSRV_BRIDGE_IN_DEVMEMINTCTXIMPORT_TAG
+{
+	IMG_HANDLE hDevMemIntCtxExport;
+} PVRSRV_BRIDGE_IN_DEVMEMINTCTXIMPORT;
+
+
+/* Bridge out structure for DevmemIntCtxImport */
+typedef struct PVRSRV_BRIDGE_OUT_DEVMEMINTCTXIMPORT_TAG
+{
+	IMG_HANDLE hDevMemServerContext;
+	IMG_HANDLE hPrivData;
+	PVRSRV_ERROR eError;
+} PVRSRV_BRIDGE_OUT_DEVMEMINTCTXIMPORT;
 
 #endif /* COMMON_CMM_BRIDGE_H */

@@ -59,6 +59,7 @@
 #define PSB_PTE_CACHED		  0x0008	/* CPU cache coherent */
 
 #define IS_MDFLD(dev) (0)
+#define IS_MRFLD(dev) (0)
 
 enum APM_VXD_STATUS {
 	VXD_APM_STS_D0 = 0,
@@ -111,7 +112,7 @@ struct drm_psb_private {
 
 	/* IMG video context */
 	struct list_head video_ctx;
-	struct mutex video_ctx_mutex;
+	spinlock_t video_ctx_lock;
 
 	/*
 	 *MSVDX
@@ -249,6 +250,8 @@ extern int drm_psb_debug;
 	PSB_DEBUG(PSB_D_WARN, _fmt, ##_arg)
 #define PSB_DEBUG_MIPI(_fmt, _arg...) \
 	PSB_DEBUG(PSB_D_MIPI, _fmt, ##_arg)
+
+#define IS_MSVDX_MEM_TILE(dev) 1
 
 #if DRM_DEBUG_CODE
 #define PSB_DEBUG(_flag, _fmt, _arg...)					\

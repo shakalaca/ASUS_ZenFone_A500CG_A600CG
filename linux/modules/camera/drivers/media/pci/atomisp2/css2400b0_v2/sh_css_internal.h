@@ -1,4 +1,4 @@
-/* Release Version: ci_master_byt_20130823_2200 */
+/* Release Version: ci_master_byt_20130916_2228 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  *
@@ -63,8 +63,6 @@
 #define SH_CSS_MAX_SP_THREADS	4 /* raw_copy, preview, capture, acceleration */
 #endif
 
-#define NUM_REF_FRAMES		(3)
-
 /* keep next up to date with the definition for MAX_CB_ELEMS_FOR_TAGGER in tagger.sp.c */
 #if defined(HAS_SP_2400)
 #define NUM_CONTINUOUS_FRAMES	15
@@ -78,7 +76,7 @@
 
 #define NUM_TNR_FRAMES		2
 
-#define NUM_VIDEO_REF_FRAMES	(3)  /* SN: Should this not always match NUM_REF_FRAMES ?*/
+#define NUM_VIDEO_REF_FRAMES	(6)  /* SN: Should this not always match NUM_REF_FRAMES ?*/
 #define NUM_VIDEO_TNR_FRAMES	2
 #define NR_OF_PIPELINES			5 /* Must match with IA_CSS_PIPE_ID_NUM */
 
@@ -204,7 +202,10 @@ struct sh_css_binary_args {
 	struct ia_css_frame *out_tnr_frame;  /* tnr output frame */
 	struct ia_css_frame *extra_frame;    /* intermediate frame */
 	struct ia_css_frame *out_vf_frame;   /* viewfinder output frame */
-	struct ia_css_frame *extra_ref_frame;    /* reference extra frame */
+	struct ia_css_frame *dvs_ref_frame1; /* reference extra frame */
+	struct ia_css_frame *dvs_ref_frame2; /* reference extra frame */
+	struct ia_css_frame *dvs_ref_frame3; /* reference extra frame */
+	struct ia_css_frame *dvs_ref_frame4; /* reference extra frame */
 	bool                 copy_vf;
 	bool                 copy_output;
 	unsigned             vf_downscale_log2;
@@ -245,7 +246,8 @@ struct sh_css_pipeline {
 	struct ia_css_frame in_frame;
 	struct ia_css_frame out_frame;
 	struct ia_css_frame vf_frame;
-	enum ia_css_frame_delay dvs_frame_delay;
+	unsigned int dvs_frame_delay;
+	int  acc_num_execs;
 };
 
 
@@ -380,9 +382,11 @@ struct sh_css_sp_pipeline {
 	mipi_port_ID_t	port_id;	/* port_id for input system */
 	uint32_t	num_stages;		/* the pipe config */
 	uint32_t	running;	/* needed for pipe termination */
-	uint32_t	dvs_frame_delay;
+	uint32_t	dvs_config;
 	hrt_vaddress	sp_stage_addr[SH_CSS_MAX_STAGES];
 	struct sh_css_sp_stage *stage; /* Current stage for this pipeline */
+	int32_t         acc_num_execs; /* number of times to run if this is
+					  an acceleration pipe. */
 	union {
 		struct {
 			unsigned int	bytes_available;
@@ -396,6 +400,62 @@ struct sh_css_sp_pipeline {
 		} raw;
 	} copy;
 };
+
+#define DVS_FRAME_DELAY_MASK 0x000000ff
+#define DVS_PARAM_QUEUE_MASK 0x0000ff00
+
+STORAGE_CLASS_INLINE void
+set_dvs_frame_delay(struct sh_css_sp_pipeline *pipe, unsigned int dvs_frame_delay)
+{
+	pipe->dvs_config = (pipe->dvs_config & ~DVS_FRAME_DELAY_MASK) | (dvs_frame_delay & DVS_FRAME_DELAY_MASK);
+}
+
+STORAGE_CLASS_INLINE unsigned int
+get_dvs_frame_delay(const struct sh_css_sp_pipeline *pipe)
+{
+	return pipe->dvs_config & DVS_FRAME_DELAY_MASK;
+}
+
+STORAGE_CLASS_INLINE void
+set_dvs_param_queue(struct sh_css_sp_pipeline *pipe, unsigned int dvs_param_queue)
+{
+	pipe->dvs_config = (pipe->dvs_config & ~DVS_PARAM_QUEUE_MASK) | ((dvs_param_queue << 8) & DVS_PARAM_QUEUE_MASK);
+}
+
+STORAGE_CLASS_INLINE unsigned int
+get_dvs_param_queue(const struct sh_css_sp_pipeline *pipe)
+{
+	return (pipe->dvs_config & DVS_PARAM_QUEUE_MASK) >> 8;
+}
+
+/* parameter buffers to the sp are followed by a command code
+ * this code will not use 00 as the lowest two bits to distinguish
+ * it from an address (that is always word aligned)
+ * for now only exp_id is passed as argument; this is the exp_id
+ * to which the dvs parameters of this parameter set should be applied
+ */
+#define PARAM_CMD_CODE		0x2
+#define PARAM_CMD_MASK		0x000000ff
+#define PARAM_EXP_ID_MASK	0x0000ff00
+#define PARAM_EXP_ID_SHIFT	8
+
+STORAGE_CLASS_INLINE unsigned int
+get_param_cmd_code(uint32_t code)
+{
+	return code & PARAM_CMD_MASK;
+}
+
+STORAGE_CLASS_INLINE unsigned int
+get_param_exp_id_code(uint32_t code)
+{
+	return (code & PARAM_EXP_ID_MASK) >> PARAM_EXP_ID_SHIFT;
+}
+
+STORAGE_CLASS_INLINE unsigned int
+set_param_exp_id_code(uint32_t code, uint8_t exp_id)
+{
+	return code | ((exp_id << PARAM_EXP_ID_SHIFT) & PARAM_EXP_ID_MASK);
+}
 
 /*
  * These structs are derived from structs defined in ia_css_types.h
@@ -445,9 +505,12 @@ enum sh_css_frame_id {
 	sh_css_frame_out_vf,		/* Dynamic */
 	sh_css_frame_s3a,		/* Dynamic */
 	sh_css_frame_dis,		/* Dynamic */
-	sh_css_frame_ref_in,
-	sh_css_frame_ref_out,
-	sh_css_frame_ref_extra,
+	sh_css_frame_ref_in,		/* sh_css_frame_ref_in should be the first of the ref frames */
+	sh_css_frame_ref_out,		/* and all frame_ref_* id's should be adjacent */
+	sh_css_frame_ref_dvs1,		/* DVS will need up to four additional frames for buffers */
+	sh_css_frame_ref_dvs2,
+	sh_css_frame_ref_dvs3,
+	sh_css_frame_ref_dvs4,
 	sh_css_frame_tnr_in,
 	sh_css_frame_tnr_out,
 	sh_css_frame_extra,
@@ -464,10 +527,11 @@ enum sh_css_frame_id {
  *
  * s3a and dis are now also dynamic but (stil) handled seperately
  */
-#define SH_CSS_NUM_FRAME_IDS (14)
+#define SH_CSS_NUM_FRAME_IDS (17) /* must be the # of elements in sh_css_frame_id */
 #define SH_CSS_NUM_DYNAMIC_BUFFER_IDS (5)
 #define SH_CSS_NUM_DYNAMIC_FRAME_IDS (3)
 #define SH_CSS_INVALID_FRAME_ID (-1)
+#define SH_CSS_NUM_REF_FRAMES (6) /* must match the # of frame_ref* id's */
 
 
 /** Frame info struct. This describes the contents of an image frame buffer.

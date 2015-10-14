@@ -32,9 +32,10 @@
 #include <asm/intel-mid.h>
 
 #define OSNIB_SIZE 64
-#define OSNIB_OEM_RSVD_SIZE	32
+#define OSNIB_OEM_RSVD_SIZE 32
 #define OSNIB_INTEL_SIZE (OSNIB_SIZE - OSNIB_OEM_RSVD_SIZE)
-#define OSNIB_DEBUG_SIZE 18
+#define OSNIB_DEBUG_SIZE 14
+#define OSNIB_FW_RSVD_SIZE 3
 #define OSNIB_CMOS_BASE_ADDR 0x0E
 #define OSNIB_FW_UPDATE_BIT 2
 
@@ -82,7 +83,6 @@ struct wake_src {
 	const char *name;
 };
 
-
 enum intel_mid_target_os {
 	MAIN = 0x00,
 	CHARGING = 0x0A,
@@ -90,6 +90,7 @@ enum intel_mid_target_os {
 	FASTBOOT = 0x0E,
 	FACTORY = 0x12,
 	DNX = 0x14,
+	RAMCONSOLE = 0x16,
 	RESERVED_INTEL_BEGIN = 0x0F,
 	RESERVED_INTEL_END = 0xEF,
 	RESERVED_OEM_BEGIN = 0xF0,
@@ -100,7 +101,6 @@ struct target_os {
 	const char *name;
 	u32 id;
 };
-
 
 struct cmos_osnib {
 
@@ -125,14 +125,18 @@ struct cmos_osnib {
 		} __packed bf;
 		u8 wake_src;
 		u8 debug[OSNIB_DEBUG_SIZE];
+		u8 fw_update_status;
 	} __packed fw_to_os;
+
+	u8 firmware_reserved[OSNIB_FW_RSVD_SIZE];
 
 	struct {
 		u8 target_mode;
 		struct {
 			u8 rtc_alarm_charger:1;
 			u8 fw_update:1;
-			u8 reserved:6;
+			u8 ramconsole:1;
+			u8 reserved:5;
 		} bf;
 	} __packed os_to_fw;
 
@@ -225,7 +229,7 @@ int intel_mid_ilb_is_osnib_valid(struct cmos_osnib *osnib);
  * @rr: target os
  *
  */
-int intel_mid_ilb_write_osnib_rr(const char *target);
+int intel_mid_ilb_write_osnib_rr(const char *target, int id);
 
 /**
  * intel_mid_ilb_read_osnib_rr() - read reboot reason from osnib

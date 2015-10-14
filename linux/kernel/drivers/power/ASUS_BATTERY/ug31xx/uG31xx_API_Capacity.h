@@ -242,7 +242,7 @@ extern void UpiSetFactoryBoardOffset(CapacityDataType *data);
  *
  * @return  NULL
  */
-extern void UpiPrintCapacityVersion(void);
+extern void UpiPrintCapacityVersion(void);
 /**
  * @brief UpiGetOcvSoc
  *

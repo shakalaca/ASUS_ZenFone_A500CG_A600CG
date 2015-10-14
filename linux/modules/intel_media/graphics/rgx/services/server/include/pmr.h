@@ -790,4 +790,10 @@ PMRInit(IMG_VOID);
 extern PVRSRV_ERROR
 PMRDeInit(IMG_VOID);
 
+#if defined(PVR_RI_DEBUG)
+extern PVRSRV_ERROR
+PMRStoreRIHandle(PMR *psPMR,
+				 IMG_PVOID hRIHandle);
+#endif
+
 #endif /* #ifdef _SRVSRV_PMR_H_ */

@@ -19,21 +19,51 @@
 #define INTEL_SCU_IPC_OSC_CLK_CNTL		    0xC6
 #define INTEL_SCU_IPC_PMDB_ACCESS		    0xD0
 
+#define SIGNED_MOS_ATTR		0x0
+#define SIGNED_COS_ATTR		0x0A
+#define SIGNED_RECOVERY_ATTR	0x0C
+#define SIGNED_POS_ATTR		0x0E
+#define SIGNED_FACTORY_ATTR	0x12
+
+enum intel_scu_ipc_wake_src {
+	WAKE_BATT_INSERT,
+	WAKE_PWR_BUTTON_PRESS,
+	WAKE_RTC_TIMER,
+	WAKE_USB_CHRG_INSERT,
+	WAKE_RESERVED,
+	WAKE_REAL_RESET,
+	WAKE_COLD_BOOT,
+	WAKE_UNKNOWN,
+	WAKE_KERNEL_WATCHDOG_RESET,
+	WAKE_SECURITY_WATCHDOG_RESET,
+	WAKE_WATCHDOG_COUNTER_EXCEEDED,
+	WAKE_POWER_SUPPLY_DETECTED,
+	WAKE_FASTBOOT_BUTTONS_COMBO,
+	WAKE_NO_MATCHING_OSIP_ENTRY,
+	WAKE_CRITICAL_BATTERY,
+	WAKE_INVALID_CHECKSUM,
+	WAKE_FORCED_RESET,
+	WAKE_ACDC_CHRG_INSERT,
+	WAKE_PMIC_WATCHDOG_RESET,
+	WAKE_PLATFORM_WATCHDOG_RESET,
+	WAKE_SC_WATCHDOG_RESET
+};
+
 struct scu_ipc_data {
-	__u32	count;  /* No. of registers */
-	__u16	addr[5]; /* Register addresses */
-	__u8	data[5]; /* Register data */
-	__u8	mask; /* Valid for read-modify-write */
+	u32	count;  /* No. of registers */
+	u16	addr[5]; /* Register addresses */
+	u8	data[5]; /* Register data */
+	u8	mask; /* Valid for read-modify-write */
 };
 
 struct scu_ipc_version {
-	__u32	count;  /* length of version info */
-	__u8	data[16]; /* version data */
+	u32	count;  /* length of version info */
+	u8	data[16]; /* version data */
 };
 
 struct osc_clk_t {
-	__u32	id; /* clock id */
-	__u32	khz; /* clock frequency */
+	u32	id; /* clock id */
+	u32	khz; /* clock frequency */
 };
 
 /* PMDB buffer, cmd, and limits */
@@ -50,10 +80,10 @@ struct osc_clk_t {
 #define PMDB_SUB_CMD_R_OTPCTL  4
 
 struct scu_ipc_pmdb_buffer {
-	__u32	sub; /* sub cmd of SCU's PMDB IPC commands */
-	__u32	count; /* length of PMDB buffer */
-	__u32	offset; /* buffer start offset for each PMDB component */
-	__u8	data[PMDB_SIZE]; /* PMDB buffer */
+	u32	sub; /* sub cmd of SCU's PMDB IPC commands */
+	u32	count; /* length of PMDB buffer */
+	u32	offset; /* buffer start offset for each PMDB component */
+	u8	data[PMDB_SIZE]; /* PMDB buffer */
 };
 
 /* Penwell has 4 osc clocks */
@@ -82,10 +112,11 @@ int intel_scu_ipc_msic_vprog1(int on);
 int intel_scu_ipc_msic_vprog2(int on);
 
 /* OSHOB-OS Handoff Buffer read */
+phys_addr_t intel_scu_ipc_get_oshob_base(void);
 int intel_scu_ipc_get_oshob_size(void);
 
 /* SCU trace buffer interface */
-u32 intel_scu_ipc_get_scu_trace_buffer(void);
+phys_addr_t intel_scu_ipc_get_scu_trace_buffer(void);
 u32 intel_scu_ipc_get_scu_trace_buffer_size(void);
 u32 intel_scu_ipc_get_fabricerror_buf1_offset(void);
 u32 intel_scu_ipc_get_fabricerror_buf2_offset(void);

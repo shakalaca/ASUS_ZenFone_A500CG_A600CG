@@ -286,7 +286,7 @@ int wldev_get_rssi(
 {
 	scb_val_t scb_val;
 	int error;
-        int db_rssi = 0;
+
 	if (!prssi)
 		return -ENOMEM;
 	bzero(&scb_val, sizeof(scb_val_t));
@@ -294,21 +294,8 @@ int wldev_get_rssi(
 	error = wldev_ioctl(dev, WLC_GET_RSSI, &scb_val, sizeof(scb_val_t), 0);
 	if (unlikely(error))
 		return error;
-#if 0
-        prssi = dtoh32(scb_val.val);
-#else
-        db_rssi = dtoh32(scb_val.val);
-        if((db_rssi <= -30) && (db_rssi > -35))
-                db_rssi = db_rssi -3;
-        else if((db_rssi <= -25) && (db_rssi > -30))
-                db_rssi = db_rssi - 5;
-        else if((db_rssi <= -15) && (db_rssi > -25))
-                db_rssi = db_rssi - 10;
-        else if (db_rssi > -15 )
-                db_rssi = db_rssi - 17;
-        *prssi = db_rssi;
-#endif
 
+	*prssi = dtoh32(scb_val.val);
 	return error;
 }
 

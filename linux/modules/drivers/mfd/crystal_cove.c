@@ -150,6 +150,13 @@ int intel_mid_pmic_set_pdata(const char *name, void *data, int len)
 }
 EXPORT_SYMBOL(intel_mid_pmic_set_pdata);
 
+/* wrapper function needed by Baytrail BCU driver */
+int intel_scu_ipc_read_mip(u8 *data, int len, int offset, int issigned)
+{
+	return 0;
+}
+EXPORT_SYMBOL(intel_scu_ipc_read_mip);
+
 static struct intel_mid_pmic intel_mid_pmic;
 static struct intel_mid_pmic *pmic = &intel_mid_pmic;
 
@@ -454,12 +461,14 @@ static int pmic_i2c_remove(struct i2c_client *i2c)
 
 static const struct i2c_device_id pmic_i2c_id[] = {
 	{ "crystal_cove", },
+	{ "INT33FD", },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, pmic_i2c_id);
 
 static struct acpi_device_id pmic_acpi_match[] = {
 	{ "TEST0001", 0 },
+	{ "INT33FD", 0 },
 	{ },
 };
 MODULE_DEVICE_TABLE(acpi, pmic_acpi_match);

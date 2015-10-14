@@ -29,25 +29,20 @@
 */
 #ifndef __PLATFORM_IPC_V2_H__
 #define __PLATFORM_IPC_V2_H__
-#define MAX_NUM_STREAMS_MRST 3
-#define MAX_NUM_STREAMS_MRFLD 23
-#define MAX_NUM_STREAMS MAX_NUM_STREAMS_MRFLD
+
 #define MAX_DBG_RW_BYTES 80
 #define MAX_NUM_SCATTER_BUFFERS 8
 #define MAX_LOOP_BACK_DWORDS 8
 /* IPC base address and mailbox, timestamp offsets */
 #define SST_MAILBOX_SIZE 0x0400
 #define SST_MAILBOX_SEND 0x0000
-#define SST_MAILBOX_RCV_MRFLD 0x0400
-#define SST_MAILBOX_RCV 0x0800
 #define SST_TIME_STAMP 0x1800
 #define SST_TIME_STAMP_MRFLD 0x800
 #define SST_RESERVED_OFFSET 0x1A00
-#define SST_CHECKPOINT_OFFSET 0x1C00
 #define SST_SCU_LPE_MAILBOX 0x1000
 #define SST_LPE_SCU_MAILBOX 0x1400
 #define SST_SCU_LPE_LOG_BUF (SST_SCU_LPE_MAILBOX+16)
-#define REPLY_MSG 0x80
+#define PROCESS_MSG 0x80
 
 /* Message ID's for IPC messages */
 /* Bits B7: SST or IA/SC ; B6-B4: Msg Category; B3-B0: Msg Type */
@@ -73,6 +68,9 @@
 #define IPC_IA_SET_RUNTIME_PARAMS 0x1C
 #define IPC_IA_SET_PARAMS 0x1
 #define IPC_IA_GET_PARAMS 0x2
+
+#define IPC_EFFECTS_CREATE 0xE
+#define IPC_EFFECTS_DESTROY 0xF
 
 /* I2L Stream config/control msgs */
 #define IPC_IA_ALLOC_STREAM_MRFLD 0x2
@@ -136,6 +134,9 @@
 /* L2I Debug msgs */
 #define IPC_IA_PRINT_STRING 0xF0
 
+/* Buffer under-run */
+#define IPC_IA_BUF_UNDER_RUN_MRFLD 0x0B
+
 /* Mrfld specific defines:
  * For asynchronous messages(INIT_CMPLT, PERIOD_ELAPSED, ASYNC_ERROR)
  * received from FW, the format is:
@@ -144,8 +145,6 @@
  *  - pipe_id is in higher 16-bits of IPC low payload for period_elapsed.
  *  - error id is in higher 16-bits of IPC low payload for async errors.
  */
-#define SST_ASYNC_ERROR_MASK 0xFFFF0000
-#define SST_ASYNC_MSG_MASK 0x0000FFFF
 #define SST_ASYNC_DRV_ID 0
 
 /* Command Response or Acknowledge message to any IPC message will have
@@ -193,6 +192,7 @@ enum sst_algo_types {
 	SST_ALGO_VTSV = 0x73,
 	SST_ALGO_AUDCLASSIFIER = 0x80,
 	SST_ALGO_VOLUME_CONTROL = 0x92,
+	SST_ALGO_GEQ = 0x99,
 };
 
 enum stream_type {
@@ -312,6 +312,27 @@ struct ipc_dsp_hdr {
 	u16 length;		/*!< Length of the payload only */
 } __packed;
 
+struct ipc_dsp_effects_info {
+	u16	cmd_id;
+	u16	length;
+	u16	sel_pos;
+	u16	sel_algo_id;
+	u16	cpu_load;       /* CPU load indication */
+	u16	memory_usage;   /* Data Memory usage */
+	u32	flags;         /* effect engine caps/requirements flags */
+} __packed;
+
+struct ipc_effect_dsp_hdr {
+	u16 mod_index_id:8;             /*!< DSP Command ID specific to tasks */
+	u16 pipe_id:8;  /*!< instance of the module in the pipeline */
+	u16 mod_id;             /*!< Pipe_id */
+} __packed;
+
+struct ipc_effect_payload {
+	struct ipc_effect_dsp_hdr dsp_hdr;
+	char *data;
+};
+
 union ipc_header_high {
 	struct {
 		u32  msg_id:8;	    /* Message ID - Max 256 Message Types */
@@ -374,19 +395,6 @@ struct ipc_header_fw_init {
 	u8 debug_info; /* Debug info from Module ID in case of fail */
 } __packed;
 
-
-/* Time stamp */
-struct snd_sst_tstamp_mfld {
-	u64 samples_processed;/* capture - data in DDR */
-	u64 samples_rendered;/* playback - data rendered */
-	u64 bytes_processed;/* bytes decoded or encoded */
-	u32 sampling_frequency;/* eg: 48000, 44100 */
-	u32 reserved1;
-	u16 reserved2;
-	u16 reserved;/* 32 bit alignment */
-	u64 pcm_delay;
-};
-
 struct snd_sst_tstamp {
 	u64 ring_buffer_counter;	/* PB/CP: Bytes copied from/to DDR. */
 	u64 hardware_counter;	    /* PB/CP: Bytes DMAed to/from SSP. */
@@ -395,8 +403,7 @@ struct snd_sst_tstamp {
 	u64 bytes_copied;
 	u32 sampling_frequency;
 	u32 channel_peak[8];
-};
-
+} __packed;
 
 /* SST to IA memory read debug message  */
 struct ipc_sst_ia_dbg_mem_rw  {
@@ -474,18 +481,6 @@ struct snd_pcm_params {
 	u8 channel_map[8];
 } __packed;
 
-/* PCM Parameters */
-struct snd_pcm_params_mfld {
-	u16 codec;	/* codec type */
-	u8 num_chan;	/* 1=Mono, 2=Stereo */
-	u8 pcm_wd_sz;	/* 16/24 - bit*/
-	u32 reserved;	/* Bitrate in bits per second */
-	u32 sfreq;	/* Sampling rate in Hz */
-	u32 ring_buffer_size;
-	u32 period_count;	/* period elapsed in samples*/
-	u32 ring_buffer_addr;
-};
-
 /* MP3 Music Parameters Message */
 struct snd_mp3_params {
 	u8  num_chan;	/* 1=Mono, 2=Stereo	*/
@@ -526,14 +521,6 @@ struct snd_wma_params {
 };
 
 /* Codec params struture */
-union snd_sst_codec_params_mfld {
-	struct snd_pcm_params_mfld pcm_params;
-	struct snd_mp3_params mp3_params;
-	struct snd_aac_params aac_params;
-	struct snd_wma_params wma_params;
-};
-
-/* Codec params struture */
 union  snd_sst_codec_params {
 	struct snd_pcm_params pcm_params;
 	struct snd_mp3_params mp3_params;
@@ -571,9 +558,6 @@ struct snd_sst_params {
 	struct snd_sst_stream_params sparams;
 	struct snd_sst_alloc_params_ext aparams;
 };
-struct snd_sst_stream_params_mfld {
-	union snd_sst_codec_params_mfld uc;
-} __packed;
 
 struct snd_sst_alloc_mrfld {
 	u16 codec_type;
@@ -581,26 +565,9 @@ struct snd_sst_alloc_mrfld {
 	u8 sg_count;
 	struct sst_address_info ring_buf_info[8];
 	u32 frag_size;
-	struct snd_sst_tstamp *ts;
+	u32 ts;
 	struct snd_sst_stream_params codec_params;
 } __packed;
-
-/* Alloc stream params structure */
-struct snd_sst_alloc_params_mfld {
-	struct snd_sst_str_type str_type;
-	struct snd_sst_stream_params_mfld stream_params;
-};
-
-struct snd_sst_pmic_config {
-	u32  sfreq;                /* Sampling rate in Hz */
-	u16  num_chan;             /* Mono =1 or Stereo =2 */
-	u16  pcm_wd_sz;            /* Number of bits per sample */
-} __packed;
-
-struct snd_sst_fw_get_stream_params_mfld {
-	struct snd_sst_stream_params_mfld codec_params;
-	struct snd_sst_pmic_config pcm_params;
-};
 
 /* Alloc stream params structure */
 struct snd_sst_alloc_params {
@@ -608,12 +575,6 @@ struct snd_sst_alloc_params {
 	struct snd_sst_stream_params stream_params;
 	struct snd_sst_alloc_params_ext alloc_params;
 } __packed;
-
-
-struct snd_sst_fw_get_stream_params {
-	struct snd_sst_stream_params codec_params;
-	struct snd_sst_pmic_config pcm_params;
-};
 
 /* Alloc stream response message */
 struct snd_sst_alloc_response {
@@ -676,20 +637,17 @@ enum stream_param_type {
 	OTHERS = 2, /*reserved for future params*/
 };
 
-struct snd_sst_get_stream_params {
-	struct snd_sst_params codec_params;
-	struct snd_sst_pmic_config pcm_params;
-};
 /* CSV Voice call routing structure */
 struct snd_sst_control_routing {
 	u8 control; /* 0=start, 1=Stop */
 	u8 reserved[3];	/* Reserved- for 32 bit alignment */
 };
 
-
 struct ipc_post {
 	struct list_head node;
 	union ipc_header header; /* driver specific */
+	bool is_large;
+	bool is_process_reply;
 	union ipc_header_mrfld mrfld_header;
 	char *mailbox_data;
 };

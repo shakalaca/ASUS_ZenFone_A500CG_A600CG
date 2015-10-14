@@ -401,6 +401,10 @@ sys_info_Fill_CPUID (
     U32                  thread_id                = 0;
     U32                  core_id                  = 0;
     U32                  package_id               = 0;
+    U32                  module_id                = 0;
+    U32                  cores_sharing_cache      = 0;
+    U32                  cache_mask_width         = 0;
+    U32                  cache_apic_mask          = 0;
 
     if (drv_x2apic_enabled) {
         apic_id    = SYS_Read_MSR(DRV_APIC_LCL_ID_MSR);
@@ -440,6 +444,8 @@ sys_info_Fill_CPUID (
                         VTSA_GEN_PER_CPU_cpu_cache_L2(local_gpc) =
                                    (U32)(SYS_INFO_CACHE_SIZE(rcx,rbx) >> 10);
                         SEP_PRINT_DEBUG("L2 Cache: %x\n", VTSA_GEN_PER_CPU_cpu_cache_L2(local_gpc));
+                        cores_sharing_cache = ((U16)(rax >> 14) & 0xfff) + 1;
+                        SEP_PRINT_DEBUG("CORES_SHARING_CACHE=%d j=%d cpu=%d\n", cores_sharing_cache, j, cpu);
                     }
 
                     if (((rax >> 5) & 0x3) == 3) {
@@ -451,6 +457,12 @@ sys_info_Fill_CPUID (
                 if (j == 0) {
                     cores_per_die = ((U16)(rax >> 26) & 0x3f) + 1;
                 }
+            }
+            if (cores_sharing_cache != 0) {
+                cache_mask_width = (U32)sys_info_nbits(cores_sharing_cache);
+                SEP_PRINT_DEBUG("CACHE MASK WIDTH=%x\n", cache_mask_width);
+                cache_apic_mask = ~((-1) << cache_mask_width);
+                SEP_PRINT_DEBUG("CACHE APIC ID MASK=%x\n", cache_apic_mask);
             }
         }
         else if (cpuid_function == 0xb) {
@@ -536,6 +548,11 @@ sys_info_Fill_CPUID (
 
     core_id    = (apic_id >> sys_info_nbits(threads_per_core)) & (cores_per_die-1);
     package_id = (apic_id >> (sys_info_nbits(cores_per_die) + sys_info_nbits(threads_per_core)));
+     if (cache_mask_width) {
+        module_id = (U32)(cpu/2);
+    }
+    SEP_PRINT_DEBUG("MODULE ID=%d CORE ID=%d for cpu=%d PACKAGE ID=%d\n", module_id, core_id, cpu, package_id);
+    SEP_PRINT_DEBUG("num_logical_per_physical=%d cores_per_die=%d\n", num_logical_per_physical, cores_per_die);
     SEP_PRINT_DEBUG("package_id %d, apic_id %x, sys_info_nbits(cores_per_die) %lld, sys_info_nbits(threads_per_core %lld\n", package_id, apic_id, sys_info_nbits(cores_per_die), sys_info_nbits(threads_per_core));
 
     VTSA_GEN_PER_CPU_cpu_intel_processor_number(local_gpc) = VTSA_NA32;
@@ -543,6 +560,10 @@ sys_info_Fill_CPUID (
     VTSA_GEN_PER_CPU_cpu_core_num(local_gpc)               = (U16)core_id;
     VTSA_GEN_PER_CPU_cpu_hw_thread_num(local_gpc)          = (U16)thread_id;
     VTSA_GEN_PER_CPU_cpu_threads_per_core(local_gpc)       = (U16)threads_per_core;
+    VTSA_GEN_PER_CPU_cpu_module_num(local_gpc)             = (U16)module_id;
+    VTSA_GEN_PER_CPU_cpu_num_modules(local_gpc)            = (U16)(GLOBAL_STATE_num_cpus(driver_state)/2);
+    GLOBAL_STATE_num_modules(driver_state)                 = VTSA_GEN_PER_CPU_cpu_num_modules(local_gpc);
+    SEP_PRINT_DEBUG("MODULE COUNT=%d\n", GLOBAL_STATE_num_modules(driver_state));
     
     core_to_package_map[cpu] = package_id;
 

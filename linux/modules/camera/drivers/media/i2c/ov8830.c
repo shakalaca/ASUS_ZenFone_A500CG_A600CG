@@ -1076,7 +1076,7 @@ static int __ov8830_s_frame_interval(struct v4l2_subdev *sd,
 /* tune this value so that the DVS resolutions get selected properly,
  * but make sure 16:9 does not match 4:3.
  */
-#define LARGEST_ALLOWED_RATIO_MISMATCH 600
+#define LARGEST_ALLOWED_RATIO_MISMATCH 500
 static int distance(struct ov8830_resolution const *res, const u32 w,
 				const u32 h)
 {

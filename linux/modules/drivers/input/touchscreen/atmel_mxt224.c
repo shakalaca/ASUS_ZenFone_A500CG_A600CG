@@ -41,6 +41,7 @@
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/atmel_mxt224.h>
+#include <linux/early_suspend_sysfs.h>
 
 /* Routines for memory access within a 16 bit address space */
 
@@ -170,11 +171,11 @@ struct mxt_data {
 	u8                   (*valid_interrupt)(void);
 	u8                   (*read_chg)(void);
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
 	u8                   T7[3];
+#ifdef CONFIG_HAS_EARLYSUSPEND
 	struct early_suspend es;
-	bool                 suspended;
 #endif
+	bool                 suspended;
 
 #ifdef DEBUG
 	u8                   *last_message;
@@ -2110,6 +2111,93 @@ out_reset:
 	mxt_reset(mxt);
 }
 
+static void mxt_early_suspend_handler()
+{
+	u16 addr;
+	u8 buf[3] = { 0 };
+	u8 err;
+
+	disable_irq(mxt_es->irq);
+
+	mutex_lock(&mxt_es->dev_mutex);
+
+	mxt_enable_autocalib(mxt_es);
+
+	addr = get_object_address(MXT_GEN_POWERCONFIG_T7,
+				0,
+				mxt_es->object_table,
+				mxt_es->device_info.num_objs);
+	mxt_read_block(mxt_es->client, addr, 3, mxt_es->T7);
+	err = mxt_write_block(mxt_es->client, addr, 3, buf);
+	if (err < 0)
+		dev_err(&mxt_es->client->dev, "fail to stop scan.\n");
+
+	mxt_es->suspended = TRUE;
+
+	mutex_unlock(&mxt_es->dev_mutex);
+}
+
+static void mxt_calibrate(struct mxt_data *mxt)
+{
+	u16 addr;
+
+	addr = get_object_address(MXT_GEN_COMMANDPROCESSOR_T6,
+			0, mxt->object_table,
+			mxt->device_info.num_objs) + MXT_ADR_T6_CALIBRATE;
+	mxt_write_byte(mxt->client, addr, 0x55);
+}
+
+
+static void mxt_late_resume_handler()
+{
+	int i;
+	int ret;
+	u16 addr;
+
+	enable_irq(mxt_es->irq);
+
+	mutex_lock(&mxt_es->dev_mutex);
+	mxt_es->calibration_confirm = 0;
+	addr = get_object_address(MXT_GEN_POWERCONFIG_T7,
+				0,
+				mxt_es->object_table,
+				mxt_es->device_info.num_objs);
+	ret = mxt_write_block(mxt_es->client, addr, 3, mxt_es->T7);
+	if (ret < 0) {
+		dev_err(&mxt_es->client->dev, "fail to start scan.\n");
+		mxt_gpio_reset(mxt_es);
+	} else {
+		msleep(40);
+		mxt_calibrate(mxt_es);
+	}
+
+	/* clear touch state when suspending */
+	for (i = 0; i < mxt_es->numtouch; i++) {
+		if (!mxt_es->finger[i].status)
+			continue;
+		mxt_es->finger[i].status = MXT_MSGB_T9_RELEASE;
+	}
+	report_mt(mxt_es);
+	input_sync(mxt_es->touch_input);
+
+	mxt_es->suspended = FALSE;
+	mxt_es->timestamp = jiffies;
+	mutex_unlock(&mxt_es->dev_mutex);
+}
+
+static ssize_t early_suspend_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	if (!strncmp(buf, EARLY_SUSPEND_ON, EARLY_SUSPEND_STATUS_LEN))
+		mxt_early_suspend_handler();
+	else if (!strncmp(buf, EARLY_SUSPEND_OFF, EARLY_SUSPEND_STATUS_LEN))
+		mxt_late_resume_handler();
+
+	return count;
+}
+
+static DEVICE_EARLY_SUSPEND_ATTR(early_suspend_store);
+
 static int mxt_probe(struct i2c_client *client,
 			       const struct i2c_device_id *id)
 {
@@ -2395,6 +2483,8 @@ static int mxt_probe(struct i2c_client *client,
 	mxt->msg_buffer_endp = 0;
 #endif
 
+	device_create_file(&client->dev, &dev_attr_early_suspend);
+
 	mxt->prev_key = 0;
 
 	if (pdata->numtouch)
@@ -2430,18 +2520,20 @@ static int mxt_probe(struct i2c_client *client,
 
 	kfree(id_data);
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
 	mxt->suspended = FALSE;
 	mxt->T7[0] = 32;
 	mxt->T7[1] = 10;
 	mxt->T7[2] = 50;
+
+#ifdef CONFIG_HAS_EARLYSUSPEND
 	mxt->es.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
 	mxt->es.suspend = mxt_early_suspend;
 	mxt->es.resume = mxt_late_resume;
-
 	register_early_suspend(&mxt->es);
-	mxt_es = mxt;
 #endif
+	mxt_es = mxt;
+
+	register_early_suspend_device(&client->dev);
 
 	return 0;
 
@@ -2481,6 +2573,8 @@ static int mxt_remove(struct i2c_client *client)
 
 		if (mxt->irq)
 			free_irq(mxt->irq, mxt);
+
+		device_remove_file(&client->dev, &dev_attr_early_suspend);
 #ifdef DEBUG
 		/* Remove debug dir entries */
 		debugfs_remove_recursive(mxt->debug_dir);
@@ -2493,6 +2587,7 @@ static int mxt_remove(struct i2c_client *client)
 		debugfs_remove(mxt->debug_dir);
 		kfree(mxt->last_message);
 #endif
+		unregister_early_suspend_device(&client->dev);
 #ifdef CONFIG_HAS_EARLYSUSPEND
 		unregister_early_suspend(&mxt->es);
 #endif
@@ -2541,75 +2636,12 @@ static int mxt_resume(struct device *dev)
 #ifdef CONFIG_HAS_EARLYSUSPEND
 void mxt_early_suspend(struct early_suspend *h)
 {
-	u16 addr;
-	u8 buf[3] = { 0 };
-	u8 err;
-
-	disable_irq(mxt_es->irq);
-
-	mutex_lock(&mxt_es->dev_mutex);
-
-	mxt_enable_autocalib(mxt_es);
-
-	addr = get_object_address(MXT_GEN_POWERCONFIG_T7,
-				0,
-				mxt_es->object_table,
-				mxt_es->device_info.num_objs);
-	mxt_read_block(mxt_es->client, addr, 3, mxt_es->T7);
-	err = mxt_write_block(mxt_es->client, addr, 3, buf);
-	if (err < 0)
-		dev_err(&mxt_es->client->dev, "fail to stop scan.\n");
-
-	mxt_es->suspended = TRUE;
-
-	mutex_unlock(&mxt_es->dev_mutex);
-}
-
-static void mxt_calibrate(struct mxt_data *mxt)
-{
-	u16 addr;
-
-	addr = get_object_address(MXT_GEN_COMMANDPROCESSOR_T6,
-			0, mxt->object_table,
-			mxt->device_info.num_objs) + MXT_ADR_T6_CALIBRATE;
-	mxt_write_byte(mxt->client, addr, 0x55);
+	mxt_early_suspend_handler();
 }
 
 void mxt_late_resume(struct early_suspend *h)
 {
-	int i;
-	int ret;
-	u16 addr;
-
-	enable_irq(mxt_es->irq);
-
-	mutex_lock(&mxt_es->dev_mutex);
-	mxt_es->calibration_confirm = 0;
-	addr = get_object_address(MXT_GEN_POWERCONFIG_T7,
-				0,
-				mxt_es->object_table,
-				mxt_es->device_info.num_objs);
-	ret = mxt_write_block(mxt_es->client, addr, 3, mxt_es->T7);
-	if (ret < 0) {
-		dev_err(&mxt_es->client->dev, "fail to start scan.\n");
-		mxt_gpio_reset(mxt_es);
-	} else {
-		msleep(40);
-		mxt_calibrate(mxt_es);
-	}
-
-	/* clear touch state when suspending */
-	for (i = 0; i < mxt_es->numtouch; i++) {
-		if (!mxt_es->finger[i].status)
-			continue;
-		mxt_es->finger[i].status = MXT_MSGB_T9_RELEASE;
-	}
-	report_mt(mxt_es);
-	input_sync(mxt_es->touch_input);
-
-	mxt_es->suspended = FALSE;
-	mxt_es->timestamp = jiffies;
-	mutex_unlock(&mxt_es->dev_mutex);
+	mxt_late_resume_handler();
 }
 #endif
 

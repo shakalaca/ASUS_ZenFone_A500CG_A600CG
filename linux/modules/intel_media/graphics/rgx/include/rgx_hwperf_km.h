@@ -148,8 +148,6 @@ typedef RGXFWIF_DM RGX_HWPERF_DM;
  * 	Packet Format Version 2 Types
  *****************************************************************************/
 
-#if defined(RGX_HWPERF_V2_FORMAT)
-
 /*! Signature ASCII pattern 'HWP2' found in the first word of a HWPerfV2 packet
  */
 #define HWPERF_PACKET_V2_SIG		0x48575032
@@ -181,8 +179,8 @@ typedef struct
 	IMG_UINT64  ui64RGXTimer;   /*!< Value of RGX_CR_TIMER at event */
 
 	/* PAYLOAD - bytes from this point on in the buffer are from the
-	 * RGX_HWPERF_PACKET_DATA union which encodes the payload data specific to
-	 * the event type set in the header. When the structure in the union
+	 * RGX_HWPERF_V2_PACKET_DATA union which encodes the payload data specific
+	 * to the event type set in the header. When the structure in the union
 	 * has a variable length member e.g. HW packets the payload length
 	 * varies.
 	 */
@@ -253,7 +251,6 @@ typedef struct
 
 RGX_FW_STRUCT_SIZE_ASSERT(RGX_HWPERF_HW_DATA_FIELDS)
 
-#endif
 
 /******************************************************************************
  * 	API Types
@@ -261,11 +258,15 @@ RGX_FW_STRUCT_SIZE_ASSERT(RGX_HWPERF_HW_DATA_FIELDS)
 
 /*! Type used in the RGX API RGXConfigureAndEnableHWPerfCounters()
  * It is used to configure the performance counter module in a layout
- * block and allows 1, 2, 3 or all the counters in the block
- * to be configured in one operation based on the counter select mask. The bit
+ * block and allows one or more counters in the block to be 
+ * configured in one operation based on the counter select mask. The bit
  * shifts for this are the values in RGX_HWPERF_CNTBLK_COUNTER_ID. This mask
  * also encodes which values in the arrays are valid, for example, if bit 1 set
- * then aui8Mode[1], aui16GroupSelect[1] and aui16BitSelect[1] must be valid.
+ * then aui8Mode[1], aui16GroupSelect[1], aui16BitSelect[1], aui32BatchMax[1],
+ * and aui32BatchMin[1] must be set. If these array elements are all set to 
+ * 0 then the counter will not count and will not be in the HW event, 
+ * effectively disabling the counter from the callers point of view. 
+ * If any are non zero then the counter will be included in the HW event.
  *
  * Each layout block has 4 or 6 counters that can be programmed independently to
  * profile the performance of a HW block. Each counter can be configured to

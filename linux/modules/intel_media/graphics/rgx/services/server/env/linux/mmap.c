@@ -212,12 +212,12 @@ int MMapPMR(struct file* pFile, struct vm_area_struct* ps_vma)
 
     // INTEL_TEMP
     // SINCE PVR_DRM_FILE_FROM_FILE is NOT found
-	//if (ps_vma->vm_pgoff > INT_MAX)
-	//{
-	//	ps_vma->vm_pgoff -= ((unsigned int)INT_MAX + 1);
+       //if (ps_vma->vm_pgoff > INT_MAX)
+       //{
+       //      ps_vma->vm_pgoff -= ((unsigned int)INT_MAX + 1);
+       //      return MMapGEM(pFile, ps_vma);
+       //}
 
-	//	return MMapGEM(pFile, ps_vma);
-	//}
 #else
     CONNECTION_DATA *psConnection = LinuxConnectionFromFile(pFile);
 #endif
@@ -327,7 +327,7 @@ int MMapPMR(struct file* pFile, struct vm_area_struct* ps_vma)
 
     uiLength = ps_vma->vm_end - ps_vma->vm_start;
 
-    for (uiOffset = 0; uiOffset < uiLength; uiOffset += 1ULL<<PAGE_SHIFT)
+     for (uiOffset = 0; uiOffset < uiLength; uiOffset += 1ULL<<PAGE_SHIFT)
     {
         IMG_SIZE_T uiNumContiguousBytes;
         IMG_INT32 iStatus;
@@ -354,13 +354,11 @@ int MMapPMR(struct file* pFile, struct vm_area_struct* ps_vma)
 		{
 	        uiPFN = sCpuPAddr.uiAddr >> PAGE_SHIFT;
 	        PVR_ASSERT(((IMG_UINT64)uiPFN << PAGE_SHIFT) == sCpuPAddr.uiAddr);
-
-		PVR_ASSERT(pfn_valid(uiPFN));
-		psPage = pfn_to_page(uiPFN);
-		iStatus = vm_insert_page(ps_vma,
-				ps_vma->vm_start + uiOffset,
-				psPage);
-
+               	PVR_ASSERT(pfn_valid(uiPFN));
+               	psPage = pfn_to_page(uiPFN);
+               	iStatus = vm_insert_page(ps_vma,
+                               ps_vma->vm_start + uiOffset,
+                               psPage);
 	        PVR_ASSERT(iStatus == 0);
 	        if(iStatus)
 	        {
@@ -387,7 +385,7 @@ int MMapPMR(struct file* pFile, struct vm_area_struct* ps_vma)
      * page requests have already been validated.
      */
     ps_vma->vm_flags |= VM_DONTEXPAND;
-    
+
     /* Don't allow mapping to be inherited across a process fork */
     ps_vma->vm_flags |= VM_DONTCOPY;
 
@@ -397,7 +395,7 @@ int MMapPMR(struct file* pFile, struct vm_area_struct* ps_vma)
     /* Install open and close handlers for ref-counting */
     ps_vma->vm_ops = &gsMMapOps;
 
-	LinuxUnLockMutex(&g_sMMapMutex);
+    LinuxUnLockMutex(&g_sMMapMutex);
 
     return 0;
 

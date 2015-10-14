@@ -196,6 +196,14 @@ SyncPrimOpComplete(PSYNC_OP_COOKIE psCookie);
 IMG_VOID
 SyncPrimOpDestroy(PSYNC_OP_COOKIE psCookie);
 
+PVRSRV_ERROR
+SyncPrimOpResolve(PSYNC_OP_COOKIE psCookie,
+				  IMG_UINT32 *pui32SyncCount,
+				  PVRSRV_CLIENT_SYNC_PRIM_OP **ppsSyncOp);
+
+PVRSRV_ERROR
+SyncPrimDumpSyncs(IMG_UINT32 ui32SyncCount, PVRSRV_CLIENT_SYNC_PRIM **papsSync, const IMG_CHAR *pcszExtraInfo);
+
 #if defined(PDUMP)
 /*************************************************************************/ /*!
 @Function       SyncPrimPDump

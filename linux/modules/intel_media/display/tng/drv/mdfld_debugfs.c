@@ -176,6 +176,80 @@ static int mdfld_dc_overlay_c_regs_info(struct seq_file *m, void *data)
 	return 0;
 }
 
+static int dc_sprite_regs_info(struct seq_file *m, void *data, int index)
+{
+	struct drm_info_node *node = (struct drm_info_node *)m->private;
+	struct drm_device *dev = node->minor->dev;
+	char c;
+	u32 reg_offset;
+	int i;
+
+	switch (index) {
+	case 0:
+		c = 'A';
+		reg_offset = 0;
+		break;
+	case 1:
+		c = 'B';
+		reg_offset = 0x1000;
+		break;
+	case 2:
+		c = 'C';
+		reg_offset = 0x2000;
+		break;
+	case 3:
+		c = 'D';
+		reg_offset = 0x3000;
+		break;
+	case 4:
+		c = 'E';
+		reg_offset = 0x4000;
+		break;
+	case 5:
+		c = 'F';
+		reg_offset = 0x5000;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	seq_printf(m, "DISPLAY SPRITE %c\n", c);
+	for (i=0x70180 + reg_offset; i<0x701d4+reg_offset; i+=4)
+		seq_printf(m, "\t\t reg(0x%x) = 0x%x\n", i, REG_READ(i));
+
+	return 0;
+}
+
+static int mdfld_dc_sprite_a_regs_info(struct seq_file *m, void *data)
+{
+	return dc_sprite_regs_info(m, data, 0);
+}
+
+static int mdfld_dc_sprite_b_regs_info(struct seq_file *m, void *data)
+{
+	return dc_sprite_regs_info(m, data, 1);
+}
+
+static int mdfld_dc_sprite_c_regs_info(struct seq_file *m, void *data)
+{
+	return dc_sprite_regs_info(m, data, 2);
+}
+
+static int mdfld_dc_sprite_d_regs_info(struct seq_file *m, void *data)
+{
+	return dc_sprite_regs_info(m, data, 3);
+}
+
+static int mdfld_dc_sprite_e_regs_info(struct seq_file *m, void *data)
+{
+	return dc_sprite_regs_info(m, data, 4);
+}
+
+static int mdfld_dc_sprite_f_regs_info(struct seq_file *m, void *data)
+{
+	return dc_sprite_regs_info(m, data, 5);
+}
+
 static struct drm_info_list mdfld_debugfs_list[] = {
 	{"mdfld_dc_dpll_regs", mdfld_dc_dpll_regs_info, 0},
 	{"mdfld_dc_pipeline_a_regs", mdfld_dc_pipeline_a_regs_info, 0},
@@ -183,6 +257,12 @@ static struct drm_info_list mdfld_debugfs_list[] = {
 	{"mdfld_dc_pipeline_c_regs", mdfld_dc_pipeline_c_regs_info, 0},
 	{"mdfld_dc_overlay_a_regs", mdfld_dc_overlay_a_regs_info, 0},
 	{"mdfld_dc_overlay_c_regs", mdfld_dc_overlay_c_regs_info, 0},
+	{"dc_sprite_a_regs", mdfld_dc_sprite_a_regs_info, 0},
+	{"dc_sprite_b_regs", mdfld_dc_sprite_b_regs_info, 0},
+	{"dc_sprite_c_regs", mdfld_dc_sprite_c_regs_info, 0},
+	{"dc_sprite_d_regs", mdfld_dc_sprite_d_regs_info, 0},
+	{"dc_sprite_e_regs", mdfld_dc_sprite_e_regs_info, 0},
+	{"dc_sprite_f_regs", mdfld_dc_sprite_f_regs_info, 0},
 };
 #define MDFLD_DEBUGFS_ENTRIES ARRAY_SIZE(mdfld_debugfs_list)
 

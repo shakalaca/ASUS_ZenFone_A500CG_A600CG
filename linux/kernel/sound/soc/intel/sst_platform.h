@@ -93,6 +93,9 @@ struct pcm_stream_info {
 struct sst_compress_cb {
 	void *param;
 	void (*compr_cb)(void *param);
+	void *drain_cb_param;
+	void (*drain_notify)(void *param);
+
 };
 
 struct snd_sst_params;

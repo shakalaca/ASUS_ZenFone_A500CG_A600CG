@@ -36,7 +36,6 @@
 #include <media/v4l2-subdev.h>
 #include "imx219.h"
 
-#define I2C_MSG_LENGTH		0x2
 
 #define IMX_MCLK		192
 
@@ -95,40 +94,8 @@
 #define IMX_MAX_DIGITAL_GAIN_SUPPORTED 0x0fff
 
 /* Defines for register writes and register array processing */
-#define IMX_BYTE_MAX	32 /* change to 32 as needed by otpdata */
-#define IMX_SHORT_MAX	16
 #define I2C_RETRY_COUNT		5
 #define IMX_TOK_MASK	0xfff0
-
-/* Defines for OTP Data Registers */
-#define IMX_OTP_START_ADDR		0x3204
-#define IMX_OTP_DATA_SIZE		512
-#define IMX_OTP_PAGE_SIZE		24
-#define IMX_OTP_PAGE_REG		0x3202
-#define IMX_OTP_MODE_REG		0x3200
-#define IMX_OTP_PAGE_MAX		12
-#define IMX_OTP_READ_ONETIME		8
-#define IMX_OTP_MODE_READ		1
-#define IMX_OTP_WRITE_CLOCK		0x3302
-#define IMX_OTP_ECC			0x3300
-
-#define IMX219_DEFAULT_AF_10CM		370
-#define IMX219_DEFAULT_AF_INF   	210
-#define IMX219_DEFAULT_AF_START 	156
-#define IMX219_DEFAULT_AF_END   	560
-
-struct imx_af_data {
-        u16 af_inf_pos;
-        u16 af_1m_pos;
-        u16 af_10cm_pos;
-        u16 af_start_curr;
-        u8 module_id;
-        u8 vendor_id;
-        u16 default_af_inf_pos;
-        u16 default_af_10cm_pos;
-        u16 default_af_start;
-        u16 default_af_end;
-};
 
 #define MAX_FMTS 1
 
@@ -137,6 +104,7 @@ struct imx_af_data {
 #define IMX_NAME_219	"imx219"
 #define IMX219_ID	0x0219
 
+#define DEFAULT_OTP_SIZE 512
 #define IMX219 0x219
 
 #define IMX_ID_DEFAULT	0x0000
@@ -190,6 +158,11 @@ struct imx_vcm {
 	int (*q_focus_abs)(struct v4l2_subdev *sd, s32 *value);
 	int (*t_vcm_slew)(struct v4l2_subdev *sd, s32 value);
 	int (*t_vcm_timing)(struct v4l2_subdev *sd, s32 value);
+};
+
+struct imx_otp {
+	void *(*otp_read)(struct v4l2_subdev *sd);
+	u32 size;
 };
 
 struct imx_settings {
@@ -332,6 +305,7 @@ struct imx_device {
 	u8 *otp_data;
 	struct imx_settings *mode_tables;
 	struct imx_vcm *vcm_driver;
+	struct imx_otp *otp_driver;
 	const struct imx_resolution *curr_res_table;
 	int entries_curr_table;
 };
@@ -349,53 +323,10 @@ struct imx_write_ctrl {
 	struct imx_write_buffer buffer;
 };
 
-static const struct imx_reg imx_soft_standby[] = {
-	{IMX_8BIT, 0x0100, 0x00},
-	{IMX_TOK_TERM, 0, 0}
-};
 
 static const struct imx_reg imx_streaming[] = {
 	{IMX_8BIT, 0x0100, 0x01},
 	{IMX_TOK_TERM, 0, 0}
-};
-
-/* FIXME - to be removed when real OTP data is ready */
-static const u8 otpdata[] = {
-	2, 1, 3, 10, 0, 1, 233, 2, 92, 2, 207, 0, 211, 1, 70, 1,
-	185, 0, 170, 1, 29, 1, 144, 2, 92, 2, 207, 3, 66, 2, 78, 169,
-	94, 151, 9, 7, 5, 163, 121, 96, 77, 71, 78, 96, 123, 160, 132, 97,
-	66, 47, 40, 47, 66, 97, 132, 117, 80, 49, 28, 21, 28, 49, 80, 119,
-	113, 74, 43, 22, 15, 22, 42, 74, 115, 118, 81, 51, 31, 23, 30, 50,
-	81, 119, 131, 98, 70, 51, 44, 51, 68, 98, 131, 181, 123, 100, 83, 76,
-	83, 100, 123, 162, 74, 52, 40, 31, 28, 31, 40, 53, 72, 58, 40, 25,
-	16, 13, 16, 25, 40, 57, 50, 32, 16, 6, 3, 7, 17, 31, 51, 48,
-	29, 14, 3, 0, 4, 14, 29, 49, 50, 32, 17, 8, 4, 8, 17, 32,
-	51, 58, 40, 27, 18, 15, 18, 26, 41, 58, 84, 53, 43, 34, 31, 34,
-	42, 54, 75, 74, 52, 40, 30, 27, 31, 39, 52, 72, 59, 40, 25, 16,
-	12, 16, 25, 40, 58, 51, 33, 17, 7, 3, 7, 17, 32, 52, 49, 30,
-	14, 3, 0, 4, 14, 30, 50, 52, 33, 18, 8, 4, 8, 18, 33, 52,
-	59, 41, 27, 18, 15, 18, 26, 41, 58, 85, 54, 43, 34, 31, 34, 42,
-	54, 76, 123, 91, 74, 61, 57, 62, 74, 93, 123, 99, 73, 52, 39, 35,
-	40, 53, 74, 100, 88, 61, 40, 26, 21, 27, 41, 62, 90, 85, 57, 36,
-	21, 17, 22, 37, 58, 88, 89, 61, 41, 27, 22, 28, 41, 62, 91, 98,
-	73, 53, 41, 37, 41, 53, 74, 100, 137, 91, 76, 64, 60, 64, 76, 93,
-	127, 5, 114, 83, 64, 49, 45, 50, 64, 83, 110, 92, 65, 41, 26, 21,
-	26, 41, 65, 91, 80, 52, 28, 11, 6, 11, 27, 52, 82, 77, 48, 23,
-	7, 2, 7, 23, 47, 79, 81, 53, 29, 14, 8, 13, 29, 53, 82, 90,
-	66, 44, 30, 24, 29, 43, 66, 91, 127, 83, 67, 54, 49, 54, 67, 84,
-	113, 77, 54, 42, 32, 30, 33, 42, 56, 77, 60, 41, 26, 17, 14, 17,
-	27, 42, 61, 52, 33, 17, 7, 3, 7, 18, 33, 54, 50, 30, 14, 3,
-	0, 4, 15, 31, 53, 53, 33, 18, 8, 4, 8, 18, 34, 55, 60, 42,
-	28, 19, 16, 19, 28, 43, 62, 88, 56, 45, 36, 33, 37, 45, 58, 81,
-	79, 55, 42, 32, 29, 32, 42, 56, 77, 62, 43, 27, 17, 13, 17, 27,
-	43, 62, 55, 35, 18, 7, 3, 7, 18, 35, 56, 53, 32, 15, 4, 0,
-	4, 15, 32, 54, 55, 35, 19, 8, 4, 8, 19, 35, 57, 62, 43, 28,
-	19, 15, 19, 28, 44, 63, 90, 57, 45, 36, 32, 35, 45, 58, 82, 184,
-	136, 111, 93, 88, 96, 114, 141, 186, 147, 109, 80, 63, 57, 65, 83, 113,
-	153, 131, 93, 63, 44, 38, 46, 66, 96, 138, 127, 87, 58, 37, 31, 39,
-	60, 91, 135, 132, 93, 64, 46, 39, 47, 66, 97, 139, 147, 109, 82, 65,
-	59, 66, 83, 113, 152, 203, 138, 114, 97, 91, 98, 116, 141, 192, 2, 8,
-	2, 223, 2, 222, 1, 249, 2, 186, 2, 223, 2, 221, 1, 147
 };
 
 extern int dw9714_vcm_power_up(struct v4l2_subdev *sd);
@@ -424,6 +355,12 @@ struct imx_vcm imx219_vcm = {
 	.q_focus_abs = dw9714_q_focus_abs,
 	.t_vcm_slew = dw9714_t_vcm_slew,
 	.t_vcm_timing = dw9714_t_vcm_timing,
+};
+
+extern void *imx_otp_read(struct v4l2_subdev *sd);
+struct imx_otp imx219_otps = {
+		.otp_read = imx_otp_read,
+		.size = DEFAULT_OTP_SIZE,
 };
 
 #endif

@@ -17,12 +17,12 @@
 #include <linux/input/intel_mid_vibra.h>
 
 static struct mid_vibra_pdata clv_vibra_pci_data = {
-	.time_divisor = 0x63,
+	.time_divisor = 0xFF,
 	.base_unit = 0x80,
 	.alt_fn = 2,
 	.ext_drv = 0,
-	.gpio_en = 0, //INTEL_VIBRA_ENABLE_GPIO,
-	.gpio_pwm = 0, //INTEL_PWM_ENABLE_GPIO,
+	.gpio_en = 0, // INTEL_VIBRA_ENABLE_GPIO
+	.gpio_pwm = 0, //INTEL_PWM_ENABLE_GPIO
 	.name = "drv8601",
 };
 
@@ -34,6 +34,13 @@ static struct mid_vibra_pdata mrfld_vibra_pci_data = {
 	.name = "drv2605",
 };
 
+static struct mid_vibra_pdata moor_pr_vibra_pci_data = {
+	.time_divisor = 0x40,
+	.base_unit = 0x80,
+	.alt_fn = 1,
+	.ext_drv = 0,
+	.name = "drv2603",
+};
 
 static struct mid_vibra_pdata bb_vibra_pci_data = {
 	.time_divisor = 0x40,
@@ -61,6 +68,19 @@ static struct mid_vibra_pdata *get_vibra_platform_data(struct pci_dev *pdev)
 			pdata->gpio_pwm = get_gpio_by_name("haptics_pwm");
 		}
 		break;
+	case PCI_DEVICE_ID_INTEL_VIBRA_MOOR:
+		/* Mountain Praire board uses DRV2605, same as Saltbay */
+		if (SPID_HARDWARE_ID(MOFD, PHONE, MP, VVA) ||
+				SPID_HARDWARE_ID(MOFD, PHONE, MP, VVA) ||
+				SPID_HARDWARE_ID(MOFD, PHONE, MP, VVA) ||
+				SPID_HARDWARE_ID(MOFD, PHONE, MP, VVA))
+			pdata = &mrfld_vibra_pci_data;
+		else
+			pdata = &moor_pr_vibra_pci_data; /*PR uses DRV2603*/
+
+		pdata->gpio_en = get_gpio_by_name("haptics_en");
+		pdata->gpio_pwm = get_gpio_by_name("haptics_pwm");
+		break;
 	default:
 		break;
 	}
@@ -68,7 +88,7 @@ static struct mid_vibra_pdata *get_vibra_platform_data(struct pci_dev *pdev)
 	return pdata;
 }
 
-static void __devinit vibra_pci_early_quirks(struct pci_dev *pci_dev)
+static void vibra_pci_early_quirks(struct pci_dev *pci_dev)
 {
 	pci_dev->dev.platform_data = get_vibra_platform_data(pci_dev);
 }
@@ -76,4 +96,6 @@ static void __devinit vibra_pci_early_quirks(struct pci_dev *pci_dev)
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_VIBRA_CLV,
 			vibra_pci_early_quirks);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_VIBRA_MRFLD,
+			vibra_pci_early_quirks);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_VIBRA_MOOR,
 			vibra_pci_early_quirks);

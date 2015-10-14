@@ -38,11 +38,16 @@ extern void log_buf_clear(void);
 
 #define SECTOR_SIZE_SHIFT (9)
 
+#define PROC_HEADER_INDEX        0
+#define PROC_CONSOLE_INDEX       1
+#define PROC_THREADS_INDEX       2
+#define PROC_GBUFFER_INDEX       3
+#define PROC_MAX_ENTRIES         4
+
 #define IPANIC_LOG_CONSOLE       0
 #define IPANIC_LOG_THREADS       1
 #define IPANIC_LOG_GBUFFER       2
 #define IPANIC_LOG_MAX           3
-#define IPANIC_LOG_PROC_ENTRY    3
 
 struct mmc_emergency_info {
 #define DISK_NAME_LENGTH 20
@@ -75,6 +80,10 @@ struct panic_header {
 	u32 version;
 #define PHDR_VERSION   0x01
 
+	char panic[SECTOR_SIZE];
+};
+
+struct log_info {
 	u32 log_offset[IPANIC_LOG_MAX];
 	u32 log_length[IPANIC_LOG_MAX];
 
@@ -85,9 +94,10 @@ struct panic_header {
 
 struct emmc_ipanic_data {
 	struct mmc_emergency_info *emmc;
-	struct panic_header curr;
+	struct panic_header hdr;
+	struct log_info curr;
 	void *bounce;
-	struct proc_dir_entry *ipanic_proc_entry[IPANIC_LOG_PROC_ENTRY];
+	struct proc_dir_entry *ipanic_proc_entry[PROC_MAX_ENTRIES];
 	unsigned char **ipanic_proc_entry_name;
 };
 

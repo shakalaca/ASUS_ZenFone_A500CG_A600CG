@@ -45,6 +45,19 @@ struct imx_resolution {
 	u8 bin_factor_y;
 	bool used;
 };
+
+static const struct imx_reg imx_soft_standby[] = {
+	{IMX_8BIT, 0x0100, 0x00},
+	{IMX_TOK_TERM, 0, 0}
+};
+
+#define I2C_MSG_LENGTH		0x2
+#define IMX_BYTE_MAX	32 /* change to 32 as needed by otpdata */
+#define IMX_SHORT_MAX	16
 #define GROUPED_PARAMETER_HOLD_ENABLE  {IMX_8BIT, 0x0104, 0x1}
 #define GROUPED_PARAMETER_HOLD_DISABLE  {IMX_8BIT, 0x0104, 0x0}
+
+int imx_write_reg(struct i2c_client *client, u16 data_length, u16 reg, u16 val);
+int imx_write_reg_array(struct i2c_client *client,
+				   const struct imx_reg *reglist);
 #endif

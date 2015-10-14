@@ -109,7 +109,7 @@ static int bcm_bt_lpm_acpi_probe(struct platform_device *pdev)
 	/*
 	 * Handle ACPI specific initializations.
 	 */
-	dev_dbg(&pdev->dev, "BCM2E1A ACPI specific probe\n");
+	dev_dbg(&pdev->dev, "ACPI specific probe\n");
 
 	bt_lpm.gpio_enable_bt = acpi_get_gpio_by_index(&pdev->dev,
 						gpio_enable_bt_acpi_idx, &info);
@@ -232,6 +232,7 @@ static enum hrtimer_restart enter_lpm(struct hrtimer *timer)
 
 static void update_host_wake_locked(int host_wake)
 {
+    printk(KERN_ERR, "host_wake = %d, bt_lpm.host_wake = %d", host_wake, bt_lpm.host_wake);
 	if (host_wake == bt_lpm.host_wake)
 		return;
 
@@ -242,13 +243,11 @@ static void update_host_wake_locked(int host_wake)
 		if (!host_wake_uart_enabled) {
 			WARN_ON(!bt_lpm.tty_dev);
 			uart_enable(bt_lpm.tty_dev);
-			//printk(KERN_ERR  " UART0 ENABLE\n");
 		}
 	} else  {
 		if (host_wake_uart_enabled) {
 			WARN_ON(!bt_lpm.tty_dev);
 			uart_disable(bt_lpm.tty_dev);
-			//printk(KERN_ERR  " UART0 DISBALE\n");
 		}
 		/*
 		 * Take a timed wakelock, so that upper layers can take it.
@@ -327,7 +326,7 @@ int bt_host_wake_read_file(struct file *file, const char *buffer, unsigned long 
         int host_wake;
         host_wake = gpio_get_value(bt_lpm.gpio_host_wake);
         printk(KERN_ERR "host_wake=%s",host_wake? "High":"Low");
-        return 1;
+        return 0;
 }
 
 static void bcm_bt_lpm_wake_peer(struct device *dev)
@@ -358,6 +357,12 @@ static void bcm_bt_lpm_wake_peer(struct device *dev)
 *  This structure hold information about the /proc file
 **/
 static struct proc_dir_entry *Bt_Wake_File;
+
+static const struct file_operations bt_proc_fops = {
+	.owner = THIS_MODULE,
+	.read = bt_host_wake_read_file,
+	.write = bt_host_wake_file,
+};
 
 static int bcm_bt_lpm_init(struct platform_device *pdev)
 {
@@ -400,18 +405,8 @@ static int bcm_bt_lpm_init(struct platform_device *pdev)
 
 	bcm_bt_lpm_wake_peer(tty_dev);
         /* Create Bt_Wake_File */
-	Bt_Wake_File = create_proc_entry(PROCFS_NAME, 0644, NULL);
-	if (Bt_Wake_File == NULL) {
-		return -ENOMEM;
-	}
-
-	Bt_Wake_File->read_proc	 = bt_host_wake_read_file;
-	Bt_Wake_File->write_proc = bt_host_wake_file;
-	Bt_Wake_File->mode = S_IFREG | S_IRUGO;
-	Bt_Wake_File->uid = 0;
-	Bt_Wake_File->gid = 0;
-	Bt_Wake_File->size = 37;
-
+	Bt_Wake_File = proc_create(PROCFS_NAME, 0664, NULL, &bt_proc_fops);
+	
 	return 0;
 }
 #endif
@@ -622,6 +617,8 @@ int bcm43xx_bluetooth_resume(struct platform_device *pdev)
 static struct acpi_device_id bcm_id_table[] = {
 	/* ACPI IDs here */
 	{ "BCM2E1A", 0 },
+	{ "BCM2E3A", 0 },
+	{ "OBDA8723", 0},
 	{ }
 };
 

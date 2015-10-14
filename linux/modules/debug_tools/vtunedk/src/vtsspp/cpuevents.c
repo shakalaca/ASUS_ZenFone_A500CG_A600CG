@@ -114,6 +114,7 @@ extern void vtss_perfvec_handler(void);
 
 void vtss_cpuevents_enable(void)
 {
+//    printk("cpu events enable\n");
     vtss_pmi_enable();
     /* enable counters globally (required for some Core2 & Core i7 systems) */
     if (hardcfg.family == 0x06 && hardcfg.model >= 0x0f) {
@@ -334,8 +335,8 @@ void vtss_cpuevents_upload(cpuevent_t* cpuevent_chain, cpuevent_cfg_v1_t* cpueve
             /// set up counter offset for fixed events
             if (hardcfg.family == 0x06 && cpuevent_cfg[i].selmsr.idx == IA32_FIXED_CTR_CTRL) {
                 /// set up fixed counter events as slaves (that follow leading events)
-                if (cpuevent_cfg[i].cntmsr.idx == IA32_FIXED_CTR0 ||
-                    cpuevent_cfg[i].cntmsr.idx == IA32_FIXED_CTR0+1)
+                if (cpuevent_cfg[i].cntmsr.idx == IA32_FIXED_CTR0 || //lp: instruction ret counter
+                    cpuevent_cfg[i].cntmsr.idx == IA32_FIXED_CTR0+1) // core counter, IA32_FIXED_CTR0+2 - ref counter
                 {
                     cpuevent_chain[i].slave_interval = cpuevent_cfg[i].interval;
                     cpuevent_chain[i].interval = 0;
@@ -621,6 +622,9 @@ static void vtss_cpuevents_restore(void *ctx)
 {
     unsigned long flags;
     gate_desc *idt_base;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+    unsigned long cr0;
+#endif
 
     local_irq_save(flags);
     if (hardcfg.family == 0x06 && hardcfg.model >= 0x0f) {
@@ -632,7 +636,15 @@ static void vtss_cpuevents_restore(void *ctx)
         wrmsrl(KNX_CORE_PERF_GLOBAL_CTRL,     pcb_cpu.saved_msr_perf);
     }
     idt_base = pcb_cpu.idt_base;
-    memcpy(&idt_base[CPU_PERF_VECTOR], &pcb_cpu.saved_perfvector, sizeof(gate_desc));
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+    cr0 = read_cr0();
+    write_cr0(cr0 & ~X86_CR0_WP);
+#endif
+    write_idt_entry(idt_base, CPU_PERF_VECTOR, &pcb_cpu.saved_perfvector);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+    write_cr0(cr0);
+#endif
+        
     local_irq_restore(flags);
 }
 
@@ -641,10 +653,22 @@ static void vtss_cpuevents_setup(void *ctx)
     unsigned long flags;
     gate_desc *idt_base, g;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+    unsigned long cr0;
+#endif
     local_irq_save(flags);
     idt_base = pcb_cpu.idt_base;
-    pack_gate(&g, GATE_INTERRUPT, (unsigned long)(size_t)vtss_perfvec_handler, 3, 0, __KERNEL_CS);
+    pack_gate(&g, GATE_INTERRUPT, (unsigned long)vtss_perfvec_handler, 3, 0, __KERNEL_CS);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+    cr0 = read_cr0();
+    write_cr0(cr0 & ~X86_CR0_WP);
+#endif
     write_idt_entry(idt_base, CPU_PERF_VECTOR, &g);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+    write_cr0(cr0);
+#endif
+
     local_irq_restore(flags);
 }
 

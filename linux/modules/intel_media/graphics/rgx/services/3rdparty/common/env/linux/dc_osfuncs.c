@@ -53,6 +53,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <asm/i387.h>
 #endif
 
+#include "srvkm.h"
 #include "dc_osfuncs.h"
 
 #define MAX_DRVNAME 128
@@ -311,6 +312,7 @@ PVRSRV_ERROR DC_OSPVRServicesSetupFuncs(IMG_HANDLE hPVRServicesConnection, DC_SE
 #endif
 
 	psServicesFuncs->pfnCheckStatus = PVRSRVCheckStatus;
+	psServicesFuncs->pfnGetErrorString = PVRSRVGetErrorStringKM;
 
 	return PVRSRV_OK;
 }
@@ -432,6 +434,8 @@ PVRSRV_ERROR DC_OSWorkQueueAddWorkItem(IMG_HANDLE hQueue, IMG_HANDLE hWorkItem)
 
 	if (!queue_work(psQueue, &psWorkItem->sWork))
 	{
+		printk(KERN_WARNING " %s - %s: Cannot queue work that's already queued\n",
+		       g_szDrvName, __FUNCTION__);
 		return PVRSRV_ERROR_UNABLE_TO_SCHEDULE_TASK;
 	}
 

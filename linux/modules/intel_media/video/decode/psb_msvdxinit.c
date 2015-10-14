@@ -36,15 +36,15 @@
 #include "psb_msvdx.h"
 #include "psb_msvdx_msg.h"
 #include "psb_msvdx_reg.h"
-#ifdef CONFIG_VIDEO_MRFLD
 #include "psb_msvdx_ec.h"
-#endif
 #include <linux/firmware.h>
+#ifdef CONFIG_VIDEO_MRFLD
+#include "video_ospm.h"
+#endif
+
 
 #ifdef CONFIG_DX_SEP54
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
 extern int sepapp_image_verify(u8 *addr, ssize_t size, u32 key_index, u32 magic_num);
-#endif
 #endif
 
 uint8_t psb_rev_id;
@@ -132,7 +132,7 @@ int psb_msvdx_core_reset(struct drm_psb_private *dev_priv)
 	/* This is neccessary for all cores up to Tourmaline */
 	if ((PSB_RMSVDX32(MSVDX_CORE_REV_OFFSET) < 0x00050502) &&
 		(PSB_RMSVDX32(MSVDX_INTERRUPT_STATUS_OFFSET)
-			& MSVDX_INTERRUPT_STATUS__MMU_FAULT_IRQ_MASK) &&
+			& MSVDX_INTERRUPT_STATUS_MMU_FAULT_IRQ_MASK) &&
 		(PSB_RMSVDX32(MSVDX_MMU_STATUS_OFFSET) & 1)) {
 		unsigned int *pptd;
 		unsigned int loop;
@@ -154,7 +154,7 @@ int psb_msvdx_core_reset(struct drm_psb_private *dev_priv)
 		PSB_WMSVDX32(ptd_addr, MSVDX_MMU_DIR_LIST_BASE_OFFSET + 12);
 
 		PSB_WMSVDX32(6, MSVDX_MMU_CONTROL0_OFFSET);
-		PSB_WMSVDX32(MSVDX_INTERRUPT_STATUS__MMU_FAULT_IRQ_MASK,
+		PSB_WMSVDX32(MSVDX_INTERRUPT_STATUS_MMU_FAULT_IRQ_MASK,
 					MSVDX_INTERRUPT_STATUS_OFFSET);
 		kunmap(msvdx_priv->mmu_recover_page);
 	}
@@ -180,7 +180,7 @@ int psb_msvdx_core_reset(struct drm_psb_private *dev_priv)
 		PSB_WMSVDX32(cmd, MSVDX_RENDEC_CONTROL1_OFFSET);
 
 		/* Issue software reset for all but core */
-		PSB_WMSVDX32((unsigned int)~MSVDX_CONTROL__MSVDX_SOFT_RESET_MASK, MSVDX_CONTROL_OFFSET);
+		PSB_WMSVDX32((unsigned int)~MSVDX_CONTROL_MSVDX_SOFT_RESET_MASK, MSVDX_CONTROL_OFFSET);
 		PSB_RMSVDX32(MSVDX_CONTROL_OFFSET);
 		/* bit format is set as little endian */
 		PSB_WMSVDX32(0, MSVDX_CONTROL_OFFSET);
@@ -189,10 +189,10 @@ int psb_msvdx_core_reset(struct drm_psb_private *dev_priv)
 						0, 0xff, 100, 100);
 		if (!ret) {
 			/* Issue software reset */
-			PSB_WMSVDX32(MSVDX_CONTROL__MSVDX_SOFT_RESET_MASK, MSVDX_CONTROL_OFFSET);
+			PSB_WMSVDX32(MSVDX_CONTROL_MSVDX_SOFT_RESET_MASK, MSVDX_CONTROL_OFFSET);
 
 			ret = psb_wait_for_register(dev_priv, MSVDX_CONTROL_OFFSET, 0,
-					MSVDX_CONTROL__MSVDX_SOFT_RESET_MASK,
+					MSVDX_CONTROL_MSVDX_SOFT_RESET_MASK,
 					2000000, 5);
 			if (!ret) {
 				/* Clear interrupt enabled flag */
@@ -224,10 +224,10 @@ int psb_msvdx_reset(struct drm_psb_private *dev_priv)
 
 	/* Issue software reset */
 	/* PSB_WMSVDX32(msvdx_sw_reset_all, MSVDX_CONTROL); */
-	PSB_WMSVDX32(MSVDX_CONTROL__MSVDX_SOFT_RESET_MASK, MSVDX_CONTROL_OFFSET);
+	PSB_WMSVDX32(MSVDX_CONTROL_MSVDX_SOFT_RESET_MASK, MSVDX_CONTROL_OFFSET);
 
 	ret = psb_wait_for_register(dev_priv, MSVDX_CONTROL_OFFSET, 0,
-			MSVDX_CONTROL__MSVDX_SOFT_RESET_MASK, 2000000, 5);
+			MSVDX_CONTROL_MSVDX_SOFT_RESET_MASK, 2000000, 5);
 	if (!ret) {
 		/* Clear interrupt enabled flag */
 		PSB_WMSVDX32(0, MSVDX_HOST_INTERRUPT_ENABLE_OFFSET);
@@ -310,6 +310,65 @@ static ssize_t psb_msvdx_pmstate_show(struct device *dev,
 #endif
 	return ret;
 }
+
+#ifdef CONFIG_VIDEO_MRFLD
+static ssize_t ved_freq_scaling_show(struct device *dev,
+                             struct device_attribute *attr, char *buf)
+{
+	struct drm_device *drm_dev = dev_get_drvdata(dev);
+	int ret = -EINVAL;
+	int chars;
+	int freq_code;
+	u32 freq_val;
+
+	if (drm_dev == NULL)
+               return 0;
+
+	freq_code = psb_msvdx_get_ved_freq(VED_SS_PM1);
+
+	ret = snprintf(buf, 32,"freq_code/freq: %d/%dMHz\n",
+                                       freq_code, GET_MSVDX_FREQUENCY(freq_code));
+
+	return ret;
+}
+
+static ssize_t ved_freq_scaling_store(struct device *dev,
+                               struct device_attribute *attr,
+                               const char *buf, size_t size)
+{
+	struct drm_device *drm_dev = dev_get_drvdata(dev);
+	u32 freq_code;
+	int chars;
+
+	if (drm_dev == NULL)
+		return 0;
+
+	chars = sscanf(buf, "%d", &freq_code);
+	if (chars == 0)
+		return size;
+
+	if ((freq_code ^ IP_FREQ_106_67
+		&& freq_code ^ IP_FREQ_133_30
+		&& freq_code ^ IP_FREQ_160_00
+		&& freq_code ^ IP_FREQ_177_78
+		&& freq_code ^ IP_FREQ_200_00
+		&& freq_code ^ IP_FREQ_213_33
+		&& freq_code ^ IP_FREQ_266_67
+		&& freq_code ^ IP_FREQ_320_00) == 0) {
+		psb_msvdx_set_ved_freq(freq_code);
+		psb_set_freq_control_switch(false);
+	} else {
+		if ((freq_code ^ IP_FREQ_RESUME_SET) == 0) {
+			psb_set_freq_control_switch(true);
+		} else {
+			printk(KERN_ERR "%s: invalid freq_code %d\n", freq_code);
+		}
+	}
+	return size;
+}
+
+static DEVICE_ATTR(ved_freq_scaling, 0664, ved_freq_scaling_show, ved_freq_scaling_store);
+#endif
 
 static DEVICE_ATTR(msvdx_pmstate, 0444, psb_msvdx_pmstate_show, NULL);
 
@@ -516,10 +575,13 @@ static void msvdx_init_ec(struct msvdx_private *msvdx_priv)
 
 	/* we should restore the state, if we power down/up
 	 * during EC */
+	PSB_WMSVDX32(0, 0x2000 + 0xcc4); /* EXT_FW_ERROR_STATE */
 	PSB_WMSVDX32(0, 0x2000 + 0xcb0); /* EXT_FW_LAST_MBS */
 	PSB_WMSVDX32(0, 0x2000 + 0xcb4); /* EXT_FW_LAST_MBS */
 	PSB_WMSVDX32(0, 0x2000 + 0xcb8); /* EXT_FW_LAST_MBS */
 	PSB_WMSVDX32(0, 0x2000 + 0xcbc); /* EXT_FW_LAST_MBS */
+
+	msvdx_priv->vec_ec_mem_saved = 1;
 
 	msvdx_priv->msvdx_ec_ctx[0] =
 		kzalloc(sizeof(struct psb_msvdx_ec_ctx) *
@@ -625,7 +687,6 @@ int tng_msvdx_fw_init(uint8_t *name,struct drm_device *dev)
 	release_firmware(fw);
 
 #ifdef CONFIG_DX_SEP54
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
 	DRM_INFO("sepapp_image_verify\n");
 
 	DRM_INFO("imr5 L 0x94 = 0x%x\n", intel_mid_msgbus_read32(PNW_IMR_MSG_PORT,0X94));
@@ -646,17 +707,16 @@ int tng_msvdx_fw_init(uint8_t *name,struct drm_device *dev)
 	DRM_INFO("imr5 H 0x95 = 0x%x\n", intel_mid_msgbus_read32(PNW_IMR_MSG_PORT,0X95));
 	DRM_INFO("imr5 RAC 0x96 = 0x%x\n", intel_mid_msgbus_read32(PNW_IMR_MSG_PORT,0X96));
 	DRM_INFO("imr5 WAC 0x97 = 0x%x\n", intel_mid_msgbus_read32(PNW_IMR_MSG_PORT,0X97));
-#endif
+
 	pwr_mask = intel_mid_msgbus_read32(0x04, 0x32);
-	DRM_INFO("VEDSSPM0 = 0x%x", pwr_mask);
+	DRM_INFO("VEDSSPM0 = 0x%x\n", pwr_mask);
 
 	intel_mid_msgbus_write32(0x04, 0x32, PSB_VEDSSPM0_OFF_STATE);
 	udelay(10);
 
 	pwr_mask = intel_mid_msgbus_read32(0x04, 0x32);
-	DRM_INFO("VEDSSPM0 = 0x%x", pwr_mask);
+	DRM_INFO("VEDSSPM0 = 0x%x\n", pwr_mask);
 
-	DRM_INFO("VED  FW is ready!!!\n");
 #endif
 	return 0;
 }
@@ -685,12 +745,8 @@ static int msvdx_startup_init(struct drm_device *dev)
 	msvdx_priv->msvdx_needs_reset = 1;
 	msvdx_priv->fw_b0_uploaded = 0;
 
-	if (IS_MRFLD(dev)) {
-		if (IS_TNG_B0(dev))
+	if (IS_MRFLD(dev))
 			msvdx_priv->fw_loaded_by_punit = 1;
-		else
-			msvdx_priv->fw_loaded_by_punit = 0;
-	}
 	else
 #endif
 		msvdx_priv->fw_loaded_by_punit =
@@ -709,6 +765,11 @@ static int msvdx_startup_init(struct drm_device *dev)
 	if (device_create_file(&dev->pdev->dev,
 			       &dev_attr_msvdx_pmstate))
 		DRM_ERROR("MSVDX: could not create sysfs file\n");
+#ifdef CONFIG_VIDEO_MRFLD
+	if (device_create_file(&dev->pdev->dev,
+                               &dev_attr_ved_freq_scaling))
+		DRM_ERROR("Freq: could not create sysfs file\n");
+#endif
 	msvdx_priv->sysfs_pmstate = sysfs_get_dirent(
 					    dev->pdev->dev.kobj.sd,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 35))
@@ -741,11 +802,6 @@ static int msvdx_startup_init(struct drm_device *dev)
 	else
 #endif
 		drm_msvdx_bottom_half = PSB_BOTTOM_HALF_WQ;
-
-#ifdef MERRIFIELD
-	//if (IS_TNG_B0(dev))
-	//	return tng_msvdx_fw_init("signed_msvdx_fw_mrfld.bin", dev);
-#endif
 
 	return 0;
 
@@ -935,9 +991,16 @@ int psb_msvdx_init(struct drm_device *dev)
         }
 
 #ifdef MERRIFIELD
-	if (!IS_TNG_B0(dev))
+	if (!(IS_TNG_B0(dev) || IS_ANN_A0(dev))) {
 #endif
-		 psb_msvdx_post_init(dev);
+		ret = psb_msvdx_post_init(dev);
+		if (ret) {
+			printk("psb_msvdx_post_init failed.\n");
+			return 1;
+		}
+#ifdef MERRIFIELD
+	}
+#endif
 
 	return 0;
 }
@@ -965,6 +1028,10 @@ int psb_msvdx_post_init(struct drm_device *dev)
         if (!msvdx_priv->fw_loaded_by_punit) {
                 /* Enable MMU by removing all bypass bits */
                 PSB_WMSVDX32(0, MSVDX_MMU_CONTROL0_OFFSET);
+#ifdef CONFIG_DRM_VXD_BYT
+		/* we need set tile format as 512x8 on Baytrail */
+		PSB_WMSVDX32(0x1<<3, MSVDX_MMU_CONTROL2_OFFSET);
+#endif
         } else {
                 msvdx_priv->rendec_init = 0;
                 ret = msvdx_mtx_init(dev, msvdx_priv->decoding_err);
@@ -1074,7 +1141,9 @@ int psb_msvdx_uninit(struct drm_device *dev)
 		device_remove_file(&dev->pdev->dev, &dev_attr_msvdx_pmstate);
 		sysfs_put(msvdx_priv->sysfs_pmstate);
 		msvdx_priv->sysfs_pmstate = NULL;
-
+#ifdef CONFIG_VIDEO_MRFLD
+		device_remove_file(&dev->pdev->dev, &dev_attr_ved_freq_scaling);
+#endif
 		kfree(msvdx_priv);
 		dev_priv->msvdx_private = NULL;
 	}

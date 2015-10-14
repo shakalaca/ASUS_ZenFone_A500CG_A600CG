@@ -30,10 +30,23 @@
 
 #include "vtss_autoconf.h"
 
+#define VTSS_MAX_LBRS 32
+
+typedef struct _lbr_control_t
+{
+    long long lbrstk[VTSS_MAX_LBRS * 2];
+    long long lbrtos;
+
+} lbr_control_t;
+
+
 int   vtss_lbr_init(void);
 void  vtss_lbr_fini(void);
-void  vtss_lbr_enable(void);
+void  vtss_lbr_enable(lbr_control_t* lbrctl);
 void  vtss_lbr_disable(void);
+void  vtss_lbr_disable_save(lbr_control_t* lbrctl);
 void* vtss_lbr_correct_ip(void* ip);
+
+int   vtss_stack_record_lbr(struct vtss_transport_data* trnd, stack_control_t* stk, pid_t tid, int cpu, int is_safe);
 
 #endif /* _VTSS_LBR_H_ */

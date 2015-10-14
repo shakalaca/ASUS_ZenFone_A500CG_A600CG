@@ -50,7 +50,7 @@ unsigned int sh_css_trace_level;
 void sh_css_set_dtrace_level(
 	const unsigned int	trace_level)
 {
-	sh_css_trace_level = 3;
+	sh_css_trace_level = trace_level;
 return;
 }
 
@@ -232,46 +232,46 @@ static void print_if_state(
 	int         st_vmincr = state->vmem_increment;
 	int         st_yuv420 = state->is_yuv420;
 
-	sh_css_dtrace(2, "InputFormatter State:\n");
+	printk("InputFormatter State:\n");
 
-	sh_css_dtrace(2, "\tConfiguration:\n");
+	printk("\tConfiguration:\n");
 
 #if defined(HAS_INPUT_FORMATTER_VERSION_1)
-	sh_css_dtrace(2, "\t\t%-32s: %s\n"       ,
+	printk("\t\t%-32s: %s\n"       ,
 			"Software reset"         , st_reset);
 #endif
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"Start line"             , st_stline);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"Start column"           , st_stcol);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"Cropped height"         , st_crpht);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"Cropped width"          , st_crpwd);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"Ver decimation"         , st_verdcm);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"Hor decimation"         , st_hordcm);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"Deinterleaving"         , st_deintr);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"Left padding"           , st_leftpd);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"EOL offset (bytes)"     , st_eoloff);
-	sh_css_dtrace(2, "\t\t%-32s: 0x%06X\n"   ,
+	printk("\t\t%-32s: 0x%06X\n"   ,
 			"VMEM start address"     , st_vmstad);
-	sh_css_dtrace(2, "\t\t%-32s: 0x%06X\n"   ,
+	printk("\t\t%-32s: 0x%06X\n"   ,
 			"VMEM end address"       , st_vmenad);
-	sh_css_dtrace(2, "\t\t%-32s: 0x%06X\n"   ,
+	printk("\t\t%-32s: 0x%06X\n"   ,
 			"VMEM increment"         , st_vmincr);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n"       ,
+	printk("\t\t%-32s: %d\n"       ,
 			"YUV 420 format"         , st_yuv420);
-	sh_css_dtrace(2, "\t\t%-32s: Active %s\n",
+	printk("\t\t%-32s: Active %s\n",
 			"Vsync"                  , st_vsalow);
-	sh_css_dtrace(2, "\t\t%-32s: Active %s\n",
+	printk("\t\t%-32s: Active %s\n",
 			"Hsync"                  , st_hsalow);
 
-	sh_css_dtrace(2, "\tFSM Status:\n");
+	printk("\tFSM Status:\n");
 
 	val = state->fsm_sync_status;
 
@@ -300,10 +300,10 @@ static void print_if_state(
 	}
 	}
 
-	sh_css_dtrace(2, "\t\t%-32s: (0x%X: %s)\n",
+	printk("\t\t%-32s: (0x%X: %s)\n",
 		     "FSM Synchronization Status", val, fsm_sync_status_str);
 
-	sh_css_dtrace(2, "\t\t%-32s: %d\n",
+	printk("\t\t%-32s: %d\n",
 		     "FSM Synchronization Counter", state->fsm_sync_counter);
 
 	val = state->fsm_crop_status;
@@ -338,25 +338,25 @@ static void print_if_state(
 		break;
 	}
 	}
-	sh_css_dtrace(2, "\t\t%-32s: (0x%X: %s)\n",
+	printk("\t\t%-32s: (0x%X: %s)\n",
 		     "FSM Crop Status", val, fsm_crop_status_str);
 
-	sh_css_dtrace(2, "\t\t%-32s: %d\n",
+	printk("\t\t%-32s: %d\n",
 		     "FSM Crop Line Counter",
 		     state->fsm_crop_line_counter);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n",
+	printk("\t\t%-32s: %d\n",
 		     "FSM Crop Pixel Counter",
 		     state->fsm_crop_pixel_counter);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n",
+	printk("\t\t%-32s: %d\n",
 		     "FSM Deinterleaving idx buffer",
 		     state->fsm_deinterleaving_index);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n",
+	printk("\t\t%-32s: %d\n",
 		     "FSM H decimation counter",
 		     state->fsm_dec_h_counter);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n",
+	printk("\t\t%-32s: %d\n",
 		     "FSM V decimation counter",
 		     state->fsm_dec_v_counter);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n",
+	printk("\t\t%-32s: %d\n",
 		     "FSM block V decimation counter",
 		     state->fsm_dec_block_v_counter);
 
@@ -387,18 +387,18 @@ static void print_if_state(
 	}
 	}
 
-	sh_css_dtrace(2, "\t\t%-32s: (0x%X: %s)\n", "FSM Padding Status",
+	printk("\t\t%-32s: (0x%X: %s)\n", "FSM Padding Status",
 		     val, fsm_padding_status_str);
 
-	sh_css_dtrace(2, "\t\t%-32s: %d\n", "FSM Padding element idx counter",
+	printk("\t\t%-32s: %d\n", "FSM Padding element idx counter",
 		     state->fsm_padding_elem_counter);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n", "FSM Vector support error",
+	printk("\t\t%-32s: %d\n", "FSM Vector support error",
 		     state->fsm_vector_support_error);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n", "FSM Vector support buf full",
+	printk("\t\t%-32s: %d\n", "FSM Vector support buf full",
 		     state->fsm_vector_buffer_full);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n", "FSM Vector support",
+	printk("\t\t%-32s: %d\n", "FSM Vector support",
 		     state->vector_support);
-	sh_css_dtrace(2, "\t\t%-32s: %d\n", "Fifo sensor data lost",
+	printk("\t\t%-32s: %d\n", "Fifo sensor data lost",
 		     state->sensor_data_lost);
 return;
 }
@@ -1141,32 +1141,32 @@ void sh_css_dump_rx_state(void)
 	bits = sh_css_rx_get_interrupt_reg();
 	sh_css_rx_get_interrupt_info(&infos);
 
-	sh_css_dtrace(2, "CSI Receiver errors: (irq reg = 0x%X)\n", bits);
+	printk("CSI Receiver errors: (irq reg = 0x%X)\n", bits);
 
 	if (infos & SH_CSS_RX_IRQ_INFO_BUFFER_OVERRUN)
-		sh_css_dtrace(2, "\tbuffer overrun\n");
+		printk("\tbuffer overrun\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_SOT)
-		sh_css_dtrace(2, "\tstart-of-transmission error\n");
+		printk("\tstart-of-transmission error\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_SOT_SYNC)
-		sh_css_dtrace(2, "\tstart-of-transmission sync error\n");
+		printk("\tstart-of-transmission sync error\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_CONTROL)
-		sh_css_dtrace(2, "\tcontrol error\n");
+		printk("\tcontrol error\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_ECC_DOUBLE)
-		sh_css_dtrace(2, "\t2 or more ECC errors\n");
+		printk("\t2 or more ECC errors\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_CRC)
-		sh_css_dtrace(2, "\tCRC mismatch\n");
+		printk("\tCRC mismatch\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_UNKNOWN_ID)
-		sh_css_dtrace(2, "\tunknown error\n");
+		printk("\tunknown error\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_FRAME_SYNC)
-		sh_css_dtrace(2, "\tframe sync error\n");
+		printk("\tframe sync error\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_FRAME_DATA)
-		sh_css_dtrace(2, "\tframe data error\n");
+		printk("\tframe data error\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_DATA_TIMEOUT)
-		sh_css_dtrace(2, "\tdata timeout\n");
+		printk("\tdata timeout\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_UNKNOWN_ESC)
-		sh_css_dtrace(2, "\tunknown escape command entry\n");
+		printk("\tunknown escape command entry\n");
 	if (infos & SH_CSS_RX_IRQ_INFO_ERR_LINE_SYNC)
-		sh_css_dtrace(2, "\tline sync error\n");
+		printk("\tline sync error\n");
 return;
 }
 

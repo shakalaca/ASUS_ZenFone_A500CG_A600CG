@@ -61,6 +61,7 @@
 #define _MATRIXIO_H_
 
 #include "pw_version.h"
+#include "pw_defines.h"
 
 // #define MATRIX_IO_FILE "/dev/matrix"
 #define SOCWATCH_DRIVER_NAME_ICS "socwatch"
@@ -203,9 +204,137 @@ struct lookup_table {
 	unsigned long cfg_db_term_wb;
 };
 
+/*
+ * 32b support in 64b kernel space
+ */
+
+#if defined (__linux__)
+
+#ifdef __KERNEL__
+
+#if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
+
+#include <linux/compat.h>
+// #include <asm/compat.h>
+
+struct mtx_msr32 {
+	compat_ulong_t eax_LSB;
+	compat_ulong_t edx_MSB;
+	compat_ulong_t ecx_address;
+	compat_ulong_t ebx_value;
+	compat_ulong_t n_cpu;
+	compat_ulong_t operation;
+};
+
+struct memory_map32 {
+	compat_ulong_t ctrl_addr;
+	compat_caddr_t ctrl_remap_address;
+	compat_ulong_t ctrl_data;
+	compat_ulong_t data_addr;
+	compat_caddr_t data_remap_address;
+	compat_caddr_t ptr_data_usr;
+	compat_ulong_t data_size;
+	compat_ulong_t operation;
+};
+
+struct mtx_pci_ops32 {
+	compat_ulong_t port;
+	compat_ulong_t data;
+	compat_ulong_t io_type;
+	compat_ulong_t port_island;
+};
+
+struct pci_config32 {
+	compat_ulong_t bus;
+	compat_ulong_t device;
+	compat_ulong_t function;
+	compat_ulong_t offset;
+	compat_ulong_t data; /* This is written to by the ioctl */
+};
+
+struct scu_config32 {
+	compat_caddr_t address;
+	compat_caddr_t usr_data;
+	compat_caddr_t drv_data;
+	compat_ulong_t length;
+};
+
+struct lookup_table32 {
+	/*Init Data */
+	compat_caddr_t msrs_init;
+	compat_ulong_t msr_init_length;
+	compat_ulong_t msr_init_wb;
+
+	compat_caddr_t mmap_init;
+	compat_ulong_t mem_init_length;
+	compat_ulong_t mem_init_wb;
+
+	compat_caddr_t pci_ops_init;
+	compat_ulong_t pci_ops_init_length;
+	compat_ulong_t pci_ops_init_wb;
+
+	compat_caddr_t cfg_db_init;
+	compat_ulong_t cfg_db_init_length;
+	compat_ulong_t cfg_db_init_wb;
+
+	/*Poll Data */
+	compat_caddr_t msrs_poll;
+	compat_ulong_t msr_poll_length;
+	compat_ulong_t msr_poll_wb;
+
+	compat_caddr_t mmap_poll;
+	compat_ulong_t mem_poll_length;
+	compat_ulong_t mem_poll_wb;
+	compat_ulong_t records;
+
+	compat_caddr_t pci_ops_poll;
+	compat_ulong_t pci_ops_poll_length;
+	compat_ulong_t pci_ops_poll_wb;
+	compat_ulong_t pci_ops_records;
+
+	compat_caddr_t cfg_db_poll;
+	compat_ulong_t cfg_db_poll_length;
+	compat_ulong_t cfg_db_poll_wb;
+
+	struct scu_config32 scu_poll;
+	compat_ulong_t scu_poll_length;
+
+	/*Term Data */
+	compat_caddr_t msrs_term;
+	compat_ulong_t msr_term_length;
+	compat_ulong_t msr_term_wb;
+
+	compat_caddr_t mmap_term;
+	compat_ulong_t mem_term_length;
+	compat_ulong_t mem_term_wb;
+
+	compat_caddr_t pci_ops_term;
+	compat_ulong_t pci_ops_term_length;
+	compat_ulong_t pci_ops_term_wb;
+
+	compat_caddr_t cfg_db_term;
+	compat_ulong_t cfg_db_term_length;
+	compat_ulong_t cfg_db_term_wb;
+};
+
+struct mtx_msr_container32 {
+	compat_caddr_t buffer;
+	compat_ulong_t length;
+	struct mtx_msr32 msrType1;
+};
+
+#endif // HAVE_COMPAT_IOCTL && CONFIG_X86_64
+#endif // __KERNEL__
+#endif // __linux__
+
 struct msr_buffer {
 	unsigned long eax_LSB;
 	unsigned long edx_MSB;
+};
+
+struct mt_msr_buffer {
+	u32 eax_LSB;
+	u32 edx_MSB;
 };
 
 struct xchange_buffer {
@@ -217,6 +346,31 @@ struct xchange_buffer {
 	unsigned long pci_ops_length;
 	unsigned long *ptr_cfg_db_buff;
 	unsigned long cfg_db_length;
+};
+
+#if 0
+struct mt_xchange_buffer {
+	u64 ptr_msr_buff;
+	u32 msr_length;
+	u64 ptr_mem_buff;
+	u32 mem_length;
+	u64 ptr_pci_ops_buff;
+	u32 pci_ops_length;
+	u64 ptr_cfg_db_buff;
+	u32 cfg_db_length;
+};
+#endif // if 0
+struct mt_xchange_buffer {
+	u64 ptr_msr_buff;
+	u64 ptr_mem_buff;
+	u64 ptr_pci_ops_buff;
+	u64 ptr_cfg_db_buff;
+	u32 pci_ops_length;
+	u32 cfg_db_length;
+	u32 msr_length;
+	u32 mem_length;
+        // u32 padding;           // Required to keep sizeof(mt_xchange_buffer) the same on 32b and 64b systems 
+                               // in the absence of #pragma pack(XXX) directives!
 };
 
 struct xchange_buffer_all {
@@ -287,6 +441,43 @@ struct mtx_size_info {
 #define IOCTL_GMCH_RESET _IOW(0xF8, 0x00000003, struct gmch_container *)
 #define IOCTL_GMCH _IOW(0xF8, 0x00000005, struct gmch_container *)
 
+#define IOCTL_GET_SOC_STEPPING _IOR(0xF8, 0x00000100, unsigned long *)
+#define IOCTL_GET_SCU_FW_VERSION _IOR(0xF8, 0x00000200, unsigned long *)
+
+#define IOCTL_GET_DRIVER_VERSION _IOW(0xF8, 0x00000400, unsigned long *)
+
+#if defined (__linux__)
+
+#ifdef __KERNEL__
+
+#if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
+    #define IOCTL_INIT_SCAN32 _IOR(0xF8, 0x00000001, compat_ulong_t)
+    #define IOCTL_TERM_SCAN32 _IOR(0xF8, 0x00000002, compat_ulong_t)
+    #define IOCTL_POLL_SCAN32 _IOR(0xF8, 0x00000004, compat_ulong_t)
+
+    #define IOCTL_INIT_MEMORY32 _IOR(0xF8, 0x00000010, compat_uptr_t)
+    #define IOCTL_FREE_MEMORY32 _IO(0xF8, 0x00000020)
+
+    #define IOCTL_READ_PCI_CONFIG32	_IOWR(0xF8, 0x00000001, compat_uptr_t)
+
+    #define IOCTL_VERSION_INFO32 _IOW(0xF8, 0x00000001, compat_caddr_t)
+    #define IOCTL_COPY_TO_USER32 _IOW(0xF8, 0x00000002, compat_uptr_t)
+    #define IOCTL_READ_CONFIG_DB32 _IOW(0xF8, 0x00000004, compat_uptr_t)
+    #define IOCTL_WRITE_CONFIG_DB32 _IOW(0xF8, 0x00000010, compat_uptr_t)
+    #define IOCTL_OPERATE_ON_MSR32 _IOW(0xF8, 0x00000020, compat_uptr_t)
+
+    #define IOCTL_MSR32 _IOW(0xF8, 0x00000040, compat_uptr_t)
+    #define IOCTL_SRAM32 _IOW(0xF8, 0x00000080, compat_uptr_t)
+    #define IOCTL_GMCH_RESET32 _IOW(0xF8, 0x00000003, compat_uptr_t)
+    #define IOCTL_GMCH32 _IOW(0xF8, 0x00000005, compat_uptr_t)
+
+    #define IOCTL_GET_SOC_STEPPING32 _IOR(0xF8, 0x00000100, compat_uptr_t)
+    #define IOCTL_GET_SCU_FW_VERSION32 _IOR(0xF8, 0x00000200, compat_uptr_t)
+
+    #define IOCTL_GET_DRIVER_VERSION32 _IOW(0xF8, 0x00000400, compat_uptr_t)
+#endif // HAVE_COMPAT_IOCTL && CONFIG_X86_64
+#endif // __KERNEL__
+#endif // __linux__
 
 #define platform_pci_read32	intel_mid_msgbus_read32_raw
 #define platform_pci_write32	intel_mid_msgbus_write32_raw

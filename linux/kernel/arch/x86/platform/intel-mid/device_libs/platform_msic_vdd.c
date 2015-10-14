@@ -40,10 +40,14 @@ void __init *msic_vdd_platform_data(void *info)
 
 	msic_vdd_pdata.msi = BCUIRQ;
 	msic_vdd_pdata.disable_unused_comparator = false;
-	if (INTEL_MID_BOARD(1, PHONE, CLVTP))
+	msic_vdd_pdata.is_clvp = false;
+
+	/* Disabling VCRIT and VWARNB for clvp */
+	if (INTEL_MID_BOARD(1, PHONE, CLVTP)) {
 		msic_vdd_pdata.disable_unused_comparator =
 			 DISABLE_VCRIT | DISABLE_VWARNB;
-
+		msic_vdd_pdata.is_clvp = true;
+	}
 	pdev->dev.platform_data = &msic_vdd_pdata;
 
 	ret = platform_device_add(pdev);
@@ -53,8 +57,9 @@ void __init *msic_vdd_platform_data(void *info)
 		platform_device_put(pdev);
 		goto out;
 	}
-
-	install_irq_resource(pdev, entry->irq);
+	/* is needed only for CTP only */
+	if (msic_vdd_pdata.is_clvp)
+		install_irq_resource(pdev, entry->irq);
 out:
 	return &msic_vdd_pdata;
 }

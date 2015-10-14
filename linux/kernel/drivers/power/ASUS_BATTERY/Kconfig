@@ -37,5 +37,12 @@ config UPI_BATTERY
 	help
 	  Say Y to support for batteries with uG31xx chip.
 
+config BATTERY_MAX17048
+	tristate "Maxim MAX17048 Fuel Gauge"
+	depends on I2C
+	help
+	  MAX17048 is fuel-gauge systems for lithium-ion (Li+) batteries
+	  in handheld and portable equipment. The MAX17048 is configured
+	  to operate with a single lithium cell.
 endif
 

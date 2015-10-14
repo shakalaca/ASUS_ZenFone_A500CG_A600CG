@@ -1,4 +1,4 @@
-/* Release Version: ci_master_byt_20130823_2200 */
+/* Release Version: ci_master_byt_20130916_2228 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  *
@@ -78,7 +78,7 @@
 */
 
 #define SH_CSS_CIRCULAR_BUF_DEFAULT_SIZE SH_CSS_CIRCULAR_BUF_NUM_ELEMS
-#define SH_CSS_CIRCULAR_BUF_PARAMETER_QUEUE_SIZE 3
+#define SH_CSS_CIRCULAR_BUF_PARAMETER_QUEUE_SIZE 6
 
 static void init_sp_queue(
 	struct sh_css_circular_buf *offset, unsigned int size);
@@ -124,12 +124,37 @@ static bool is_sp_queue_full(
 
  \param	offset[in]	The target queue's offset that is
 			relative to the base address of the struct
-			"host_sp_queuemunication".
+			"host_sp_communication".
 
  \return true if the queue is empty
  */
 /*STORAGE_CLASS_INLINE bool is_sp_queue_empty(*/
 static bool is_sp_queue_empty(
+	struct sh_css_circular_buf *offset);
+
+#if 0 /* unused for now, commented out to save code size and avoid compile warning */
+/*! Return the number of full slots in the queue
+
+ \param	offset[in]	The target queue's offset that is
+			relative to the base address of the struct
+			"host_sp_communication".
+
+ \return the number of full slots
+ */
+
+static int sp_queue_full_slots(
+	struct sh_css_circular_buf *offset);
+#endif
+
+/*! Return the number of empty slots in the queue
+
+ \param	offset[in]	The target queue's offset that is
+			relative to the base address of the struct
+			"host_sp_communication".
+
+ \return the number of empty slots
+ */
+static int sp_queue_empty_slots(
 	struct sh_css_circular_buf *offset);
 
 /*
@@ -227,7 +252,6 @@ bool host2sp_enqueue_buffer(
 		offsetof(struct host_sp_queues,
 			host2sp_buffer_queues[pipe_num][index]);
 
-	/* check whether both queues are full or not */
 	is_full = is_sp_queue_full(offset_to_queue);
 
 	if (!is_full) {
@@ -237,6 +261,28 @@ bool host2sp_enqueue_buffer(
 
 
 	return !is_full;
+}
+
+uint32_t host2sp_empty_slots(
+	unsigned int pipe_num,
+	enum sh_css_buffer_queue_id index)
+{
+	struct sh_css_circular_buf *offset_to_queue;
+
+	assert(pipe_num < SH_CSS_MAX_SP_THREADS);
+	assert((index < SH_CSS_NUM_BUFFER_QUEUES));
+
+	if (pipe_num >= SH_CSS_MAX_SP_THREADS)
+		return 0;
+
+	/* This is just the first step of introducing the queue API */
+	/* The implementation is still the old non-queue implementation */
+	/* till the new queue implementation is there */
+	offset_to_queue = (struct sh_css_circular_buf *)
+		offsetof(struct host_sp_queues,
+			host2sp_buffer_queues[pipe_num][index]);
+
+	return sp_queue_empty_slots(offset_to_queue);
 }
 
 /************************************************************
@@ -330,7 +376,7 @@ bool sp2host_dequeue_buffer(
 	(void)stage_num;
 	(void)pipe_num;
 
-	assert_exit_code(buffer_ptr != NULL, false);
+	assert(buffer_ptr != NULL);
 	assert(index < SH_CSS_NUM_BUFFER_QUEUES);
 
 	/* This is just the first step of introducing the queue API */
@@ -364,7 +410,7 @@ bool sp2host_dequeue_irq_event(
 	bool is_empty;
 	struct sh_css_circular_buf *offset_to_queue;
 
-	assert_exit_code(event != NULL, false);
+	assert(event != NULL);
 
 	offset_to_queue = (struct sh_css_circular_buf *)
 		offsetof(struct host_sp_queues,
@@ -536,7 +582,7 @@ static void pop_sp_queue(
 	unsigned int entry_to_cb_elem;
 	uint32_t cb_elem;
 
-	assert_exit(elem != NULL);
+	assert(elem != NULL);
 
 #ifndef C_RUN
 	/* get the variable address from the firmware */
@@ -564,22 +610,10 @@ static void pop_sp_queue(
 static bool is_sp_queue_full(
 	struct sh_css_circular_buf *offset)
 {
-#ifndef C_RUN
-	unsigned int HIVE_ADDR_host_sp_queue;
-	const struct ia_css_fw_info *fw;
-#endif
-
 	unsigned int cb_size;
 	unsigned int cb_start;
 	unsigned int cb_end;
-
 	bool is_full;
-
-#ifndef C_RUN
-	/* get the variable address from the firmware */
-	fw = &sh_css_sp_fw;
-	HIVE_ADDR_host_sp_queue = fw->info.sp.host_sp_queue;
-#endif
 
 	load_sp_queue (offset, &cb_size, NULL, &cb_start, &cb_end);
 
@@ -635,6 +669,23 @@ static bool is_sp_queue_full(
 static bool is_sp_queue_empty(
 	struct sh_css_circular_buf *offset)
 {
+	unsigned int cb_size;
+	unsigned int cb_start;
+	unsigned int cb_end;
+	bool is_empty;
+
+	load_sp_queue (offset, &cb_size, NULL, &cb_start, &cb_end);
+
+	/* check whether the queue is full or not */
+	is_empty = (cb_start == cb_end);
+
+	return is_empty;
+}
+
+#if 0 /* unused for now, commented out to save code size and avoid compile warning */
+static int sp_queue_full_slots(
+	struct sh_css_circular_buf *offset)
+{
 #ifndef C_RUN
 	unsigned int HIVE_ADDR_host_sp_queue;
 	const struct ia_css_fw_info *fw;
@@ -644,8 +695,6 @@ static bool is_sp_queue_empty(
 	unsigned int cb_start;
 	unsigned int cb_end;
 
-	bool is_empty;
-
 #ifndef C_RUN
 	/* get the variable address from the firmware */
 	fw = &sh_css_sp_fw;
@@ -654,10 +703,31 @@ static bool is_sp_queue_empty(
 
 	load_sp_queue (offset, &cb_size, NULL, &cb_start, &cb_end);
 
-	/* check whether the queue is full or not */
-	is_empty = (cb_start == cb_end);
+	return (cb_end + cb_size - cb_start) % cb_size;
+}
+#endif
 
-	return is_empty;
+static int sp_queue_empty_slots(
+	struct sh_css_circular_buf *offset)
+{
+#ifndef C_RUN
+	unsigned int HIVE_ADDR_host_sp_queue;
+	const struct ia_css_fw_info *fw;
+#endif
+
+	unsigned int cb_size;
+	unsigned int cb_start;
+	unsigned int cb_end;
+
+#ifndef C_RUN
+	/* get the variable address from the firmware */
+	fw = &sh_css_sp_fw;
+	HIVE_ADDR_host_sp_queue = fw->info.sp.host_sp_queue;
+#endif
+
+	load_sp_queue (offset, &cb_size, NULL, &cb_start, &cb_end);
+	/* there is always one unused slot so capacity is cb_size -1 */
+	return cb_size - 1 - ((cb_end + cb_size - cb_start) % cb_size);
 }
 
 /*

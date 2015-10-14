@@ -45,9 +45,11 @@ int   vtss_transport_record_write(struct vtss_transport_data* trnd, void* part0,
 int   vtss_transport_record_write_all(void* part0, size_t size0, void* part1, size_t size1, int is_safe);
 int   vtss_transport_complete(struct vtss_transport_data* trnd);
 struct vtss_transport_data* vtss_transport_create(pid_t ppid, pid_t pid, uid_t cuid, gid_t cgid);
+struct vtss_transport_data* vtss_transport_create_aux(struct vtss_transport_data* main_trnd, uid_t cuid, gid_t cgid);
 
 char* vtss_transport_get_filename(struct vtss_transport_data* trnd);
 int   vtss_transport_is_overflowing(struct vtss_transport_data* trnd);
+int   vtss_transport_is_active(struct vtss_transport_data* trnd);
 int   vtss_transport_debug_info(struct seq_file *s);
 int   vtss_transport_init(void);
 void  vtss_transport_fini(void);

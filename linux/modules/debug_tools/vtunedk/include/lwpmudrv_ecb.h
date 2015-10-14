@@ -5,7 +5,7 @@
  *  agreement or nondisclosure agreement with Intel Corporation and may not
  *  be copied or disclosed except in accordance with the terms of that
  *  agreement.
- *        Copyright (c) 2007-2012 Intel Corporation.  All Rights Reserved.
+ *        Copyright (c) 2007-2013 Intel Corporation.  All Rights Reserved.
  * -------------------------------------------------------------------------
 **COPYRIGHT*/
 
@@ -336,13 +336,18 @@ struct EVENT_REG_NODE_S {
     U8                   event_id_index;       // U8 must be changed if MAX_EVENTS > 256
     U8                   event_id_index_local; // U8 must be changed if MAX_EVENTS > 256
     U8                   emon_event_id_index_local; 
+    U8                   reserved0;
+    U16                  reserved1;
     EVENT_REG_ID_NODE    event_reg_id;
     U16                  desc_id;
     U16                  flags;
+    U32                  reserved2;
     U64                  reg_value;
     U64                  max_bits;
     U8                   scheduled;
     // PCI config-specific fields
+    U8                   reserved3;
+    U16                  reserved4;
     U32                  bus_no;
     U32                  dev_no;
     U32                  func_no;
@@ -516,6 +521,7 @@ struct DRV_PCI_DEVICE_ENTRY_NODE_S {
     U32        bar_name;
     U32        prog_type;
     U32        config_type;
+    U32        reserved0;
     U64        value;
     U64        mask;
     U64        virtual_address;
@@ -579,11 +585,14 @@ struct ECB_NODE_S {
     U32                          data_pop;
     U16                          flags;
     U8                           pmu_timer_interval;
-    U8                           reserved;     // added for alignment reasons
+    U8                           reserved0;
     DRV_PCI_DEVICE_ENTRY_NODE    pcidev_entry_node;
     U32                          num_pci_devices;
     U32                          pcidev_list_offset;
     DRV_PCI_DEVICE_ENTRY         pcidev_entry_list;
+#if defined(DRV_IA32)
+    U32                          reserved1;
+#endif
     EVENT_REG_NODE               entries[];
 };
 

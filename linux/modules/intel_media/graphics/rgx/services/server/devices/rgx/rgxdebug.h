@@ -66,6 +66,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ******************************************************************************/
 IMG_VOID RGXPanic(PVRSRV_RGXDEV_INFO	*psDevInfo);
 
+
+typedef IMG_VOID (DUMPDEBUG_PRINTF_FUNC)(const IMG_CHAR *pszFormat, ...);
+
 /*!
 *******************************************************************************
 
@@ -75,12 +78,14 @@ IMG_VOID RGXPanic(PVRSRV_RGXDEV_INFO	*psDevInfo);
 
  Dump useful debugging info
 
- @Input psDevInfo	 - RGX device info
+ @Input pfnDumpDebugPrintf  - Optional replacement print function
+ @Input psDevInfo	        - RGX device info
 
  @Return   IMG_VOID
 
 ******************************************************************************/
-IMG_VOID RGXDumpDebugInfo(PVRSRV_RGXDEV_INFO	*psDevInfo);
+IMG_VOID RGXDumpDebugInfo(DUMPDEBUG_PRINTF_FUNC *pfnDumpDebugPrintf,
+                          PVRSRV_RGXDEV_INFO	*psDevInfo);
 
 /*!
 *******************************************************************************
@@ -92,14 +97,38 @@ IMG_VOID RGXDumpDebugInfo(PVRSRV_RGXDEV_INFO	*psDevInfo);
  This function will print out the debug for the specificed level of
  verbosity
 
- @Input psDevInfo	 - RGX device info
- @Input ui32VerbLevel - Verbosity level
+ @Input pfnDumpDebugPrintf  - Optional replacement print function
+ @Input psDevInfo	        - RGX device info
+ @Input ui32VerbLevel       - Verbosity level
 
  @Return   IMG_VOID
 
 ******************************************************************************/
-IMG_VOID RGXDebugRequestProcess(PVRSRV_RGXDEV_INFO	*psDevInfo,
-							    IMG_UINT32			ui32VerbLevel);
+IMG_VOID RGXDebugRequestProcess(DUMPDEBUG_PRINTF_FUNC *pfnDumpDebugPrintf,
+                                PVRSRV_RGXDEV_INFO	*psDevInfo,
+                                IMG_UINT32			ui32VerbLevel);
+
+
+#if defined(PVRSRV_ENABLE_FW_TRACE_DEBUGFS)
+/*!
+*******************************************************************************
+
+ @Function	RGXDumpFirmwareTrace
+
+ @Description Dumps the decoded version of the firmware trace buffer.
+
+ Dump useful debugging info
+
+ @Input pfnDumpDebugPrintf  - Optional replacement print function
+ @Input psDevInfo	        - RGX device info
+
+ @Return   IMG_VOID
+
+******************************************************************************/
+IMG_VOID RGXDumpFirmwareTrace(DUMPDEBUG_PRINTF_FUNC *pfnDumpDebugPrintf,
+                              PVRSRV_RGXDEV_INFO	*psDevInfo);
+#endif
+
 
 /*!
 *******************************************************************************

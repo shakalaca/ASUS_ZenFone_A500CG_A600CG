@@ -68,16 +68,26 @@ struct _DEVMEMINT_CTX_
 
     IMG_UINT32 ui32RefCount;
 
+    /* Lock for this memory context */
+    POS_LOCK hLock;
+
     /* This handle is for devices that require notification when a new
        memory context is created and they need to store private data that
        is associated with the context. */
     IMG_HANDLE hPrivData;
 };
 
+struct _DEVMEMINT_CTX_EXPORT_ 
+{
+	DEVMEMINT_CTX *psDevmemCtx;
+};
+
 struct _DEVMEMINT_HEAP_
 {
     struct _DEVMEMINT_CTX_ *psDevmemCtx;
     IMG_UINT32 ui32RefCount;
+    /* Lock for this heap */
+    POS_LOCK hLock;
 };
 
 struct _DEVMEMINT_RESERVATION_
@@ -94,6 +104,76 @@ struct _DEVMEMINT_MAPPING_
     IMG_UINT32 uiNumPages;
     IMG_UINT32 uiLog2PageSize;
 };
+
+/*************************************************************************/ /*!
+@Function       _DevmemIntCtxAcquire
+@Description    Acquire a reference to the provided device memory context.
+@Return         None
+*/ /**************************************************************************/
+static INLINE IMG_VOID _DevmemIntCtxAcquire(DEVMEMINT_CTX *psDevmemCtx)
+{
+	OSLockAcquire(psDevmemCtx->hLock);
+	psDevmemCtx->ui32RefCount++;
+	OSLockRelease(psDevmemCtx->hLock);
+}
+
+/*************************************************************************/ /*!
+@Function       _DevmemIntCtxRelease
+@Description    Release the reference to the provided device memory context.
+                If this is the last reference which was taken then the
+                memory context will be freed.
+@Return         None
+*/ /**************************************************************************/
+static INLINE IMG_VOID _DevmemIntCtxRelease(DEVMEMINT_CTX *psDevmemCtx)
+{
+	IMG_UINT32 ui32RefCount;
+
+	OSLockAcquire(psDevmemCtx->hLock);
+	ui32RefCount = --psDevmemCtx->ui32RefCount;
+	OSLockRelease(psDevmemCtx->hLock);
+
+	if (ui32RefCount == 0)
+	{
+		/* The last reference has gone, destroy the context */
+		PVRSRV_DEVICE_NODE *psDevNode = psDevmemCtx->psDevNode;
+	
+		if (psDevNode->pfnUnregisterMemoryContext)
+		{
+			psDevNode->pfnUnregisterMemoryContext(psDevmemCtx->hPrivData);
+		}
+	    MMU_ContextDestroy(psDevmemCtx->psMMUContext);
+	    OSLockDestroy(psDevmemCtx->hLock);
+	
+		PVR_DPF((PVR_DBG_MESSAGE, "%s: Freed memory context %p", __FUNCTION__, psDevmemCtx));
+		OSFreeMem(psDevmemCtx);
+	}
+}
+
+/*************************************************************************/ /*!
+@Function       _DevmemIntHeapAcquire
+@Description    Acquire a reference to the provided device memory heap.
+@Return         None
+*/ /**************************************************************************/
+static INLINE IMG_VOID _DevmemIntHeapAcquire(DEVMEMINT_HEAP *psDevmemHeap)
+{
+	OSLockAcquire(psDevmemHeap->hLock);
+	psDevmemHeap->ui32RefCount++;
+	OSLockRelease(psDevmemHeap->hLock);
+}
+
+/*************************************************************************/ /*!
+@Function       _DevmemIntHeapRelease
+@Description    Release the reference to the provided device memory heap.
+                If this is the last reference which was taken then the
+                memory context will be freed.
+@Return         None
+*/ /**************************************************************************/
+static INLINE IMG_VOID _DevmemIntHeapRelease(DEVMEMINT_HEAP *psDevmemHeap)
+{
+	OSLockAcquire(psDevmemHeap->hLock);
+	psDevmemHeap->ui32RefCount--;
+	OSLockRelease(psDevmemHeap->hLock);
+}
 
 /*************************************************************************/ /*!
 @Function       DevmemServerGetImportHandle
@@ -152,18 +232,25 @@ DevmemIntCtxCreate(
     DEVMEMINT_CTX *psDevmemCtx;
     IMG_HANDLE hPrivDataInt = IMG_NULL;
 
-	PVR_DPF((PVR_DBG_MESSAGE, "DevmemIntCtx_Create"));
+	PVR_DPF((PVR_DBG_MESSAGE, "%s", __FUNCTION__));
 
 	/* allocate a Devmem context */
     psDevmemCtx = OSAllocMem(sizeof *psDevmemCtx);
     if (psDevmemCtx == IMG_NULL)
 	{
         eError = PVRSRV_ERROR_OUT_OF_MEMORY;
-		PVR_DPF ((PVR_DBG_ERROR, "DevmemIntCtx_Create: Alloc failed"));
-        goto e0;
+		PVR_DPF ((PVR_DBG_ERROR, "%s: Alloc failed", __FUNCTION__));
+        goto fail_alloc;
 	}
 
-	psDevmemCtx->ui32RefCount = 0;
+	eError = OSLockCreate(&psDevmemCtx->hLock, LOCK_TYPE_PASSIVE);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: Failed to create lock", __FUNCTION__));
+		goto fail_lock;
+	}
+
+	psDevmemCtx->ui32RefCount = 1;
     psDevmemCtx->psDevNode = psDeviceNode;
 
     /* Call down to MMU context creation */
@@ -172,7 +259,8 @@ DevmemIntCtxCreate(
                                &psDevmemCtx->psMMUContext);
 	if (eError != PVRSRV_OK)
 	{
-		goto e1;
+		PVR_DPF((PVR_DBG_ERROR, "%s: MMU_ContextCreate failed", __FUNCTION__));
+		goto fail_mmucontext;
 	}
 
 
@@ -181,33 +269,28 @@ DevmemIntCtxCreate(
 		eError = psDeviceNode->pfnRegisterMemoryContext(psDeviceNode, psDevmemCtx->psMMUContext, &hPrivDataInt);
 		if (eError != PVRSRV_OK)
 		{
-			goto e2;
+			PVR_DPF((PVR_DBG_ERROR, "%s: Failed to register MMU context", __FUNCTION__));
+			goto fail_register;
 		}
 	}
 
 	/* Store the private data as it is required to unregister the memory context */
 	psDevmemCtx->hPrivData = hPrivDataInt;
 	*hPrivData = hPrivDataInt;
-
-    if (eError != PVRSRV_OK)
-	{
-		PVR_DPF((PVR_DBG_ERROR, "DevmemIntCtx_Create: MMU_ContextCreate failed"));
-		goto e1;
-	}
-
-	psDevmemCtx->ui32RefCount++;
-
     *ppsDevmemCtxPtr = psDevmemCtx;
 
 	return PVRSRV_OK;
 
- e2:
+fail_register:
     MMU_ContextDestroy(psDevmemCtx->psMMUContext);
 
- e1:
+fail_mmucontext:
+	OSLockDestroy(psDevmemCtx->hLock);
+
+fail_lock:
     OSFreeMem(psDevmemCtx);
 
- e0:
+fail_alloc:
     PVR_ASSERT(eError != PVRSRV_OK);
     return eError;
 }
@@ -230,20 +313,27 @@ DevmemIntHeapCreate(
     PVRSRV_ERROR eError;
     DEVMEMINT_HEAP *psDevmemHeap;
 
-	PVR_DPF((PVR_DBG_MESSAGE, "DevmemIntHeap_Create"));
+	PVR_DPF((PVR_DBG_MESSAGE, "%s: DevmemIntHeap_Create", __FUNCTION__));
 
 	/* allocate a Devmem context */
 	psDevmemHeap = OSAllocMem(sizeof *psDevmemHeap);
     if (psDevmemHeap == IMG_NULL)
 	{
         eError = PVRSRV_ERROR_OUT_OF_MEMORY;
-		PVR_DPF ((PVR_DBG_ERROR, "DevmemIntHeap_Create: Alloc failed"));
-        goto e0;
+		PVR_DPF ((PVR_DBG_ERROR, "%s: Alloc failed", __FUNCTION__));
+        goto fail_alloc;
+	}
+
+	eError = OSLockCreate(&psDevmemHeap->hLock, LOCK_TYPE_PASSIVE);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: Failed to create lock", __FUNCTION__));
+		goto fail_lock;
 	}
 
     psDevmemHeap->psDevmemCtx = psDevmemCtx;
 
-    psDevmemHeap->psDevmemCtx->ui32RefCount ++;
+	_DevmemIntCtxAcquire(psDevmemHeap->psDevmemCtx);
 
 	psDevmemHeap->ui32RefCount = 1;
 
@@ -251,8 +341,10 @@ DevmemIntHeapCreate(
 
 	return PVRSRV_OK;
 
+fail_lock:
+	OSFreeMem(psDevmemHeap);
 
- e0:
+fail_alloc:
     return eError;
 }
 
@@ -316,7 +408,7 @@ DevmemIntMapPMR(DEVMEMINT_HEAP *psDevmemHeap,
     /* Don't bother with refcount on reservation, as a reservation
        only ever holds one mapping, so we directly increment the
        refcount on the heap instead */
-    psMapping->psReservation->psDevmemHeap->ui32RefCount ++;
+    _DevmemIntHeapAcquire(psMapping->psReservation->psDevmemHeap);
 
     *ppsMappingPtr = psMapping;
 
@@ -356,7 +448,7 @@ DevmemIntUnmapPMR(DEVMEMINT_MAPPING *psMapping)
     /* Don't bother with refcount on reservation, as a reservation
        only ever holds one mapping, so we directly decrement the
        refcount on the heap instead */
-    psDevmemHeap->ui32RefCount --;
+    _DevmemIntHeapRelease(psDevmemHeap);
 
 	OSFreeMem(psMapping);
 
@@ -400,6 +492,8 @@ DevmemIntReserveRange(DEVMEMINT_HEAP *psDevmemHeap,
        chosen a new one for us */
     PVR_ASSERT(sAllocationDevVAddr.uiAddr == psReservation->sBase.uiAddr);
 
+	_DevmemIntHeapAcquire(psDevmemHeap);
+
     psReservation->psDevmemHeap = psDevmemHeap;
     *ppsReservationPtr = psReservation;
 
@@ -424,6 +518,7 @@ DevmemIntUnreserveRange(DEVMEMINT_RESERVATION *psReservation)
               psReservation->sBase,
               psReservation->uiLength);
 
+	_DevmemIntHeapRelease(psReservation->psDevmemHeap);
 	OSFreeMem(psReservation);
 
     return PVRSRV_OK;
@@ -434,23 +529,34 @@ DevmemIntHeapDestroy(
                      DEVMEMINT_HEAP *psDevmemHeap
                      )
 {
-
-	PVR_DPF((PVR_DBG_MESSAGE, "DevmemIntHeapDestroy"));
-
     if (psDevmemHeap->ui32RefCount != 1)
     {
-        PVR_DPF((PVR_DBG_ERROR, "BUG!  DevmemIntHeapDestroy called but has too many references (%d) "
+        PVR_DPF((PVR_DBG_ERROR, "BUG!  %s called but has too many references (%d) "
                  "which probably means allocations have been made from the heap and not freed",
+                 __FUNCTION__,
                  psDevmemHeap->ui32RefCount));
-        return PVRSRV_ERROR_DEVICEMEM_ALLOCATIONS_REMAIN_IN_HEAP;
+        /*
+			Try again later when you've freed all the memory
+
+			Note:
+			While we don't expect the application to retry (after all this call
+			would succeed if the client had freed all the memory which it should
+			have done before calling this function) resman will retry at which
+			point any allocations leaked by the client will have also been cleaned
+			up by resman and so this call would then succeed.
+        */
+        return PVRSRV_ERROR_RETRY;
     }
 
     PVR_ASSERT(psDevmemHeap->ui32RefCount == 1);
 
+	_DevmemIntCtxRelease(psDevmemHeap->psDevmemCtx);
 
-    psDevmemHeap->psDevmemCtx->ui32RefCount --;
+	OSLockDestroy(psDevmemHeap->hLock);
 
+	PVR_DPF((PVR_DBG_MESSAGE, "%s: Freed heap %p", __FUNCTION__, psDevmemHeap));
 	OSFreeMem(psDevmemHeap);
+
 	return PVRSRV_OK;
 }
 
@@ -466,17 +572,75 @@ DevmemIntCtxDestroy(
                     DEVMEMINT_CTX *psDevmemCtx
                     )
 {
-	PVRSRV_DEVICE_NODE *psDevNode = psDevmemCtx->psDevNode;
+	/*
+		We can't determine if we should be freeing the context here
+		as it refcount!=1 could be due to either the fact that heap(s)
+		remain with allocations on them, or that this memory context
+		has been exported.
+		As the client couldn’t do anything useful with this information
+		anyway and the fact that the refcount will ensure we only
+		free the context when _all_ references have been released
+		don't bother checking and just return OK regardless.
+	*/
+	_DevmemIntCtxRelease(psDevmemCtx);
+	return PVRSRV_OK;
+}
 
-	PVR_DPF((PVR_DBG_MESSAGE, "DevmemCtx_Destroy"));
+/*************************************************************************/ /*!
+@Function       DevmemIntCtxExport
+@Description    Exports a device memory context.
+@Return         valid Device Memory context handle - Success
+                PVRSRV_ERROR failure code
+*/ /**************************************************************************/
+PVRSRV_ERROR
+DevmemIntCtxExport(DEVMEMINT_CTX *psDevmemCtx,
+                   DEVMEMINT_CTX_EXPORT **ppsExport)
+{
+	DEVMEMINT_CTX_EXPORT *psExport;
 
-	if (psDevNode->pfnUnregisterMemoryContext)
+	psExport = OSAllocMem(sizeof(*psExport));
+	if (psExport == IMG_NULL)
 	{
-		psDevNode->pfnUnregisterMemoryContext(psDevmemCtx->hPrivData);
+		return PVRSRV_ERROR_OUT_OF_MEMORY;
 	}
-    MMU_ContextDestroy(psDevmemCtx->psMMUContext);
+	_DevmemIntCtxAcquire(psDevmemCtx);
+	psExport->psDevmemCtx = psDevmemCtx;
+	
+	*ppsExport = psExport;
+	return PVRSRV_OK;
+}
 
-	OSFreeMem(psDevmemCtx);
+/*************************************************************************/ /*!
+@Function       DevmemIntCtxUnexport
+@Description    Unexport an exported a device memory context.
+@Return         None
+*/ /**************************************************************************/
+PVRSRV_ERROR
+DevmemIntCtxUnexport(DEVMEMINT_CTX_EXPORT *psExport)
+{
+	_DevmemIntCtxRelease(psExport->psDevmemCtx);
+	OSFreeMem(psExport);
+	return PVRSRV_OK;
+}
+
+/*************************************************************************/ /*!
+@Function       DevmemIntCtxImport
+@Description    Import an exported a device memory context.
+@Return         valid Device Memory context handle - Success
+                PVRSRV_ERROR failure code
+*/ /**************************************************************************/
+PVRSRV_ERROR
+DevmemIntCtxImport(DEVMEMINT_CTX_EXPORT *psExport,
+				   DEVMEMINT_CTX **ppsDevmemCtxPtr,
+				   IMG_HANDLE *hPrivData)
+{
+	DEVMEMINT_CTX *psDevmemCtx = psExport->psDevmemCtx;
+
+	_DevmemIntCtxAcquire(psDevmemCtx);
+
+	*ppsDevmemCtxPtr = psDevmemCtx;
+	*hPrivData = psDevmemCtx->hPrivData;
+
 	return PVRSRV_OK;
 }
 

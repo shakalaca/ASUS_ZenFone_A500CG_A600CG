@@ -39,11 +39,10 @@
 
 #include "sh_css_hrt.h"
 
-#ifndef CONFIG_VIDEO_ATOMISP_CSS20
+#ifndef CSS20
 #include "sh_css.h"
-#endif /* CONFIG_VIDEO_ATOMISP_CSS20 */
+#endif /* CSS20 */
 
-#include "sh_css_debug.h"
 #include "gp_device.h"
 #include "device_access.h"
 #include "irq.h"
@@ -570,6 +569,7 @@ static unsigned int atomisp_subdev_streaming_count(
 {
 	return asd->video_out_preview.capq.streaming
 		+ asd->video_out_capture.capq.streaming
+		+ asd->video_out_video_capture.capq.streaming
 		+ asd->video_in.capq.streaming;
 }
 
@@ -780,6 +780,11 @@ static int atomisp_s_fmt_cap(struct file *file, void *fh,
 	int ret;
 
 	mutex_lock(&isp->mutex);
+	if (isp->isp_fatal_error) {
+		ret = -EIO;
+		mutex_unlock(&isp->mutex);
+		return ret;
+	}
 	ret = atomisp_set_fmt(vdev, f);
 	mutex_unlock(&isp->mutex);
 	return ret;
@@ -1270,9 +1275,12 @@ static int atomisp_dqbuf(struct file *file, void *fh, struct v4l2_buffer *buf)
 
 enum atomisp_css_pipe_id atomisp_get_css_pipe_id(struct atomisp_sub_device *asd)
 {
-	if (asd->continuous_mode->val &&
-	    asd->run_mode->val != ATOMISP_RUN_MODE_VIDEO)
-		return CSS_PIPE_ID_PREVIEW;
+	if (asd->continuous_mode->val) {
+		if (asd->run_mode->val == ATOMISP_RUN_MODE_VIDEO)
+			return CSS_PIPE_ID_VIDEO;
+		else
+			return CSS_PIPE_ID_PREVIEW;
+	}
 
 	/*
 	 * Disable vf_pp and run CSS in video mode. This allows using ISP
@@ -1340,6 +1348,11 @@ static int atomisp_streamon(struct file *file, void *fh,
 	}
 
 	mutex_lock(&isp->mutex);
+	if (isp->isp_fatal_error) {
+		ret = -EIO;
+		goto out;
+	}
+
 	if (asd->streaming == ATOMISP_DEVICE_STREAMING_STOPPING) {
 		ret = -EBUSY;
 		goto out;
@@ -1371,17 +1384,21 @@ static int atomisp_streamon(struct file *file, void *fh,
 		/* trigger still capture */
 		if (asd->continuous_mode->val &&
 		    atomisp_subdev_source_pad(vdev)
-		    == ATOMISP_SUBDEV_PAD_SOURCE_CAPTURE &&
-		    asd->run_mode->val != ATOMISP_RUN_MODE_VIDEO) {
-			dev_dbg(isp->dev,
+		    == ATOMISP_SUBDEV_PAD_SOURCE_CAPTURE) {
+			if (asd->run_mode->val == ATOMISP_RUN_MODE_VIDEO)
+			    dev_dbg(isp->dev,
+				"SDV last video raw buffer id: %u\n",
+				asd->latest_preview_exp_id);
+			else
+			    dev_dbg(isp->dev,
 				"ZSL last preview raw buffer id: %u\n",
-				isp->latest_preview_exp_id);
+				asd->latest_preview_exp_id);
 
-			if (isp->delayed_init != ATOMISP_DELAYED_INIT_DONE) {
-				flush_work_sync(&isp->delayed_init_work);
+			if (asd->delayed_init != ATOMISP_DELAYED_INIT_DONE) {
+				flush_work(&asd->delayed_init_work);
 				mutex_unlock(&isp->mutex);
 				if (wait_for_completion_interruptible(
-						&isp->init_done) != 0)
+						&asd->init_done) != 0)
 					return -ERESTARTSYS;
 				mutex_lock(&isp->mutex);
 			}
@@ -1404,7 +1421,7 @@ static int atomisp_streamon(struct file *file, void *fh,
 	}
 
 #ifdef PUNIT_CAMERA_BUSY
-	if (!IS_ISP2400(isp) && isp->need_gfx_throttle) {
+	if (!IS_ISP24XX(isp) && isp->need_gfx_throttle) {
 		/*
 		 * As per h/w architect and ECO 697611 we need to throttle the
 		 * GFX performance (freq) while camera is up to prevent peak
@@ -1427,17 +1444,16 @@ static int atomisp_streamon(struct file *file, void *fh,
 	if (ret)
 		goto out;
 
-	if (asd->continuous_mode->val &&
-	    asd->run_mode->val != ATOMISP_RUN_MODE_VIDEO) {
+	if (asd->continuous_mode->val) {
 		struct v4l2_mbus_framefmt *sink;
 
 		sink = atomisp_subdev_get_ffmt(&asd->subdev, NULL,
 				       V4L2_SUBDEV_FORMAT_ACTIVE,
 				       ATOMISP_SUBDEV_PAD_SINK);
 
-		INIT_COMPLETION(isp->init_done);
-		isp->delayed_init = ATOMISP_DELAYED_INIT_QUEUED;
-		queue_work(isp->delayed_init_workq, &isp->delayed_init_work);
+		INIT_COMPLETION(asd->init_done);
+		asd->delayed_init = ATOMISP_DELAYED_INIT_QUEUED;
+		queue_work(asd->delayed_init_workq, &asd->delayed_init_work);
 		atomisp_css_set_cont_prev_start_time(isp,
 				ATOMISP_CALC_CSS_PREV_OVERLAP(sink->height));
 	}
@@ -1457,7 +1473,7 @@ static int atomisp_streamon(struct file *file, void *fh,
 
 	isp->sw_contex.invalid_frame = false;
 	asd->params.dis_proj_data_valid = false;
-	isp->latest_preview_exp_id = 0;
+	asd->latest_preview_exp_id = 0;
 
 	atomisp_qbuffers_to_css(asd);
 
@@ -1475,17 +1491,17 @@ start_sensor:
 	if (!isp->sw_contex.file_input) {
 		atomisp_css_irq_enable(isp, CSS_IRQ_INFO_CSS_RECEIVER_SOF,
 					true);
-#if !defined(CONFIG_VIDEO_ATOMISP_CSS15) || !defined(CONFIG_ISP2400)
+#if defined(CSS15) && defined(ISP2300)
 		atomisp_css_irq_enable(isp,
 				CSS_IRQ_INFO_CSS_RECEIVER_FIFO_OVERFLOW, true);
 #endif
 		atomisp_set_term_en_count(isp);
 
-		if (IS_ISP2400(isp) &&
+		if (IS_ISP24XX(isp) &&
 			atomisp_freq_scaling(isp, ATOMISP_DFS_MODE_AUTO) < 0)
 			dev_dbg(isp->dev, "dfs failed!\n");
 	} else {
-		if (IS_ISP2400(isp) &&
+		if (IS_ISP24XX(isp) &&
 			atomisp_freq_scaling(isp, ATOMISP_DFS_MODE_MAX) < 0)
 			dev_dbg(isp->dev, "dfs failed!\n");
 	}
@@ -1515,6 +1531,7 @@ int __atomisp_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
 	struct atomisp_video_pipe *capture_pipe = NULL;
 	struct atomisp_video_pipe *vf_pipe = NULL;
 	struct atomisp_video_pipe *preview_pipe = NULL;
+	struct atomisp_video_pipe *video_pipe = NULL;
 	struct videobuf_buffer *vb, *_vb;
 	enum atomisp_css_pipe_id css_pipe_id;
 	int ret;
@@ -1537,9 +1554,11 @@ int __atomisp_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
 	 * do only videobuf_streamoff for capture & vf pipes in
 	 * case of continuous capture
 	 */
-	if (asd->run_mode->val != ATOMISP_RUN_MODE_VIDEO &&
-	    asd->continuous_mode->val && atomisp_subdev_source_pad(vdev)
-	    != ATOMISP_SUBDEV_PAD_SOURCE_PREVIEW) {
+	if (asd->continuous_mode->val &&
+	    atomisp_subdev_source_pad(vdev) !=
+		ATOMISP_SUBDEV_PAD_SOURCE_PREVIEW &&
+	    atomisp_subdev_source_pad(vdev) !=
+		ATOMISP_SUBDEV_PAD_SOURCE_VIDEO) {
 
 		/* stop continuous still capture if needed */
 		if (atomisp_subdev_source_pad(vdev)
@@ -1604,18 +1623,23 @@ int __atomisp_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
 
 	atomisp_clear_css_buffer_counters(asd);
 
-	if (!isp->sw_contex.file_input)
+	if (!isp->sw_contex.file_input) {
 		atomisp_css_irq_enable(isp, CSS_IRQ_INFO_CSS_RECEIVER_SOF,
 					false);
+#if defined(CSS15) && defined(ISP2300)
+		atomisp_css_irq_enable(isp,
+				CSS_IRQ_INFO_CSS_RECEIVER_FIFO_OVERFLOW, false);
+#endif
+	}
 
-	if (isp->delayed_init == ATOMISP_DELAYED_INIT_QUEUED) {
-		cancel_work_sync(&isp->delayed_init_work);
-		isp->delayed_init = ATOMISP_DELAYED_INIT_NOT_QUEUED;
+	if (asd->delayed_init == ATOMISP_DELAYED_INIT_QUEUED) {
+		cancel_work_sync(&asd->delayed_init_work);
+		asd->delayed_init = ATOMISP_DELAYED_INIT_NOT_QUEUED;
 	}
 
 	css_pipe_id = atomisp_get_css_pipe_id(asd);
 	ret = atomisp_css_stop(asd, css_pipe_id, false);
-#ifndef CONFIG_VIDEO_ATOMISP_CSS20
+#ifndef CSS20
 	/* Workaround to avoid system wide crash */
 	if (ret == -EIO)
 		isp->isp_timeout = true;
@@ -1634,6 +1658,10 @@ int __atomisp_streamoff(struct file *file, void *fh, enum v4l2_buf_type type)
 	if (asd->video_out_preview.users) {
 		preview_pipe = &asd->video_out_preview;
 		wake_up_interruptible(&preview_pipe->capq.wait);
+	}
+	if (asd->video_out_video_capture.users) {
+		video_pipe = &asd->video_out_video_capture;
+		wake_up_interruptible(&video_pipe->capq.wait);
 	}
 	ret = videobuf_streamoff(&pipe->capq);
 	if (ret)
@@ -1660,7 +1688,8 @@ stopsensor:
 				       video, s_stream, 0);
 
 	if (0 == strncmp(isp->inputs[asd->input_curr].camera->name, "mn34130", strlen("mn34130"))
-		|| 0 == strncmp(isp->inputs[asd->input_curr].camera->name, "t4k37", strlen("t4k37"))) {
+		|| 0 == strncmp(isp->inputs[asd->input_curr].camera->name, "gc0310", strlen("gc0310"))
+          || 0 == strncmp(isp->inputs[asd->input_curr].camera->name, "t4k37", strlen("t4k37"))) {
 	        while (atomisp_css_rx_err_ecc_no_err_check(isp)) {
 	                icount++;
 	                msleep(10);
@@ -1677,11 +1706,13 @@ stopsensor:
 	}
 
 	/* if other streams are running, isp should not be powered off */
-	if (atomisp_streaming_count(isp))
+	if (atomisp_streaming_count(isp)) {
+		atomisp_css_flush(isp);
 		return 0;
+	}
 
 #ifdef PUNIT_CAMERA_BUSY
-	if (!IS_ISP2400(isp) && isp->need_gfx_throttle) {
+	if (!IS_ISP24XX(isp) && isp->need_gfx_throttle) {
 		/* Free camera_busy bit */
 		msg_ret = intel_mid_msgbus_read32(PUNIT_PORT, MFLD_OR1);
 		msg_ret &= ~0x100;
@@ -1689,7 +1720,7 @@ stopsensor:
 	}
 #endif
 
-	if (IS_ISP2400(isp) && atomisp_freq_scaling(isp, ATOMISP_DFS_MODE_LOW))
+	if (IS_ISP24XX(isp) && atomisp_freq_scaling(isp, ATOMISP_DFS_MODE_LOW))
 		dev_warn(isp->dev, "DFS failed.\n");
 	/*
 	 * ISP work around, need to reset isp
@@ -1697,11 +1728,11 @@ stopsensor:
 	 */
 	if (isp->sw_contex.power_state == ATOM_ISP_POWER_UP) {
 		if (isp->isp_timeout)
-			dev_err(isp->dev, "%s: Resetting with WA activated", __func__);
+			dev_err(isp->dev, "%s: Resetting with WA activated",
+				__func__);
 		atomisp_reset(isp);
 		isp->isp_timeout = false;
 	}
-
 	return ret;
 }
 
@@ -2261,7 +2292,11 @@ static long atomisp_vidioc_default(struct file *file, void *fh,
 		break;
 
 	case ATOMISP_IOC_S_DIS_VECTOR:
+#ifdef CSS20
+		err = atomisp_set_dvs_6axis_config(asd, arg);
+#else
 		err = atomisp_set_dis_vector(asd, arg);
+#endif
 		break;
 
 	case ATOMISP_IOC_G_ISP_PARM:
@@ -2269,7 +2304,8 @@ static long atomisp_vidioc_default(struct file *file, void *fh,
 		break;
 
 	case ATOMISP_IOC_S_ISP_PARM:
-		err = atomisp_param(asd, 1, arg);
+		//workaround for setting extended  parameters
+		err = atomisp_param_ext(asd, arg);
 		break;
 
 	case ATOMISP_IOC_G_3A_STAT:
@@ -2362,7 +2398,12 @@ static long atomisp_vidioc_default(struct file *file, void *fh,
 			return v4l2_subdev_call(
 					isp->inputs[asd->input_curr].camera,
 					core, ioctl, cmd, arg);
-
+// <ChungYi>
+	case ATOMISP_TEST_CMD_SET_VCM_POS:
+	case ATOMISP_TEST_CMD_GET_VCM_POS:
+	case ATOMISP_TEST_CMD_SET_TORCH:
+	case ATOMISP_TEST_CMD_SET_FLASH:
+// </ChungYi>
 	case ATOMISP_IOC_S_EXPOSURE:
 	case ATOMISP_IOC_G_SENSOR_CALIBRATION_GROUP:
 	case ATOMISP_IOC_G_SENSOR_PRIV_INT_DATA:
@@ -2422,7 +2463,6 @@ static long atomisp_vidioc_default(struct file *file, void *fh,
 	case ATOMISP_IOC_S_CONT_CAPTURE_CONFIG:
 		err = atomisp_offline_capture_configure(asd, arg);
 		break;
-
 	default:
 		mutex_unlock(&isp->mutex);
 		return -EINVAL;

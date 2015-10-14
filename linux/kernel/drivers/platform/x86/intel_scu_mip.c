@@ -23,7 +23,7 @@
 #include <asm/intel_scu_ipc.h>
 #include <asm/intel_mip.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/intel_mid_remoteproc.h>
+#include <linux/platform_data/intel_mid_remoteproc.h>
 
 #define DRIVER_NAME "intel_scu_mip"
 
@@ -82,7 +82,7 @@ static u8 calc_checksum(void *_buf, int size)
 	return checksum;
 }
 
-static int mmcblk0boot0_match(struct device *dev, void *data)
+static int mmcblk0boot0_match(struct device *dev, const void *data)
 {
 	if (strcmp(dev_name(dev), UMIP_BLKDEVICE) == 0)
 		return 1;
@@ -128,13 +128,9 @@ static int read_mip(u8 *data, int len, int offset, int issigned)
 	cmdid = issigned ? IPC_CMD_SMIP_RD : IPC_CMD_UMIP_RD;
 	cmd = 4 << 16 | cmdid << 12 | IPCMSG_MIP_ACCESS;
 
-	do {
-		ret = rpmsg_send_raw_command(mip_instance, cmd, 0, NULL,
-			(u32 *)&data_off, 0, 1, sptr, dptr);
+	ret = rpmsg_send_raw_command(mip_instance, cmd, 0, NULL,
+		(u32 *)&data_off, 0, 1, sptr, dptr);
 
-		if (ret == -EIO)
-			msleep(20);
-	} while (ret == -EIO);
 
 	if (!ret)
 		memcpy(data, intel_mip_base + data_off, len);
@@ -383,12 +379,8 @@ bd_put:
 
 		memcpy(intel_mip_base, buf, len_align);
 
-		do {
-			ret = rpmsg_send_raw_command(mip_instance, cmd, 0, NULL,
-					NULL, 0, 0, sptr, dptr);
-			if (ret == -EIO)
-				msleep(20);
-		} while (ret == -EIO);
+		ret = rpmsg_send_raw_command(mip_instance, cmd, 0, NULL,
+			NULL, 0, 0, sptr, dptr);
 
 fail:
 		if (buf && len_align != len)
@@ -648,7 +640,7 @@ static struct platform_driver scu_mip_driver = {
 		.owner = THIS_MODULE,
 	},
 	.probe = scu_mip_probe,
-	.remove = __devexit_p(scu_mip_remove),
+	.remove = scu_mip_remove,
 	.id_table = scu_mip_table,
 };
 

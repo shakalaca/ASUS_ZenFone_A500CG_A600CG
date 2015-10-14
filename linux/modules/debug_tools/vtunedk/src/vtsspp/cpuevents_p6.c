@@ -208,7 +208,7 @@ static void vf_p6_freeze_read_ro(cpuevent_t* this)
 static int vf_p6_overflowed(cpuevent_t* this)
 {
     if (this->frozen_count >= 0) {
-        return 1;               /// always signal overflow for no sampling mode and in case of real overflow
+        return 1;               // always signal overflow for no sampling mode and in case of real overflow
     }
     return 0;
 }

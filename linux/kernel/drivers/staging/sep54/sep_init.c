@@ -125,14 +125,14 @@ static int fetch_image(struct device *mydev, const char *image_name,
 
 	rc = request_firmware(&image, image_name, mydev);
 	if (unlikely(rc != 0)) {
-		SEP_LOG_ERR("Failed loading image %s (%d)\n", image_name, rc);
+		pr_err("Failed loading image %s (%d)\n", image_name, rc);
 		return -ENODEV;
 	}
 	*image_pp = dma_alloc_coherent(mydev,
 				       image->size, image_dma_addr_p,
 				       GFP_KERNEL);
 	if (unlikely(*image_pp == NULL)) {
-		SEP_LOG_ERR("Failed allocating DMA mem. for resident image\n");
+		pr_err("Failed allocating DMA mem. for resident image\n");
 		rc = -ENOMEM;
 	} else {
 		memcpy(*image_pp, image->data, image->size);
@@ -141,7 +141,7 @@ static int fetch_image(struct device *mydev, const char *image_name,
 	/* Image copied into the DMA coherent buffer. No need for "firmware" */
 	release_firmware(image);
 	if (likely(rc == 0))
-		SEP_LOG_DEBUG("%s: %d Bytes\n", image_name, *image_size_p);
+		pr_debug("%s: %zu Bytes\n", image_name, *image_size_p);
 	return rc;
 }
 
@@ -156,7 +156,7 @@ static enum dx_cc_init_msg_icache_size icache_size_to_enum(u8
 		if ((icache_size_log2 == icache_sizes_enum2log[i]) &&
 		    (icache_sizes_enum2log[i] >= 0))
 			return (enum dx_cc_init_msg_icache_size)i;
-	SEP_LOG_ERR("Requested Icache size (%uKB) is invalid\n",
+	pr_err("Requested Icache size (%uKB) is invalid\n",
 		    1 << (icache_size_log2 - 10));
 	return DX_CC_INIT_MSG_ICACHE_SCR_INVALID_SIZE;
 }
@@ -268,7 +268,7 @@ struct cc_init_ctx *create_cc_init_ctx(struct sep_drvdata *drvdata)
 
 	init_ctx = kzalloc(sizeof(struct cc_init_ctx), GFP_KERNEL);
 	if (unlikely(init_ctx == NULL)) {
-		SEP_LOG_ERR("Failed allocating CC-Init. context\n");
+		pr_err("Failed allocating CC-Init. context\n");
 		rc = -ENOMEM;
 		goto create_err;
 	}
@@ -319,7 +319,7 @@ static int sepinit_wait_for_cold_boot_finish(struct sep_drvdata *drvdata)
 		rc = -EIO;
 		cur_status =
 		    READ_REGISTER(drvdata->cc_base + SEP_STATUS_GPR_OFFSET);
-		SEP_LOG_ERR(
+		pr_err(
 			    "Failed waiting for DONE_COLD_BOOT from SeP (state=0x%08X status=0x%08X)\n",
 			    cur_state, cur_status);
 	}
@@ -392,7 +392,7 @@ int sepinit_do_cc_init(struct sep_drvdata *drvdata)
 	cur_state = dx_sep_wait_for_state(DX_SEP_STATE_START_SECURE_BOOT,
 					  COLD_BOOT_TIMEOUT_MSEC);
 	if (cur_state != DX_SEP_STATE_START_SECURE_BOOT) {
-		SEP_LOG_ERR("Bad SeP state = 0x%08X\n", cur_state);
+		pr_err("Bad SeP state = 0x%08X\n", cur_state);
 		return -EIO;
 	}
 #ifdef __BIG_ENDIAN
@@ -416,11 +416,7 @@ int sepinit_do_cc_init(struct sep_drvdata *drvdata)
 /*** FW_INIT handlers ***/
 
 #ifdef DEBUG
-#define ENUM_CASE_RETURN_STR(enum_name)		\
-	do {					\
-		case enum_name:			\
-			return #enum_name;	\
-	} while (0)
+#define ENUM_CASE_RETURN_STR(enum_name)	(case enum_name: return #enum_name)
 
 static const char *param2str(enum dx_fw_init_tlv_params param_type)
 {
@@ -454,7 +450,7 @@ static void dump_fwinit_params(struct sep_drvdata *drvdata,
 	char line_buf[LINE_BUF_LEN];
 	unsigned int line_offset;
 
-	printk(KERN_DEBUG "Dx SeP fw_init params dump:\n");
+	pr_debug("Dx SeP fw_init params dump:\n");
 	cur_buf_p = fw_init_params_buf_p;
 	do {
 		tl_word = le32_to_cpu(*cur_buf_p);
@@ -464,7 +460,7 @@ static void dump_fwinit_params(struct sep_drvdata *drvdata,
 
 		if ((cur_buf_p + len - fw_init_params_buf_p) >
 		    (FW_INIT_PARAMS_BUF_LEN / sizeof(u32))) {
-			SEP_LOG_ERR
+			pr_err
 			    ("LAST parameter not found up to buffer end\n");
 			break;
 		}
@@ -479,7 +475,7 @@ static void dump_fwinit_params(struct sep_drvdata *drvdata,
 			 * next call to snprintf
 			 */
 			if (line_offset + 11 >= LINE_BUF_LEN) {
-				printk(KERN_DEBUG "%s\n", line_buf);
+				pr_debug("%s\n", line_buf);
 				line_offset = 0;
 			}
 			line_offset += snprintf(line_buf + line_offset,
@@ -488,7 +484,7 @@ static void dump_fwinit_params(struct sep_drvdata *drvdata,
 						le32_to_cpu(*cur_buf_p));
 			cur_buf_p++;
 		}
-		printk(KERN_DEBUG "%s}\n", line_buf);
+		pr_debug("%s}\n", line_buf);
 	} while (tl_word != last_tl_word);
 }
 #else
@@ -516,7 +512,7 @@ static void add_fwinit_param(u32 *tlv_buf, u32 *idx_p,
 #ifdef DEBUG
 	/* Verify that we have enough space for LAST param. after this param. */
 	if ((*idx_p + 1 + length + 2) > (FW_INIT_PARAMS_BUF_LEN / 4)) {
-		SEP_LOG_ERR("tlv_buf size limit reached!\n");
+		pr_err("tlv_buf size limit reached!\n");
 		SEP_DRIVER_BUG();
 	}
 #endif
@@ -602,11 +598,11 @@ static int create_fwinit_command(struct sep_drvdata *drvdata,
 						    FW_INIT_PARAMS_BUF_LEN,
 						    fw_init_params_dma_p,
 						    GFP_KERNEL);
-	SEP_LOG_DEBUG("fw_init_params_dma=0x%08lX fw_init_params_va=0x%p\n",
+	pr_debug("fw_init_params_dma=0x%08lX fw_init_params_va=0x%p\n",
 		      (unsigned long)*fw_init_params_dma_p,
 		      *fw_init_params_buf_pp);
 	if (*fw_init_params_buf_pp == NULL) {
-		SEP_LOG_ERR("Unable to allocate coherent workspace buffer\n");
+		pr_err("Unable to allocate coherent workspace buffer\n");
 		return -ENOMEM;
 	}
 
@@ -636,7 +632,7 @@ static int create_fwinit_command(struct sep_drvdata *drvdata,
 		    ctxmgr_sep_cache_get_size(drvdata->queue[i].sep_cache);
 		if ((qs_base_dma[i] == 0) || (qs_size[i] == 0) ||
 		    (qs_ctx_size[i] == 0)) {
-			SEP_LOG_ERR(
+			pr_err(
 				    "Invalid queue %d resources: base=0x%08X size=%u ctx_cache_size=%u\n",
 				    i, qs_base_dma[i], qs_size[i],
 				    qs_ctx_size[i]);
@@ -647,7 +643,7 @@ static int create_fwinit_command(struct sep_drvdata *drvdata,
 	}
 
 	if (qs_ctx_size_total > drvdata->num_of_sep_cache_entries) {
-		SEP_LOG_ERR("Too many context cache entries allocated(%u>%u)\n",
+		pr_err("Too many context cache entries allocated(%u>%u)\n",
 			    qs_ctx_size_total,
 			    drvdata->num_of_sep_cache_entries);
 		rc = -EINVAL;
@@ -724,7 +720,7 @@ void sepinit_get_fw_props(struct sep_drvdata *drvdata)
 			 DX_SEP_INIT_MLLI_TBL_SIZE_BIT_OFFSET,
 			 DX_SEP_INIT_MLLI_TBL_SIZE_BIT_SIZE);
 
-	SEP_LOG_INFO("ROM Ver.=0x%08X , FW Ver.=0x%08X\n"
+	pr_info("ROM Ver.=0x%08X , FW Ver.=0x%08X\n"
 		     "SEP queues=%u, Ctx.Cache#ent.=%u , MLLIsize=%lu B\n",
 		     drvdata->rom_ver, drvdata->fw_ver,
 		     drvdata->num_of_desc_queues,
@@ -754,11 +750,11 @@ static int sepinit_wait_for_fw_init_done(struct sep_drvdata *drvdata)
 		rc = -EIO;
 		cur_status =
 		    READ_REGISTER(drvdata->cc_base + SEP_STATUS_GPR_OFFSET);
-		SEP_LOG_ERR(
+		pr_err(
 			    "Failed waiting for DONE_FW_INIT from SeP (state=0x%08X status=0x%08X)\n",
 			    cur_state, cur_status);
 	} else {
-		SEP_LOG_INFO("DONE_FW_INIT\n");
+		pr_info("DONE_FW_INIT\n");
 	}
 
 	return rc;

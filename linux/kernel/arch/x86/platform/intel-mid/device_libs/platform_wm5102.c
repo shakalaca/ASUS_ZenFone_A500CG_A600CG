@@ -32,7 +32,6 @@ static const struct arizona_micd_range micd_ctp_ranges[] = {
 
 static struct arizona_pdata wm5102_pdata  = {
 	.ldoena = 44,
-	.irq_base = 0x50,
 	.clk32k_src = ARIZONA_32KZ_MCLK2,
 	.irq_flags = IRQF_TRIGGER_FALLING,
 	.dmic_ref = {ARIZONA_DMIC_MICBIAS1, ARIZONA_DMIC_MICBIAS3, 0, 0},

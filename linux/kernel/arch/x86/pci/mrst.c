@@ -206,6 +206,7 @@ static int pci_write(struct pci_bus *bus, unsigned int devfn, int where,
 
 static int intel_mid_pci_irq_enable(struct pci_dev *dev)
 {
+#ifndef CONFIG_XEN
 	u8 pin;
 	struct io_apic_irq_attr irq_attr;
 
@@ -215,16 +216,23 @@ static int intel_mid_pci_irq_enable(struct pci_dev *dev)
 	 * IOAPIC RTE entries, so we just enable RTE for the device.
 	 */
 	irq_attr.ioapic = mp_find_ioapic(dev->irq);
+	if (irq_attr.ioapic < 0)
+		return -EINVAL;
 	irq_attr.ioapic_pin = dev->irq;
 	irq_attr.trigger = 1; /* level */
 	if ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) ||
-	    (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE))
+		(intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE) ||
+		(intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON))
 		irq_attr.polarity = 0; /* active high */
 	else
 		irq_attr.polarity = 1; /* active low */
 	io_apic_set_pci_routing(&dev->dev, dev->irq, &irq_attr);
 
 	return 0;
+#else
+	xen_register_gsi(dev->irq, -1, 0, 1);
+	return xen_pcifront_enable_irq(dev);
+#endif
 }
 
 struct pci_ops intel_mid_pci_ops = {
@@ -252,7 +260,7 @@ int __init intel_mid_pci_init(void)
 /* Langwell devices are not true pci devices, they are not subject to 10 ms
  * d3 to d0 delay required by pci spec.
  */
-static void __devinit pci_d3delay_fixup(struct pci_dev *dev)
+static void pci_d3delay_fixup(struct pci_dev *dev)
 {
 	/* PCI fixups are effectively decided compile time. If we have a dual
 	   SoC/non-SoC kernel we don't want to mangle d3 on non SoC devices */
@@ -264,10 +272,11 @@ static void __devinit pci_d3delay_fixup(struct pci_dev *dev)
 	if (type1_access_ok(dev->bus->number, dev->devfn, PCI_DEVICE_ID))
 		return;
 	dev->d3_delay = 0;
+	dev->d3cold_delay = 0;
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, PCI_ANY_ID, pci_d3delay_fixup);
 
-static void __devinit mrst_power_off_unused_dev(struct pci_dev *dev)
+static void mrst_power_off_unused_dev(struct pci_dev *dev)
 {
 	pci_set_power_state(dev, PCI_D3hot);
 }
@@ -280,7 +289,7 @@ DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 0x0815, mrst_power_off_unused_dev);
 /*
  * Langwell devices reside at fixed offsets, don't try to move them.
  */
-static void __devinit pci_fixed_bar_fixup(struct pci_dev *dev)
+static void pci_fixed_bar_fixup(struct pci_dev *dev)
 {
 	unsigned long offset;
 	u32 size;

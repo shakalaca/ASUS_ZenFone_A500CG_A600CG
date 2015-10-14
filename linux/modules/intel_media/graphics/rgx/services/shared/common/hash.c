@@ -91,9 +91,6 @@ typedef struct _BUCKET_ BUCKET;
 
 struct _HASH_TABLE_
 {
-	/* the hash table array */
-	BUCKET **ppBucketTable;
-
 	/* current size of the hash table */
 	IMG_UINT32 uSize;
 
@@ -111,6 +108,9 @@ struct _HASH_TABLE_
 
 	/* key comparison function */
 	HASH_KEY_COMP *pfnKeyComp;
+
+	/* the hash table array */
+	BUCKET **ppBucketTable;
 };
 
 /*************************************************************************/ /*!
@@ -332,13 +332,6 @@ HASH_TABLE * HASH_Create_Extended (IMG_UINT32 uInitialLen, IMG_SIZE_T uKeySize, 
 		return IMG_NULL;
     }
 
-	if (pHash->ppBucketTable == IMG_NULL)
-    {
-		OSFreeMem(pHash);
-		/*not nulling pointer, out of scope*/
-		return IMG_NULL;
-    }
-
 	for (uIndex=0; uIndex<pHash->uSize; uIndex++)
 		pHash->ppBucketTable[uIndex] = IMG_NULL;
 	return pHash;
@@ -374,7 +367,7 @@ IMG_INTERNAL IMG_VOID
 HASH_Delete (HASH_TABLE *pHash)
 {
 	IMG_BOOL bDoCheck = IMG_TRUE;
-#if defined(__KERNEL__)
+#if defined(__KERNEL__) && !defined(__QNXNTO__)
 	PVRSRV_DATA *psPVRSRVData = PVRSRVGetPVRSRVData();
 	if (psPVRSRVData->eServicesState != PVRSRV_SERVICES_STATE_OK)
 	{

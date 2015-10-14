@@ -18,3 +18,4 @@ obj-$(CONFIG_UPI_BATTERY) += ug31xx/
 obj-y += asus_battery_power.o
 obj-$(CONFIG_PROC_FS) += asus_battery_proc_fs.o
 obj-$(CONFIG_ASUS_ENGINEER_MODE) += asus_battery_proc_fs_asustag.o
+obj-$(CONFIG_BATTERY_MAX17048)	+= max17048_battery.o

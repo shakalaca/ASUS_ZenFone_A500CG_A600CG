@@ -50,13 +50,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #endif
 
 static RGX_TIMING_INFORMATION	gsRGXTimingInfo;
-static RGX_DATA					gsRGXData;
+static RGX_DATA			gsRGXData;
 static PVRSRV_DEVICE_CONFIG 	gsDevices[1];
 static PVRSRV_SYSTEM_CONFIG 	gsSysConfig;
 
 static PHYS_HEAP_FUNCTIONS	gsPhysHeapFuncs;
 #if defined(TDMETACODE)
-static PHYS_HEAP_CONFIG		gsPhysHeapConfig[2];
+static PHYS_HEAP_CONFIG		gsPhysHeapConfig[3];
 #else
 static PHYS_HEAP_CONFIG		gsPhysHeapConfig[1];
 #endif
@@ -87,14 +87,13 @@ IMG_VOID UMAPhysHeapDevPAddrToCpuPAddr(IMG_HANDLE hPrivData,
 	psCpuPAddr->uiAddr = psDevPAddr->uiAddr;
 }
 
-
 /*
 	SysCreateConfigData
 */
 PVRSRV_ERROR SysCreateConfigData(PVRSRV_SYSTEM_CONFIG **ppsSysConfig)
 {
 	/*
-	 * Setup information about physaical memory heap(s) we have
+	 * Setup information about physical memory heap(s) we have
 	 */
 	gsPhysHeapFuncs.pfnCpuPAddrToDevPAddr = UMAPhysHeapCpuPAddrToDevPAddr;
 	gsPhysHeapFuncs.pfnDevPAddrToCpuPAddr = UMAPhysHeapDevPAddrToCpuPAddr;
@@ -111,12 +110,18 @@ PVRSRV_ERROR SysCreateConfigData(PVRSRV_SYSTEM_CONFIG **ppsSysConfig)
 	gsPhysHeapConfig[1].eType = PHYS_HEAP_TYPE_UMA;
 	gsPhysHeapConfig[1].psMemFuncs = &gsPhysHeapFuncs;
 	gsPhysHeapConfig[1].hPrivData = IMG_NULL;
+
+	gsPhysHeapConfig[2].ui32PhysHeapID = 2;
+	gsPhysHeapConfig[2].pszPDumpMemspaceName = "TDSECUREBUFMEM";
+	gsPhysHeapConfig[2].eType = PHYS_HEAP_TYPE_UMA;
+	gsPhysHeapConfig[2].psMemFuncs = &gsPhysHeapFuncs;
+	gsPhysHeapConfig[2].hPrivData = IMG_NULL;
 #endif
 
 	gsSysConfig.pasPhysHeaps = &(gsPhysHeapConfig[0]);
-	gsSysConfig.ui32PhysHeapCount = sizeof(gsPhysHeapConfig) / sizeof(gsPhysHeapConfig[0]);
-	gsSysConfig.pui32BIFTilingHeapConfigs = gauiBIFTilingHeapXStrides;
+	gsSysConfig.ui32PhysHeapCount = IMG_ARR_NUM_ELEMS(gsPhysHeapConfig);
 
+	gsSysConfig.pui32BIFTilingHeapConfigs = gauiBIFTilingHeapXStrides;
 	gsSysConfig.ui32BIFTilingHeapCount = IMG_ARR_NUM_ELEMS(gauiBIFTilingHeapXStrides);
 
 	/*
@@ -134,6 +139,9 @@ PVRSRV_ERROR SysCreateConfigData(PVRSRV_SYSTEM_CONFIG **ppsSysConfig)
 #if defined(TDMETACODE)
 	gsRGXData.bHasTDMetaCodePhysHeap = IMG_TRUE;
 	gsRGXData.uiTDMetaCodePhysHeapID = 1;
+
+	gsRGXData.bHasTDSecureBufPhysHeap = IMG_TRUE;
+	gsRGXData.uiTDSecureBufPhysHeapID = 2;
 #endif
 
 	/*
@@ -186,9 +194,9 @@ PVRSRV_ERROR SysCreateConfigData(PVRSRV_SYSTEM_CONFIG **ppsSysConfig)
 #endif
 
 	*ppsSysConfig = &gsSysConfig;
+
 	return PVRSRV_OK;
 }
-
 
 /*
 	SysDestroyConfigData
@@ -200,6 +208,20 @@ IMG_VOID SysDestroyConfigData(PVRSRV_SYSTEM_CONFIG *psSysConfig)
 #if defined(SUPPORT_ION)
 	IonDeinit();
 #endif
+}
+
+PVRSRV_ERROR SysAcquireSystemData(IMG_HANDLE hSysData)
+{
+	PVR_UNREFERENCED_PARAMETER(hSysData);
+
+	return PVRSRV_ERROR_NOT_SUPPORTED;
+}
+
+PVRSRV_ERROR SysReleaseSystemData(IMG_HANDLE hSysData)
+{
+	PVR_UNREFERENCED_PARAMETER(hSysData);
+
+	return PVRSRV_ERROR_NOT_SUPPORTED;
 }
 
 PVRSRV_ERROR SysDebugInfo(PVRSRV_SYSTEM_CONFIG *psSysConfig)

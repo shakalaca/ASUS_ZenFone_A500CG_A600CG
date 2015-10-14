@@ -1,5 +1,5 @@
 /**
-#endif
+ *
  * file tng_topazinit.c
  * TOPAZ initialization and mtx-firmware upload
  *
@@ -20,7 +20,7 @@
  * more details.
  *
  * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
+ * this program; if not, write to the Free Software Foundation, Inc.
  * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  *
  **************************************************************************/
@@ -60,11 +60,10 @@
 
 #define FW_NAME_A0 "topazhp_fw.bin"
 #define FW_NAME_B0 "topazhp_fw_b0.bin"
+#define FW_NAME_ANN "ann_a0_signed_vec_key0.bin"
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
 #ifdef CONFIG_DX_SEP54
 extern int sepapp_image_verify(u8 *addr, ssize_t size, u32 key_index, u32 magic_num);
-#endif
 #endif
 
 extern int drm_psb_msvdx_tiling;
@@ -607,8 +606,7 @@ static void tng_topaz_mmu_configure(struct drm_device *dev)
 #endif
 
 void tng_topaz_mmu_enable_tiling(
-	struct drm_psb_private *dev_priv,
-	uint32_t pipe_id)
+	struct drm_psb_private *dev_priv)
 {
 	uint32_t reg_val;
 	uint32_t min_addr = dev_priv->bdev.man[TTM_PL_TT].gpu_offset;
@@ -619,11 +617,11 @@ void tng_topaz_mmu_enable_tiling(
 			min_addr, max_addr);
 
 	reg_val = F_ENCODE(1, TOPAZHP_TOP_CR_TILE_ENABLE) | /* Enable tiling */
-		F_ENCODE(0, TOPAZHP_TOP_CR_TILE_STRIDE) | /* Set stride */
+		F_ENCODE(2, TOPAZHP_TOP_CR_TILE_STRIDE) | /* Set stride to 2048 as tiling is only used for 1080p */
 		F_ENCODE((max_addr>>20), TOPAZHP_TOP_CR_TILE_MAX_ADDR) | /* Set max address */
 		F_ENCODE((min_addr>>20), TOPAZHP_TOP_CR_TILE_MIN_ADDR); /* Set min address */
 
-	TOPAZCORE_WRITE32(pipe_id, TOPAZHP_TOP_CR_MMU_TILE_0, reg_val);
+	MULTICORE_WRITE32(TOPAZHP_TOP_CR_MMU_TILE_0, reg_val);
 
 }
 
@@ -655,7 +653,7 @@ void tng_powerdown_topaz(struct work_struct *work)
 	int32_t ret = 0;
 
 	PSB_DEBUG_TOPAZ("TOPAZ: Task start\n");
-	if (Is_Mrfld_B0()) {
+	if (Is_Secure_Fw()) {
 		ret = tng_topaz_query_queue(dev);
 		if (ret == 0) {
 			ret = tng_topaz_power_off(dev);
@@ -851,7 +849,7 @@ int tng_topaz_reset(struct drm_psb_private *dev_priv)
 	uint32_t reg_val;
 
 	topaz_priv = dev_priv->topaz_private;
-	topaz_priv->topaz_busy = 0;
+	/* topaz_priv->topaz_busy = 0; */
 
 	topaz_priv->topaz_needs_reset = 0;
 
@@ -938,33 +936,29 @@ int tng_topaz_init_fw_chaabi(struct drm_device *dev)
 	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct tng_topaz_private *topaz_priv = dev_priv->topaz_private;
 	const struct firmware *raw = NULL;
-
-	struct ttm_buffer_object **cur_drm_obj;
-	struct ttm_bo_kmap_obj tmp_kmap;
-	bool is_iomem;
-
-	unsigned char *uc_ptr;
-	unsigned char *uc_header;
-	unsigned int  *ui_ptr;
-	uint32_t ret = 0;
-	int n;
-
-	unsigned long imr_addr;
-	int imr_size;
-	unsigned char *imr_ptr;
-	const unsigned long tng_magic_num = 0x43455624;
+	uint32_t imr6l_val, imr6l_addr;
+	void *ptr = NULL;
+	int32_t ret = 0;
+	int fw_size;
+	uint8_t *imr_ptr;
+	const uint32_t tng_magic_num = 0x43455624;
 
 #ifdef VERIFYFW_INIT
 	uint32_t i, *p_buf;
 #endif
 	/* # get firmware */
 	ret = request_firmware(&raw, FW_NAME_B0, &dev->pdev->dev);
+	if (IS_TNG_B0(dev))
+		ret = request_firmware(&raw, FW_NAME_B0, &dev->pdev->dev);
+	else if (IS_ANN_A0(dev))
+		ret = request_firmware(&raw, FW_NAME_ANN, &dev->pdev->dev);
+	else
+		DRM_ERROR("VEC secure fw: bad platform\n");
+
 	if (ret) {
 		DRM_ERROR("TOPAZ: Request firmware failed: %d\n", ret);
 		return ret;
 	}
-
-	PSB_DEBUG_TOPAZ("TOPAZ: Opened firmware, size 0x%08x\n", raw->size);
 
 	if ((NULL == raw) || (raw->size < 20)) {
 		DRM_ERROR("TOPAZ: Firmware file size is not correct.\n");
@@ -972,67 +966,75 @@ int tng_topaz_init_fw_chaabi(struct drm_device *dev)
 		goto out;
 	}
 
-	uc_ptr = (unsigned char *) raw->data;
-	if (!uc_ptr) {
-		DRM_ERROR("TOPAZ: firmware data addr = 0x%08x\n",
-			(unsigned int)uc_ptr);
-		ret = -1;
-		goto out;
-	}
+	PSB_DEBUG_TOPAZ("TOPAZ: Opened firmware, size 0x%08x\n", raw->size);
 
 	/* # load fw from file */
 	PSB_DEBUG_TOPAZ("TOPAZ: copy firmware data to IMR6\n");
 
 	/* get imr 11 region start address and size */
-	imr_addr = intel_mid_msgbus_read32(PNW_IMR_MSG_PORT,
+	imr6l_val = intel_mid_msgbus_read32(PNW_IMR_MSG_PORT,
 		TNG_IMR6L_MSG_REGADDR);
-	imr_addr <<= TNG_IMR_ADDRESS_SHIFT;
-	PSB_DEBUG_TOPAZ("IMR6 base address 0x%08x\n", imr_addr);
-	imr_size = raw->size;
+
+	imr6l_addr = (imr6l_val & TNG_IMR_ADDRESS_MASK) << TNG_IMR_ADDRESS_SHIFT;
+
+	PSB_DEBUG_TOPAZ("IMR6 base address 0x%08x, 0x%08x\n",
+		imr6l_val, imr6l_addr);
+
+	ptr = (int *)(raw)->data;
+	if (!ptr) {
+		DRM_ERROR("TOPAZ: firmware data addr = 0x%08x\n",
+			(unsigned int)ptr);
+		ret = -1;
+		goto out;
+	}
+
+	fw_size = (int)(raw)->size;
 	/* FIXME: set imr_addr to default value */
 	/* imr_addr = 0x48f3000; */
 
 	/* map imr 11 */
 	/* check if raw size is smaller than */
 	/* ioremap the region */
-	PSB_DEBUG_TOPAZ("ioremap IMR6 0x%08x, size 0x%08x\n",
-		imr_addr, imr_size);
-	imr_ptr = ioremap(imr_addr, imr_size);
+	PSB_DEBUG_TOPAZ("ioremap fw size 0x%08x\n", fw_size);
+	imr_ptr = ioremap(imr6l_addr, fw_size);
 	if (!imr_ptr) {
-		DRM_ERROR("failed to map imr_addr\n");
+		DRM_ERROR("failed to map imr6l_addr\n");
 		ret = -1;
 		goto out;
 	}
 
-	PSB_DEBUG_TOPAZ("copy fw data to IMR6 0x%08x\n",
-		(u32)imr_ptr);
+	PSB_DEBUG_TOPAZ("copy fw data to IMR6 0x%08x\n", (u32)imr_ptr);
 	/* copy the firmware to imr 11 */
-	memcpy(imr_ptr, uc_ptr, raw->size);
+	memcpy(imr_ptr, ptr, fw_size);
 
 	PSB_DEBUG_TOPAZ("iounmap IMR6 0x%08x\n", imr_ptr);
 	/* unmap the region */
 	iounmap(imr_ptr);
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
+
 #ifdef CONFIG_DX_SEP54
 	PSB_DEBUG_TOPAZ("CALL chaabi API to verify it\n");
-	ret = sepapp_image_verify(imr_addr, imr_size, 0,
-		tng_magic_num);
+	PSB_DEBUG_TOPAZ("addr = 0x%08x, fw_size = 0x%08x, magic = 0x%08x\n",
+		imr6l_addr, fw_size, tng_magic_num);
+#ifdef MRFLD_B0_DEBUG
+	PSB_DEBUG_TOPAZ("imr6 L 0x98 = 0x%x\n", intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,0X98));
+	PSB_DEBUG_TOPAZ("imr6 H 0x99 = 0x%x\n", intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,0X99));
+	PSB_DEBUG_TOPAZ("imr6 RAC 0x9a = 0x%x\n", intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,0X9a));
+	PSB_DEBUG_TOPAZ("imr6 WAC 0x9b = 0x%x\n", intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,0X9b));
+#endif
+	ret = sepapp_image_verify(imr6l_addr, fw_size, 0, tng_magic_num);
 	if (ret) {
 		DRM_ERROR("failed to verify vec firmware ret %x\n", ret);
 		ret = -1;
 		goto out;
 	}
+	PSB_DEBUG_TOPAZ("FW is verified\n");
 #ifdef MRFLD_B0_DEBUG
-	ret = intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,
-		TNG_IMR6_WAC_MSG_REGADDR);
-	PSB_DEBUG_TOPAZ("TOPAZ: WAC = 0x%08x\n",
-		ret);
-	ret = intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,
-		TNG_IMR6_RAC_MSG_REGADDR);
-	PSB_DEBUG_TOPAZ("TOPAZ: RAC = 0x%08x\n",
-		ret);
-	udelay(10);
-#endif
+	PSB_DEBUG_TOPAZ("imr6 L 0x98 = 0x%x\n", intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,0X98));
+	PSB_DEBUG_TOPAZ("imr6 H 0x99 = 0x%x\n", intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,0X99));
+	PSB_DEBUG_TOPAZ("imr6 RAC 0x9a = 0x%x\n", intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,0X9a));
+	PSB_DEBUG_TOPAZ("imr6 WAC 0x9b = 0x%x\n", intel_mid_msgbus_read32(TNG_IMR_MSG_PORT,0X9b));
+	PSB_DEBUG_TOPAZ("vec FW power PM0 = 0x%x\n", intel_mid_msgbus_read32(0x04, 0x34));
+	ret = 0;
 #endif
 #endif
 
@@ -1520,7 +1522,9 @@ int tng_topaz_fw_run(
 		0);
 		/* TOPAZHP_NON_SECURE_FW_MARKER); */
 		/* reg_val); */
-	MULTICORE_WRITE32(MTX_SCRATCHREG_IDLE, 0);
+
+	if (codec != IMG_CODEC_JPEG) /* Not JPEG */
+		MULTICORE_WRITE32(MTX_SCRATCHREG_IDLE, 0);
 
 	/* set up mmu */
 	tng_topaz_mmu_hwsetup(dev_priv);
@@ -1942,7 +1946,7 @@ void tng_topaz_mmu_hwsetup(struct drm_psb_private *dev_priv)
 	if (drm_psb_msvdx_tiling && dev_priv->have_mem_mmu_tiling &&
 		((topaz_priv->frame_w>PSB_TOPAZ_TILING_THRESHOLD) ||
 		(topaz_priv->frame_h>PSB_TOPAZ_TILING_THRESHOLD))) {
-		tng_topaz_mmu_enable_tiling(dev_priv, 0);
+		tng_topaz_mmu_enable_tiling(dev_priv);
 	}
 
 	/* now enable MMU access for all requestors */

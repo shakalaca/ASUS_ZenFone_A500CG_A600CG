@@ -13,4 +13,7 @@
 #define _PLATFORM_EDLP_MODEM_H_
 
 extern void *edlp_modem_platform_data(void *data) __attribute__((weak));
+
+extern void sfi_handle_edlp_dev(struct sfi_device_table_entry *pentry,
+						 struct devs_id *dev);
 #endif

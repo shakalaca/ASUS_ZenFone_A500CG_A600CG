@@ -334,15 +334,23 @@ void mrfld_setup_pll(struct drm_device *dev, int pipe, int clk)
 	 */
 	if (pipe != 1) {
 		if (is_panel_vid_or_cmd(dev) == MDFLD_DSI_ENCODER_DBI) {
-			if (get_panel_type(dev, pipe) == JDI_CMD) {
+			if (get_panel_type(dev, pipe) == JDI_7x12_CMD) {
 				clock.p1 = 4;
 				clk_n = 1;
 				clock.m = 142;
+			} else if (get_panel_type(dev, pipe) == SHARP_10x19_CMD) {
+				clock.p1 = 3;
+				clk_n = 1;
+				clock.m = 125;
 			} else {
 				clock.p1 = 4;
 				clk_n = 1;
 				clock.m = 120;
 			}
+		} else if (is_dual_dsi(dev)) {
+			clock.p1 = 2;
+			clk_n = 1;
+			clock.m = 104;
 		} else {
 			clock.p1 = 5;
 			clk_n = 1;
@@ -462,9 +470,8 @@ void enable_HFPLL(struct drm_device *dev)
 	struct drm_psb_private *dev_priv =
 		(struct drm_psb_private *)dev->dev_private;
 
-	/* Enable HFPLL for B0 command mode panel */
-	if ((IS_TNG_B0(dev)) &&
-		(dev_priv->mipi_encoder_type == MDFLD_DSI_ENCODER_DBI)) {
+	/* Enable HFPLL for command mode panel */
+	if (dev_priv->bUseHFPLL) {
 			pll_select = intel_mid_msgbus_read32(CCK_PORT,
 						DSI_PLL_CTRL_REG);
 			ctrl_reg5 = intel_mid_msgbus_read32(CCK_PORT,

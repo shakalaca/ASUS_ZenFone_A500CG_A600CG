@@ -73,7 +73,6 @@
 #define SFI_SIG_DEVS		"DEVS"
 #define SFI_SIG_GPIO		"GPIO"
 #define SFI_SIG_OEMB		"OEMB"
-#define SFI_SIG_OEM0		"OEM0"
 #define SFI_SIG_OEMR            "OEMR"
 
 #define SFI_SIGNATURE_SIZE	4
@@ -175,10 +174,9 @@ struct sfi_gpio_table_entry {
 	char	pin_name[SFI_NAME_LEN];
 } __packed;
 
-
 struct sfi_table_oemr {
-	struct sfi_table_header		header;
-	u8				pentry[9];
+        struct sfi_table_header header;
+        u8 pentry[9];
 } __packed;
 
 struct sfi_oemr_table_entry {
@@ -188,7 +186,7 @@ struct sfi_oemr_table_entry {
         u8  hardware_id;
         u8  project_id;
         u8  Camera_8M;
-		u8  tp_id;
+        u8  tp_id;
 	u8  MiniOS;
 	u8  IFWI_RC;
 } __packed;

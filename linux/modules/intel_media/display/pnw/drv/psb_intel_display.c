@@ -1837,14 +1837,13 @@ static int mdfld_crtc_dsi_mode_set(struct drm_crtc *crtc,
 	}
 
 	/*
-	 * Overlay issues DMA to load register buffer between vblank start
-	 * and frame start. If this can't be finished before frame start,
-	 * overlay will crash.
-	 * Maxmizing frame start delay to 4 scan lines to minimize overlay
-	 * crash.
-	 */
+	* Overlay issues DMA to load register buffer between vblank start
+	* and frame start. If this can't be finished before frame start,
+	* overlay will crash.
+	* Maxmizing frame start delay to 4 scan lines to minimize overlay
+	* crash.
+	*/
 	hdelay = 4;
-
 
 	ctx->pipeconf |= ((hdelay - 1) << 27);
 

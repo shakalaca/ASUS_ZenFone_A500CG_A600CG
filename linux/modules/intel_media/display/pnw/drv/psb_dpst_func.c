@@ -85,7 +85,7 @@ int send_hist(void)
 
    /*
     * Implement the workaround for DIET when HDMI plugin.
-    * If HDMI not plugin then enable the DIET for dpst ,others disable the dpst 
+    * If HDMI not plugin then enable the DIET for dpst ,others disable the dpst
     */
 void disable_diet(int disable)
 {
@@ -93,17 +93,17 @@ void disable_diet(int disable)
 		if(disable){ //HDMI plug in
 			if(dpst_level > 0)
 				current_level = dpst_level;
-			dpst_level = 0;	
-			psb_irq_disable_dpst(g_dev);					    
+			dpst_level = 0;
+			psb_irq_disable_dpst(g_dev);
 		}else {
 			if(current_level != -1) {
 			dpst_level = current_level; //restore the level last time
 				current_level = -1;
-			}	
+			}
 			psb_irq_enable_dpst(g_dev);
 		}
-		psb_diet_enable(g_dev, 0);	
-	}	
+                psb_diet_enable(g_dev, 0);
+	}
 }
 
 /* IOCTL - moved to standard calls for Kernel Integration */

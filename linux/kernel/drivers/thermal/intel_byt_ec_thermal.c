@@ -532,7 +532,7 @@ static int byt_ec_thermal_probe(struct platform_device *pdev)
 				NUM_ALERT_LEVELS, ALERT_RW_MASK,
 				initialize_sensor(i, &tdata->sensors[i]),
 				&tzd_ops,
-				0, 0, 0, 0);
+				NULL, 0, 0);
 		if (IS_ERR(tdata->tzd[i])) {
 			ret = PTR_ERR(tdata->tzd[i]);
 			dev_err(&pdev->dev,

@@ -185,7 +185,14 @@ static int pmic_master_xfer(struct i2c_adapter *adap,
 		index = msgs[i].flags & I2C_M_RD;
 		ret = (xfer_fn[index])(msgs[i]);
 
-		if (ret != 0)
+		if (ret == -EACCES)
+			dev_info(pmic_dev->dev, "Blocked Access!\n");
+
+		/* If access is restricted, return true to
+		*  avoid extra error handling in client
+		*/
+
+		if (ret != 0 && ret != -EACCES)
 			goto transfer_err_exit;
 	}
 

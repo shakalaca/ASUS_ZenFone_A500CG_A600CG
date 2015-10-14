@@ -114,7 +114,11 @@ extern "C" {
 	#if defined(UNDER_CE) || defined(UNDER_WDDM)
 		#define PVRSRV_IOC_GID          (0x800UL)			/*!< (see ioctldef.h for details) */
 	#else
+        #if defined(__QNXNTO__)
+            #define PVRSRV_IOC_GID      (0x0UL)
+        #else
 		#error Unknown platform: Cannot define ioctls
+	#endif
 	#endif
 
 	#define PVRSRV_IO(INDEX)    (PVRSRV_IOC_GID + (INDEX))

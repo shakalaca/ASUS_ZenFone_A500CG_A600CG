@@ -211,12 +211,21 @@ PVR_ANDROID_HAS_HAL_PIXEL_FORMAT_BLOB := 1
 endif
 
 ##############################################################################
+# JB MR2 adds a new graphics HAL (gralloc) API function, lock_ycbcr(), and
+# a so-called "flexible" YUV format enum.
+#
+ifeq ($(is_at_least_jellybean_mr2),1)
+PVR_ANDROID_HAS_HAL_PIXEL_FORMAT_YCbCr_420_888 := 1
+PVR_ANDROID_GRALLOC_HAS_0_2_FEATURES := 1
+endif
+
+##############################################################################
 # In JB MR2 we can use a native helper library for the unittest wrapper.
 # In earlier versions, we must use a less ideal approach.
 #
-#ifeq ($(is_at_least_jellybean_mr2),0)
+ifeq ($(is_at_least_jellybean_mr2),0)
 PVR_ANDROID_SURFACE_FIELD_NAME := \"mNativeSurface\"
-#endif
+endif
 
 ##############################################################################
 # JB MR2 introduces two new camera HAL formats (Y8, Y16)
@@ -224,6 +233,62 @@ PVR_ANDROID_SURFACE_FIELD_NAME := \"mNativeSurface\"
 ifeq ($(is_at_least_jellybean_mr2),1)
 PVR_ANDROID_HAS_HAL_PIXEL_FORMAT_Y8 := 1
 PVR_ANDROID_HAS_HAL_PIXEL_FORMAT_Y16 := 1
+endif
+
+##############################################################################
+# KK's EGL wrapper remaps EGLConfigs in the BGRA and BGRX formats to RGBA and
+# RGBX respectively, for CpuConsumer compatibility. It does this because the
+# usage bits for the gralloc allocation are not available to EGL.
+#
+# In this newer platform version, gralloc has been redefined to allow the
+# 'format' parameter to gralloc->alloc() to be ignored for non-USAGE_SW
+# allocations, so long as the bits per channel and sRGB-ness are preserved.
+#
+ifeq ($(is_at_least_kitkat),1)
+PVR_ANDROID_REMAP_HW_ONLY_PIXEL_FORMATS := 1
+endif
+
+##############################################################################
+# Workaround for texture atlas "double registerBuffer" issue in KK
+#
+ifeq ($(is_at_least_kitkat),1)
+PVR_ANDROID_DONT_ENFORCE_SINGLE_REGISTER := 1
+endif
+
+##############################################################################
+# Support newer HWC features in KK
+#
+ifeq ($(is_at_least_kitkat),1)
+PVR_ANDROID_HWC_HAS_1_3_FEATURES := 1
+endif
+
+##############################################################################
+# KK eliminated egl.cfg. Only create for older versions.
+#
+ifeq ($(is_at_least_kitkat),0)
+PVR_ANDROID_HAS_EGL_CFG := 1
+endif
+
+##############################################################################
+# KK has a bug in its browser that we need to work around.
+#
+ifeq ($(is_at_least_kitkat),1)
+PVR_ANDROID_RELAX_GRALLOC_MODULE_MAP_CHECKS := 1
+endif
+
+##############################################################################
+# KK's Camera HAL requires that ACTIVE_ARRAY_SIZE specify xmin/ymin first
+#
+ifeq ($(is_at_least_kitkat),1)
+PVR_ANDROID_CAMERA_ACTIVE_ARRAY_SIZE_HAS_XMIN_YMIN := 1
+endif
+
+##############################################################################
+# KitKat added a new memory tracking HAL. This enables gralloc support for
+# the GRAPHICS/GL memtrack types.
+#
+ifeq ($(is_at_least_kitkat),1)
+SUPPORT_ANDROID_MEMTRACK_HAL := 1
 endif
 
 # Placeholder for future version handling

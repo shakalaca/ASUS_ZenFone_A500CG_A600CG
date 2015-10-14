@@ -42,6 +42,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */ /**************************************************************************/
 #include "img_types.h"
 #include "sync_server.h"
+#include "sync_server_internal.h"
 #include "allocmem.h"
 #include "devicemem.h"
 #include "devicemem_pdump.h"
@@ -375,8 +376,8 @@ PVRSRVServerSyncPrimSetKM(SERVER_SYNC_PRIMITIVE *psServerSync, IMG_UINT32 ui32Va
 	return PVRSRV_OK;
 }
 
-static
-IMG_VOID _ServerSyncRef(SERVER_SYNC_PRIMITIVE *psSync)
+IMG_VOID
+ServerSyncRef(SERVER_SYNC_PRIMITIVE *psSync)
 {
 	IMG_UINT32 ui32RefCount;
 
@@ -386,6 +387,36 @@ IMG_VOID _ServerSyncRef(SERVER_SYNC_PRIMITIVE *psSync)
 
 	SYNC_REFCOUNT_PRINT("%s: Server sync %p, refcount = %d",
 						__FUNCTION__, psSync, ui32RefCount);
+}
+
+IMG_VOID
+ServerSyncUnref(SERVER_SYNC_PRIMITIVE *psSync)
+{
+	IMG_UINT32 ui32RefCount;
+
+	OSLockAcquire(psSync->hLock);
+	ui32RefCount = --psSync->ui32RefCount;
+	OSLockRelease(psSync->hLock);
+
+	if (ui32RefCount == 0)
+	{
+		SYNC_REFCOUNT_PRINT("%s: Server sync %p, refcount = %d",
+							__FUNCTION__, psSync, ui32RefCount);
+
+		/* Remove the sync from the global list */
+		OSLockAcquire(g_hListLock);
+		dllist_remove_node(&psSync->sNode);
+		OSLockRelease(g_hListLock);
+
+		OSLockDestroy(psSync->hLock);
+		SyncPrimFree(psSync->psSync);
+		OSFreeMem(psSync);
+	}
+	else
+	{
+		SYNC_REFCOUNT_PRINT("%s: Server sync %p, refcount = %d",
+							__FUNCTION__, psSync, ui32RefCount);
+	}
 }
 
 PVRSRV_ERROR
@@ -443,40 +474,10 @@ fail_sync_alloc:
 	return eError;
 }
 
-static
-IMG_VOID _ServerSyncUnref(SERVER_SYNC_PRIMITIVE *psSync)
-{
-	IMG_UINT32 ui32RefCount;
-
-	OSLockAcquire(psSync->hLock);
-	ui32RefCount = --psSync->ui32RefCount;
-	OSLockRelease(psSync->hLock);
-
-	if (ui32RefCount == 0)
-	{
-		SYNC_REFCOUNT_PRINT("%s: Server sync %p, refcount = %d",
-							__FUNCTION__, psSync, ui32RefCount);
-
-		/* Remove the sync from the global list */
-		OSLockAcquire(g_hListLock);
-		dllist_remove_node(&psSync->sNode);
-		OSLockRelease(g_hListLock);
-
-		OSLockDestroy(psSync->hLock);
-		SyncPrimFree(psSync->psSync);
-		OSFreeMem(psSync);
-	}
-	else
-	{
-		SYNC_REFCOUNT_PRINT("%s: Server sync %p, refcount = %d",
-							__FUNCTION__, psSync, ui32RefCount);
-	}
-}
-
 PVRSRV_ERROR
 PVRSRVServerSyncFreeKM(SERVER_SYNC_PRIMITIVE *psSync)
 {
-	_ServerSyncUnref(psSync);
+	ServerSyncUnref(psSync);
 	return PVRSRV_OK;
 }
 
@@ -516,7 +517,7 @@ _PVRSRVSyncPrimServerExportKM(SERVER_SYNC_PRIMITIVE *psSync,
 		goto e0;
 	}
 
-	_ServerSyncRef(psSync);
+	ServerSyncRef(psSync);
 
 	psNewExport->psSync = psSync;
 	*ppsExport = psNewExport;
@@ -529,7 +530,7 @@ e0:
 static PVRSRV_ERROR
 _PVRSRVSyncPrimServerUnexportKM(SERVER_SYNC_EXPORT *psExport)
 {
-	_ServerSyncUnref(psExport->psSync);
+	ServerSyncUnref(psExport->psSync);
 
 	OSFreeMem(psExport);
 
@@ -541,7 +542,7 @@ _PVRSRVSyncPrimServerImportKM(SERVER_SYNC_EXPORT *psExport,
 							  SERVER_SYNC_PRIMITIVE **ppsSync,
 							  IMG_UINT32 *pui32SyncPrimVAddr)
 {
-	_ServerSyncRef(psExport->psSync);
+	ServerSyncRef(psExport->psSync);
 
 	*ppsSync = psExport->psSync;
 	*pui32SyncPrimVAddr = SyncPrimGetFirmwareAddr(psExport->psSync->psSync);
@@ -719,10 +720,10 @@ PVRSRVServerSyncQueueSWOpKM(SERVER_SYNC_PRIMITIVE *psSync,
 						  IMG_BOOL *pbFenceRequired)
 {
 
-	_ServerSyncRef(psSync);
+	ServerSyncRef(psSync);
 
 	/*
-		_ServerSyncRef will acquire and release the lock but we need to
+		ServerSyncRef will acquire and release the lock but we need to
 		reacquire here to ensure the state that we're modifying below
 		will be consistent with itself. But it doesn't matter if another
 		thread acquires the lock in between as we've ensured the sync
@@ -863,7 +864,7 @@ ServerSyncCompleteOp(SERVER_SYNC_PRIMITIVE *psSync,
 		*psSync->psSync->pui32LinAddr = ui32UpdateValue;
 	}
 
-	_ServerSyncUnref(psSync);
+	ServerSyncUnref(psSync);
 }
 
 IMG_UINT32 ServerSyncGetFWAddr(SERVER_SYNC_PRIMITIVE *psSync)
@@ -1013,7 +1014,7 @@ PVRSRVSyncPrimOpCreateKM(IMG_UINT32 ui32SyncBlockCount,
 
 	for (i=0;i<ui32ServerSyncCount;i++)
 	{
-		_ServerSyncRef(psNewCookie->papsServerSync[i]);
+		ServerSyncRef(psNewCookie->papsServerSync[i]);
 	}
 
 	*ppsServerCookie = psNewCookie;
@@ -1205,7 +1206,7 @@ PVRSRVSyncPrimOpDestroyKM(SERVER_OP_COOKIE *psServerCookie)
 
 	for (i = 0; i < psServerCookie->ui32ServerSyncCount; i++)
 	{
-		_ServerSyncUnref(psServerCookie->papsServerSync[i]);
+		ServerSyncUnref(psServerCookie->papsServerSync[i]);
 	}
 
 	OSFreeMem(psServerCookie);

@@ -45,7 +45,7 @@ static struct platform_device *umip_mid_pdev;
 	the variable.
 */
 
-static ssize_t Factory_UMIP_show(struct device *dev,
+static ssize_t factory_umip_show(struct device *dev,
 				struct device_attribute *attr, char *buffer)
 {
 	int ret;
@@ -68,7 +68,7 @@ static ssize_t Factory_UMIP_show(struct device *dev,
 	}
 }
 
-ssize_t Factory_UMIP_store(struct device *dev,
+ssize_t factory_umip_store(struct device *dev,
 					struct device_attribute *attr,
 					const char *buffer, size_t count)
 {
@@ -207,8 +207,7 @@ ssize_t usb_host_enable_timeout_store(struct device *dev,
 		if (string_length < MAX_USB_TIMEOUT_LEN) {
 			sscanf(buffer, "%s", timeout);
 		} else {
-			pr_err("Invalid value written."\
-			"Check the Availabe values that can be used\n");
+			pr_err("Invalid value written.\n");
 			return -EINVAL;
 		}
 
@@ -229,8 +228,7 @@ ssize_t usb_host_enable_timeout_store(struct device *dev,
 				return ret;
 			}
 		} else {
-			pr_err("Invalid value written."\
-			"Check the Available values that can be used\n");
+			pr_err("Invalid value written.\n");
 			count = -EINVAL;
 		}
 	} else {
@@ -242,8 +240,8 @@ ssize_t usb_host_enable_timeout_store(struct device *dev,
 }
 
 /* Attach the sysfs write method */
-DEVICE_ATTR(Factory_UMIP, S_IRUGO|S_IWUSR,
-		Factory_UMIP_show, Factory_UMIP_store);
+DEVICE_ATTR(factory_umip, S_IRUGO|S_IWUSR,
+		factory_umip_show, factory_umip_store);
 DEVICE_ATTR(available_timeouts, S_IRUGO,
 		available_usb_host_enable_timeouts_show, NULL);
 DEVICE_ATTR(current_timeout, S_IRUGO|S_IWUSR,
@@ -251,7 +249,7 @@ DEVICE_ATTR(current_timeout, S_IRUGO|S_IWUSR,
 
 /* Attribute Descriptor */
 static struct attribute *umip_mid_attrs[] = {
-		&dev_attr_Factory_UMIP.attr,
+		&dev_attr_factory_umip.attr,
 		&dev_attr_available_timeouts.attr,
 		&dev_attr_current_timeout.attr,
 		NULL

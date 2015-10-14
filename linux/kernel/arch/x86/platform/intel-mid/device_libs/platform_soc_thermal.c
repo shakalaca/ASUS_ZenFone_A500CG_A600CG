@@ -31,20 +31,20 @@ static struct resource res = {
 
 static struct soc_throttle_data tng_soc_data[] = {
 	{
-		.power_limit = 0x9C,
+		.power_limit = 0x6d, /* 3.5W */
 		.floor_freq = 0x00,
 	},
 	{
-		.power_limit = 0x8C,
-		.floor_freq = 0x00,
+		.power_limit = 0x38, /* 1.8W */
+		.floor_freq = 0x01,
 	},
 	{
-		.power_limit = 0x7C,
-		.floor_freq = 0x00,
+		.power_limit = 0x1C, /* 0.9W */
+		.floor_freq = 0x01,
 	},
 	{
-		.power_limit = 0x6C,
-		.floor_freq = 0x00,
+		.power_limit = 0x1C, /* 0.9W */
+		.floor_freq = 0x01,
 	},
 };
 

@@ -33,8 +33,11 @@
 #define __CRYPTO_API_H__
 
 /* Crypto-API init. entry point (to be used by sep_setup) */
-int __devinit dx_crypto_api_init(struct sep_drvdata *drvdata);
-void __devexit dx_crypto_api_fini(void);
+int dx_crypto_api_init(struct sep_drvdata *drvdata);
+void dx_crypto_api_fini(void);
+
+int hwk_init(void);
+void hwk_fini(void);
 
 #endif /*__CRYPTO_API_H__*/
 

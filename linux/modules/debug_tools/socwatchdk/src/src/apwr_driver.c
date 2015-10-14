@@ -102,9 +102,19 @@
 #include <asm/delay.h> // for "udelay"
 #include <linux/suspend.h> // for "pm_notifier"
 #include <linux/pci.h>
+#include <linux/sfi.h> // To retrieve SCU F/W version
+
+#ifdef CONFIG_RPMSG_IPC
+    #include <asm/intel_mid_rpmsg.h>
+#endif // CONFIG_RPMSG_IPC
+/*
 #if DO_ANDROID
-#include <asm/intel-mid.h>
-#endif
+    #include <asm/intel-mid.h>
+#endif // DO_ANDROID
+*/
+#ifdef CONFIG_X86_WANT_INTEL_MID
+    #include <asm/intel-mid.h>
+#endif // CONFIG_X86_WANT_INTEL_MID
 
 #if DO_WAKELOCK_SAMPLE 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,4,0)
@@ -142,10 +152,13 @@ typedef enum {
 
 static __read_mostly atom_arch_type_t pw_is_atm = NON_ATOM;
 static __read_mostly slm_arch_type_t pw_is_slm = NON_SLM;
+static __read_mostly bool pw_is_hsw = false;
 static __read_mostly bool pw_is_any_thread_set = false;
 static __read_mostly bool pw_is_auto_demote_enabled = false;
 static __read_mostly u16 pw_msr_fsb_freq_value = 0x0;
 static __read_mostly u16 pw_max_non_turbo_ratio = 0x0;
+
+__read_mostly u16 pw_scu_fw_major_minor = 0x0;
 
 /* Controls the amount of printks that happen. Levels are:
  *	- 0: no output save for errors and status at end
@@ -282,7 +295,11 @@ static unsigned long startJIFF, stopJIFF;
  * Useful on MFLD, where the default
  * TPF seems to be broken.
  */
-#define DO_CPUFREQ_NOTIFIER 1
+#define DO_CPUFREQ_NOTIFIER 0
+/*
+ * Collect S state residency counters
+ */
+#define DO_S_RESIDENCY_SAMPLE 1
 /*
  * Collect ACPI S3 state residency counters
  */
@@ -414,6 +431,10 @@ static unsigned long startJIFF, stopJIFF;
  */
 #define MSR_IA32_IACORE_RATIOS 0x66a
 /*
+ * For SLM -- max turbo ratio is encoded in bits 4:0 of 'MSR_IA32_IACORE_TURBO_RATIOS'
+ */
+#define MSR_IA32_IACORE_TURBO_RATIOS 0x66c
+/*
  * Standard Bus frequency. Valid for
  * NHM/WMR.
  * TODO: frequency for MFLD?
@@ -506,11 +527,27 @@ static unsigned long startJIFF, stopJIFF;
 #if DO_ACPI_S3_SAMPLE
 static u64 startTSC_acpi_s3;
 #endif
+//
+// Required to calculate S0i0 residency counter from non-zero S state counters
+#if DO_S_RESIDENCY_SAMPLE || DO_ACPI_S3_SAMPLE
+    // static u64 startJIFF_s_residency = 0;
+    static u64 startTSC_s_residency = 0;
+#endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27)
 #define SMP_CALL_FUNCTION(func,ctx,retry,wait)    smp_call_function((func),(ctx),(wait))
 #else
 #define SMP_CALL_FUNCTION(func,ctx,retry,wait)    smp_call_function((func),(ctx),(retry),(wait))
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 9, 0)
+    #define PW_HLIST_FOR_EACH_ENTRY(tpos, pos, head, member) hlist_for_each_entry(tpos, pos, head, member)
+    #define PW_HLIST_FOR_EACH_ENTRY_SAFE(tpos, pos, n, head, member) hlist_for_each_entry_safe(tpos, pos, n, head, member)
+    #define PW_HLIST_FOR_EACH_ENTRY_RCU(tpos, pos, head, member) hlist_for_each_entry_rcu(tpos, pos, head, member)
+#else // >= 3.9.0
+    #define PW_HLIST_FOR_EACH_ENTRY(tpos, pos, head, member) hlist_for_each_entry(tpos, head, member)
+    #define PW_HLIST_FOR_EACH_ENTRY_SAFE(tpos, pos, n, head, member) hlist_for_each_entry_safe(tpos, n, head, member)
+    #define PW_HLIST_FOR_EACH_ENTRY_RCU(tpos, pos, head, member) hlist_for_each_entry_rcu(tpos, head, member)
 #endif
 
 /*
@@ -662,6 +699,7 @@ static long pw_device_unlocked_ioctl(struct file *filp, unsigned int ioctl_num, 
 static long pw_device_compat_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param);
 #endif
 static long pw_unlocked_handle_ioctl_i(unsigned int ioctl_num, struct PWCollector_ioctl_arg *remote_args, unsigned long ioctl_param);
+static int pw_set_platform_res_config_i(struct PWCollector_platform_res_info *remote_info, int size);
 static unsigned int pw_device_poll(struct file *filp, poll_table *wait);
 static int pw_device_mmap(struct file *filp, struct vm_area_struct *vma);
 static int pw_register_dev(void);
@@ -775,12 +813,6 @@ static spinlock_t wlock_map_locks[NUM_HASH_LOCKS];
  * checking turbo frequencies.
  */
 static __read_mostly u32 base_operating_freq_khz = 0x0;
-/*
- * A table of available frequencies -- basically
- * the same as what's displayed in the 
- * 'scaling_available_frequencies' sysfs file.
- */
-static __read_mostly u32 *apwr_available_frequencies = NULL;
 /*
  * Character device file MAJOR
  * number -- we're now obtaining
@@ -1345,13 +1377,6 @@ static void pw_destroy_data_structures(void)
 
     destroy_sys_list();
 
-
-    if (apwr_available_frequencies) {
-        pw_kfree(apwr_available_frequencies);
-        OUTPUT(3, KERN_INFO "FREED AVAILABLE FREQUENCIES!\n");
-        apwr_available_frequencies = NULL;
-    }
-
     pw_destroy_per_cpu_buffers();
 
     pw_destroy_msr_info_sets();
@@ -1543,7 +1568,7 @@ static tnode_t *timer_find(unsigned long timer_addr, pid_t tid)
     {
 	head = &timer_map[idx].head;
 
-	hlist_for_each_entry(node, curr, head, list){
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, head, list) {
 	    if(node->timer_addr == timer_addr && (node->tid == tid || tid < 0)){
 		retVal = node;
 		break;
@@ -1568,7 +1593,7 @@ static void timer_insert(unsigned long timer_addr, pid_t tid, pid_t pid, u64 tsc
     {
         head = &timer_map[idx].head;
 
-        hlist_for_each_entry(node, curr, head, list){
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, head, list) {
             if(node->timer_addr == timer_addr){
                 /*
                  * Update-in-place.
@@ -1615,7 +1640,7 @@ static int timer_delete(unsigned long timer_addr, pid_t tid)
     {
 	head = &timer_map[idx].head;
 
-	hlist_for_each_entry_safe(node, curr, next, head, list){
+        PW_HLIST_FOR_EACH_ENTRY_SAFE(node, curr, next, head, list) {
 	    // if(node->timer_addr == timer_addr && node->tid == tid){
             if(node->timer_addr == timer_addr) {
                 if (node->tid != tid){
@@ -1648,7 +1673,7 @@ static void delete_all_non_kernel_timers(void)
 	{
 	    HASH_LOCK(i);
 	    {
-		hlist_for_each_entry_safe(node, curr, next, &timer_map[i].head, list){
+                PW_HLIST_FOR_EACH_ENTRY_SAFE(node, curr, next, &timer_map[i].head, list) {
                     if (node->is_root_timer == 0) {
 			++num_timers;
 			OUTPUT(3, KERN_INFO "[%d]: Timer %p (Node %p) has TRACE = %p\n", node->tid, (void *)node->timer_addr, node, node->trace);
@@ -1672,7 +1697,7 @@ static void delete_timers_for_tid(pid_t tid)
 	{
 	    HASH_LOCK(i);
 	    {
-		hlist_for_each_entry_safe(node, curr, next, &timer_map[i].head, list){
+                PW_HLIST_FOR_EACH_ENTRY_SAFE(node, curr, next, &timer_map[i].head, list) {
 		    if(node->is_root_timer == 0 && node->tid == tid){
 			++num_timers;
 			OUTPUT(3, KERN_INFO "[%d]: Timer %p (Node %p) has TRACE = %p\n", tid, (void *)node->timer_addr, node, node->trace);
@@ -1695,7 +1720,7 @@ static int get_num_timers(void)
 
 
     for(i=0; i<NUM_MAP_BUCKETS; ++i)
-	hlist_for_each_entry(node, curr, &timer_map[i].head, list){
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, &timer_map[i].head, list) {
 	    ++num;
 	    OUTPUT(3, KERN_INFO "[%d]: %d --> %p\n", i, node->tid, (void *)node->timer_addr);
 	}
@@ -1759,7 +1784,7 @@ static int find_wlock_node_i(unsigned long hash, size_t wlock_name_len, const ch
 
     rcu_read_lock();
     {
-        hlist_for_each_entry_rcu (node, curr, &wlock_map[idx].head, list) {
+        PW_HLIST_FOR_EACH_ENTRY_RCU (node, curr, &wlock_map[idx].head, list) {
             //printk(KERN_INFO "hash_val = %lu, name = %s, cp_index = %d\n", node->hash_val, node->wakelock_name, node->constant_pool_index);
             if (node->hash_val == hash && node->wakelock_name_len == wlock_name_len && !strcmp(node->wakelock_name, wlock_name)) {
                 cp_index = node->constant_pool_index;
@@ -1812,7 +1837,7 @@ static pw_mapping_type_t wlock_insert(size_t wlock_name_len, const char *wlock_n
          * a different process inserted an entry into the wakelock after our check and before we could insert
          * (i.e. a race condition). Check for that first.
          */
-        hlist_for_each_entry(old_node, curr, &wlock_map[idx].head, list) {
+        PW_HLIST_FOR_EACH_ENTRY(old_node, curr, &wlock_map[idx].head, list) {
             if (old_node->hash_val == hash && old_node->wakelock_name_len == wlock_name_len && !strcmp(old_node->wakelock_name, wlock_name)) {
                 *cp_index = old_node->constant_pool_index;
                 //printk(KERN_INFO "wlock mapping EXISTS: cp_index = %d, name = %s\n", *cp_index, wlock_name);
@@ -1856,7 +1881,7 @@ static int get_num_wlock_mappings(void)
     struct hlist_node *curr = NULL;
 
     for(i=0; i<NUM_WLOCK_MAP_BUCKETS; ++i)
-	hlist_for_each_entry(node, curr, &wlock_map[i].head, list){
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, &wlock_map[i].head, list) {
 	    ++retVal;
 	    OUTPUT(0, KERN_INFO "[%d]: wlock Num=%d, Dev=%s\n", i, node->wlock, node->name);
 	}
@@ -1925,7 +1950,7 @@ static bool find_irq_node_i(int cpu, int irq_num, const char *irq_name, int *ind
 
     rcu_read_lock();
 
-    hlist_for_each_entry_rcu(node, curr, &irq_map[idx].head, list){
+    PW_HLIST_FOR_EACH_ENTRY_RCU (node, curr, &irq_map[idx].head, list) {
 	if(node->irq == irq_num
 #if DO_ALLOW_MULTI_DEV_IRQ
 	   && !strcmp(node->name, irq_name)
@@ -2010,7 +2035,7 @@ static irq_mapping_types_t irq_insert(int cpu, int irq_num, const char *irq_name
 	irq_node_t *old_node = NULL;
 	struct hlist_node *curr = NULL;
 	if(found_mapping){
-	    hlist_for_each_entry(old_node, curr, &irq_map[idx].head, list){
+            PW_HLIST_FOR_EACH_ENTRY(old_node, curr, &irq_map[idx].head, list) {
 		if(old_node->irq == irq_num
 #if DO_ALLOW_MULTI_DEV_IRQ
 		   && !strcmp(old_node->name, irq_name)
@@ -2079,7 +2104,7 @@ static int get_num_irq_mappings(void)
     struct hlist_node *curr = NULL;
 
     for(i=0; i<NUM_IRQ_MAP_BUCKETS; ++i)
-	hlist_for_each_entry(node, curr, &irq_map[i].head, list){
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, &irq_map[i].head, list) {
 	    ++retVal;
 	    OUTPUT(0, KERN_INFO "[%d]: IRQ Num=%d, Dev=%s\n", i, node->irq, node->name);
 	}
@@ -2106,7 +2131,7 @@ inline bool is_tid_in_sys_list(pid_t tid)
     SYS_MAP_LOCK(lindex);
     {
 	struct hlist_head *apwr_sys_list = GET_SYS_HLIST(hindex);
-        hlist_for_each_entry (node, curr, apwr_sys_list, list) {
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, apwr_sys_list, list) {
 	    if (node->tid == tid) {
 		found = true;
 		break;
@@ -2129,7 +2154,7 @@ inline int check_and_remove_proc_from_sys_list(pid_t tid, pid_t pid)
     SYS_MAP_LOCK(lindex);
     {
 	struct hlist_head *apwr_sys_list = GET_SYS_HLIST(hindex);
-        hlist_for_each_entry (node, curr, apwr_sys_list, list) {
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, apwr_sys_list, list) {
 	    if (node->tid == tid && node->ref_count > 0) {
 		found = true;
 		--node->ref_count;
@@ -2156,7 +2181,7 @@ inline int check_and_delete_proc_from_sys_list(pid_t tid, pid_t pid)
     SYS_MAP_LOCK(lindex);
     {
 	struct hlist_head *apwr_sys_list = GET_SYS_HLIST(hindex);
-        hlist_for_each_entry (node, curr, apwr_sys_list, list) {
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, apwr_sys_list, list) {
 	    if (node->tid == tid) {
 		found = true;
 		hlist_del(&node->list);
@@ -2186,7 +2211,7 @@ inline int check_and_add_proc_to_sys_list(pid_t tid, pid_t pid)
     SYS_MAP_LOCK(lindex);
     {
 	struct hlist_head *apwr_sys_list = GET_SYS_HLIST(hindex);
-        hlist_for_each_entry (node, curr, apwr_sys_list, list) {
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, apwr_sys_list, list) {
 	    if (node->tid == tid) {
 		found = true;
 		++node->ref_count;
@@ -2240,11 +2265,11 @@ static inline void producer_template(int cpu)
     pw_produce_generic_msg(&msg, should_wakeup);
 };
 
-
 #if DO_ACPI_S3_SAMPLE
 /*
  * Insert a ACPI S3 Residency counter sample into a (per-cpu) output buffer.
  */
+#if 0
 static inline void produce_acpi_s3_sample(bool s3flag)
 {
     u64 tsc;
@@ -2283,7 +2308,265 @@ static inline void produce_acpi_s3_sample(bool s3flag)
      */
     pw_produce_generic_msg(&msg, true); // "true" ==> allow wakeups
 };
-#endif
+#endif // if 0
+#if 0
+static inline void produce_acpi_s3_sample(u64 s3_res)
+{
+    u64 tsc;
+    int cpu = raw_smp_processor_id();
+
+    PWCollector_msg_t msg;
+    s_residency_sample_t sres;
+
+    /*
+     * No residency counters available  
+     */
+    tscval(&tsc);
+    msg.data_type = ACPI_S3;
+    msg.cpuidx = cpu;
+    msg.tsc = tsc;
+    msg.data_len = sizeof(sres);
+
+    /*
+    if (startTSC_acpi_s3 == 0) {
+        startTSC_acpi_s3 = tsc;
+    }
+
+    if (s3flag) { 
+        sres.data[0] = 0;
+        sres.data[1] = s3_res; // tsc - startTSC_acpi_s3;
+    } else {
+        sres.data[0] = tsc - startTSC_acpi_s3;
+        sres.data[1] = 0;
+    }
+    */
+    printk(KERN_INFO "GU: start tsc = %llu, tsc = %llu, s3_res = %llu\n", startTSC_acpi_s3, tsc, s3_res);
+
+    if (startTSC_acpi_s3 == 0 || s3_res > 0) {
+        startTSC_acpi_s3 = tsc;
+    }
+    sres.data[0] = tsc - startTSC_acpi_s3;
+    sres.data[1] = s3_res;
+
+    startTSC_acpi_s3 = tsc;
+
+    msg.p_data = (u64)((unsigned long)(&sres));
+
+    /*
+     * OK, everything computed. Now copy
+     * this sample into an output buffer
+     */
+    pw_produce_generic_msg(&msg, true); // "true" ==> allow wakeups
+};
+#endif // if 0
+static inline void produce_acpi_s3_sample(u64 tsc, u64 s3_res)
+{
+    int cpu = raw_smp_processor_id();
+
+    PWCollector_msg_t msg;
+    s_residency_sample_t sres;
+
+    /*
+     * No residency counters available  
+     */
+    msg.data_type = ACPI_S3;
+    msg.cpuidx = cpu;
+    msg.tsc = tsc;
+    msg.data_len = sizeof(sres);
+
+    /*
+    if (startTSC_acpi_s3 == 0) {
+        startTSC_acpi_s3 = tsc;
+    }
+
+    if (s3flag) { 
+        sres.data[0] = 0;
+        sres.data[1] = s3_res; // tsc - startTSC_acpi_s3;
+    } else {
+        sres.data[0] = tsc - startTSC_acpi_s3;
+        sres.data[1] = 0;
+    }
+    */
+    pw_pr_debug("GU: start tsc = %llu, tsc = %llu, s3_res = %llu\n", startTSC_acpi_s3, tsc, s3_res);
+
+    if (startTSC_acpi_s3 == 0 || s3_res > 0) {
+        startTSC_acpi_s3 = tsc;
+    }
+    sres.data[0] = tsc - startTSC_acpi_s3;
+    sres.data[1] = s3_res;
+
+    startTSC_acpi_s3 = tsc;
+
+    msg.p_data = (u64)((unsigned long)(&sres));
+
+    /*
+     * OK, everything computed. Now copy
+     * this sample into an output buffer
+     */
+    pw_produce_generic_msg(&msg, true); // "true" ==> allow wakeups
+};
+#endif // DO_ACPI_S3_SAMPLE
+
+#if DO_S_RESIDENCY_SAMPLE 
+
+#ifdef CONFIG_RPMSG_IPC
+    #define PW_SCAN_MMAP_DO_IPC(cmd, sub_cmd) rpmsg_send_generic_simple_command(cmd, sub_cmd)
+#else
+    #define PW_SCAN_MMAP_DO_IPC(cmd, sub_cmd) (-ENODEV)
+#endif // CONFIG_RPMSG_IPC
+
+static inline void pw_start_s_residency_counter_i(void)
+{
+    /*
+     * Send START IPC command.
+     */
+    PW_SCAN_MMAP_DO_IPC(INTERNAL_STATE.ipc_start_command, INTERNAL_STATE.ipc_start_sub_command);
+    pw_pr_debug("GU: SENT START IPC command!\n");
+};
+
+static inline void pw_dump_s_residency_counter_i(void)
+{
+    /*
+     * Send DUMP IPC command.
+     */
+    PW_SCAN_MMAP_DO_IPC(INTERNAL_STATE.ipc_dump_command, INTERNAL_STATE.ipc_dump_sub_command);
+    pw_pr_debug("GU: SENT DUMP IPC command!\n");
+};
+
+static inline void pw_stop_s_residency_counter_i(void)
+{
+    /*
+     * Send STOP IPC command.
+     */
+    PW_SCAN_MMAP_DO_IPC(INTERNAL_STATE.ipc_stop_command, INTERNAL_STATE.ipc_stop_sub_command);
+    pw_pr_debug("GU: SENT STOP IPC command!\n");
+};
+
+static inline void pw_populate_s_residency_values_i(u64 *values, bool is_begin_boundary)
+{
+    u16 i=0, j=0;
+    u64 value = 0;
+    const int counter_size_in_bytes = (int)INTERNAL_STATE.counter_size_in_bytes;
+    if (INTERNAL_STATE.collection_type == PW_IO_IPC) {
+        pw_dump_s_residency_counter_i(); // TODO: OK to call immediately after 'START'?
+    }
+#if 1
+    for (i=0, j=1; i<INTERNAL_STATE.num_addrs; ++i, ++j) {
+        values[j] = 0x0;
+        if (j == 4) {
+            // pwr library EXPECTS the fifth element to be the ACPI S3 residency value!
+            ++j;
+        }
+        switch (INTERNAL_STATE.collection_type) {
+            case PW_IO_IPC:
+            case PW_IO_MMIO: // fall-through
+                // value = INTERNAL_STATE.platform_remapped_addrs[i];
+                // value = *((u64 *)INTERNAL_STATE.platform_remapped_addrs[i]);
+                // value = *((u32 *)INTERNAL_STATE.platform_remapped_addrs[i]);
+                memcpy(&value, (void *)INTERNAL_STATE.platform_remapped_addrs[i], counter_size_in_bytes);
+                break;
+            default:
+                printk(KERN_INFO "ERROR: unsupported S0iX collection type: %u!\n", INTERNAL_STATE.collection_type);
+                break;
+        }
+        if (is_begin_boundary) {
+            INTERNAL_STATE.init_platform_res_values[i] = value;
+            values[j] = 0;
+        } else {
+            // values[j] = INTERNAL_STATE.init_platform_res_values[i] - value;
+            values[j] = value - INTERNAL_STATE.init_platform_res_values[i];
+        }
+        /*
+        if (is_begin_boundary) {
+            INTERNAL_STATE.init_platform_res_values[i] = value;
+        }
+        values[j] = value - INTERNAL_STATE.init_platform_res_values[i];
+        */
+        pw_pr_debug("\t[%u] ==> %llu (%llu <--> %llu)\n", j, values[j], INTERNAL_STATE.init_platform_res_values[i], value);
+    }
+#else // if 1
+    {
+        char __tmp[1024];
+        u64 *__p_tmp = (u64 *)&__tmp[0];
+        // memcpy((u32 *)&__tmp[0], INTERNAL_STATE.platform_remapped_addrs[0], sizeof(u32) * (INTERNAL_STATE.num_addrs * 2));
+        memcpy(__p_tmp, INTERNAL_STATE.platform_remapped_addrs[0], sizeof(u64) * INTERNAL_STATE.num_addrs);
+        for (i=0; i<INTERNAL_STATE.num_addrs; ++i) {
+            u64 __value1 = 0, __value2 = 0;
+            memcpy(&__value1, INTERNAL_STATE.platform_remapped_addrs[i], sizeof(u64));
+            __value2 = *((u64 *)INTERNAL_STATE.platform_remapped_addrs[i]);
+            printk(KERN_INFO "[%d] ==> %llu, %llu, %llu, %llu\n", i, __p_tmp[i], __value1, __value2, INTERNAL_STATE.platform_remapped_addrs[i]);
+        }
+    }
+#endif // if 0
+};
+
+static inline void produce_boundary_s_residency_msg_i(bool is_begin_boundary)
+{
+    u64 tsc;
+    int cpu = raw_smp_processor_id();
+    PWCollector_msg_t msg;
+    s_res_msg_t *smsg = INTERNAL_STATE.platform_residency_msg;
+    u64 *values = smsg->residencies;
+
+    // printk(KERN_INFO "smsg = %p, smsg->residencies = %p\n", smsg, smsg->residencies);
+
+    tscval(&tsc);
+    msg.data_type = S_RESIDENCY;
+    msg.cpuidx = cpu;
+    msg.tsc = tsc;
+    // msg.data_len = sizeof(smsg);
+    msg.data_len = sizeof(*smsg) + sizeof(u64) * (INTERNAL_STATE.num_addrs + 2); // "+2" for S0i3, S3
+
+    if (startTSC_s_residency == 0) {
+        startTSC_s_residency = tsc;
+    }
+    /*
+     * Power library requires S0i0 entry to be delta TSC
+     */
+    values[0] = tsc - startTSC_s_residency;
+
+    // printk(KERN_INFO "\t[%u] ==> %llu\n", 0, values[0]);
+
+#if 0
+    if (INTERNAL_STATE.collection_type == PW_IO_IPC && is_begin_boundary == true) {
+        pw_stop_s_residency_counter_i();
+        pw_start_s_residency_counter_i();
+    }
+#endif // if 0
+
+    pw_populate_s_residency_values_i(values, is_begin_boundary);
+
+#if 0
+    if (INTERNAL_STATE.collection_type == PW_IO_IPC && is_begin_boundary == false) {
+        pw_stop_s_residency_counter_i();
+    }
+#endif // if 0
+
+    msg.p_data = (u64)((unsigned long)(smsg));
+
+    /*
+     * OK, everything computed. Now copy
+     * this sample into an output buffer
+     */
+    pw_produce_generic_msg(&msg, true); // "true" ==> allow wakeups
+
+    /*
+     * Check if we need to produce ACPI S3 samples.
+     */
+    if (pw_is_slm && IS_ACPI_S3_MODE()) {
+        if (is_begin_boundary == true) {
+            /*
+             * Ensure we reset the ACPI S3 'start' TSC counter.
+             */
+            startTSC_acpi_s3 = 0x0;
+        }
+        // produce_acpi_s3_sample(0 /* s3 res */);
+        produce_acpi_s3_sample(tsc, 0 /* s3 res */);
+    }
+};
+
+#endif // DO_S_RESIDENCY_SAMPLE 
+
 
 #if DO_WAKELOCK_SAMPLE 
 /*
@@ -2394,6 +2677,8 @@ static inline void produce_p_sample(int cpu, unsigned long long tsc, u32 req_fre
     sample.data_type = P_STATE;
     sample.data_len = sizeof(p_msg);
     sample.p_data = (u64)((unsigned long)&p_msg);
+
+    pw_pr_debug("DEBUG: TSC = %llu, req_freq = %u, perf-status = %u\n", tsc, req_freq, perf_status);
 
     /*
      * OK, everything computed. Now copy
@@ -3908,81 +4193,6 @@ static void probe_cpu_hotplug(void *ignore, unsigned int state, int cpu_id)
  * Tokenize the Frequency table string
  * to extract individual frequency 'steps'
  */
-int extract_valid_frequencies(const char *buffer, ssize_t len)
-{
-    const char *str = NULL;
-    char tmp[10];
-    int num_toks = 0, i=0, j=0, tmp_len = 0;
-    unsigned long freq = 0;
-
-    if(len <= 0 || !buffer)
-	return -ERROR;
-
-    /*
-     * Step-1: find out number of
-     * frequency steps
-     */
-    for (i=0; i<len; ++i) {
-	if (buffer[i] == ' ') {
-	    ++num_toks;
-        }
-    }
-
-    /*
-     * We don't keep a separate "len"
-     * field to indicate # of freq
-     * steps. Instead, we write a
-     * ZERO in the last entry of the
-     * 'apwr_available_frequencies' table.
-     * Increase the size of the table to
-     * accommodate this.
-     */
-    ++num_toks;
-
-    /*
-     * Step-2: allocate memory etc.
-     */
-    if(!(apwr_available_frequencies = pw_kmalloc(sizeof(u32) * num_toks, GFP_KERNEL))){
-	pw_pr_error("ERROR: could NOT allocate memory for apwr_available_frequencies array!\n");
-	return -ERROR;
-    }
-
-    /*
-     * Step-3: extract the actual frequencies.
-     */
-    for (i=0, j=0, str = buffer; i<len; ++i) {
-	if (buffer[i] == ' ') {
-	    memset(tmp, 0, sizeof(tmp));
-	    ++num_toks;
-	    if ( (tmp_len = (buffer+i) - str) > 10) {
-		// ERROR!
-		return -ERROR;
-	    }
-	    strncpy(tmp, str, tmp_len);
-	    // fprintf(stderr, "TOKEN = %d\n", atoi(tmp));
-	    freq = simple_strtoul(tmp, NULL, 10);
-	    apwr_available_frequencies[j++] = (u32)freq;
-	    OUTPUT(0, KERN_INFO "FREQ-STEP: %lu\n", freq);
-	    str = buffer + i + 1;
-	}
-    }
-    /*
-     * Now write the ZERO entry 
-     * denoting EOF
-     */
-    apwr_available_frequencies[j] = 0x0;
-    /*
-     * Special support for MFLD -- if we
-     * couldn't get the 'base_operating_freq_khz'
-     * then set that now.
-     */
-    if (!base_operating_freq_khz) {
-	OUTPUT(0, KERN_INFO "WARNING: no \"base_operating_frequency\" set -- using %u\n", apwr_available_frequencies[0]);
-	base_operating_freq_khz = apwr_available_frequencies[0];
-    }
-    return SUCCESS;
-};
-
 
 /*
  * New methodology -- We're now using APERF/MPERF
@@ -4102,6 +4312,7 @@ static struct notifier_block apwr_cpufreq_notifier_block = {
 
 #else // DO_CPUFREQ_NOTIFIER
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) // Use 'trace_power_frequency()'
 /*
  * P-state transition probe.
  *
@@ -4120,6 +4331,15 @@ static void probe_power_frequency(void *ignore, unsigned int type, unsigned int 
     DO_PER_CPU_OVERHEAD_FUNC(tpf, CPU(), type, state);
 };
 
+#else // version >= 2.6.38 ==> Use 'trace_cpu_frequency()'
+static void probe_cpu_frequency(void *ignore, unsigned int new_freq, unsigned int cpu)
+{
+    if(unlikely(!IS_FREQ_MODE())){
+        return;
+    }
+    DO_PER_CPU_OVERHEAD_FUNC(tpf, cpu, 2 /* type, don't care */, new_freq, 0 /* prev freq, 0 ==> use pcpu var */);
+};
+#endif // LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
 #endif // DO_CPUFREQ_NOTIFIER
 
 
@@ -4927,24 +5147,16 @@ static int register_pausable_probes(void)
     if(IS_WAKELOCK_MODE()){
 #if DO_WAKELOCK_SAMPLE
         OUTPUT(0, KERN_INFO "\tWAKELOCK_EVENTS");
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,4,0)
         ret = register_trace_wake_lock(probe_wake_lock);
-#else
-        ret = register_trace_wakeup_source_activate(probe_wakeup_source_activate);
-#endif
         WARN_ON(ret);
 
         OUTPUT(0, KERN_INFO "\tWAKEUNLOCK_EVENTS");
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,4,0)
         ret = register_trace_wake_unlock(probe_wake_unlock);
-#else
-        ret = register_trace_wakeup_source_deactivate(probe_wakeup_source_deactivate);
-#endif
         WARN_ON(ret);
 #endif
     }
 
-#else // KERNEL_VER
+#else // KERNEL_VERSION >= 2.6.35
 
     /*
      * ALWAYS required.
@@ -4983,7 +5195,11 @@ static int register_pausable_probes(void)
 #else // DO_CPUFREQ_NOTIFIER
 	{
 	    OUTPUT(0, KERN_INFO "\tPSTATE_EVENTS\n");
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) // Use 'trace_power_frequency()'
 	    ret = register_trace_power_frequency(probe_power_frequency, NULL);
+#else // Use 'trace_cpu_frequency()'
+	    ret = register_trace_cpu_frequency(probe_cpu_frequency, NULL);
+#endif // LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
 	    WARN_ON(ret);
 	}
 #endif // DO_CPUFREQ_NOTIFIER
@@ -5070,7 +5286,7 @@ static void unregister_pausable_probes(void)
 #endif
     }
 
-#else // KERNEL_VER
+#else // Kernel version >= 2.6.35
 
     /*
      * ALWAYS required.
@@ -5104,7 +5320,11 @@ static void unregister_pausable_probes(void)
 	}
 #else // DO_CPUFREQ_NOTIFIER
 	{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38) // Use 'trace_power_frequency()'
 	    unregister_trace_power_frequency(probe_power_frequency, NULL);
+#else // Use 'trace_cpu_frequency()'
+            unregister_trace_cpu_frequency(probe_cpu_frequency, NULL);
+#endif // LINUX_VERSION_CODE < KERNEL_VERSION(2,6,38)
 
 	    tracepoint_synchronize_unregister();
 	}
@@ -5298,61 +5518,6 @@ static inline bool is_cmd_valid(PWCollector_cmd_t cmd)
 };
 
 /*
- * Get list of available frequencies
- */
-void get_frequency_steps(void)
-{
-    /*
-     * Try and determine the 'legal' frequencies
-     * i.e. the various (discrete) frequencies
-     * the processor could possibly execute at.
-     * This must be done ONCE PER COLLECTION (and
-     * only at the START of the collection)!
-     * Update: do this ONLY if we're computing
-     * frequencies dynamically!
-     */
-    int cpu = 0;
-    struct cpufreq_policy *policy;
-    ssize_t buffer_len = -1;
-    struct freq_attr *freq_attrs = &cpufreq_freq_attr_scaling_available_freqs;
-    char buffer[512]; // size is probably overkill -- but we can't be sure how many freq states there are!
-    /*
-     * (1) Get the current CPUFREQ policy...
-     */
-    if( (policy = cpufreq_cpu_get(cpu)) == NULL){
-	OUTPUT(0, KERN_INFO "WARNING: cpufreq_cpu_get error for CPU = %d\n", cpu);
-    }
-    else{
-	/*
-	 * (2) Get the (string) representation of the
-	 * various frequencies. The string contains
-	 * a number of (space-separated) frequencies (in KHz).
-	 */
-	if( (buffer_len = freq_attrs->show(policy, buffer)) == -ENODEV){
-	    OUTPUT(0, KERN_INFO "WARNING: cpufreq_attrs->show(...) error for CPU = %d\n", cpu);
-	}else{
-            if (buffer_len >= 512) {
-                pw_pr_error("Error: buffer_len (%d) >= 512\n", buffer_len);
-                return;
-            }
-	    /*
-	     * (3) Tokenize the string to extract the
-	     * actual frequencies. At this point
-	     * we can confidently state we've found
-	     * the frequencies and we don't need to
-	     * repeat this procedure.
-	     */
-	    OUTPUT(0, KERN_INFO "[%d]: buffer_len = %d, BUFFER = %s\n", cpu, (int)buffer_len, buffer);
-	    if (extract_valid_frequencies(buffer, buffer_len)) {
-		pw_pr_error("ERROR: could NOT determine frequency table!\n");
-	    }
-	}
-        cpufreq_cpu_put(policy);
-    }
-};
-
-
-/*
  * Retrieve the base operating frequency
  * for this CPU. The base frequency acts
  * as a THRESHOLD indicator for TURBO -- frequencies
@@ -5368,7 +5533,7 @@ static inline void get_base_operating_frequency(void)
     }
 
     base_operating_freq_khz = pw_max_non_turbo_ratio * INTERNAL_STATE.bus_clock_freq_khz;
-    printk(KERN_INFO "RATIO = 0x%x, BUS_FREQ = %u, FREQ = %u\n", (u32)pw_max_non_turbo_ratio , (u32)INTERNAL_STATE.bus_clock_freq_khz, base_operating_freq_khz);
+    pw_pr_debug("RATIO = 0x%x, BUS_FREQ = %u, FREQ = %u\n", (u32)pw_max_non_turbo_ratio , (u32)INTERNAL_STATE.bus_clock_freq_khz, base_operating_freq_khz);
 #else
     struct cpufreq_policy *policy;
     if( (policy = cpufreq_cpu_get(0)) == NULL){
@@ -5441,21 +5606,12 @@ int set_config(struct PWCollector_config *remote_config, int size)
      * bus frequency -- set it here.
      */
     get_base_operating_frequency();
-    /*
-     * Get a list of frequencies that
-     * the processors may execute at.
-     * (But only if the steps haven't previously
-     * been determined).
-     */
-    if (!apwr_available_frequencies) {
-        get_frequency_steps();
-    }
 
     /*
      * Set power switches.
      */
     INTERNAL_STATE.collection_switches = local_config.data;
-    printk(KERN_INFO "\tCONFIG collection switches = %d\n", INTERNAL_STATE.collection_switches);
+    pw_pr_debug("\tCONFIG collection switches = %llu\n", INTERNAL_STATE.collection_switches);
 
     INTERNAL_STATE.d_state_sample_interval = local_config.d_state_sample_interval;
     OUTPUT(0, KERN_INFO "\tCONFIG D-state collection interval (msec) = %d\n", INTERNAL_STATE.d_state_sample_interval);
@@ -5567,6 +5723,203 @@ int pw_set_msr_addrs(struct pw_msr_info *remote_info, int size)
 done:
     pw_kfree(__buffer);
     return retVal;
+};
+/*
+ * Free up space required for S0iX addresses.
+ */
+static void pw_deallocate_platform_res_info_i(void)
+{
+    if (likely(INTERNAL_STATE.platform_res_addrs)) {
+        pw_kfree(INTERNAL_STATE.platform_res_addrs);
+        INTERNAL_STATE.platform_res_addrs = NULL;
+    }
+    /*
+     * TODO
+     * un-initialize as well?
+     */
+    if (INTERNAL_STATE.platform_remapped_addrs) {
+        int i=0;
+        for (i=0; i<INTERNAL_STATE.num_addrs; ++i) {
+            if (INTERNAL_STATE.platform_remapped_addrs[i]) {
+                iounmap(INTERNAL_STATE.platform_remapped_addrs[i]);
+                // printk(KERN_INFO "OK: unmapped MMIO base addr: 0x%lx\n", INTERNAL_STATE.platform_remapped_addrs[i]);
+            }
+        }
+        pw_kfree(INTERNAL_STATE.platform_remapped_addrs);
+        INTERNAL_STATE.platform_remapped_addrs = NULL;
+    }
+    if (likely(INTERNAL_STATE.platform_residency_msg)) {
+        pw_kfree(INTERNAL_STATE.platform_residency_msg);
+        INTERNAL_STATE.platform_residency_msg = NULL;
+    }
+    if (likely(INTERNAL_STATE.init_platform_res_values)) {
+        pw_kfree(INTERNAL_STATE.init_platform_res_values);
+        INTERNAL_STATE.init_platform_res_values = NULL;
+    }
+    return;
+};
+/*
+ * Set S0iX method, addresses.
+ */
+#if 0
+int pw_set_platform_res_config_i(struct PWCollector_platform_res_info *remote_info, int size)
+{
+    struct PWCollector_platform_res_info *local_info;
+    char *__buffer = NULL;
+    int i=0;
+    u64 *__addrs = NULL;
+
+    if (!remote_info) {
+        pw_pr_error("ERROR: NULL remote_info value?!\n");
+        return -ERROR;
+    }
+    printk(KERN_INFO "REMOTE_INFO = %p, size = %d\n", remote_info, size);
+    /*
+     * 'Size' includes space for the 'header' AND space for all of the 64b IO addresses.
+     */
+    __buffer = pw_kmalloc(sizeof(char) * size, GFP_KERNEL);
+    if (!__buffer) {
+        pw_pr_error("ERROR allocating space for local platform_res_info!\n");
+        return -ERROR;
+    }
+    memset(__buffer, 0, (sizeof(char) * size));
+
+    local_info = (PWCollector_platform_res_info_t *)__buffer;
+    __addrs = (u64 *)local_info->addrs;
+
+    i = copy_from_user(local_info, remote_info, size);
+    if (i) { // "copy_from_user" returns number of bytes that COULD NOT be copied
+        pw_pr_error("ERROR copying platform residency info data from userspace!\n");
+        pw_kfree(__buffer);
+	return i;
+    }
+    printk(KERN_INFO "OK: platform info collection type = %d, # addrs = %u\n", local_info->collection_type, local_info->num_addrs);
+    for (i=0; i<local_info->num_addrs; ++i) {
+        printk(KERN_INFO "\t[%d] --> 0x%lx\n", i, __addrs[i]);
+    }
+    pw_kfree(__buffer);
+    return -ERROR;
+};
+#endif // if 0
+int pw_set_platform_res_config_i(struct PWCollector_platform_res_info __user *remote_info, int size)
+{
+    struct PWCollector_platform_res_info local_info;
+    int i=0;
+    u64 __user *__remote_addrs = NULL;
+    char *buffer = NULL;
+    // const int counter_size_in_bytes = (int)INTERNAL_STATE.counter_size_in_bytes;
+
+    INTERNAL_STATE.init_platform_res_values = INTERNAL_STATE.platform_remapped_addrs = INTERNAL_STATE.platform_res_addrs = NULL;
+    INTERNAL_STATE.platform_residency_msg = NULL;
+
+    if (!remote_info) {
+        pw_pr_error("ERROR: NULL remote_info value?!\n");
+        return -ERROR;
+    }
+    __remote_addrs = (u64 *)remote_info->addrs;
+    pw_pr_debug("Remote address = %llx\n", __remote_addrs[0]);
+
+
+    i = copy_from_user(&local_info, remote_info, sizeof(local_info));
+    if (i) { // "copy_from_user" returns number of bytes that COULD NOT be copied
+        pw_pr_error("ERROR copying platform residency info data from userspace!\n");
+	return i;
+    }
+    // printk(KERN_INFO "OK: platform info collection type = %d, # addrs = %u\n", local_info.collection_type, local_info.num_addrs);
+
+    INTERNAL_STATE.ipc_start_command = local_info.ipc_start_command; INTERNAL_STATE.ipc_start_sub_command = local_info.ipc_start_sub_command;
+    INTERNAL_STATE.ipc_stop_command = local_info.ipc_stop_command; INTERNAL_STATE.ipc_stop_sub_command = local_info.ipc_stop_sub_command;
+    INTERNAL_STATE.ipc_dump_command = local_info.ipc_dump_command; INTERNAL_STATE.ipc_dump_sub_command = local_info.ipc_dump_sub_command;
+
+    INTERNAL_STATE.num_addrs = local_info.num_addrs;
+    INTERNAL_STATE.collection_type = local_info.collection_type;
+    INTERNAL_STATE.counter_size_in_bytes = local_info.counter_size_in_bytes;
+
+    if (INTERNAL_STATE.num_addrs > 5) {
+        printk(KERN_INFO "ERROR: can only collect a max of 5 platform residency states, for now (%u requested)!\n", INTERNAL_STATE.num_addrs);
+        return -ERROR;
+    }
+    INTERNAL_STATE.platform_res_addrs = (u64 *)pw_kmalloc(sizeof(u64) * INTERNAL_STATE.num_addrs, GFP_KERNEL);
+    if (!INTERNAL_STATE.platform_res_addrs) {
+        printk(KERN_INFO "ERROR allocating space for local addrs!\n");
+        return -ERROR;
+    }
+    memset(INTERNAL_STATE.platform_res_addrs, 0, (sizeof(u64) * INTERNAL_STATE.num_addrs));
+
+    INTERNAL_STATE.platform_remapped_addrs = (u64 *)pw_kmalloc(sizeof(u64) * INTERNAL_STATE.num_addrs, GFP_KERNEL);
+    if (!INTERNAL_STATE.platform_remapped_addrs) {
+        printk(KERN_INFO "ERROR allocating space for local addrs!\n");
+        pw_kfree(INTERNAL_STATE.platform_res_addrs);
+        INTERNAL_STATE.platform_res_addrs = NULL;
+        return -ERROR;
+    }
+    memset(INTERNAL_STATE.platform_remapped_addrs, 0, (sizeof(u64) * INTERNAL_STATE.num_addrs));
+
+    INTERNAL_STATE.init_platform_res_values = (u64 *)pw_kmalloc(sizeof(u64) * INTERNAL_STATE.num_addrs, GFP_KERNEL);
+    if (!INTERNAL_STATE.init_platform_res_values) {
+        printk(KERN_INFO "ERROR allocating space for local addrs!\n");
+        pw_kfree(INTERNAL_STATE.platform_res_addrs);
+        pw_kfree(INTERNAL_STATE.platform_remapped_addrs);
+        INTERNAL_STATE.platform_res_addrs = NULL;
+        INTERNAL_STATE.platform_remapped_addrs = NULL;
+        return -ERROR;
+    }
+    memset(INTERNAL_STATE.init_platform_res_values, 0, (sizeof(u64) * INTERNAL_STATE.num_addrs));
+
+    buffer = (char *)pw_kmalloc(sizeof(s_res_msg_t) + (sizeof(u64) * (INTERNAL_STATE.num_addrs+2)), GFP_KERNEL); // "+2" ==> S0i0, S3
+    if (!buffer) {
+        printk(KERN_INFO "ERROR allocating space for local addrs!\n");
+        pw_kfree(INTERNAL_STATE.platform_res_addrs);
+        pw_kfree(INTERNAL_STATE.platform_remapped_addrs);
+        pw_kfree(INTERNAL_STATE.init_platform_res_values);
+        INTERNAL_STATE.platform_res_addrs = NULL;
+        INTERNAL_STATE.platform_remapped_addrs = NULL;
+        INTERNAL_STATE.init_platform_res_values = NULL;
+        return -ERROR;
+    }
+    memset(buffer, 0, sizeof(char) * sizeof(s_res_msg_t) + (sizeof(u64) * (INTERNAL_STATE.num_addrs+2)));
+    // INTERNAL_STATE.platform_residency_msg = (s_res_msg_t *)pw_kmalloc(sizeof(s_res_msg_t) + (sizeof(u64) * (INTERNAL_STATE.num_addrs+2)), GFP_KERNEL); // "+2" ==> S0i0, S3
+    INTERNAL_STATE.platform_residency_msg = (s_res_msg_t *)&buffer[0];
+    INTERNAL_STATE.platform_residency_msg->residencies = (u64 *)&buffer[sizeof(s_res_msg_t)];
+
+    i = copy_from_user(INTERNAL_STATE.platform_res_addrs, __remote_addrs, (sizeof(u64) * INTERNAL_STATE.num_addrs));
+    if (i) { // "copy_from_user" returns number of bytes that COULD NOT be copied
+        pw_pr_error("ERROR copying platform residency info data from userspace!\n");
+        pw_deallocate_platform_res_info_i();
+	return i;
+    }
+#if 0
+    printk(KERN_INFO "%llx\n", INTERNAL_STATE.platform_res_addrs[0]);
+    for (i=0; i<INTERNAL_STATE.num_addrs; ++i) {
+        printk(KERN_INFO "\t[%d] --> 0x%lx\n", i, INTERNAL_STATE.platform_res_addrs[i]);
+    }
+#endif // if 0
+    switch (INTERNAL_STATE.collection_type) {
+        case PW_IO_IPC:
+        case PW_IO_MMIO: // fall-through
+#if 1
+            for (i=0; i<INTERNAL_STATE.num_addrs; ++i) {
+                // INTERNAL_STATE.platform_remapped_addrs[i] = ioremap_nocache(INTERNAL_STATE.platform_res_addrs[i], sizeof(u32) * 1);
+                // INTERNAL_STATE.platform_remapped_addrs[i] = (u64)ioremap_nocache(INTERNAL_STATE.platform_res_addrs[i], sizeof(u64) * 1);
+                // INTERNAL_STATE.platform_remapped_addrs[i] = (u64)ioremap_nocache(INTERNAL_STATE.platform_res_addrs[i], sizeof(u32) * 1);
+                INTERNAL_STATE.platform_remapped_addrs[i] = (u64)ioremap_nocache(INTERNAL_STATE.platform_res_addrs[i], (INTERNAL_STATE.counter_size_in_bytes * 1));
+                if (INTERNAL_STATE.platform_remapped_addrs[i] == NULL) {
+                    printk(KERN_INFO "ERROR remapping MMIO addresses 0x%lx\n", INTERNAL_STATE.platform_res_addrs[i]);
+                    pw_deallocate_platform_res_info_i();
+                    return -ERROR;
+                }
+                pw_pr_debug("OK: mapped address %llu to %llu!\n", INTERNAL_STATE.platform_res_addrs[i], INTERNAL_STATE.platform_remapped_addrs[i]);
+            }
+#else // if 1
+            INTERNAL_STATE.platform_remapped_addrs[0] = ioremap_nocache(INTERNAL_STATE.platform_res_addrs[0], sizeof(unsigned long) * (INTERNAL_STATE.num_addrs * 2));
+#endif // if 0
+            break;
+        default:
+            printk(KERN_INFO "ERROR: unsupported platform residency collection type: %u!\n", INTERNAL_STATE.collection_type);
+            pw_deallocate_platform_res_info_i();
+            return -ERROR;
+    }
+    return SUCCESS;
 };
 
 int check_platform(struct PWCollector_check_platform *remote_check, int size)
@@ -5764,33 +6117,6 @@ int get_status(struct PWCollector_status *remote_status, int size)
     return retVal;
 };
 
-long get_available_frequencies(struct PWCollector_available_frequencies *remote_freqs, int size)
-{
-    int i=0;
-    struct PWCollector_available_frequencies local_freqs;
-
-    if (!remote_freqs) {
-        pw_pr_error("ERROR: NULL remote_freqs value?!\n");
-        return -ERROR;
-    }
-
-    if(!apwr_available_frequencies){
-	pw_pr_error("ERROR: trying to get list of available frequencies WITHOUT setting config?!\n");
-	return -ERROR;
-    }
-
-    memset(local_freqs.frequencies, 0, sizeof(u32) * PW_MAX_NUM_AVAILABLE_FREQUENCIES);
-
-    for(i = 0, local_freqs.num_freqs = 0; apwr_available_frequencies[i] != 0; ++i, ++local_freqs.num_freqs){
-	local_freqs.frequencies[i] = apwr_available_frequencies[i];
-    }
-
-    if(copy_to_user(remote_freqs, &local_freqs, size)) // returns number of bytes that could NOT be copied.
-	return -ERROR;
-
-    return SUCCESS;
-};
-
 /*
  * Reset all statistics collected so far.
  * Called from a non-running collection context.
@@ -5888,7 +6214,7 @@ static void reset_trace_sent_fields(void)
     int i=0;
 
     for(i=0; i<NUM_MAP_BUCKETS; ++i)
-	hlist_for_each_entry(node, curr, &timer_map[i].head, list){
+        PW_HLIST_FOR_EACH_ENTRY(node, curr, &timer_map[i].head, list) {
 	    node->trace_sent = 0;
 	}
 };
@@ -6239,8 +6565,18 @@ int start_collection(PWCollector_cmd_t cmd)
 	return -ERROR;
     }
 
+#if DO_S_RESIDENCY_SAMPLE 
+    //struct timeval cur_time;
+    if (IS_S_RESIDENCY_MODE()) {
+        startTSC_s_residency = 0;
+        produce_boundary_s_residency_msg_i(true); // "true" ==> BEGIN boundary
+        // startJIFF_s_residency = CURRENT_TIME_IN_USEC();
+    }
+#endif // DO_S_RESIDENCY_SAMPLE
+
 #if DO_ACPI_S3_SAMPLE 
     //struct timeval cur_time;
+#if 0
     if(pw_is_slm && IS_ACPI_S3_MODE()){
         /*
          * Ensure we reset the ACPI S3 'start' TSC counter.
@@ -6248,6 +6584,7 @@ int start_collection(PWCollector_cmd_t cmd)
         startTSC_acpi_s3 = 0x0;
         produce_acpi_s3_sample(false);
     }
+#endif // if 0
 #endif
 
     return SUCCESS;
@@ -6282,10 +6619,19 @@ int stop_collection(PWCollector_cmd_t cmd)
         hrtimer_try_to_cancel(&pw_acpi_s3_hrtimer);
     }
 
+#if DO_S_RESIDENCY_SAMPLE 
+    if (IS_S_RESIDENCY_MODE()) {
+        produce_boundary_s_residency_msg_i(false); // "false" ==> NOT begin boundary
+        startTSC_s_residency = 0; // redundant!
+    }
+#endif // DO_S_RESIDENCY_SAMPLE
+
 #if DO_ACPI_S3_SAMPLE 
+#if 0
     if(pw_is_slm && IS_ACPI_S3_MODE()){
         produce_acpi_s3_sample(false);
     }
+#endif // if 0
 #endif
 
     INTERNAL_STATE.collectionStopJIFF = jiffies;
@@ -6372,8 +6718,10 @@ int stop_collection(PWCollector_cmd_t cmd)
 #if DO_USE_CONSTANT_POOL_FOR_WAKELOCK_NAMES
         destroy_wlock_map();
 #endif // DO_USE_CONSTANT_POOL_FOR_WAKELOCK_NAMES
-        printk(KERN_INFO "Debug: deallocating on a stop/cancel!\n");
+        pw_pr_debug("Debug: deallocating on a stop/cancel!\n");
         pw_deallocate_msr_info_i(&INTERNAL_STATE.msr_addrs);
+        // pw_deallocate_platform_res_info_i(&INTERNAL_STATE.platform_res_addrs);
+        pw_deallocate_platform_res_info_i();
         pw_reset_msr_info_sets();
     }
 
@@ -6478,22 +6826,78 @@ int pw_alrm_suspend_notifier_callback_i(struct notifier_block *block, unsigned l
 {
     u64 tsc_suspend_time_ticks = 0;
     u64 suspend_time_ticks = 0;
+    u64 usec = 0;
+    u64 suspend_time_usecs = 0;
+    u64 base_operating_freq_mhz = base_operating_freq_khz / 1000;
 
-    if (!pw_is_atm && !pw_is_slm) {
+    if (!pw_is_slm) {
         return NOTIFY_DONE;
     }
     switch (state) {
         case PM_SUSPEND_PREPARE:
             /*
-             * Entering SUSPEND -- nothing to do.
+             * Entering SUSPEND.
              */
             tscval(&pw_suspend_start_tsc);
             printk(KERN_INFO "pw: SUSPEND PREPARE: tsc = %llu\n", pw_suspend_start_tsc);
             if (likely(IS_COLLECTING())) {
-                if (likely(IS_COLLECTING()) && likely(IS_ACPI_S3_MODE())) {
-                    produce_acpi_s3_sample(false); 
-                }
+                if (IS_S_RESIDENCY_MODE()) {
+                    /*
+                     * Generate an S_RESIDENCY sample.
+                     */
+                    int cpu = RAW_CPU();
+                    PWCollector_msg_t msg;
+                    s_res_msg_t *smsg = INTERNAL_STATE.platform_residency_msg;
+                    u64 *values = smsg->residencies;
 
+#if 0
+                    switch (INTERNAL_STATE.collection_type) {
+                        case PW_IO_IPC:
+                        case PW_IO_MMIO:
+                            /*
+                             * ASSUMPTION:
+                             * S0iX addresses are layed out as following:
+                             * S0i1, S0i2, S0i3, <others>
+                             * Where "others" is optional.
+                             */
+                            pw_suspend_start_s0i3 = *((u64 *)INTERNAL_STATE.platform_remapped_addrs[2]);
+                            break;
+                        default:
+                            printk(KERN_INFO "ERROR: unsupported S0iX collection type: %u!\n", INTERNAL_STATE.collection_type);
+                            return NOTIFY_DONE;
+                    }
+#endif // if 0
+
+                    /*
+                     * No residency counters available  
+                     */
+                    msg.data_type = S_RESIDENCY;
+                    msg.cpuidx = cpu;
+                    msg.tsc = pw_suspend_start_tsc;
+                    msg.data_len = sizeof(*smsg) + sizeof(u64) * (INTERNAL_STATE.num_addrs + 2); // "+2" for S0i3, S3
+
+                    values[0] = pw_suspend_start_tsc - startTSC_s_residency;
+
+                    pw_populate_s_residency_values_i(values, false); // "false" ==> NOT begin boundary
+
+                    pw_suspend_start_s0i3 = values[3]; // values array has entries in order: S0i0, S0i1, S0i2, S0i3, ...
+
+                    msg.p_data = (u64)((unsigned long)(smsg));
+
+                    /*
+                     * OK, everything computed. Now copy
+                     * this sample into an output buffer
+                     */
+                    pw_produce_generic_msg(&msg, true); // "true" ==> allow wakeups
+                }
+                /*
+                 * Also need to send an ACPI S3 sample.
+                 */
+                if (IS_ACPI_S3_MODE()) {
+                    // produce_acpi_s3_sample(false); 
+                    // produce_acpi_s3_sample(0 /* s3 res */); 
+                    produce_acpi_s3_sample(pw_suspend_start_tsc, 0 /* s3 res */); 
+                }
                 /*
                  * And finally, the special 'broadcast' wakelock sample.
                  */
@@ -6532,15 +6936,87 @@ int pw_alrm_suspend_notifier_callback_i(struct notifier_block *block, unsigned l
             printk(KERN_INFO "pw: POST SUSPEND: tsc = %llu\n", pw_suspend_stop_tsc);
             BUG_ON(pw_suspend_start_tsc == 0);
 
-            if (likely(IS_COLLECTING()) && likely(IS_ACPI_S3_MODE())) {
-                produce_acpi_s3_sample(true); 
-            }
+            if (likely(IS_COLLECTING())) {
+                if (IS_S_RESIDENCY_MODE()) {
+#if 0
+                    switch (INTERNAL_STATE.collection_type) {
+                        case PW_IO_IPC:
+                        case PW_IO_MMIO:
+                            /*
+                             * ASSUMPTION:
+                             * S0iX addresses are layed out as following:
+                             * S0i1, S0i2, S0i3, <others>
+                             * Where "others" is optional.
+                             */
+                            pw_suspend_stop_s0i3 = *((u64 *)INTERNAL_STATE.platform_remapped_addrs[2]);
+                            break;
+                        default:
+                            printk(KERN_INFO "ERROR: unsupported S0iX collection type: %u!\n", INTERNAL_STATE.collection_type);
+                            return NOTIFY_DONE;
+                    }
+#endif // if 0
+                    /*
+                     * We need to an 'S_RESIDENCY' sample detailing the actual supend 
+                     * statistics (when did the device get suspended; for how long 
+                     * was it suspended etc.). 
+                     */
+                    {
+                        PWCollector_msg_t msg;
+                        s_res_msg_t *smsg = INTERNAL_STATE.platform_residency_msg;
+                        u64 *values = smsg->residencies;
 
-            {
+                        msg.data_type = S_RESIDENCY;
+                        msg.cpuidx = RAW_CPU();
+                        msg.tsc = pw_suspend_stop_tsc;
+                        msg.data_len = sizeof(*smsg) + sizeof(u64) * (INTERNAL_STATE.num_addrs + 2); // "+2" for S0i3, S3
+
+                        values[0] = pw_suspend_stop_tsc - startTSC_s_residency;
+
+                        pw_populate_s_residency_values_i(values, false); // "false" ==> NOT begin boundary
+
+                        pw_suspend_stop_s0i3 = values[3]; // values array has entries in order: S0i0, S0i1, S0i2, S0i3, ...
+
+                        /*
+                         * UPDATE: TNG, VLV have S0iX counter incrementing at TSC frequency!!!
+                         */
+                        if (pw_is_slm) {
+                            suspend_time_ticks = (pw_suspend_stop_s0i3 - pw_suspend_start_s0i3);
+                        } else {
+                            suspend_time_usecs = (pw_suspend_stop_s0i3 - pw_suspend_start_s0i3); 
+                            suspend_time_ticks = suspend_time_usecs * base_operating_freq_mhz;
+                        }
+                        printk(KERN_INFO "BASE operating freq_mhz = %llu\n", base_operating_freq_mhz);
+                        printk(KERN_INFO "POST SUSPEND s0i3 = %llu, S3 RESIDENCY = %llu (%llu ticks)\n", pw_suspend_stop_s0i3, suspend_time_usecs, suspend_time_ticks);
+
+
+                        /*
+                         * PWR library EXPECTS 5th entry to be the ACPI S3 residency (in clock ticks)!
+                         */
+                        values[4] = suspend_time_ticks;
+
+                        msg.p_data = (u64)((unsigned long)(smsg));
+
+                        /*
+                         * OK, everything computed. Now copy
+                         * this sample into an output buffer
+                         */
+                        pw_produce_generic_msg(&msg, true); // "true" ==> allow wakeups
+                    }
+                } // IS_S_RESIDENCY_MODE()
+#if 0
+                else if (IS_ACPI_S3_MODE()) {
+                    produce_acpi_s3_sample(true); 
+                }
+#endif // if 0
+            } else {
                 tsc_suspend_time_ticks = (pw_suspend_stop_tsc - pw_suspend_start_tsc);
                 suspend_time_ticks = tsc_suspend_time_ticks;
             }
             printk(KERN_INFO "OK: suspend time ticks = %llu\n", suspend_time_ticks);
+            if (IS_ACPI_S3_MODE()) {
+                // produce_acpi_s3_sample(suspend_time_ticks /* s3 res */); 
+                produce_acpi_s3_sample(pw_suspend_stop_tsc, suspend_time_ticks /* s3 res */); 
+            }
 
             break;
         default:
@@ -6612,6 +7088,7 @@ long pw_unlocked_handle_ioctl_i(unsigned int ioctl_num, struct PWCollector_ioctl
     if(get_arg_lengths(ioctl_param, &local_in_len, &local_out_len)){
 	return -ERROR;
     }
+    OUTPUT(0, KERN_INFO "GU: local_in_len = %d, local_out_len = %d\n", local_in_len, local_out_len);
     /*
      * (3) Service individual IOCTL requests.
      */
@@ -6663,10 +7140,6 @@ long pw_unlocked_handle_ioctl_i(unsigned int ioctl_num, struct PWCollector_ioctl
     else if(MATCH_IOCTL(ioctl_num, PW_IOCTL_TURBO_THRESHOLD)){
 	OUTPUT(0, KERN_INFO "PW_IOCTL_TURBO_THRESHOLD\n");
 	return get_turbo_threshold((struct PWCollector_turbo_threshold *)remote_args->out_arg, local_out_len);
-    }
-    else if(MATCH_IOCTL(ioctl_num, PW_IOCTL_AVAILABLE_FREQUENCIES)){
-	OUTPUT(0, KERN_INFO "PW_IOCTL_AVAILABLE_FREQUENCIES\n");
-	return get_available_frequencies((struct PWCollector_available_frequencies *)remote_args->out_arg, local_out_len);
     }
     else if (MATCH_IOCTL(ioctl_num, PW_IOCTL_COLLECTION_TIME)) {
         /*
@@ -6732,7 +7205,7 @@ long pw_unlocked_handle_ioctl_i(unsigned int ioctl_num, struct PWCollector_ioctl
          */
         {
             u32 __fsb_non_turbo = (pw_max_non_turbo_ratio << 16 | pw_msr_fsb_freq_value);
-            printk(KERN_INFO "__fsb_non_turbo = %u\n", __fsb_non_turbo);
+            pw_pr_debug("__fsb_non_turbo = %u\n", __fsb_non_turbo);
             if (put_user(__fsb_non_turbo, (u32 *)remote_args->out_arg)) {
                 pw_pr_error("ERROR transfering FSB_FREQ MSR value!\n");
                 return -ERROR;
@@ -6743,6 +7216,11 @@ long pw_unlocked_handle_ioctl_i(unsigned int ioctl_num, struct PWCollector_ioctl
     else if (MATCH_IOCTL(ioctl_num, PW_IOCTL_MSR_ADDRS)) {
         pw_pr_debug(KERN_INFO "PW_IOCTL_MSR_ADDRS\n");
         return pw_set_msr_addrs((struct pw_msr_info *)remote_args->in_arg, local_in_len);
+    }
+    else if (MATCH_IOCTL(ioctl_num, PW_IOCTL_PLATFORM_RES_CONFIG)) {
+        pw_pr_debug(KERN_INFO "PW_IOCTL_PLATFORM_RES_CONFIG encountered!\n");
+        return pw_set_platform_res_config_i((struct PWCollector_platform_res_info *)remote_args->in_arg, local_in_len);
+        // return -ERROR;
     }
     else{
 	// ERROR!
@@ -7082,7 +7560,7 @@ static void get_fms(unsigned int *family, unsigned int *model, unsigned int *ste
     if (*family == 6 || *family == 0xf){
         *model += ((fms >> 16) & 0xf) << 4;
     }
-    printk(KERN_INFO "FMS = 0x%x:%x:%x (%d:%d:%d)\n", *family, *model, *stepping, *family, *model, *stepping);
+    pw_pr_debug("FMS = 0x%x:%x:%x (%d:%d:%d)\n", *family, *model, *stepping, *family, *model, *stepping);
 };
 /*
  * Check if we're running on ATM.
@@ -7115,6 +7593,7 @@ static atom_arch_type_t is_atm(void)
 #endif // ifndef __arm__
     return NON_ATOM;
 };
+
 static slm_arch_type_t is_slm(void)
 {
 #ifndef __arm__
@@ -7140,6 +7619,30 @@ static slm_arch_type_t is_slm(void)
     return NON_SLM;
 };
 
+static bool is_hsw(void)
+{
+#ifndef __arm__
+    unsigned int family, model, stepping;
+
+    get_fms(&family, &model, &stepping);
+    /*
+     * This check below will need to
+     * be updated for each new
+     * architecture type!!!
+     */
+    if (family == 0x6) {
+        switch (model) {
+            case 0x3c:
+            case 0x45:
+                return true;
+            default:
+                break;
+        }
+    }
+#endif // __arm__
+    return false;
+};
+
 static void test_wlock_mappings(void)
 {
 #if DO_WAKELOCK_SAMPLE 
@@ -7148,6 +7651,38 @@ static void test_wlock_mappings(void)
     produce_w_sample(0, 0x1, PW_WAKE_LOCK, 0, 0, "abcdef", "swapper", 0x0);
 #endif
 };
+
+#define PW_GET_SCU_FW_MAJOR(num) ( ( (num) >> 8 ) & 0xff)
+#define PW_GET_SCU_FW_MINOR(num) ( (num) & 0xff )
+
+#ifdef CONFIG_X86_WANT_INTEL_MID
+static int pw_do_parse_sfi_oemb_table_i(struct sfi_table_header *header)
+{
+    struct sfi_table_oemb *oemb; // "struct sfi_table_oemb" defined in "intel-mid.h"
+
+    oemb = (struct sfi_table_oemb *)header;
+    if (!oemb) {
+        printk(KERN_INFO "ERROR: NULL sfi table header?!\n");
+        return -ERROR;
+    }
+    pw_scu_fw_major_minor = (oemb->scu_runtime_major_version << 8) | (oemb->scu_runtime_minor_version);
+    pw_pr_debug("Major = %u, Minor = %u\n", oemb->scu_runtime_major_version, oemb->scu_runtime_minor_version);
+
+    return SUCCESS;
+};
+static void pw_do_extract_scu_fw_version(void)
+{
+    if (sfi_table_parse(SFI_SIG_OEMB, NULL, NULL, &pw_do_parse_sfi_oemb_table_i)) {
+        printk(KERN_INFO "WARNING: no SFI information; resetting SCU F/W version!\n");
+        pw_scu_fw_major_minor = 0x0;
+    }
+};
+#else // CONFIG_X86_WANT_INTEL_MID
+static void pw_do_extract_scu_fw_version(void)
+{
+    pw_scu_fw_major_minor = 0x0;
+};
+#endif // CONFIG_X86_WANT_INTEL_MID
 
 static int __init init_hooks(void)
 {
@@ -7186,9 +7721,13 @@ static int __init init_hooks(void)
      */
     pw_is_slm = is_slm();
     /*
+     * Check if we're running on HSW.
+     */
+    pw_is_hsw = is_hsw();
+    /*
      * Sanity!
      */
-    BUG_ON(pw_is_atm && pw_is_slm);
+    BUG_ON(pw_is_atm && pw_is_slm && pw_is_hsw);
 
     /*
      * For MFLD, we also check
@@ -7239,7 +7778,7 @@ static int __init init_hooks(void)
         rdmsrl(MSR_FSB_FREQ_ADDR, res);
         // memcpy(&pw_msr_fsb_freq_value, &res, sizeof(unsigned long));
         memcpy(&pw_msr_fsb_freq_value, &res, sizeof(pw_msr_fsb_freq_value));
-        printk(KERN_INFO "MSR_FSB_FREQ value = %u\n", pw_msr_fsb_freq_value);
+        pw_pr_debug("MSR_FSB_FREQ value = %u\n", pw_msr_fsb_freq_value);
     }
     /*
      * Read the Max non-turbo ratio.
@@ -7266,17 +7805,33 @@ static int __init init_hooks(void)
         } else if (pw_is_slm) {
             rdmsrl(MSR_IA32_IACORE_RATIOS, res);
             ratio = (res >> 16) & 0x3F; // Bits 21:16
-        }else{
+        } else {
             rdmsrl(PLATFORM_INFO_MSR_ADDR, res);
             /*
              * Base Operating Freq ratio is
              * bits 15:8
              */
             ratio = (res >> 8) & 0xff;
+            pw_pr_debug("val = %llu, max-efficiency ratio = %u, min operating ratio = %u\n", res, (res >> 40) & 0xff, (res >> 48) & 0xff);
+            if (pw_is_hsw) {
+                /*
+                 * Check the max turbo ratio limit
+                 */
+                const u32 MSR_TURBO_RATIO_LIMIT = 0x1AD;
+                rdmsrl(MSR_TURBO_RATIO_LIMIT, res);
+                pw_pr_debug("MAX_TURBO_RATIO_LIMIT: val = %llu, 1c = %u, 2c = %u, 3c = %u, 4c = %u\n", res, res & 0xff, (res >> 8) & 0xff, (res >> 16) & 0xff, (res >> 24) & 0xff);
+            }
         }
 
         pw_max_non_turbo_ratio = ratio;
-        printk(KERN_INFO "MAX non-turbo ratio = %u\n", (u32)pw_max_non_turbo_ratio);
+        pw_pr_debug("MAX non-turbo ratio = %u\n", (u32)pw_max_non_turbo_ratio);
+    }
+    /*
+     * Extract SCU F/W version (if possible)
+     */
+    {
+        pw_do_extract_scu_fw_version();
+        printk(KERN_INFO "SCU F/W version = %X.%X\n", PW_GET_SCU_FW_MAJOR(pw_scu_fw_major_minor), PW_GET_SCU_FW_MINOR(pw_scu_fw_major_minor));
     }
 
     OUTPUT(3, KERN_INFO "Sizeof node = %lu\n", sizeof(tnode_t));
@@ -7293,13 +7848,6 @@ static int __init init_hooks(void)
         pw_destroy_data_structures();
         return -ERROR;
     }
-
-
-#if 0
-    {
-        get_base_operating_frequency();
-    }
-#endif
 
     /*
     {
@@ -7373,10 +7921,8 @@ static int __init init_hooks(void)
 
     printk(KERN_INFO "\n--------------------------------------------------------------------------------------------\n");
     printk(KERN_INFO "START Initialized the SOCWatch driver\n");
-#if DO_ANDROID
-#ifdef CONFIG_X86_INTEL_MID
+#ifdef CONFIG_X86_WANT_INTEL_MID
     printk(KERN_INFO "SOC Identifier = %u, Stepping = %u\n", intel_mid_identify_cpu(), intel_mid_soc_stepping());
-#endif
 #endif
     printk(KERN_INFO "--------------------------------------------------------------------------------------------\n");
 

@@ -43,6 +43,7 @@ static struct hall_sensor_str {
 	
 }* hall_sensor_dev;
 
+static void hall_sensor_shutdown(struct platform_device *pdev);
 int lid_connect(struct input_handler *handler, struct input_dev *dev, const struct input_device_id *id){
 	printk("[%s] hall_sensor connect to handler\n", DRIVER_NAME);
 	return 0;
@@ -50,7 +51,7 @@ int lid_connect(struct input_handler *handler, struct input_dev *dev, const stru
 
 void lid_event(struct input_handle *handle, unsigned int type, unsigned int code, int value){
 	if(type==EV_SW && code==SW_LID ){
-		if(!!test_bit(code, hall_sensor_dev->lid_indev->sw) != !hall_sensor_dev->status){
+     		if(value != 2 && !!test_bit(code, hall_sensor_dev->lid_indev->sw) != !hall_sensor_dev->status){
 			__change_bit(code,  hall_sensor_dev->lid_indev->sw);
 			printk("[%s] reset dev->sw=%d \n", DRIVER_NAME,!hall_sensor_dev->status);
 		}
@@ -221,6 +222,8 @@ static void lid_report_function(struct work_struct *dat)
 	if((status > 0) && (status < 3)){
 		pr_info("[%s] SW_LID do not report to framework.\n", DRIVER_NAME);
 		hall_sensor_dev->status = initial_status;
+        	input_report_switch(hall_sensor_dev->lid_indev, SW_LID, 2);
+        	input_sync(hall_sensor_dev->lid_indev);
 		wake_unlock(&hall_sensor_dev->wake_lock);
  		return;
 	}
@@ -234,8 +237,8 @@ static void lid_report_function(struct work_struct *dat)
                 pwn_enable(false);
 #endif
 	wake_unlock(&hall_sensor_dev->wake_lock);
-    wake_lock_timeout(&hall_sensor_dev->wake_lock, msecs_to_jiffies(3000));
-        pr_info("[%s] SW_LID report value = %d\n", DRIVER_NAME,!hall_sensor_dev->status);
+	wake_lock_timeout(&hall_sensor_dev->wake_lock, msecs_to_jiffies(3000));
+	pr_info("[%s] SW_LID report value = %d\n", DRIVER_NAME,!hall_sensor_dev->status);
  
 
 }
@@ -305,11 +308,30 @@ static struct platform_driver lid_platform_driver = {
 	.driver.name    = DRIVER_NAME,
 	.driver.owner	= THIS_MODULE,
 	.driver.pm      = &lid_dev_pm_ops,
+	.shutdown	= hall_sensor_shutdown, 
 	.probe          = lid_probe,
 	.id_table	= lid_id_table,
 };
 
 //----------------for pm_ops callback----------------
+
+
+
+static void hall_sensor_shutdown(struct platform_device *pdev)
+{
+
+        disable_irq(hall_sensor_dev->irq);
+        gpio_free(hall_sensor_dev->gpio);
+        destroy_workqueue(hall_sensor_do_wq);
+        destroy_workqueue(hall_sensor_wq);
+        input_free_device(hall_sensor_dev->lid_indev);
+        wake_lock_destroy(&hall_sensor_dev->wake_lock);
+        hall_sensor_dev->lid_indev=NULL;
+        kfree(hall_sensor_dev);
+        hall_sensor_dev=NULL;
+        kobject_put(hall_sensor_kobj);
+		
+}
 
 static int __init hall_sensor_init(void)
 {	
@@ -376,8 +398,8 @@ static int __init hall_sensor_init(void)
 	//init workqueue & start detect signal
 	hall_sensor_wq = create_singlethread_workqueue("hall_sensor_wq");
 	hall_sensor_do_wq = create_singlethread_workqueue("hall_sensor_do_wq");
-	INIT_DELAYED_WORK_DEFERRABLE(&hall_sensor_dev->hall_sensor_work, lid_report_function);
-	INIT_DELAYED_WORK_DEFERRABLE(&hall_sensor_dev->hall_sensor_dowork, lid_do_work_function);
+	INIT_DELAYED_WORK(&hall_sensor_dev->hall_sensor_work, lid_report_function);
+	INIT_DELAYED_WORK(&hall_sensor_dev->hall_sensor_dowork, lid_do_work_function);
 
 
 	queue_delayed_work(hall_sensor_do_wq, &hall_sensor_dev->hall_sensor_dowork, 0);
@@ -401,18 +423,18 @@ fail_for_hall_sensor:
 
 static void __exit hall_sensor_exit(void)
 {
+    disable_irq(hall_sensor_dev->irq);
 	gpio_free(hall_sensor_dev->gpio);
-	free_irq(hall_sensor_dev->irq, hall_sensor_dev);
+    destroy_workqueue(hall_sensor_do_wq);
+    destroy_workqueue(hall_sensor_wq);
 	input_free_device(hall_sensor_dev->lid_indev);
+    wake_lock_destroy(&hall_sensor_dev->wake_lock);
 	hall_sensor_dev->lid_indev=NULL;
 	kfree(hall_sensor_dev);
 	hall_sensor_dev=NULL;
 	kobject_put(hall_sensor_kobj);
 	platform_driver_unregister(&lid_platform_driver);
 	platform_device_unregister(pdev);
-	wake_lock_destroy(&hall_sensor_dev->wake_lock);
-	destroy_workqueue(&hall_sensor_dev->hall_sensor_work);
-	destroy_workqueue(&hall_sensor_dev->hall_sensor_dowork);
 }
 
 

@@ -19,13 +19,15 @@
  */
 #include <linux/time.h>
 #include <asm/intel_mid_rpmsg.h>
-#include <asm/mwait.h>
+#include <linux/cpuidle.h>
 #include "intel_soc_pm_debug.h"
 #include <asm-generic/io-64-nonatomic-hi-lo.h>
-#include <linux/pm_wakeup.h>
+#include <asm/tsc.h>
 
 #ifdef CONFIG_PM_DEBUG
 #define MAX_CSTATES_POSSIBLE	32
+
+
 
 static struct latency_stat *lat_stat;
 
@@ -114,9 +116,12 @@ static int show_pmu_s0ix_lat(struct seq_file *s, void *unused)
 	seq_printf(s, "%33s %35s\n", "min/avg/max(msec)", "min/avg/max(msec)");
 
 	for (i = SYS_STATE_S0I1; i <= SYS_STATE_S3; i++) {
-		seq_printf(s, "\n%s(%llu)", states[i - SYS_STATE_S0I1],
-							lat_stat->count[i]);
-
+		/* Klockwork: Array 'states' of size 4 may use index value 4 */
+		int j = i - SYS_STATE_S0I1;
+		if (j < 4)
+			seq_printf(s, "\n%s(%llu)", states[j], lat_stat->count[i]);
+		else
+			seq_printf(s, "\nstate array [%d] out of bound!", j);
 		seq_printf(s, "\n%5s", "entry");
 		print_simple_stat(s, USEC_PER_MSEC, 1, lat_stat->count[i],
 						lat_stat->scu_latency[i].entry);
@@ -229,35 +234,31 @@ void s0ix_lat_stat_init(void)
 	if (!platform_is(INTEL_ATOM_CLV))
 		return;
 
-	lat_stat = kzalloc(sizeof(struct latency_stat), GFP_KERNEL);
+	lat_stat = devm_kzalloc(&mid_pmu_cxt->pmu_dev->dev,
+			sizeof(struct latency_stat), GFP_KERNEL);
 	if (unlikely(!lat_stat)) {
 		pr_err("Failed to allocate memory for s0ix latency!\n");
-		goto out_err0;
+		goto out_err;
 	}
 
 	lat_stat->scu_s0ix_lat_addr =
-		ioremap_nocache(S0IX_LAT_SRAM_ADDR_CLVP,
-					S0IX_LAT_SRAM_SIZE_CLVP);
+		devm_ioremap_nocache(&mid_pmu_cxt->pmu_dev->dev,
+			S0IX_LAT_SRAM_ADDR_CLVP, S0IX_LAT_SRAM_SIZE_CLVP);
 	if (unlikely(!lat_stat->scu_s0ix_lat_addr)) {
 		pr_err("Failed to map SCU_S0IX_LAT_ADDR!\n");
-		goto out_err1;
+		goto out_err;
 	}
 
 	lat_stat->dentry = debugfs_create_file("s0ix_latency",
 			S_IFREG | S_IRUGO, NULL, NULL, &s0ix_latency_ops);
 	if (unlikely(!lat_stat->dentry)) {
 		pr_err("Failed to create debugfs for s0ix latency!\n");
-		goto out_err2;
+		goto out_err;
 	}
 
 	return;
 
-out_err2:
-	iounmap(lat_stat->scu_s0ix_lat_addr);
-out_err1:
-	kfree(lat_stat);
-	lat_stat = NULL;
-out_err0:
+out_err:
 	pr_err("%s: Initialization failed\n", __func__);
 }
 
@@ -269,14 +270,8 @@ void s0ix_lat_stat_finish(void)
 	if (unlikely(!lat_stat))
 		return;
 
-	if (likely(lat_stat->scu_s0ix_lat_addr))
-		iounmap(lat_stat->scu_s0ix_lat_addr);
-
 	if (likely(lat_stat->dentry))
 		debugfs_remove(lat_stat->dentry);
-
-	kfree(lat_stat);
-	lat_stat = NULL;
 }
 
 void time_stamp_in_suspend_flow(int mark, bool start)
@@ -339,6 +334,8 @@ void s0ix_lat_stat_finish(void) {}
 void time_stamp_for_sleep_state_latency(int sleep_state, bool start,
 							bool entry) {}
 void time_stamp_in_suspend_flow(int mark, bool start) {}
+inline unsigned int pmu_get_new_cstate
+		(unsigned int cstate, int *index) { return cstate; };
 #endif /* CONFIG_PM_DEBUG */
 
 static char *dstates[] = {"D0", "D0i1", "D0i2", "D0i3"};
@@ -346,8 +343,8 @@ static char *dstates[] = {"D0", "D0i1", "D0i2", "D0i3"};
 /* This can be used to report NC power transitions */
 void (*nc_report_power_state) (u32, int);
 
-#if defined(CONFIG_INTEL_ATOM_MDFLD_POWER)			\
-			|| defined(CONFIG_INTEL_ATOM_CLV_POWER)
+#if defined(CONFIG_REMOVEME_INTEL_ATOM_MDFLD_POWER)			\
+			|| defined(CONFIG_REMOVEME_INTEL_ATOM_CLV_POWER)
 
 #define PMU_DEBUG_PRINT_STATS	(1U << 0)
 static int debug_mask;
@@ -651,8 +648,8 @@ static void pmu_stat_seq_printf(struct seq_file *s, int type, char *typestr)
 	init_2_now_time =  (unsigned long) t;
 
 	/* for calculating percentage residency */
-	time = time * 100;
 	t = (u64) time;
+	t *= 100;
 
 	/* take care of divide by zero */
 	if (init_2_now_time) {
@@ -661,8 +658,8 @@ static void pmu_stat_seq_printf(struct seq_file *s, int type, char *typestr)
 
 		/* for getting 3 digit precision after
 		 * decimal dot */
-		remainder *= 1000;
 		t = (u64) remainder;
+		t *= 1000;
 		remainder = do_div(t, init_2_now_time);
 	} else
 		time = t = 0;
@@ -708,8 +705,8 @@ static unsigned long pmu_dev_res_print(int index, unsigned long *precision,
 	*sampled_time = time;
 
 	/* for calculating percentage residency */
-	time = time * 100;
 	t = (u64) time;
+	t *= 100;
 
 	/* take care of divide by zero */
 	if (init_to_now_time) {
@@ -718,8 +715,8 @@ static unsigned long pmu_dev_res_print(int index, unsigned long *precision,
 
 		/* for getting 3 digit precision after
 		* decimal dot */
-		remainder *= 1000;
 		t = (u64) remainder;
+		t *= 1000;
 		remainder = do_div(t, init_to_now_time);
 	} else
 		time = t = 0;
@@ -816,8 +813,7 @@ static int pmu_devices_state_show(struct seq_file *s, void *unused)
 	pmu_stat_seq_printf(s, SYS_STATE_S0I3, "s0i3");
 	pmu_stat_seq_printf(s, SYS_STATE_S3, "s3");
 
-	while ((pdev = pci_get_device(PCI_ID_ANY, PCI_ID_ANY, pdev)) != NULL) {
-
+	for_each_pci_dev(pdev) {
 		/* find the base class info */
 		base_class = pdev->class >> 16;
 
@@ -989,8 +985,7 @@ static int show_pmu_dev_stats(struct seq_file *s, void *unused)
 	seq_printf(s,
 	"==================================================================\n");
 
-	while ((pdev = pci_get_device(PCI_ID_ANY, PCI_ID_ANY, pdev)) != NULL) {
-
+	for_each_pci_dev(pdev) {
 		/* find the base class info */
 		base_class = pdev->class >> 16;
 
@@ -1141,7 +1136,8 @@ static void pmu_log_s0ix_status(int type, char *typestr,
 	init_2_now_time =  (unsigned long) t;
 
 	/* for calculating percentage residency */
-	t = (u64) time * 100;
+	t = (u64) time;
+	t *= 100;
 
 	/* take care of divide by zero */
 	if (init_2_now_time) {
@@ -1150,8 +1146,8 @@ static void pmu_log_s0ix_status(int type, char *typestr,
 
 		/* for getting 3 digit precision after
 		 * decimal dot */
-		remainder *= 1000;
 		t = (u64) remainder;
+		t *= 1000;
 		remainder = do_div(t, init_2_now_time);
 	} else
 		time = t = 0;
@@ -1235,8 +1231,8 @@ static void pmu_stats_logger(bool logging_type, struct seq_file *s)
 	pmu_log_s0ix_lss_blocked(SYS_STATE_S0I2, "lpmp3", s, logging_type);
 	pmu_log_s0ix_lss_blocked(SYS_STATE_S0I3, "s0i3", s, logging_type);
 
-	printk ("dump active wakeup sources:\n");
-	wakeup_source_monitor();
+        printk ("dump active wakeup sources:\n");
+        print_active_wakeup_sources();
 
 	if (!logging_type)
 		DEBUG_PRINT(logging_type, s, STATS,
@@ -1294,7 +1290,7 @@ void pmu_stats_init(void)
 
 #ifdef CONFIG_PM_DEBUG
 	/* dynamic debug tracing in every 5 mins */
-	INIT_DELAYED_WORK_DEFERRABLE(&mid_pmu_cxt->log_work, pmu_log_stat);
+	INIT_DEFERRABLE_WORK(&mid_pmu_cxt->log_work, pmu_log_stat);
 	schedule_delayed_work(&mid_pmu_cxt->log_work,
 				msecs_to_jiffies(pmu_stats_interval*1000));
 
@@ -1323,338 +1319,33 @@ void pmu_stats_finish(void)
 
 #endif /*if CONFIG_X86_MDFLD_POWER || CONFIG_X86_CLV_POWER*/
 
-#ifdef CONFIG_PM_DEBUG
-static int cstate_ignore_add_show(struct seq_file *s, void *unused)
-{
-	int i;
-	seq_printf(s, "CSTATES IGNORED: ");
-	for (i = 0; i < MWAIT_MAX_NUM_CSTATES; i++)
-		if ((mid_pmu_cxt->cstate_ignore & (1 << i)))
-			seq_printf(s, "%d, ", i+1);
-
-	seq_printf(s, "\n");
-	return 0;
-}
-
-static int cstate_ignore_add_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, cstate_ignore_add_show, NULL);
-}
-
-static ssize_t cstate_ignore_add_write(struct file *file,
-		     const char __user *userbuf, size_t count, loff_t *ppos)
-{
-	char buf[32];
-	int res;
-	int cstate;
-	int buf_size = min(count, sizeof(buf)-1);
-
-	if (copy_from_user(buf, userbuf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = 0;
-
-	res = kstrtou32(buf, 10, &cstate);
-
-	if (res)
-		return -EINVAL;
-
-	if (cstate > MAX_CSTATES_POSSIBLE)
-		return -EINVAL;
-
-	/* cannot add/remove C0, C1 */
-	if (((cstate == 0) || (cstate == 1))) {
-		printk(KERN_CRIT "C0 C1 state cannot be used.\n");
-		return -EINVAL;
-	}
-
-	if (!mid_pmu_cxt->cstate_qos)
-		return -EINVAL;
-
-	if (cstate == MAX_CSTATES_POSSIBLE) {
-		mid_pmu_cxt->cstate_ignore = ((1 << MWAIT_MAX_NUM_CSTATES) - 1);
-		/* Ignore C2, C3, C4, C5, C8 states */
-		mid_pmu_cxt->cstate_ignore |= (1 << 1);
-		mid_pmu_cxt->cstate_ignore |= (1 << 2);
-		mid_pmu_cxt->cstate_ignore |= (1 << 3);
-		mid_pmu_cxt->cstate_ignore |= (1 << 4);
-		mid_pmu_cxt->cstate_ignore |= (1 << 7);
-
-		pm_qos_update_request(mid_pmu_cxt->cstate_qos,
-					CSTATE_EXIT_LATENCY_C1 - 1);
-	} else {
-		u32 cstate_exit_latency[MWAIT_MAX_NUM_CSTATES+1];
-		u32 local_cstate_allowed;
-		int max_cstate_allowed;
-
-		/* 0 is C1 state */
-		cstate--;
-		mid_pmu_cxt->cstate_ignore |= (1 << cstate);
-
-		/* by default remove C1 from ignore list */
-		mid_pmu_cxt->cstate_ignore &= ~(1 << 0);
-
-		/* Ignore C2, C3, C4, C5, C8 states */
-		mid_pmu_cxt->cstate_ignore |= (1 << 1);
-		mid_pmu_cxt->cstate_ignore |= (1 << 2);
-		mid_pmu_cxt->cstate_ignore |= (1 << 3);
-		mid_pmu_cxt->cstate_ignore |= (1 << 4);
-		mid_pmu_cxt->cstate_ignore |= (1 << 7);
-
-		/* populate cstate latency table */
-		cstate_exit_latency[0] = CSTATE_EXIT_LATENCY_C1;
-		cstate_exit_latency[1] = CSTATE_EXIT_LATENCY_C2;
-		cstate_exit_latency[2] = CSTATE_EXIT_LATENCY_C2;
-		cstate_exit_latency[3] = CSTATE_EXIT_LATENCY_C2;
-		cstate_exit_latency[4] = CSTATE_EXIT_LATENCY_C2;
-		cstate_exit_latency[5] = CSTATE_EXIT_LATENCY_C6;
-		cstate_exit_latency[6] = CSTATE_EXIT_LATENCY_S0i1;
-		cstate_exit_latency[7] = CSTATE_EXIT_LATENCY_S0i2;
-		cstate_exit_latency[8] = CSTATE_EXIT_LATENCY_S0i3;
-		cstate_exit_latency[9] = PM_QOS_DEFAULT_VALUE;
-		cstate_exit_latency[10] = PM_QOS_DEFAULT_VALUE;
-
-		local_cstate_allowed = ~mid_pmu_cxt->cstate_ignore;
-
-		/* restrict to max c-states */
-		local_cstate_allowed &= ((1<<MWAIT_MAX_NUM_CSTATES)-1);
-
-		/* If no states allowed will return 0 */
-		max_cstate_allowed = fls(local_cstate_allowed);
-
-		printk(KERN_CRIT "max_cstate: %d local_cstate_allowed = %x\n",
-			max_cstate_allowed, local_cstate_allowed);
-		printk(KERN_CRIT "exit latency = %d\n",
-				(cstate_exit_latency[max_cstate_allowed]-1));
-		pm_qos_update_request(mid_pmu_cxt->cstate_qos,
-				(cstate_exit_latency[max_cstate_allowed]-1));
-	}
-
-	return buf_size;
-}
-
-static const struct file_operations cstate_ignore_add_ops = {
-	.open		= cstate_ignore_add_open,
-	.read		= seq_read,
-	.write		= cstate_ignore_add_write,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int cstate_ignore_remove_show(struct seq_file *s, void *unused)
-{
-	int i;
-	seq_printf(s, "CSTATES ALLOWED: ");
-	for (i = 0; i < MWAIT_MAX_NUM_CSTATES; i++)
-		if (!(mid_pmu_cxt->cstate_ignore & (1 << i)))
-			seq_printf(s, "%d, ", i+1);
-
-	seq_printf(s, "\n");
-
-	return 0;
-}
-
-static int cstate_ignore_remove_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, cstate_ignore_remove_show, NULL);
-}
-
-static ssize_t cstate_ignore_remove_write(struct file *file,
-		     const char __user *userbuf, size_t count, loff_t *ppos)
-{
-	char buf[32];
-	int res;
-	int cstate;
-	int buf_size = min(count, sizeof(buf)-1);
-
-	if (copy_from_user(buf, userbuf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = 0;
-
-	res = kstrtou32(buf, 10, &cstate);
-
-	if (res)
-		return -EINVAL;
-
-	if (cstate > MAX_CSTATES_POSSIBLE)
-		return -EINVAL;
-
-	/* cannot add/remove C0, C1 */
-	if (((cstate == 0) || (cstate == 1))) {
-		printk(KERN_CRIT "C0 C1 state cannot be used.\n");
-		return -EINVAL;
-	}
-
-	if (!mid_pmu_cxt->cstate_qos)
-		return -EINVAL;
-
-	if (cstate == MAX_CSTATES_POSSIBLE) {
-		mid_pmu_cxt->cstate_ignore =
-				~((1 << MWAIT_MAX_NUM_CSTATES) - 1);
-		/* Ignore C2, C3, C4, C5, C8 states */
-		mid_pmu_cxt->cstate_ignore |= (1 << 1);
-		mid_pmu_cxt->cstate_ignore |= (1 << 2);
-		mid_pmu_cxt->cstate_ignore |= (1 << 3);
-		mid_pmu_cxt->cstate_ignore |= (1 << 4);
-		mid_pmu_cxt->cstate_ignore |= (1 << 7);
-
-		pm_qos_update_request(mid_pmu_cxt->cstate_qos,
-						PM_QOS_DEFAULT_VALUE);
-	} else {
-		u32 cstate_exit_latency[MWAIT_MAX_NUM_CSTATES+1];
-		u32 local_cstate_allowed;
-		int max_cstate_allowed;
-
-		/* populate cstate latency table */
-		cstate_exit_latency[0] = CSTATE_EXIT_LATENCY_C1;
-		cstate_exit_latency[1] = CSTATE_EXIT_LATENCY_C2;
-		cstate_exit_latency[2] = CSTATE_EXIT_LATENCY_C2;
-		cstate_exit_latency[3] = CSTATE_EXIT_LATENCY_C2;
-		cstate_exit_latency[4] = CSTATE_EXIT_LATENCY_C2;
-		cstate_exit_latency[5] = CSTATE_EXIT_LATENCY_C6;
-		cstate_exit_latency[6] = CSTATE_EXIT_LATENCY_S0i1;
-		cstate_exit_latency[7] = CSTATE_EXIT_LATENCY_S0i2;
-		cstate_exit_latency[8] = CSTATE_EXIT_LATENCY_S0i3;
-		cstate_exit_latency[9] = PM_QOS_DEFAULT_VALUE;
-		cstate_exit_latency[10] = PM_QOS_DEFAULT_VALUE;
-
-		/* 0 is C1 state */
-		cstate--;
-		mid_pmu_cxt->cstate_ignore &= ~(1 << cstate);
-
-		/* by default remove C1 from ignore list */
-		mid_pmu_cxt->cstate_ignore &= ~(1 << 0);
-
-		/* Ignore C2, C3, C4, C5, C8 states */
-		mid_pmu_cxt->cstate_ignore |= (1 << 1);
-		mid_pmu_cxt->cstate_ignore |= (1 << 2);
-		mid_pmu_cxt->cstate_ignore |= (1 << 3);
-		mid_pmu_cxt->cstate_ignore |= (1 << 4);
-		mid_pmu_cxt->cstate_ignore |= (1 << 7);
-
-		local_cstate_allowed = ~mid_pmu_cxt->cstate_ignore;
-		/* restrict to max c-states */
-		local_cstate_allowed &= ((1<<MWAIT_MAX_NUM_CSTATES)-1);
-
-		/* If no states allowed will return 0 */
-		max_cstate_allowed = fls(local_cstate_allowed);
-		printk(KERN_CRIT "max_cstate: %d local_cstate_allowed = %x\n",
-			max_cstate_allowed, local_cstate_allowed);
-		printk(KERN_CRIT "exit latency = %d\n",
-				(cstate_exit_latency[max_cstate_allowed]-1));
-		pm_qos_update_request(mid_pmu_cxt->cstate_qos,
-				(cstate_exit_latency[max_cstate_allowed]-1));
-	}
-
-	return buf_size;
-}
-
-static const struct file_operations cstate_ignore_remove_ops = {
-	.open		= cstate_ignore_remove_open,
-	.read		= seq_read,
-	.write		= cstate_ignore_remove_write,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-unsigned int pmu_get_new_cstate(unsigned int cstate, int *index)
-{
-	static int cstate_index_table[MWAIT_MAX_NUM_CSTATES] = {
-					1, 1, 1, 1, 1, 2, 3, 4, 5, 5};
-	unsigned int new_cstate = cstate;
-	u32 local_cstate = (u32)(cstate);
-	u32 local_cstate_allowed = ~mid_pmu_cxt->cstate_ignore;
-	u32 cstate_mask, cstate_no_s0ix_mask = (u32)((1 << 6) - 1);
-
-	if (platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_BYT)) {
-		/* cstate is also 7 for C9 so correct */
-		if ((local_cstate == 7) && (*index == 4))
-			local_cstate = 9;
-
-		/* get next low cstate allowed */
-		cstate_mask	= (u32)((1 << local_cstate)-1);
-		local_cstate_allowed	&= ((1<<MWAIT_MAX_NUM_CSTATES)-1);
-		local_cstate_allowed	&= cstate_mask;
-		if (!could_do_s0ix())
-			local_cstate_allowed &= cstate_no_s0ix_mask;
-		new_cstate	= fls(local_cstate_allowed);
-
-		if (likely(new_cstate))
-			*index	= cstate_index_table[new_cstate-1];
-		else
-			new_cstate = 1;
-	}
-
-	return new_cstate;
-}
-
-void cstate_ignore_add_init(void)
-{
-	if (!mid_pmu_cxt)
-		return;
-	if (platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_BYT)) {
-		/* If s0ix is disabled then restrict to C6 */
-		if (!enable_s0ix) {
-			mid_pmu_cxt->cstate_ignore =
-				~((1 << MWAIT_MAX_NUM_CSTATES) - 1);
-
-			/* Ignore C2, C3, C4, C5 states */
-			mid_pmu_cxt->cstate_ignore |= (1 << 1);
-			mid_pmu_cxt->cstate_ignore |= (1 << 2);
-			mid_pmu_cxt->cstate_ignore |= (1 << 3);
-			mid_pmu_cxt->cstate_ignore |= (1 << 4);
-
-			/* For now ignore C7, C8, C9, C10 states */
-			mid_pmu_cxt->cstate_ignore |= (1 << 6);
-			mid_pmu_cxt->cstate_ignore |= (1 << 7);
-			mid_pmu_cxt->cstate_ignore |= (1 << 8);
-			mid_pmu_cxt->cstate_ignore |= (1 << 9);
-		}
-
-		mid_pmu_cxt->cstate_qos =
-			kzalloc(sizeof(struct pm_qos_request), GFP_KERNEL);
-		if (mid_pmu_cxt->cstate_qos) {
-			pm_qos_add_request(mid_pmu_cxt->cstate_qos,
-				 PM_QOS_CPU_DMA_LATENCY, PM_QOS_DEFAULT_VALUE);
-		}
-
-		/* If s0ix is disabled then restrict to C6 */
-		if (!enable_s0ix) {
-			/* Restrict platform Cx state to C6 */
-			pm_qos_update_request(mid_pmu_cxt->cstate_qos,
-						(CSTATE_EXIT_LATENCY_S0i1-1));
-		}
-		/* /sys/kernel/debug/cstate_ignore_add */
-		(void) debugfs_create_file("cstate_ignore_add",
-			S_IFREG | S_IRUGO, NULL, NULL, &cstate_ignore_add_ops);
-		/* /sys/kernel/debug/cstate_ignore_remove */
-		(void) debugfs_create_file("cstate_ignore_remove",
-		S_IFREG | S_IRUGO, NULL, NULL, &cstate_ignore_remove_ops);
-	}
-}
-#else
-inline unsigned int pmu_get_new_cstate
-		(unsigned int cstate, int *index) { return cstate; };
-inline void cstate_ignore_add_init(void) { return; }
-#endif
-
-#ifdef CONFIG_INTEL_ATOM_MRFLD_POWER
+#ifdef CONFIG_REMOVEME_INTEL_ATOM_MRFLD_POWER
 
 static u32 prev_s0ix_cnt[SYS_STATE_MAX];
 static unsigned long long prev_s0ix_res[SYS_STATE_MAX];
+static unsigned long long cur_s0ix_res[SYS_STATE_MAX];
+static unsigned long long cur_s0ix_cnt[SYS_STATE_MAX];
 static u32 S3_count;
 static unsigned long long S3_res;
 
-static void pmu_stat_seq_printf(struct seq_file *s, int type, char *typestr)
+static void pmu_stat_seq_printf(struct seq_file *s, int type, char *typestr,
+							long long uptime)
 {
 	unsigned long long t;
-	u32 scu_val, time;
-	u32 micro_sec_rem, remainder;
+	u32 scu_val = 0, time = 0;
+	u32 remainder;
 	unsigned long init_2_now_time;
+	unsigned long long tsc_freq = 1330000;
+
+	/* If tsc calibration fails use the default as 1330Mhz */
+	if (tsc_khz)
+		tsc_freq = tsc_khz;
 
 	/* Print S0ix residency counter */
-	if (type < SYS_STATE_S3) {
+	if (type == SYS_STATE_S0I0) {
+		for (t = SYS_STATE_S0I1; t <= SYS_STATE_S3; t++)
+			time += cur_s0ix_res[t];
+	} else if (type < SYS_STATE_S3) {
 		t = readq(residency[type]);
 		if (t < prev_s0ix_res[type])
 			t += (((unsigned long long)~0) - prev_s0ix_res[type]);
@@ -1666,21 +1357,39 @@ static void pmu_stat_seq_printf(struct seq_file *s, int type, char *typestr)
 	} else
 		t = prev_s0ix_res[SYS_STATE_S3];
 
-	micro_sec_rem = do_div(t, MICRO_SEC);
-	time = (unsigned int)t;
+	if (type == SYS_STATE_S0I0) {
+		/* uptime(nanoS) - sum_res(miliSec) */
+		t = uptime;
+		do_div(t, MICRO_SEC);
+		time = t - time;
+	} else {
+		/* s0ix residency counters are in TSC cycle count domain
+		 * convert this to milli second time domain
+		 */
+		remainder = do_div(t, tsc_freq);
 
-	seq_printf(s, "%s\t%5lu.%03lu\t",
-		typestr, (unsigned long)(t),
-			(unsigned long) micro_sec_rem / 1000);
+		/* store time in millisecs */
+		time = (unsigned int)t;
+	}
+	cur_s0ix_res[type] = (unsigned int)time;
 
-	t =  cpu_clock(0);
-	t -= mid_pmu_cxt->pmu_init_time;
-	do_div(t, NANO_SEC);
+	seq_printf(s, "%s\t%5lu.%03lu\t", typestr,
+		(unsigned long)(time/1000), (unsigned long)(time%1000));
+
+	t = uptime;
+	do_div(t, MICRO_SEC); /* time in milli secs */
+
+	/* Note: with millisecs accuracy we get more
+	 * precise residency percentages, but we have
+	 * to trade off with the max number of days
+	 * that we can run without clearing counters,
+	 * with 32bit counter this value is ~50days.
+	 */
 	init_2_now_time =  (unsigned long) t;
 
 	/* for calculating percentage residency */
-	time = time * 100;
-	t = (u64) time;
+	t	= (u64)(time);
+	t	*= 100;
 
 	/* take care of divide by zero */
 	if (init_2_now_time) {
@@ -1689,16 +1398,21 @@ static void pmu_stat_seq_printf(struct seq_file *s, int type, char *typestr)
 
 		/* for getting 3 digit precision after
 		 * decimal dot */
-		remainder *= 1000;
 		t = (u64) remainder;
+		t *= 1000;
 		remainder = do_div(t, init_2_now_time);
 	} else
 		time = t = 0;
 
 	seq_printf(s, "%5lu.%03lu\t", (unsigned long) time, (unsigned long) t);
 
-	/* Print number of interations of S0ix */
-	if (type < SYS_STATE_S3) {
+	/* Print S0ix counters */
+	if (type == SYS_STATE_S0I0) {
+		for (t = SYS_STATE_S0I1; t <= SYS_STATE_S3; t++)
+			scu_val += cur_s0ix_cnt[t];
+		if (scu_val == 0) /* S0I0 residency 100% */
+			scu_val = 1;
+	} else if (type < SYS_STATE_S3) {
 		scu_val = readl(s0ix_counter[type]);
 		if (scu_val < prev_s0ix_cnt[type])
 			scu_val += (((u32)~0) - prev_s0ix_cnt[type]);
@@ -1710,7 +1424,19 @@ static void pmu_stat_seq_printf(struct seq_file *s, int type, char *typestr)
 	} else
 			scu_val = prev_s0ix_cnt[SYS_STATE_S3];
 
-	seq_printf(s, "%lu\n", (unsigned long) scu_val);
+	if (type != SYS_STATE_S0I0)
+		cur_s0ix_cnt[type] = scu_val;
+
+	seq_printf(s, "%5lu\t", (unsigned long) scu_val);
+
+	remainder = 0;
+	t = cur_s0ix_res[type];
+	if (scu_val) { /* s0ix_time in millisecs */
+		do_div(t, scu_val);
+		remainder = do_div(t, 1000);
+	}
+	seq_printf(s, "%5lu.%03lu\n", (unsigned long) t,
+			(unsigned long) remainder);
 }
 
 static int pmu_devices_state_show(struct seq_file *s, void *unused)
@@ -1720,6 +1446,7 @@ static int pmu_devices_state_show(struct seq_file *s, void *unused)
 	unsigned int base_class;
 	u32 mask, val, nc_pwr_sts;
 	struct pmu_ss_states cur_pmsss;
+	long long uptime;
 	int ret;
 
 	if (!pmu_initialized)
@@ -1738,7 +1465,7 @@ static int pmu_devices_state_show(struct seq_file *s, void *unused)
 
 	seq_printf(s, "cmd_error_int count: %d\n", mid_pmu_cxt->cmd_error_int);
 
-	seq_printf(s, "\ttime(secs)\tresidency(%%)\tcount\n");
+	seq_printf(s, "\ttime(secs)\tresidency(%%)\tcount\tAvg.Res(Sec)\n");
 
 	down(&mid_pmu_cxt->scu_ready_sem);
 	/* Dump S0ix residency counters */
@@ -1752,10 +1479,18 @@ static int pmu_devices_state_show(struct seq_file *s, void *unused)
 		seq_printf(s, "IPC command to DUMP S0ix count failed\n");
 	up(&mid_pmu_cxt->scu_ready_sem);
 
-	pmu_stat_seq_printf(s, SYS_STATE_S0I1, "s0i1");
-	pmu_stat_seq_printf(s, SYS_STATE_S0I2, "s0i2");
-	pmu_stat_seq_printf(s, SYS_STATE_S0I3, "s0i3");
-	pmu_stat_seq_printf(s, SYS_STATE_S3, "s3");
+	uptime =  cpu_clock(0);
+	uptime -= mid_pmu_cxt->pmu_init_time;
+	pmu_stat_seq_printf(s, SYS_STATE_S0I1, "s0i1", uptime);
+	pmu_stat_seq_printf(s, SYS_STATE_LPMP3, "lpmp3", uptime);
+	pmu_stat_seq_printf(s, SYS_STATE_S0I2, "s0i2", uptime);
+	pmu_stat_seq_printf(s, SYS_STATE_S0I3, "s0i3", uptime);
+	pmu_stat_seq_printf(s, SYS_STATE_S3, "s3", uptime);
+	pmu_stat_seq_printf(s, SYS_STATE_S0I0, "s0", uptime);
+
+	val = do_div(uptime, NANO_SEC);
+	seq_printf(s, "\n\nTotal time: %5lu.%03lu Sec\n", (unsigned long)uptime,
+		   (unsigned long) val/1000000);
 
 	seq_printf(s, "\nNORTH COMPLEX DEVICES :\n\n");
 
@@ -1768,7 +1503,7 @@ static int pmu_devices_state_show(struct seq_file *s, void *unused)
 
 	seq_printf(s, "\nSOUTH COMPLEX DEVICES :\n\n");
 
-	while ((pdev = pci_get_device(PCI_ID_ANY, PCI_ID_ANY, pdev)) != NULL) {
+	for_each_pci_dev(pdev) {
 		/* find the base class info */
 		base_class = pdev->class >> 16;
 
@@ -1828,19 +1563,15 @@ static ssize_t devices_state_write(struct file *file,
 		up(&mid_pmu_cxt->scu_ready_sem);
 
 		mid_pmu_cxt->pmu_init_time = cpu_clock(0);
-		prev_s0ix_cnt[SYS_STATE_S0I1] =
-			readl(s0ix_counter[SYS_STATE_S0I1]);
-		prev_s0ix_cnt[SYS_STATE_S0I2] =
-			readl(s0ix_counter[SYS_STATE_S0I2]);
-		prev_s0ix_cnt[SYS_STATE_S0I3] =
-			readl(s0ix_counter[SYS_STATE_S0I3]);
+		prev_s0ix_cnt[SYS_STATE_S0I1] = readl(s0ix_counter[SYS_STATE_S0I1]);
+		prev_s0ix_cnt[SYS_STATE_LPMP3] = readl(s0ix_counter[SYS_STATE_LPMP3]);
+		prev_s0ix_cnt[SYS_STATE_S0I2] = readl(s0ix_counter[SYS_STATE_S0I2]);
+		prev_s0ix_cnt[SYS_STATE_S0I3] = readl(s0ix_counter[SYS_STATE_S0I3]);
 		prev_s0ix_cnt[SYS_STATE_S3] = 0;
-		prev_s0ix_res[SYS_STATE_S0I1] =
-			readq(residency[SYS_STATE_S0I1]);
-		prev_s0ix_res[SYS_STATE_S0I2] =
-			readq(residency[SYS_STATE_S0I2]);
-		prev_s0ix_res[SYS_STATE_S0I3] =
-			readq(residency[SYS_STATE_S0I3]);
+		prev_s0ix_res[SYS_STATE_S0I1] = readq(residency[SYS_STATE_S0I1]);
+		prev_s0ix_res[SYS_STATE_LPMP3] = readq(residency[SYS_STATE_LPMP3]);
+		prev_s0ix_res[SYS_STATE_S0I2] = readq(residency[SYS_STATE_S0I2]);
+		prev_s0ix_res[SYS_STATE_S0I3] = readq(residency[SYS_STATE_S0I3]);
 		prev_s0ix_res[SYS_STATE_S3] = 0 ;
 	}
 	return buf_size;
@@ -1881,20 +1612,12 @@ static int ignore_add_open(struct inode *inode, struct file *file)
 static ssize_t ignore_add_write(struct file *file,
 		     const char __user *userbuf, size_t count, loff_t *ppos)
 {
-	char buf[32];
 	int res;
-	int buf_size = min(count, sizeof(buf)-1);
 	int sub_sys_pos, sub_sys_index;
 	u32 lss, local_ignore_lss[4];
 	u32 pm_cmd_val;
 
-	if (copy_from_user(buf, userbuf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = 0;
-
-	res = kstrtou32(buf, 10, &lss);
-
+	res = kstrtou32_from_user(userbuf, count, 0, &lss);
 	if (res)
 		return -EINVAL;
 
@@ -1928,7 +1651,7 @@ static ssize_t ignore_add_write(struct file *file,
 	memcpy(mid_pmu_cxt->ignore_lss, local_ignore_lss, (sizeof(u32)*4));
 	up(&mid_pmu_cxt->scu_ready_sem);
 
-	return buf_size;
+	return count;
 }
 
 static const struct file_operations ignore_add_ops = {
@@ -1947,20 +1670,12 @@ static int ignore_remove_open(struct inode *inode, struct file *file)
 static ssize_t ignore_remove_write(struct file *file,
 		     const char __user *userbuf, size_t count, loff_t *ppos)
 {
-	char buf[32];
 	int res;
-	int buf_size = min(count, sizeof(buf)-1);
 	int sub_sys_pos, sub_sys_index;
 	u32 lss, local_ignore_lss[4];
 	u32 pm_cmd_val;
 
-	if (copy_from_user(buf, userbuf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = 0;
-
-	res = kstrtou32(buf, 10, &lss);
-
+	res = kstrtou32_from_user(userbuf, count, 0, &lss);
 	if (res)
 		return -EINVAL;
 
@@ -1994,7 +1709,7 @@ static ssize_t ignore_remove_write(struct file *file,
 	memcpy(mid_pmu_cxt->ignore_lss, local_ignore_lss, (sizeof(u32)*4));
 	up(&mid_pmu_cxt->scu_ready_sem);
 
-	return buf_size;
+	return count;
 }
 
 static const struct file_operations ignore_remove_ops = {
@@ -2035,10 +1750,8 @@ static int pmu_sync_d0ix_open(struct inode *inode, struct file *file)
 static ssize_t pmu_sync_d0ix_write(struct file *file,
 		     const char __user *userbuf, size_t count, loff_t *ppos)
 {
-	char buf[32];
 	int res, i;
 	bool send_cmd;
-	int buf_size = min(count, sizeof(buf)-1);
 	u32 lss, local_os_sss[4];
 	int sub_sys_pos, sub_sys_index;
 	u32 pm_cmd_val;
@@ -2046,14 +1759,7 @@ static ssize_t pmu_sync_d0ix_write(struct file *file,
 
 	struct pmu_ss_states cur_pmsss;
 
-
-	if (copy_from_user(buf, userbuf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = 0;
-
-	res = kstrtou32(buf, 10, &lss);
-
+	res = kstrtou32_from_user(userbuf, count, 0, &lss);
 	if (res)
 		return -EINVAL;
 
@@ -2135,7 +1841,7 @@ static ssize_t pmu_sync_d0ix_write(struct file *file,
 unlock:
 	up(&mid_pmu_cxt->scu_ready_sem);
 
-	return buf_size;
+	return count;
 }
 
 static const struct file_operations pmu_sync_d0ix_ops = {
@@ -2171,20 +1877,12 @@ static int pmu_force_d0ix_open(struct inode *inode, struct file *file)
 static ssize_t pmu_force_d0i3_write(struct file *file,
 		     const char __user *userbuf, size_t count, loff_t *ppos)
 {
-	char buf[32];
 	int res;
-	int buf_size = min(count, sizeof(buf)-1);
 	u32 lss, local_os_sss[4];
 	int sub_sys_pos, sub_sys_index;
 	u32 pm_cmd_val;
 
-	if (copy_from_user(buf, userbuf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = 0;
-
-	res = kstrtou32(buf, 10, &lss);
-
+	res = kstrtou32_from_user(userbuf, count, 0, &lss);
 	if (res)
 		return -EINVAL;
 
@@ -2213,7 +1911,7 @@ static ssize_t pmu_force_d0i3_write(struct file *file,
 
 	up(&mid_pmu_cxt->scu_ready_sem);
 
-	return buf_size;
+	return count;
 }
 
 static const struct file_operations pmu_force_d0i3_ops = {
@@ -2227,20 +1925,12 @@ static const struct file_operations pmu_force_d0i3_ops = {
 static ssize_t pmu_force_d0i0_write(struct file *file,
 		     const char __user *userbuf, size_t count, loff_t *ppos)
 {
-	char buf[32];
 	int res;
-	int buf_size = min(count, sizeof(buf)-1);
 	u32 lss, local_os_sss[4];
 	int sub_sys_pos, sub_sys_index;
 	u32 pm_cmd_val;
 
-	if (copy_from_user(buf, userbuf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = 0;
-
-	res = kstrtou32(buf, 10, &lss);
-
+	res = kstrtou32_from_user(userbuf, count, 0, &lss);
 	if (res)
 		return -EINVAL;
 
@@ -2269,7 +1959,7 @@ static ssize_t pmu_force_d0i0_write(struct file *file,
 
 	up(&mid_pmu_cxt->scu_ready_sem);
 
-	return buf_size;
+	return count;
 }
 
 static const struct file_operations pmu_force_d0i0_ops = {
@@ -2280,6 +1970,208 @@ static const struct file_operations pmu_force_d0i0_ops = {
 	.release	= single_release,
 };
 
+static int cstate_ignore_add_show(struct seq_file *s, void *unused)
+{
+	int i;
+	seq_printf(s, "CSTATES IGNORED: ");
+	for (i = 0; i < CPUIDLE_STATE_MAX; i++)
+		if ((mid_pmu_cxt->cstate_ignore & (1 << i)))
+			seq_printf(s, "%d, ", i+1);
+
+	seq_printf(s, "\n");
+	return 0;
+}
+
+static int cstate_ignore_add_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, cstate_ignore_add_show, NULL);
+}
+
+static ssize_t cstate_ignore_add_write(struct file *file,
+		     const char __user *userbuf, size_t count, loff_t *ppos)
+{
+	int res;
+	int cstate;
+
+	res = kstrtou32_from_user(userbuf, count, 0, &cstate);
+	if (res)
+		return -EINVAL;
+
+	if (cstate > MAX_CSTATES_POSSIBLE)
+		return -EINVAL;
+
+	/* cannot add/remove C0, C1 */
+	if (((cstate == 0) || (cstate == 1))) {
+		printk(KERN_CRIT "C0 C1 state cannot be used.\n");
+		return -EINVAL;
+	}
+
+	if (!mid_pmu_cxt->cstate_qos)
+		return -EINVAL;
+
+	if (cstate == MAX_CSTATES_POSSIBLE) {
+		mid_pmu_cxt->cstate_ignore = ((1 << CPUIDLE_STATE_MAX) - 1);
+		pm_qos_update_request(mid_pmu_cxt->cstate_qos,
+					CSTATE_EXIT_LATENCY_C1 - 1);
+	} else {
+		u32 cstate_exit_latency[CPUIDLE_STATE_MAX+1];
+		u32 local_cstate_allowed;
+		int max_cstate_allowed;
+
+		/* 0 is C1 state */
+		cstate--;
+		mid_pmu_cxt->cstate_ignore |= (1 << cstate);
+
+		/* by default remove C1 from ignore list */
+		mid_pmu_cxt->cstate_ignore &= ~(1 << 0);
+
+		/* populate cstate latency table */
+		cstate_exit_latency[0] = CSTATE_EXIT_LATENCY_C1;
+		cstate_exit_latency[1] = CSTATE_EXIT_LATENCY_C2;
+		cstate_exit_latency[2] = CSTATE_EXIT_LATENCY_C2;
+		cstate_exit_latency[3] = CSTATE_EXIT_LATENCY_C2;
+		cstate_exit_latency[4] = CSTATE_EXIT_LATENCY_C2;
+		cstate_exit_latency[5] = CSTATE_EXIT_LATENCY_C6;
+		cstate_exit_latency[6] = CSTATE_EXIT_LATENCY_S0i1;
+		cstate_exit_latency[7] = CSTATE_EXIT_LATENCY_S0i2;
+		cstate_exit_latency[8] = CSTATE_EXIT_LATENCY_S0i3;
+		cstate_exit_latency[9] = PM_QOS_DEFAULT_VALUE;
+		cstate_exit_latency[10] = PM_QOS_DEFAULT_VALUE;
+
+		local_cstate_allowed = ~mid_pmu_cxt->cstate_ignore;
+
+		/* restrict to max c-states */
+		local_cstate_allowed &= ((1<<CPUIDLE_STATE_MAX)-1);
+
+		/* If no states allowed will return 0 */
+		max_cstate_allowed = fls(local_cstate_allowed);
+
+		printk(KERN_CRIT "max_cstate: %d local_cstate_allowed = %x\n",
+			max_cstate_allowed, local_cstate_allowed);
+		printk(KERN_CRIT "exit latency = %d\n",
+				(cstate_exit_latency[max_cstate_allowed]-1));
+		pm_qos_update_request(mid_pmu_cxt->cstate_qos,
+				(cstate_exit_latency[max_cstate_allowed]-1));
+	}
+
+	return count;
+}
+
+static const struct file_operations cstate_ignore_add_ops = {
+	.open		= cstate_ignore_add_open,
+	.read		= seq_read,
+	.write		= cstate_ignore_add_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int cstate_ignore_remove_show(struct seq_file *s, void *unused)
+{
+	int i;
+	seq_printf(s, "CSTATES ALLOWED: ");
+	for (i = 0; i < CPUIDLE_STATE_MAX; i++)
+		if (!(mid_pmu_cxt->cstate_ignore & (1 << i)))
+			seq_printf(s, "%d, ", i+1);
+
+	seq_printf(s, "\n");
+
+	return 0;
+}
+
+static int cstate_ignore_remove_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, cstate_ignore_remove_show, NULL);
+}
+
+static ssize_t cstate_ignore_remove_write(struct file *file,
+		     const char __user *userbuf, size_t count, loff_t *ppos)
+{
+	int res;
+	int cstate;
+	res = kstrtou32_from_user(userbuf, count, 0, &cstate);
+	if (res)
+		return -EINVAL;
+
+	if (cstate > MAX_CSTATES_POSSIBLE)
+		return -EINVAL;
+
+	/* cannot add/remove C0, C1 */
+	if (((cstate == 0) || (cstate == 1))) {
+		printk(KERN_CRIT "C0 C1 state cannot be used.\n");
+		return -EINVAL;
+	}
+
+	if (!mid_pmu_cxt->cstate_qos)
+		return -EINVAL;
+
+	if (cstate == MAX_CSTATES_POSSIBLE) {
+		mid_pmu_cxt->cstate_ignore =
+				~((1 << CPUIDLE_STATE_MAX) - 1);
+		/* Ignore C2, C3, C5, C8 and C10 states */
+		mid_pmu_cxt->cstate_ignore |= (1 << 1);
+		mid_pmu_cxt->cstate_ignore |= (1 << 2);
+		mid_pmu_cxt->cstate_ignore |= (1 << 4);
+		mid_pmu_cxt->cstate_ignore |= (1 << 7);
+		mid_pmu_cxt->cstate_ignore |= (1 << 9);
+
+		pm_qos_update_request(mid_pmu_cxt->cstate_qos,
+						PM_QOS_DEFAULT_VALUE);
+	} else {
+		u32 cstate_exit_latency[CPUIDLE_STATE_MAX+1];
+		u32 local_cstate_allowed;
+		int max_cstate_allowed;
+
+		/* populate cstate latency table */
+		cstate_exit_latency[0] = CSTATE_EXIT_LATENCY_C1;
+		cstate_exit_latency[1] = CSTATE_EXIT_LATENCY_C2;
+		cstate_exit_latency[2] = CSTATE_EXIT_LATENCY_C2;
+		cstate_exit_latency[3] = CSTATE_EXIT_LATENCY_C2;
+		cstate_exit_latency[4] = CSTATE_EXIT_LATENCY_C2;
+		cstate_exit_latency[5] = CSTATE_EXIT_LATENCY_C6;
+		cstate_exit_latency[6] = CSTATE_EXIT_LATENCY_S0i1;
+		cstate_exit_latency[7] = CSTATE_EXIT_LATENCY_S0i2;
+		cstate_exit_latency[8] = CSTATE_EXIT_LATENCY_S0i3;
+		cstate_exit_latency[9] = PM_QOS_DEFAULT_VALUE;
+		cstate_exit_latency[10] = PM_QOS_DEFAULT_VALUE;
+
+		/* 0 is C1 state */
+		cstate--;
+		mid_pmu_cxt->cstate_ignore &= ~(1 << cstate);
+
+		/* by default remove C1 from ignore list */
+		mid_pmu_cxt->cstate_ignore &= ~(1 << 0);
+
+		/* Ignore C2, C3, C5, C8 and C10 states */
+		mid_pmu_cxt->cstate_ignore |= (1 << 1);
+		mid_pmu_cxt->cstate_ignore |= (1 << 2);
+		mid_pmu_cxt->cstate_ignore |= (1 << 4);
+		mid_pmu_cxt->cstate_ignore |= (1 << 7);
+		mid_pmu_cxt->cstate_ignore |= (1 << 9);
+
+		local_cstate_allowed = ~mid_pmu_cxt->cstate_ignore;
+		/* restrict to max c-states */
+		local_cstate_allowed &= ((1<<CPUIDLE_STATE_MAX)-1);
+
+		/* If no states allowed will return 0 */
+		max_cstate_allowed = fls(local_cstate_allowed);
+		printk(KERN_CRIT "max_cstate: %d local_cstate_allowed = %x\n",
+			max_cstate_allowed, local_cstate_allowed);
+		printk(KERN_CRIT "exit latency = %d\n",
+				(cstate_exit_latency[max_cstate_allowed]-1));
+		pm_qos_update_request(mid_pmu_cxt->cstate_qos,
+				(cstate_exit_latency[max_cstate_allowed]-1));
+	}
+
+	return count;
+}
+
+static const struct file_operations cstate_ignore_remove_ops = {
+	.open		= cstate_ignore_remove_open,
+	.read		= seq_read,
+	.write		= cstate_ignore_remove_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static int s3_ctrl_show(struct seq_file *s, void *unused)
 {
@@ -2295,18 +2187,10 @@ static int s3_ctrl_open(struct inode *inode, struct file *file)
 static ssize_t s3_ctrl_write(struct file *file,
 		     const char __user *userbuf, size_t count, loff_t *ppos)
 {
-	char buf[32];
 	int res;
 	int local_s3_ctrl;
-	int buf_size = min(count, sizeof(buf)-1);
 
-	if (copy_from_user(buf, userbuf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = 0;
-
-	res = kstrtou32(buf, 10, &local_s3_ctrl);
-
+	res = kstrtou32_from_user(userbuf, count, 0, &local_s3_ctrl);
 	if (res)
 		return -EINVAL;
 
@@ -2317,7 +2201,7 @@ static ssize_t s3_ctrl_write(struct file *file,
 	else
 		__pm_stay_awake(mid_pmu_cxt->pmu_wake_lock);
 
-	return buf_size;
+	return count;
 }
 
 static const struct file_operations s3_ctrl_ops = {
@@ -2327,6 +2211,37 @@ static const struct file_operations s3_ctrl_ops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
+
+
+unsigned int pmu_get_new_cstate(unsigned int cstate, int *index)
+{
+	static int cstate_index_table[CPUIDLE_STATE_MAX] = {
+					1, 1, 1, 1, 1, 2, 3, 3, 4, 4};
+	unsigned int new_cstate = cstate;
+	u32 local_cstate = (u32)(cstate);
+	u32 local_cstate_allowed = ~mid_pmu_cxt->cstate_ignore;
+	u32 cstate_mask, cstate_no_s0ix_mask = (u32)((1 << 6) - 1);
+
+	if (platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_MOORFLD)) {
+		/* cstate is also 7 for C9 so correct */
+		if ((local_cstate == 7) && (*index == 4))
+			local_cstate = 9;
+
+		/* get next low cstate allowed */
+		cstate_mask = (u32)((1 << local_cstate)-1);
+		/* in case if cstate == 0 which should not be the case*/
+		cstate_mask |= 1;
+		local_cstate_allowed	&= ((1<<CPUIDLE_STATE_MAX)-1);
+		local_cstate_allowed	&= cstate_mask;
+		if (!could_do_s0ix())
+			local_cstate_allowed &= cstate_no_s0ix_mask;
+		new_cstate	= fls(local_cstate_allowed);
+
+		*index	= cstate_index_table[new_cstate-1];
+	}
+
+	return new_cstate;
+}
 #endif
 
 DEFINE_PER_CPU(u64[NUM_CSTATES_RES_MEASURE], c_states_res);
@@ -2460,8 +2375,48 @@ void pmu_stats_init(void)
 	(void) debugfs_create_file("c_states_stat", S_IFREG | S_IRUGO,
 				NULL, NULL, &c_states_stat_ops);
 #ifdef CONFIG_PM_DEBUG
-	if (platform_is(INTEL_ATOM_MRFLD)) {
-		cstate_ignore_add_init();
+	if (platform_is(INTEL_ATOM_MRFLD) || platform_is(INTEL_ATOM_MOORFLD)) {
+		/* If s0ix is disabled then restrict to C6 */
+		if (!enable_s0ix) {
+			mid_pmu_cxt->cstate_ignore =
+				~((1 << CPUIDLE_STATE_MAX) - 1);
+
+			/* Ignore C2, C3, C5 states */
+			mid_pmu_cxt->cstate_ignore |= (1 << 1);
+			mid_pmu_cxt->cstate_ignore |= (1 << 2);
+			mid_pmu_cxt->cstate_ignore |= (1 << 4);
+
+			/* For now ignore C7, C8, C9, C10 states */
+			mid_pmu_cxt->cstate_ignore |= (1 << 6);
+			mid_pmu_cxt->cstate_ignore |= (1 << 7);
+			mid_pmu_cxt->cstate_ignore |= (1 << 8);
+			mid_pmu_cxt->cstate_ignore |= (1 << 9);
+		} else {
+			mid_pmu_cxt->cstate_ignore =
+				~((1 << CPUIDLE_STATE_MAX) - 1);
+
+			/* Ignore C2, C3, C5, C8 and C10 states */
+			mid_pmu_cxt->cstate_ignore |= (1 << 1);
+			mid_pmu_cxt->cstate_ignore |= (1 << 2);
+			mid_pmu_cxt->cstate_ignore |= (1 << 4);
+			mid_pmu_cxt->cstate_ignore |= (1 << 7);
+			mid_pmu_cxt->cstate_ignore |= (1 << 9);
+		}
+
+		mid_pmu_cxt->cstate_qos =
+			kzalloc(sizeof(struct pm_qos_request), GFP_KERNEL);
+		if (mid_pmu_cxt->cstate_qos) {
+			pm_qos_add_request(mid_pmu_cxt->cstate_qos,
+				 PM_QOS_CPU_DMA_LATENCY, PM_QOS_DEFAULT_VALUE);
+		}
+
+		/* If s0ix is disabled then restrict to C6 */
+		if (!enable_s0ix) {
+			/* Restrict platform Cx state to C6 */
+			pm_qos_update_request(mid_pmu_cxt->cstate_qos,
+						(CSTATE_EXIT_LATENCY_S0i1-1));
+		}
+
 		/* /sys/kernel/debug/ignore_add */
 		(void) debugfs_create_file("ignore_add", S_IFREG | S_IRUGO,
 					NULL, NULL, &ignore_add_ops);
@@ -2477,11 +2432,17 @@ void pmu_stats_init(void)
 		/* /sys/kernel/debug/pmu_force_d0i3 */
 		(void) debugfs_create_file("pmu_force_d0i3", S_IFREG | S_IRUGO,
 					NULL, NULL, &pmu_force_d0i3_ops);
-		/* /sys/kernel/debug/s3_ctrl*/
+		/* /sys/kernel/debug/cstate_ignore_add */
+		(void) debugfs_create_file("cstate_ignore_add",
+			S_IFREG | S_IRUGO, NULL, NULL, &cstate_ignore_add_ops);
+		/* /sys/kernel/debug/cstate_ignore_remove */
+		(void) debugfs_create_file("cstate_ignore_remove",
+		S_IFREG | S_IRUGO, NULL, NULL, &cstate_ignore_remove_ops);
+		/* /sys/kernel/debug/cstate_ignore_remove */
 		(void) debugfs_create_file("s3_ctrl",
 		S_IFREG | S_IRUGO, NULL, NULL, &s3_ctrl_ops);
 	}
 #endif
 }
 
-#endif /*if CONFIG_INTEL_ATOM_MRFLD_POWER*/
+#endif /*if CONFIG_REMOVEME_INTEL_ATOM_MRFLD_POWER*/

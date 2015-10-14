@@ -448,14 +448,18 @@
 #define PIPE_VSYNC_CLEAR                     (1UL<<9)
 #define PIPE_VSYNC_STATUS                    (1UL<<9)
 #define PIPE_HDMI_AUDIO_UNDERRUN_STATUS      (1UL<<10)
+#define PIPE_FRAME_DONE_STATUS		     (1UL<<10)
 #define PIPE_HDMI_AUDIO_BUFFER_DONE_STATUS   (1UL<<11)
+#define PIPE_CMD_DONE_STATUS		     (1UL<<14)
 #define PIPE_VBLANK_INTERRUPT_ENABLE         (1UL<<17)
 #define PIPE_START_VBLANK_INTERRUPT_ENABLE   (1UL<<18)
 #define PIPE_TE_ENABLE		             (1UL<<22)
 #define PIPE_DPST_EVENT_ENABLE               (1UL<<23)
 #define PIPE_VSYNC_ENABL                     (1UL<<25)
 #define PIPE_HDMI_AUDIO_UNDERRUN             (1UL<<26)
+#define PIPE_FRAME_DONE_ENABLE		     (1UL<<26)
 #define PIPE_HDMI_AUDIO_BUFFER_DONE          (1UL<<27)
+#define PIPE_CMD_DONE_ENABLE		     (1UL<<30)
 #define PIPE_HDMI_AUDIO_INT_MASK (PIPE_HDMI_AUDIO_UNDERRUN | PIPE_HDMI_AUDIO_BUFFER_DONE)
 #define PIPE_EVENT_MASK (BIT29|BIT28|BIT27|BIT26|BIT25|BIT24|BIT23|BIT22|BIT21 \
 		|BIT20|BIT18|BIT17|BIT16)
@@ -597,18 +601,22 @@ struct dpst_guardband {
 
 #define DSPASURF		0x7019C
 #define DSPATILEOFF		0x701A4
+#define DSPACONSTALPHA		0x701A8
 
 #define DSPBSURF		0x7119C
 #define DSPBTILEOFF		0x711A4
+#define DSPBCONSTALPHA		0x711A8
 
 #define DSPCSURF		0x7219C
 #define DSPCTILEOFF		0x721A4
 #define DSPCKEYMAXVAL 		0x721A0
+#define DSPCCONSTALPHA		0x721A8
 #define DSPCKEYMINVAL 		0x72194
 #define DSPCKEYMSK 		0x72198
 
 #define DSPDSURF		0x7319C
 #define DSPDTILEOFF		0x731A4
+#define DSPDCONSTALPHA		0x731A8
 
 #define VGACNTRL		0x71400
 #define VGA_DISP_DISABLE			(1 << 31)
@@ -1304,6 +1312,7 @@ gamma settings.
 #define SKU_BYPASS 					0x08
 
 /* MDFLD delta registers */
+#define PIPEA			0x0
 #define PIPEB			0x1
 #define PIPEC			0x2
 #define PIPEB_OFFSET		0x1000

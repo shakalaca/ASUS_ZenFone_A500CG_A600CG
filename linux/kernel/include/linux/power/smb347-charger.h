@@ -86,12 +86,15 @@ enum smb347_otg_control {
  * factory programmed default will be used. For soft/hard temperature
  * values, pass in %SMB347_TEMP_USE_DEFAULT instead.
  */
-#define  MAXSMB347_CONFIG_DATA_SIZE 32
+#define  MAXSMB34x_CONFIG_REG		20
+#define  MAXSMB347_CONFIG_DATA_SIZE	(MAXSMB34x_CONFIG_REG*2)
+
 struct smb347_charger_platform_data {
 	struct power_supply_info battery_info;
 	bool		use_mains;
 	bool		use_usb;
 	bool		show_battery;
+	bool		is_valid_battery;
 	int		irq_gpio;
 	unsigned int	termination_current;
 	enum smb347_chg_enable enable_control;
@@ -108,12 +111,15 @@ struct smb347_charger_platform_data {
 	unsigned long supported_cables;
 	struct power_supply_throttle *throttle_states;
 	struct ps_batt_chg_prof *chg_profile;
+	bool	detect_chg;
+	int	gpio_mux;
 };
 
 #ifdef CONFIG_CHARGER_SMB347
 extern int smb347_get_charging_status(void);
 extern int smb347_enable_charger(void);
 extern int smb347_disable_charger(void);
+extern int smb34x_get_bat_health(void);
 #else
 static int smb347_get_charging_status(void)
 {
@@ -127,6 +133,9 @@ static int smb347_disable_charger(void)
 {
 	return 0;
 }
-#endif
-
+int smb34x_get_bat_health(void)
+{
+	return 0;
+}
 #endif /* SMB347_CHARGER_H */
+#endif
