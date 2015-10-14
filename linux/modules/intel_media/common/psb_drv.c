@@ -1190,20 +1190,26 @@ static bool intel_mid_get_vbt_data(struct drm_psb_private *dev_priv)
 		}
 	} else {
 #if defined(CONFIG_SUPPORT_MIPI_HX8394_DISPLAY) || defined(CONFIG_SUPPORT_MIPI_ORISE1283A_DISPLAY)
-		if (Read_LCD_ID() == LCD_ID_TM) {
-			printk("[DISP] DriverIC : HX8394 SR device registered!\n");
-			strncpy(panel_name, panel_name_FW, strlen("HX8394"));
-			mipi_mode = MDFLD_DSI_ENCODER_DPI;
+		if(Read_PROJ_ID()==PROJ_ID_A600CG ){
+				printk("[DISP] DriverIC : ORISE1283A device registered!\n");
+				strncpy(panel_name, panel_name_FW, strlen("ORISE1283A"));
+				mipi_mode = MDFLD_DSI_ENCODER_DPI;
 		} else {
+			if (Read_LCD_ID() == LCD_ID_TM) {
+				printk("[DISP] DriverIC : HX8394 SR device registered!\n");
+				strncpy(panel_name, panel_name_FW, strlen("HX8394"));
+				mipi_mode = MDFLD_DSI_ENCODER_DPI;
+			} else {
 #ifdef PANEL_HX8394_EVB
-			printk("[DISP] DriverIC : HX8394 EVB device registered!\n");
-			strncpy(panel_name, panel_name_FW, strlen("HX8394"));
-			mipi_mode = MDFLD_DSI_ENCODER_DPI;
+				printk("[DISP] DriverIC : HX8394 EVB device registered!\n");
+				strncpy(panel_name, panel_name_FW, strlen("HX8394"));
+				mipi_mode = MDFLD_DSI_ENCODER_DPI;
 #else
-			printk("[DISP] DriverIC : ORISE1283A device registered!\n");
-			strncpy(panel_name, panel_name_FW, strlen("ORISE1283A"));
-			mipi_mode = MDFLD_DSI_ENCODER_DPI;
+				printk("[DISP] DriverIC : ORISE1283A device registered!\n");
+				strncpy(panel_name, panel_name_FW, strlen("ORISE1283A"));
+				mipi_mode = MDFLD_DSI_ENCODER_DPI;
 #endif
+			}
 		}
 #endif
 	}

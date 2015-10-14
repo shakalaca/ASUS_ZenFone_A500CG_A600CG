@@ -5,6 +5,7 @@
 #define HW_ID_MP                                        0x00000005
 
 #define LCD_ID_TM				0
+#define LCD_ID_CTC				0
 #define LCD_ID_HSD				1
 
 #define A502CG_LCD_ID_GIS				0

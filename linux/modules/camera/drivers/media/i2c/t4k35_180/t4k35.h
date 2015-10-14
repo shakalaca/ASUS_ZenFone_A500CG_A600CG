@@ -799,6 +799,26 @@ struct tsb_resolution t4k35_res_preview[] = {
 		},
 	},
     {
+		.desc = "PREVIEW_FHD_1936x1096_30fps_2lane",
+		.regs = t4k35_FHD_1936x1096_30fps_2lane,
+		.width = 1936,
+		.height = 1096,
+		.bin_factor_x = 1,
+		.bin_factor_y = 1,
+		.used = 0,
+		.skip_frames = 3,
+		.fps_options = {
+		    {
+		         .fps = 30,
+		         .pixels_per_line = 0x0F5E,
+		         .lines_per_frame = 0x07A0,
+		    },
+		    {
+		    }
+                },
+        },
+		/*
+    {
         .desc = "PREVIEW_Full_3280x1852_26fps_2lane",
         .regs = t4k35_Full_3280x1852_26fps_2lane,
         .width = 3280,
@@ -836,6 +856,7 @@ struct tsb_resolution t4k35_res_preview[] = {
             }
         },
     },
+	*/
 };
 
 struct tsb_resolution t4k35_res_still[] = {

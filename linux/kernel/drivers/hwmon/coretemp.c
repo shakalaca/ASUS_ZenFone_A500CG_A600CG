@@ -40,7 +40,6 @@
 #include <asm/mce.h>
 #include <asm/processor.h>
 #include <asm/cpu_device_id.h>
-#include <linux/tkb.h>
 
 #define DRVNAME	"coretemp"
 
@@ -181,15 +180,9 @@ static ssize_t store_tx(struct device *dev,
 	u32 eax, edx;
 	unsigned long val;
 	int diff;
-	int temp;
 
 	if (kstrtoul(buf, 10, &val))
 		return -EINVAL;
-
-#ifdef CONFIG_SENSORS_CORETEMP_INTERRUPT
-	temp = tkb_get_coretemp_thr(attr->index, val, mask);
-	val = temp;
-#endif
 
 	/*
 	 * Thermal threshold mask is 7 bits wide. Values are entered in terms
@@ -291,8 +284,6 @@ static ssize_t show_temp(struct device *dev,
 	struct platform_data *pdata = dev_get_drvdata(dev);
 	struct temp_data *tdata = pdata->core_data[attr->index];
 
-	printk(KERN_INFO "%s: enter, index = %d\n", __func__, attr->index);
-
 	mutex_lock(&tdata->update_lock);
 
 	/* Check whether the time interval has elapsed */
@@ -309,10 +300,6 @@ static ssize_t show_temp(struct device *dev,
 	}
 
 	mutex_unlock(&tdata->update_lock);
-
-	tkb_update_coretemp(attr->index, tdata->temp);
-
-	printk(KERN_INFO "%s: return temp = %d\n", __func__, tdata->temp);
 
 	return tdata->valid ? sprintf(buf, "%d\n", tdata->temp) : -EAGAIN;
 }
@@ -511,42 +498,6 @@ static int coretemp_interrupt(__u64 msr_val)
 	return 0;
 }
 
-void core_threshold_set(int low_thr, int high_thr)
-{
-	u32 eax, edx;
-	unsigned int cpu = smp_processor_id();
-	int indx = TO_ATTR_NO(cpu);
-	int diff;
-	struct platform_device *pdev = coretemp_get_pdev(cpu);
-	struct platform_data *pdata = platform_get_drvdata(pdev);
-	struct temp_data *tdata = pdata->core_data[indx];
-	u32 mask;
-	int shift;
-
-	        /* configure low threshold */
-	diff = (tdata->tjmax - low_thr) / 1000;
-	mask = THERM_MASK_THRESHOLD0;
-	shift = THERM_SHIFT_THRESHOLD0;
-
-	mutex_lock(&tdata->update_lock);
-	rdmsr_on_cpu(tdata->cpu, tdata->intrpt_reg, &eax, &edx);
-	eax = (eax & ~mask) | (diff << shift);
-	wrmsr_on_cpu(tdata->cpu, tdata->intrpt_reg, eax, edx);
-	mutex_unlock(&tdata->update_lock);
-
-
-	/* configure high threshold */
-	diff = (tdata->tjmax - high_thr) / 1000;
-	mask = THERM_MASK_THRESHOLD1;
-	shift = THERM_SHIFT_THRESHOLD1;
-
-	mutex_lock(&tdata->update_lock);
-	rdmsr_on_cpu(tdata->cpu, tdata->intrpt_reg, &eax, &edx);
-	eax = (eax & ~mask) | (diff << shift);
-	wrmsr_on_cpu(tdata->cpu, tdata->intrpt_reg, eax, edx);
-	mutex_unlock(&tdata->update_lock);
-
-}
 static void core_threshold_work_fn(struct work_struct *work)
 {
 	u32 eax, edx;
@@ -559,9 +510,6 @@ static void core_threshold_work_fn(struct work_struct *work)
 	struct platform_device *pdev = coretemp_get_pdev(cpu);
 	struct platform_data *pdata = platform_get_drvdata(pdev);
 	struct temp_data *tdata = pdata->core_data[indx];
-	bool is_thermal_service_triggered;
-	int tkb_enabled;
-	int low_thr, high_thr;
 
 	if (!tdata) {
 		pr_err("Could not retrieve temp_data\n");
@@ -616,30 +564,19 @@ static void core_threshold_work_fn(struct work_struct *work)
 			tdata->cpu_core_id, temp, event, thresh, t0, t1);
 	}
 
-	is_thermal_service_triggered = tkb_coretemp_trigger(
-			indx, tdata->temp, event, &low_thr, &high_thr, &tkb_enabled);
+	thermal_event[0] = kasprintf(GFP_KERNEL, "NAME=Core %u",
+						tdata->cpu_core_id);
+	thermal_event[1] = kasprintf(GFP_KERNEL, "TEMP=%d", temp);
+	thermal_event[2] = kasprintf(GFP_KERNEL, "EVENT=%d", event);
+	thermal_event[3] = kasprintf(GFP_KERNEL, "LEVEL=%d", thresh);
+	thermal_event[4] = NULL;
 
-	if(is_thermal_service_triggered) {
+	kobject_uevent_env(&pdev->dev.kobj, KOBJ_CHANGE, thermal_event);
 
-		thermal_event[0] = kasprintf(GFP_KERNEL, "NAME=Core %u",
-			tdata->cpu_core_id);
-		thermal_event[1] = kasprintf(GFP_KERNEL,
-			"TEMP=%d", tdata->temp);
-		thermal_event[2] = kasprintf(GFP_KERNEL, "EVENT=%d", event);
-		thermal_event[3] = kasprintf(GFP_KERNEL, "LEVEL=%d", thresh);
-		thermal_event[4] = NULL;
-
-		kobject_uevent_env(&pdev->dev.kobj, KOBJ_CHANGE, thermal_event);
-
-		kfree(thermal_event[3]);
-		kfree(thermal_event[2]);
-		kfree(thermal_event[1]);
-		kfree(thermal_event[0]);
-	}
-
-	if(tkb_enabled) {
-		core_threshold_set(low_thr, high_thr);
-	}
+	kfree(thermal_event[3]);
+	kfree(thermal_event[2]);
+	kfree(thermal_event[1]);
+	kfree(thermal_event[0]);
 }
 
 static void configure_apic(void *info)
