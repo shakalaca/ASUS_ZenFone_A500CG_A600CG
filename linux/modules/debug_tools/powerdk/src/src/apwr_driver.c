@@ -4372,7 +4372,8 @@ int extract_valid_frequencies(const char *buffer, ssize_t len)
 	if (buffer[i] == ' ') {
 	    memset(tmp, 0, sizeof(tmp));
 	    ++num_toks;
-	    if ( (tmp_len = (buffer+i) - str) > 10) {
+            tmp_len = (buffer+i) - str;
+            if (tmp_len > sizeof(tmp)) {
 		// ERROR!
 		return -ERROR;
 	    }
@@ -7500,15 +7501,6 @@ atom_arch_type_t is_atm(void)
     return NON_ATOM;
 };
 
-static void test_wlock_mappings(void)
-{
-#if DO_WAKELOCK_SAMPLE 
-    produce_w_sample(0, 0x1, PW_WAKE_LOCK, 0, 0, "abcdef", "swapper", 0x0);
-    produce_w_sample(0, 0x1, PW_WAKE_LOCK, 0, 0, "PowerManagerService", "swapper", 0x0);
-    produce_w_sample(0, 0x1, PW_WAKE_LOCK, 0, 0, "abcdef", "swapper", 0x0);
-#endif
-};
-
 static int __init init_hooks(void)
 {
     int ret = SUCCESS;
@@ -7601,13 +7593,6 @@ static int __init init_hooks(void)
     if (pw_init_data_structures()) {
         return -ERROR;
     }
-
-    if (false) {
-        test_wlock_mappings();
-        pw_destroy_data_structures();
-        return -ERROR;
-    }
-
 
 #if 0
     {

@@ -35,6 +35,9 @@
  */
 #define DRIVER_NAME "I2S SSP Driver"
 
+#define ACPI_DMA_EDK "ADMA0F28"
+#define ACPI_DMA_FDK "DMA0F28"
+
 /* Moorestone */
 #define MRST_SSP0_DEVICE_ID     0x0815
 #define MRST_LPE_DMA_DEVICE_ID  0x0814
@@ -62,8 +65,6 @@
 #define FEAT_DIV_CTRL  2		/* DIV_CTRL register on SSP */
 #define FEAT_ISRX_IMRX 3		/* Need to clear IRQ */
 
-
-
 /* FIXME: use of MRFL_SSPx_REG_BASE_ADDRESS should be
  * avoided by PCI table reorganization which allow to
  * determine SSP # from PCI info */
@@ -80,8 +81,6 @@
 #define VLV2_LPE_SHIM_REG_BASE_ADDRESS	(0xdf540000)
 #define VLV2_LPE_SHIM_REG_SIZE		(0x100)
 
-
-
 /* SSP PCI device definitions */
 #define MRST_SSP_BAR	0
 #define MRST_LPE_BAR	1
@@ -89,15 +88,23 @@
 #define SSP0_INSTANCE	0
 #define SSP1_INSTANCE	1
 #define SSP2_INSTANCE	2
+#define NONE_INSTANCE	100
+
+#define ACPI_SSP0_INSTANCE	0
+#define ACPI_SSP1_INSTANCE	1
+#define ACPI_SSP2_INSTANCE	2
+#define ACPI_NONE_INSTANCE	1000
+
+#define ACPI_BLUET_USAGE "BLUET"
+#define ACPI_MODEM_USAGE "MODEM"
+#define ACPI_CODEC_USAGE "CODEC"
 
 /* SSP mode */
 #define SSP_IN_MASTER_MODE		0x0
 #define SSP_IN_SLAVE_MODE		0x1
-
 /* SSP state */
 #define SSP_OFF 0
 #define SSP_ON  1
-
 
 /*
  *	Macros: Register definitions
@@ -108,7 +115,6 @@
 		{ return __raw_readl(p + (OFFSET_ ## reg)); } \
 	static inline void write_ ## reg(u32 v, void *p) \
 		{ __raw_writel(v, p + (OFFSET_ ## reg)); }
-
 /*
  *	Macros: Registers field definitions
  */
@@ -138,7 +144,6 @@
 			<< reg ## _ ## field ## _SHIFT)); \
 	}
 
-
 /*
  * LPE registers definitions
  * -------------------------
@@ -164,7 +169,6 @@ DEFINE_REG(LPE_SSP2_DIV_CTRL_H, 0xFC)
 #define SSP1_OFFSET 0xA1000
 #define SSP2_OFFSET 0xA2000
 #define LPESHIM_OFFSET 0x140000
-
 #ifdef __MRFL_SPECIFIC__
 DEFINE_REG(LPE_CHICKEN_BITS, 0x88)
 #endif /* __MRFL_SPECIFIC__ */
@@ -178,7 +182,6 @@ DEFINE_FIELD(LPE_ISRX, IAPIS_SSP2, 0x01, 5);
 DEFINE_FIELD(LPE_IMRX, IAPIS_SSP0, 0x01, 3);
 DEFINE_FIELD(LPE_IMRX, IAPIS_SSP1, 0x01, 4);
 DEFINE_FIELD(LPE_IMRX, IAPIS_SSP2, 0x01, 5);
-
 
 /*
  * SSP registers definitions
@@ -310,7 +313,6 @@ DEFINE_FIELD(SFIFOTT, RFT, 0xFFFF, 16)	/* Receive FIFO Trigger Threshold */
 DEFINE_FIELD(SFIFOTT, TFT, 0xFFFF, 0)	/* Transmit FIFO Trigger Threshold */
 #endif /* __MRFL_SPECIFIC__ */
 
-
 /*
  *	list of differents types of SSP, value depends of adid entry of
  *	capability ID of the PCI
@@ -362,8 +364,6 @@ DEFINE_FIELD(SFIFOTT, TFT, 0xFFFF, 0)	/* Transmit FIFO Trigger Threshold */
 
 #define PCI_ADID_SSP_FS_GPIO_MODE_SHIFT 14
 #define PCI_ADID_SSP_FS_GPIO_MODE_MASK 0x3
-
-
 
 #define PCI_CAP_ADID_I2S_BT_FM  ((PCI_ADID_SSP_CONF_BT_FM) | \
 					 (PCI_ADID_SSP_MODE_I2S))
@@ -530,6 +530,12 @@ struct intel_mid_i2s_hdl {
 	enum intel_mid_i2s_ssp_usage usage;
 
 	struct intel_mid_i2s_settings current_settings;
+#ifdef CONFIG_ACPI
+	/* timing configuration from acpi */
+	struct intel_mid_i2s_ssp_config config_c08k;
+	struct intel_mid_i2s_ssp_config config_c16k;
+	struct intel_mid_i2s_ssp_config config_c48k;
+#endif
 };
 
 struct intel_mid_ssp_gpio {
@@ -576,7 +582,6 @@ static int check_device_acpi(struct device *device_ptr, void *data);
 static void set_ssp_i2s_hw(struct intel_mid_i2s_hdl *drv_data,
 			const struct intel_mid_i2s_settings *ps_settings);
 
-
 #ifdef CONFIG_PM
 static int intel_mid_i2s_runtime_resume(struct device *device_ptr);
 static int intel_mid_i2s_runtime_suspend(struct device *device_ptr);
@@ -614,7 +619,6 @@ static int intel_mid_i2s_resume(struct device *dev);
 	(((value) & SSRSA_##regbit##_MASK) << SSRSA_##regbit##_SHIFT)
 #define SSTSA_reg(regbit, value)					\
 	(((value) & SSTSA_##regbit##_MASK) << SSTSA_##regbit##_SHIFT)
-
 
 #define change_SSCR0_reg(reg_pointer, regbit, value)			  \
 	write_SSCR0((read_SSCR0(reg_pointer)				  \
@@ -658,11 +662,9 @@ static int intel_mid_i2s_resume(struct device *dev);
 	& (~((LPE_ISRX_##regbit##_MASK << LPE_ISRX_##regbit##_SHIFT)))),  \
 	reg_pointer);
 
-
 /* RX FIFO level */
 #define GET_SSSR_val(x, regb)						  \
 	((x & (SSSR_##regb##_MASK<<SSSR_##regb##_SHIFT))>>SSSR_##regb##_SHIFT)
-
 
 /*
  * SSP hardware can be configured as I2S, PCM, SPI...
@@ -725,8 +727,6 @@ static int intel_mid_i2s_resume(struct device *dev);
 /* ADDID = Additional Device ID */
 #define PCI_CAP_OFFSET_ADID 6
 
-
-
 #define SSP_PLL_FREQ_05_622 (0<<4)
 #define SSP_PLL_FREQ_11_345 (1<<4)
 #define SSP_PLL_FREQ_12_235 (2<<4)
@@ -745,7 +745,6 @@ static int intel_mid_i2s_resume(struct device *dev);
 
 #define SSP_SSACD_NOT_AVAILABLE 0xff
 #define SSP_CLK_SSCR0_SCR_NOT_AVAILABLE 0
-
 
 /*
  * Following enums are for frequency calculation in master mode...
@@ -784,7 +783,6 @@ ssp_ssacd[SSP_FRM_FREQ_SIZE][SSP_BIT_PER_SAMPLE_SIZE][SSP_TIMESLOT_SIZE] = {
 	[SSP_FRM_FREQ_UNDEFINED][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_4] = SSP_SSACD_NOT_AVAILABLE,
 	[SSP_FRM_FREQ_UNDEFINED][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_8] = SSP_SSACD_NOT_AVAILABLE,
 
-
 	[SSP_FRM_FREQ_48_000][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_1] = SSP_PLL_FREQ_12_235 | SSP_SYSCLK_DIV_8,
 	[SSP_FRM_FREQ_48_000][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_2] = SSP_PLL_FREQ_12_235 | SSP_SYSCLK_DIV_4,
 	[SSP_FRM_FREQ_48_000][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_4] = SSP_PLL_FREQ_12_235 | SSP_SYSCLK_DIV_2,
@@ -799,7 +797,6 @@ ssp_ssacd[SSP_FRM_FREQ_SIZE][SSP_BIT_PER_SAMPLE_SIZE][SSP_TIMESLOT_SIZE] = {
 	[SSP_FRM_FREQ_48_000][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_2] = SSP_PLL_FREQ_12_235 | SSP_SYSCLK_DIV_1,
 	[SSP_FRM_FREQ_48_000][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_4] = SSP_PLL_FREQ_12_235 | SSP_SYSCLK_DIV_2 | SSP_SYSCLK_DIV4_BYPASS,
 	[SSP_FRM_FREQ_48_000][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_8] = SSP_PLL_FREQ_12_235 | SSP_SYSCLK_DIV_1 | SSP_SYSCLK_DIV4_BYPASS,
-
 
 	[SSP_FRM_FREQ_44_100][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_1] = SSP_PLL_FREQ_11_345 | SSP_SYSCLK_DIV_8,
 	[SSP_FRM_FREQ_44_100][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_2] = SSP_PLL_FREQ_11_345 | SSP_SYSCLK_DIV_4,
@@ -816,7 +813,6 @@ ssp_ssacd[SSP_FRM_FREQ_SIZE][SSP_BIT_PER_SAMPLE_SIZE][SSP_TIMESLOT_SIZE] = {
 	[SSP_FRM_FREQ_44_100][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_4] = SSP_PLL_FREQ_11_345 | SSP_SYSCLK_DIV_2 | SSP_SYSCLK_DIV4_BYPASS,
 	[SSP_FRM_FREQ_44_100][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_8] = SSP_PLL_FREQ_11_345 | SSP_SYSCLK_DIV_1 | SSP_SYSCLK_DIV4_BYPASS,
 
-
 	[SSP_FRM_FREQ_22_050][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_1] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_8,
 	[SSP_FRM_FREQ_22_050][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_2] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_4,
 	[SSP_FRM_FREQ_22_050][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_4] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_2,
@@ -831,7 +827,6 @@ ssp_ssacd[SSP_FRM_FREQ_SIZE][SSP_BIT_PER_SAMPLE_SIZE][SSP_TIMESLOT_SIZE] = {
 	[SSP_FRM_FREQ_22_050][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_2] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_1,
 	[SSP_FRM_FREQ_22_050][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_4] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_2 | SSP_SYSCLK_DIV4_BYPASS,
 	[SSP_FRM_FREQ_22_050][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_8] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_1 | SSP_SYSCLK_DIV4_BYPASS,
-
 
 	[SSP_FRM_FREQ_16_000][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_1] = SSP_SSACD_NOT_AVAILABLE,
 	[SSP_FRM_FREQ_16_000][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_2] = SSP_PLL_FREQ_32_842 | SSP_SYSCLK_DIV_32,
@@ -848,7 +843,6 @@ ssp_ssacd[SSP_FRM_FREQ_SIZE][SSP_BIT_PER_SAMPLE_SIZE][SSP_TIMESLOT_SIZE] = {
 	[SSP_FRM_FREQ_16_000][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_4] = SSP_PLL_FREQ_32_842 | SSP_SYSCLK_DIV_4,
 	[SSP_FRM_FREQ_16_000][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_8] = SSP_PLL_FREQ_32_842 | SSP_SYSCLK_DIV_2,
 
-
 	[SSP_FRM_FREQ_11_025][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_1] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_16,
 	[SSP_FRM_FREQ_11_025][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_2] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_8,
 	[SSP_FRM_FREQ_11_025][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_4] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_4,
@@ -863,7 +857,6 @@ ssp_ssacd[SSP_FRM_FREQ_SIZE][SSP_BIT_PER_SAMPLE_SIZE][SSP_TIMESLOT_SIZE] = {
 	[SSP_FRM_FREQ_11_025][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_2] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_2,
 	[SSP_FRM_FREQ_11_025][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_4] = SSP_PLL_FREQ_05_622 | SSP_SYSCLK_DIV_1,
 	[SSP_FRM_FREQ_11_025][SSP_BIT_PER_SAMPLE_32][SSP_TIMESLOT_8] = SSP_PLL_FREQ_11_345 | SSP_SYSCLK_DIV_1,
-
 
 	[SSP_FRM_FREQ_8_000][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_1] = SSP_SSACD_NOT_AVAILABLE,
 	[SSP_FRM_FREQ_8_000][SSP_BIT_PER_SAMPLE_8][SSP_TIMESLOT_2] = SSP_SSACD_NOT_AVAILABLE,

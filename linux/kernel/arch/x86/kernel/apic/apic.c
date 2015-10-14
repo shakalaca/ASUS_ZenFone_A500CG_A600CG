@@ -275,8 +275,12 @@ u32 native_safe_apic_wait_icr_idle(void)
 
 void native_apic_icr_write(u32 low, u32 id)
 {
+	unsigned long flags;
+
+	local_irq_save(flags);
 	apic_write(APIC_ICR2, SET_APIC_DEST_FIELD(id));
 	apic_write(APIC_ICR, low);
+	local_irq_restore(flags);
 }
 
 u64 native_apic_icr_read(void)
@@ -2234,8 +2238,13 @@ static int lapic_suspend(void)
 	 * and wont produce timer based wake up event.
 	 */
 	if ((intel_mid_identify_cpu() != 0) ||
-			(boot_cpu_data.x86_model == 0x37)) {
-		apic_write(APIC_TMICT, ~0);
+			(boot_cpu_data.x86_model == 0x37) ||
+				(boot_cpu_data.x86_model == 0x4C)) {
+		if (this_cpu_has(X86_FEATURE_TSC_DEADLINE_TIMER))
+			wrmsrl(MSR_IA32_TSC_DEADLINE, 0);
+		else
+			apic_write(APIC_TMICT, ~0);
+
 		return 0;
 	}
 
@@ -2276,14 +2285,20 @@ static void lapic_resume(void)
 	unsigned int l, h;
 	unsigned long flags;
 	int maxlvt;
+	u64 tsc;
 
 	/*
 	 * On intel_mid, the resume flow is a bit different.
 	 * Refer explanation on lapic_suspend.
 	 */
 	if ((intel_mid_identify_cpu() != 0) ||
-			(boot_cpu_data.x86_model == 0x37)) {
-		apic_write(APIC_TMICT, 10);
+			(boot_cpu_data.x86_model == 0x37) ||
+				(boot_cpu_data.x86_model == 0x4C)) {
+		if (this_cpu_has(X86_FEATURE_TSC_DEADLINE_TIMER)) {
+			rdtscll(tsc);
+			wrmsrl(MSR_IA32_TSC_DEADLINE, tsc + 10);
+		} else
+			apic_write(APIC_TMICT, 10);
 		return;
 	}
 

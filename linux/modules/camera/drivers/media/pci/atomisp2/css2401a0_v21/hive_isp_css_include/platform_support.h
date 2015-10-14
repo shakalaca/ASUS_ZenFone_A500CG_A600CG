@@ -22,6 +22,11 @@
 #ifndef __PLATFORM_SUPPORT_H_INCLUDED__
 #define __PLATFORM_SUPPORT_H_INCLUDED__
 
+/**
+* @file
+* Platform specific includes and functionality.
+*/
+
 #if defined(_MSC_VER)
 /*
  * Put here everything _MSC_VER specific not covered in
@@ -29,6 +34,7 @@
  */
 #include "hrt/defs.h"
 #include "storage_class.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -38,13 +44,13 @@ hrt_sleep(void)
 	/* Empty for now. Polling is not used in many places */
 }
 
-/* Ignore warning 4505: Unreferenced local function has been removed */
-#pragma warning(disable: 4505)
+/* Ignore warning 4505: Unreferenced local function has been removed    *
+ * Ignore warning 4324: structure was padded due to __declspec(align()) */
+#pragma warning(disable : 4505 4324)
 
 #define CSS_ALIGN(d, a) _declspec(align(a)) d
 #define inline      __inline
 #define __func__    __FUNCTION__
-#define OP_std_modadd(base, offset, size) ((base+offset)%(size))
 
 #define snprintf(buffer, size, ...) \
 	_snprintf_s(buffer, size, size, __VA_ARGS__)
@@ -55,7 +61,6 @@ hrt_sleep(void)
  * "assert_support.h", "math_support.h", etc
  */
 #include <string.h>
-
 #define CSS_ALIGN(d, a) d __attribute__((aligned(a)))
 
 #elif defined(__KERNEL__)
@@ -71,7 +76,6 @@ hrt_sleep(void)
 #define UINT32_MAX UINT_MAX
 #define UCHAR_MAX  (255)
 
-#define OP_std_modadd(base, offset, size) ((base+offset)%(size))
 #define CSS_ALIGN(d, a) d __attribute__((aligned(a)))
 
 /*
@@ -86,16 +90,10 @@ hrt_sleep(void)
  */
 #include "hrt/host.h"
 #include <string.h>
+#include <stdarg.h>
 #include <stdio.h>
 
 #define CSS_ALIGN(d, a) d __attribute__((aligned(a)))
-#if !defined(__ISP) && !defined(__SP)
-/*
- * For SP and ISP, SDK provides the definition of OP_std_modadd.
- * We need it only for host
- */
-#define OP_std_modadd(base, offset, size) ((base+offset)%(size))
-#endif
 
 #else /* default is for the FIST environment */
 /*
@@ -103,7 +101,6 @@ hrt_sleep(void)
  * "assert_support.h", "math_support.h", etc
  */
 #include <string.h>
-
 #endif
 
 #endif /* __PLATFORM_SUPPORT_H_INCLUDED__ */

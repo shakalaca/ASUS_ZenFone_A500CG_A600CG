@@ -56,6 +56,7 @@ DEFINE_PER_CPU(struct sfi_processor *, sfi_processors);
 static DEFINE_MUTEX(performance_mutex);
 static int sfi_cpufreq_num;
 static u32 sfi_cpu_num;
+static bool battlow;
 
 #define SFI_FREQ_MAX		32
 #define INTEL_MSR_RANGE		0xffff
@@ -69,6 +70,13 @@ struct sfi_cpufreq_data {
 	struct cpufreq_frequency_table *freq_table;
 	unsigned int max_freq;
 	unsigned int resume;
+};
+
+
+struct drv_cmd {
+	const struct cpumask *mask;
+	u32 msr;
+	u32 val;
 };
 
 static DEFINE_PER_CPU(struct sfi_cpufreq_data *, drv_data);
@@ -101,6 +109,16 @@ static int parse_freq(struct sfi_table_header *table)
 	}
 
 	return 0;
+}
+
+static void get_cpu_sibling_mask(int cpu, struct cpumask *sibling_mask)
+{
+	unsigned int base = (cpu/CONFIG_NR_CPUS_PER_MODULE) * CONFIG_NR_CPUS_PER_MODULE;
+	unsigned int i;
+
+	cpumask_clear(sibling_mask);
+	for (i = base; i < (base + CONFIG_NR_CPUS_PER_MODULE); i++)
+		cpumask_set_cpu(i, sibling_mask);
 }
 
 static int sfi_processor_get_performance_states(struct sfi_processor *pr)
@@ -198,16 +216,40 @@ static unsigned extract_freq(u32 msr, struct sfi_cpufreq_data *data)
 
 	msr &= INTEL_MSR_BUSRATIO_MASK;
 	perf = data->sfi_data;
+	unsigned int lowest_freq = data->freq_table[0].frequency;
 
 	for (i = 0; data->freq_table[i].frequency != CPUFREQ_TABLE_END; i++) {
 		sfi_ctrl = perf->states[data->freq_table[i].index].control
 			& INTEL_MSR_BUSRATIO_MASK;
+		if (data->freq_table[i].frequency < lowest_freq)
+			lowest_freq = data->freq_table[i].frequency;
 		if (sfi_ctrl == msr)
 			return data->freq_table[i].frequency;
 	}
-	return data->freq_table[0].frequency;
+	return lowest_freq;
 }
 
+/* Called via smp_call_function_many(), on the target CPUs */
+static void do_drv_write(void *_cmd)
+{
+	struct drv_cmd *cmd = _cmd;
+	u32 lo, hi;
+
+	rdmsr(cmd->msr, lo, hi);
+	lo = (lo & ~INTEL_MSR_RANGE) | (cmd->val & INTEL_MSR_RANGE);
+	wrmsr(cmd->msr, lo, hi);
+}
+
+static void drv_write(struct drv_cmd *cmd)
+{
+	int this_cpu;
+
+	this_cpu = get_cpu();
+	if (cpumask_test_cpu(this_cpu, cmd->mask))
+		do_drv_write(cmd);
+	smp_call_function_many(cmd->mask, do_drv_write, cmd, 1);
+	put_cpu();
+}
 
 static u32 get_cur_val(const struct cpumask *mask)
 {
@@ -223,9 +265,21 @@ static u32 get_cur_val(const struct cpumask *mask)
 
 static unsigned int get_cur_freq_on_cpu(unsigned int cpu)
 {
-	struct sfi_cpufreq_data *data = per_cpu(drv_data, cpu);
+	struct sfi_cpufreq_data *data = NULL;
 	unsigned int freq;
 	unsigned int cached_freq;
+	struct cpumask sibling_mask;
+	unsigned int master_cpu;
+
+	/* take care of both of module-based and standalone DVFS */
+	get_cpu_sibling_mask(cpu, &sibling_mask);
+	for_each_cpu(master_cpu, &sibling_mask) {
+		data = per_cpu(drv_data, master_cpu);
+
+		/* very likely it's the first cpu */
+		if (likely(data != NULL))
+			break;
+	}
 
 	pr_debug("get_cur_freq_on_cpu (%d)\n", cpu);
 
@@ -258,7 +312,8 @@ static int sfi_cpufreq_target(struct cpufreq_policy *policy,
 	unsigned int next_state = 0; /* Index into freq_table */
 	unsigned int next_perf_state = 0; /* Index into perf table */
 	int result = 0;
-	u32 lo, hi;
+	struct drv_cmd cmd;
+
 
 	pr_debug("sfi_cpufreq_target %d (%d)\n", target_freq, policy->cpu);
 
@@ -288,16 +343,16 @@ static int sfi_cpufreq_target(struct cpufreq_policy *policy,
 		}
 	}
 
+	cmd.msr = MSR_IA32_PERF_CTL;
+	cmd.val = (u32) perf->states[next_perf_state].control;
+	cmd.mask = policy->cpus;
+
 	freqs.old = perf->states[perf->state].core_frequency * 1000;
 	freqs.new = data->freq_table[next_state].frequency;
 
 	cpufreq_notify_transition(policy, &freqs, CPUFREQ_PRECHANGE);
 
-	rdmsr_on_cpu(policy->cpu, MSR_IA32_PERF_CTL, &lo, &hi);
-	lo = (lo & ~INTEL_MSR_RANGE) |
-		((u32) perf->states[next_perf_state].control & INTEL_MSR_RANGE);
-	wrmsr_on_cpu(policy->cpu, MSR_IA32_PERF_CTL, lo, hi);
-
+	drv_write(&cmd);
 
 	cpufreq_notify_transition(policy, &freqs, CPUFREQ_POSTCHANGE);
 	perf->state = next_perf_state;
@@ -335,13 +390,22 @@ static int __init sfi_cpufreq_early_init(void)
 static int sfi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 {
 	unsigned int i;
+	unsigned int freq;
+	unsigned int cpufreqidx = 0;
 	unsigned int valid_states = 0;
 	unsigned int cpu = policy->cpu;
 	struct sfi_cpufreq_data *data;
 	unsigned int result = 0;
 	struct cpuinfo_x86 *c = &cpu_data(policy->cpu);
 	struct sfi_processor_performance *perf;
-	u32 lo, hi;
+	struct cpumask sibling_mask;
+	struct {
+		unsigned int max;
+		unsigned int min;
+	} freq_saved = {
+		.max = policy->max,
+		.min = policy->min
+	};
 
 	pr_debug("sfi_cpufreq_cpu_init CPU:%d\n", policy->cpu);
 
@@ -360,9 +424,10 @@ static int sfi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 		goto err_free;
 
 	perf = data->sfi_data;
-	policy->shared_type = CPUFREQ_SHARED_TYPE_HW;
+	policy->shared_type = CPUFREQ_SHARED_TYPE_ALL;
 
-	cpumask_set_cpu(policy->cpu, policy->cpus);
+	get_cpu_sibling_mask(cpu, &sibling_mask);
+	cpumask_copy(policy->cpus, &sibling_mask);
 	cpumask_set_cpu(policy->cpu, policy->related_cpus);
 
 	/* capability check */
@@ -400,34 +465,43 @@ static int sfi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 		    perf->states[i].core_frequency * 1000;
 		valid_states++;
 	}
+	cpufreqidx = valid_states - 1;
 	data->freq_table[valid_states].frequency = CPUFREQ_TABLE_END;
-	perf->state = 0;
 
 	result = cpufreq_frequency_table_cpuinfo(policy, data->freq_table);
 	if (result)
 		goto err_freqfree;
 
-	policy->cur = get_cur_freq_on_cpu(cpu);
+	/* restore saved min and max freq. */
+	if (freq_saved.max && freq_saved.min) {
+		struct cpufreq_policy new_policy;
+		pr_debug("CPU%u - restoring min and max freq.\n", cpu);
+		memcpy(&new_policy, policy, sizeof(struct cpufreq_policy));
+		new_policy.max = freq_saved.max;
+		new_policy.min = freq_saved.min;
 
+		/* do restore after freq. boundary chk & calibration */
+		if (!cpufreq_frequency_table_verify(&new_policy, data->freq_table)) {
+			policy->min = new_policy.min;
+			policy->max = new_policy.max;
+		}
+	}
+
+	policy->cur = get_cur_freq_on_cpu(cpu);
 
 	/* Check for APERF/MPERF support in hardware */
 	if (cpu_has(c, X86_FEATURE_APERFMPERF))
 		sfi_cpufreq_driver.getavg = cpufreq_get_measured_perf;
 
-	/* enable eHALT for SLM */
-	if (boot_cpu_data.x86_model == X86_ATOM_ARCH_SLM) {
-		rdmsr_on_cpu(policy->cpu, MSR_IA32_POWER_MISC, &lo, &hi);
-		lo = lo | ENABLE_ULFM_AUTOCM | ENABLE_INDP_AUTOCM;
-		wrmsr_on_cpu(policy->cpu, MSR_IA32_POWER_MISC, lo, hi);
-	}
-
 	pr_debug("CPU%u - SFI performance management activated.\n", cpu);
-	for (i = 0; i < perf->state_count; i++)
+	for (i = 0; i < perf->state_count; i++) {
+		if (policy->cur == (u32) perf->states[i].core_frequency * 1000)
+			perf->state = i;
 		pr_debug("     %cP%d: %d MHz, %d uS\n",
 			(i == perf->state ? '*' : ' '), i,
 			(u32) perf->states[i].core_frequency,
 			(u32) perf->states[i].transition_latency);
-
+	}
 	cpufreq_frequency_table_get_attr(data->freq_table, policy->cpu);
 
 	/*
@@ -435,6 +509,22 @@ static int sfi_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	 * writing something to the appropriate registers.
 	 */
 	data->resume = 1;
+
+	/**
+	 * Capping the cpu frequency to LFM during boot, if battery is detected
+	 * as critically low.
+	 */
+	if (battlow) {
+		freq = data->freq_table[cpufreqidx].frequency;
+		if (freq != CPUFREQ_ENTRY_INVALID) {
+			pr_info("CPU%u freq is capping to %uKHz\n", cpu, freq);
+			policy->max = freq;
+		} else {
+			pr_err("CPU%u table entry %u is invalid.\n",
+					cpu, cpufreqidx);
+			goto err_freqfree;
+		}
+	}
 
 	return result;
 
@@ -494,6 +584,18 @@ static struct cpufreq_driver sfi_cpufreq_driver = {
 	.owner = THIS_MODULE,
 	.attr = sfi_cpufreq_attr,
 };
+
+/**
+ * set_battlow_status - enables "battlow" to cap the max scaling cpu frequency.
+ */
+static int __init set_battlow_status(char *unused)
+{
+	pr_notice("Low Battery detected! Frequency shall be capped.\n");
+	battlow = true;
+	return 0;
+}
+/* Checking "battlow" param on boot, whether battery is critically low or not */
+early_param("battlow", set_battlow_status);
 
 static int __init parse_cpus(struct sfi_table_header *table)
 {
@@ -578,35 +680,6 @@ static void __exit sfi_cpufreq_exit(void)
 late_initcall(sfi_cpufreq_init);
 module_exit(sfi_cpufreq_exit);
 
-unsigned int ehalt_enable __read_mostly = 1; /* default enable */
-int set_ehalt_feature(const char *val, struct kernel_param *kp)
-{
-	int i, nc;
-	u32 lo, hi;
-	int rv = param_set_int(val, kp);
-
-	if (rv)
-		return rv;
-
-	/* disable eHALT for SLM */
-	nc = num_possible_cpus();
-	if (boot_cpu_data.x86_model == X86_ATOM_ARCH_SLM) {
-		for (i = 0; i < nc; i++) {
-			rdmsr_on_cpu(i, MSR_IA32_POWER_MISC, &lo, &hi);
-			if (ehalt_enable)
-				lo = lo |
-				(ENABLE_ULFM_AUTOCM | ENABLE_INDP_AUTOCM);
-			else
-				lo = lo &
-				(~(ENABLE_ULFM_AUTOCM | ENABLE_INDP_AUTOCM));
-			wrmsr_on_cpu(i, MSR_IA32_POWER_MISC, lo, hi);
-		}
-	}
-	return 0;
-}
-MODULE_PARM_DESC(ehalt_enable, "to enable/disable ehalt feature(1:Enable; 0:Disable)");
-module_param_call(ehalt_enable, set_ehalt_feature, param_get_uint,
-		  &ehalt_enable, S_IRUGO | S_IWUSR);
 
 unsigned int turbo_enable  __read_mostly = 1; /* default enable */
 int set_turbo_feature(const char *val, struct kernel_param *kp)

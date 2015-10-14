@@ -19,14 +19,32 @@
  *
  */
 
-#ifndef __RAW_PARAM_H
-#define __RAW_PARAM_H
+#ifndef __IA_CSS_RAW_PARAM_H
+#define __IA_CSS_RAW_PARAM_H
 
 #include "type_support.h"
+
+#include "dma.h"
 
 /* RAW (Optical Black) */
 struct sh_css_isp_raw_params {
 	int baf_strength;
 };
 
-#endif /* __RAW_PARAM_H */
+/* Raw channel */
+struct sh_css_isp_raw_isp_config {
+	uint32_t width_a_over_b;
+	struct dma_port_config port_b;
+	uint32_t inout_port_config;
+	uint32_t input_needs_raw_binning;
+	uint32_t format; /* enum ia_css_frame_format */
+	uint32_t required_bds_factor;
+	uint32_t two_ppc;
+	uint32_t stream_format; /* enum sh_stream_format */
+	uint32_t deinterleaved;
+	uint8_t start_column; /*left crop offset*/
+	uint8_t start_line; /*top crop offset*/
+	uint8_t enable_left_padding; /*need this for multiple binary case*/
+};
+
+#endif /* __IA_CSS_RAW_PARAM_H */

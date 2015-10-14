@@ -316,10 +316,6 @@ const struct cntry_locales_custom translate_custom_table[] = {
 	{BCM4339_CHIP_ID,  "KR", "KR", 4}, /* Enable correct 5Ghz channel */
     {BCM43362_CHIP_ID, "TW", "TW", 0},
     {BCM43362_CHIP_ID, "CN", "CN", 0},
-    {BCM43362_CHIP_ID, "US", "US", 0},
-    {BCM43362_CHIP_ID, "RU", "EU", 0},
-    {BCM43362_CHIP_ID, "IR", "EU", 0},
-    {BCM43362_CHIP_ID, "SY", "EU", 0},
     //special case(rev!=0)
     {BCM43362_CHIP_ID, "JP", "JP", 1},
 #else /* SUPPORT_MULTIPLE_REVISION */

@@ -48,6 +48,20 @@
 #error "SUPPORT_DRI_DRM must be set"
 #endif
 
+/*	ASUS_BSP: Louis +++	*/
+#ifdef CONFIG_SUPPORT_DDS_MIPI_SWITCH
+static bool bootDdsCheck;
+#if defined(CONFIG_EEPROM_PADSTATION)
+extern int checkPadExist(int);
+extern int AX_MicroP_IsP01Connected(void);
+#include <linux/microp_notify.h>
+#include <linux/microp_pin_def.h>
+#include <linux/microp_api.h>
+#endif
+
+#endif
+/*	ASUS_BSP: Louis ---	*/
+
 #define MAXFLIPCOMMANDS 4
 
 struct flip_command {
@@ -69,7 +83,7 @@ extern int drm_psb_3D_vblank;
 
 #define MRSTLFB_COMMAND_COUNT		1
 
-#define FLIP_TIMEOUT (HZ)
+#define FLIP_TIMEOUT (HZ/4)
 
 /*if panel refresh rate is 60HZ
 * then the max transfer time shoule be smaller
@@ -234,6 +248,8 @@ static void MRSTLFBFlipOverlay(MRSTLFB_DEVINFO *psDevInfo,
 	ovadd = MRSTLFBSetupOvadd(dev, psContext);
 	if (ovadd == 0)
 		return;
+	if (!(is_cmd_mode_panel(dev) && overlay_pipe == 0))
+		MRSTLFBWaitOverlayFlip(dev);
 	PSB_WVDC32(ovadd, ovadd_reg);
 
 	/* If overlay enabled while display plane doesn't,
@@ -287,6 +303,16 @@ static void MRSTLFBFlipSprite(MRSTLFB_DEVINFO *psDevInfo,
 	struct drm_psb_private *dev_priv;
 	struct mdfld_dsi_config *dsi_config = 0;
 	struct mdfld_dsi_hw_context *ctx;
+
+/*	ASUS_BSP: Louis +++	*/
+#ifdef CONFIG_SUPPORT_DDS_MIPI_SWITCH
+#if defined(CONFIG_EEPROM_PADSTATION)
+	/*	char *envp_pad_state_1[] = { "PAD_STATE=1", NULL };	*/
+	char *envp_pad_state_0[] = { "PAD_STATE=0", NULL };
+#endif
+#endif
+/*	ASUS_BSP: Louis ---	*/
+
 	u32 reg_offset;
 	int pipe;
 
@@ -316,8 +342,45 @@ static void MRSTLFBFlipSprite(MRSTLFB_DEVINFO *psDevInfo,
 	if ((psContext->update_mask & SPRITE_UPDATE_POSITION))
 		PSB_WVDC32(psContext->pos, DSPAPOS + reg_offset);
 	if ((psContext->update_mask & SPRITE_UPDATE_SIZE)) {
+/*	ASUS_BSP: Louis +++	*/
+#ifdef CONFIG_SUPPORT_DDS_MIPI_SWITCH
+#if defined(CONFIG_EEPROM_PADSTATION)
+		if (!bootDdsCheck) {
+			checkPadExist(0);
+			DRM_INFO("[DISPLAY][DDS] %s: Do checkPadExist(0).\n", __func__);
+			bootDdsCheck = true;
+
+			DRM_INFO("[DISPLAY][DDS] %s: panel_turn_on = %d, AX_MicroP_IsP01Connected() =%d, AX_MicroP_getGPIOOutputPinLevel(OUT_uP_LCD_RST)=%d\n", __func__, panel_turn_on, AX_MicroP_IsP01Connected(), AX_MicroP_getGPIOOutputPinLevel(OUT_uP_LCD_RST));
+
+			if ((panel_turn_on == DDS_PAD) && !AX_MicroP_IsP01Connected()) {
+				DRM_INFO("[DISPLAY][DDS] hpd = 0\n");
+				hpd = 0;
+				DRM_INFO("[DISPLAY][DDS] P01_REMOVE.\n");
+				kobject_uevent_env(&dsi_config->dev->primary->kdev.kobj, KOBJ_CHANGE, envp_pad_state_0);
+			}
+			/*	else if((panel_turn_on == DDS_NT35521) /*&& (AX_MicroP_getGPIOOutputPinLevel(OUT_uP_LCD_RST)==0)){
+				schedule_work(&dev_priv->reset_panel_work);
+			}
+			*/
+		}
+
+		if (panel_id == 0)
+			PSB_WVDC32 ((psContext->size > 0x35501df) ? 0x35501df : psContext->size, DSPASIZE + reg_offset);
+		else
+			PSB_WVDC32 ((psContext->size > 0x4ff031f) ? 0x4ff031f : psContext->size, DSPASIZE + reg_offset);
+#endif
+		if (1) {
+			if (panel_id == 0)
+				PSB_WVDC32 ((psContext->size > 0x35501df) ? 0x35501df : psContext->size, DSPASIZE + reg_offset);
+			else
+				PSB_WVDC32 ((psContext->size > 0x4ff031f) ? 0x4ff031f : psContext->size, DSPASIZE + reg_offset);
+		}
+		PSB_WVDC32(psContext->stride, DSPASTRIDE + reg_offset);
+#else
 		PSB_WVDC32(psContext->size, DSPASIZE + reg_offset);
 		PSB_WVDC32(psContext->stride, DSPASTRIDE + reg_offset);
+#endif
+/*	ASUS_BSP: Louis ---	*/
 	}
 
 	if ((psContext->update_mask & SPRITE_UPDATE_CONTROL)) {
@@ -384,8 +447,15 @@ static void MRSTLFBFlipPrimary(MRSTLFB_DEVINFO *psDevInfo,
 	if ((psContext->update_mask & SPRITE_UPDATE_POSITION))
 		PSB_WVDC32(psContext->pos, DSPAPOS + reg_offset);
 	if ((psContext->update_mask & SPRITE_UPDATE_SIZE)) {
+/*	ASUS_BSP: Louis +++	*/
+#ifdef CONFIG_SUPPORT_DDS_MIPI_SWITCH
+		PSB_WVDC32((panel_id == 0) ? 0x35501df : 0x4ff031f, DSPASIZE + reg_offset);
+		PSB_WVDC32(0xc80, DSPASTRIDE + reg_offset);
+#else
 		PSB_WVDC32(psContext->size, DSPASIZE + reg_offset);
 		PSB_WVDC32(psContext->stride, DSPASTRIDE + reg_offset);
+#endif
+/*	ASUS_BSP: Louis ---	*/
 	}
 
 	if ((psContext->update_mask & SPRITE_UPDATE_CONTROL)) {
@@ -1868,10 +1938,14 @@ static IMG_BOOL ProcessFlip2(IMG_HANDLE hCmdCookie,
 
 	if (contextlocked)
 		mdfld_dsi_dsr_forbid_locked(dsi_config);
-#if 0
+
+        /*widi play video always use fake vsync in hwc.
+         *video mode panel ,mipi on and have some flip cmd,
+         *but mipi vblank interrupt disable,flip cmd can not
+         * be completed will caused timeout.
+        */
 	if (dev_priv->exit_idle && (dsi_config->type == MDFLD_DSI_ENCODER_DPI))
 		dev_priv->exit_idle(dev, MDFLD_DSR_2D_3D, NULL, true);
-#endif
 
 	/* wait for previous frame finished, otherwise
 	 * if waiting at sending command, it will occupy CPU resource.

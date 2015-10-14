@@ -87,13 +87,3 @@ void *fsa9285_platform_data(void)
 
 	return &fsa_pdata;
 }
-
-#ifdef CONFIG_BYT_ULPMC_BATTERY
-static int __init fsa9285_i2c_init(void)
-{
-	fsa9285_i2c_device.platform_data = fsa9285_platform_data();
-
-	return i2c_register_board_info(3, &fsa9285_i2c_device, 1);
-}
-module_init(fsa9285_i2c_init);
-#endif

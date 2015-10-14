@@ -161,6 +161,37 @@ enum mrst_ssp_clk_mode {
 	SSP_CLK_MODE_3
 };
 
+#ifdef CONFIG_ACPI
+
+#define ACPI_FREQ_LEN 4
+
+struct intel_mid_i2s_ssp_config {
+	__u8   ssp_psp_T1;
+	__u8   ssp_psp_T2;
+	__u8   ssp_psp_T4;   /* DMYSTOP */
+	__u8   ssp_psp_T5;   /* SFRMDLY */
+	__u8   ssp_psp_T6;   /* SFRMWDTH */
+	bool   valid;
+};
+
+enum ssp_config_type {
+	SSPCONF_NONE = 0,
+	SSPCONF_PCM0,
+	SSPCONF_PCM1,
+	SSPCONF_I2S0
+};
+
+#define CONFIG_C08K "C08K"
+#define CONFIG_C16K "C16K"
+#define CONFIG_C48K "C48K"
+
+struct name_to_config_type {
+	char config_name[ACPI_FREQ_LEN+1];
+	enum ssp_config_type type;
+};
+
+#endif
+
 /*
  *	Structure used to configure the SSP Port
  *	Please note that only the PSP format and the DMA transfer are supported
@@ -213,7 +244,6 @@ struct intel_mid_i2s_settings {
 	enum mrst_ssp_loopback_mode_status        ssp_loopback_mode_status;
 	__u8                                      ssp_rx_fifo_threshold;
 	__u8                                      ssp_tx_fifo_threshold;
-
 
 	enum mrst_ssp_frame_sync_relative_timing_bit  ssp_frmsync_timing_bit;
 	enum mrst_ssp_frame_sync_polarity_bit     ssp_frmsync_pol_bit;

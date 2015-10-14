@@ -47,7 +47,7 @@ int snd_ctl_effect_create(struct snd_card *card, void *arg)
 		retval = -EFAULT;
 		goto out;
 	}
-	pr_debug("effect_offload: device %d, pos %d, mode%d\n",
+	pr_debug("effect_offload: device %u, pos %u, mode%u\n",
 			effect->device, effect->pos, effect->mode);
 
 	mutex_lock(&card->effect_lock);
@@ -57,6 +57,7 @@ out:
 	kfree(effect);
 	return retval;
 }
+EXPORT_SYMBOL_GPL(snd_ctl_effect_create);
 
 int snd_ctl_effect_destroy(struct snd_card *card, void *arg)
 {
@@ -77,13 +78,14 @@ out:
 	kfree(effect);
 	return retval;
 }
+EXPORT_SYMBOL_GPL(snd_ctl_effect_destroy);
 
 int snd_ctl_effect_set_params(struct snd_card *card, void *arg)
 {
 	int retval = 0;
 	struct snd_effect_params *params;
+	char *params_ptr;
 	char __user *argp = (char __user *)arg;
-	char __user *bufp;
 
 	params = kmalloc(sizeof(*params), GFP_KERNEL);
 	if (!params)
@@ -93,27 +95,30 @@ int snd_ctl_effect_set_params(struct snd_card *card, void *arg)
 		retval = -EFAULT;
 		goto out;
 	}
-	bufp = params->buffer;
-	params->buffer = kmalloc(params->size, GFP_KERNEL);
-	if (!params->buffer) {
+	params_ptr = kmalloc(params->size, GFP_KERNEL);
+	if (!params_ptr) {
 		retval = -ENOMEM;
 		goto out;
 	}
 
-	if (copy_from_user((void *)params->buffer, bufp, params->size)) {
+	if (copy_from_user((void *)params_ptr, (void __user *)params->buffer_ptr,
+				params->size)) {
 		retval = -EFAULT;
 		goto free_buf;
 	}
+
+	params->buffer_ptr = (unsigned long)params_ptr;
 
 	mutex_lock(&card->effect_lock);
 	retval = card->effect_ops->set_params(card, params);
 	mutex_unlock(&card->effect_lock);
 free_buf:
-	kfree(params->buffer);
+	kfree(params_ptr);
 out:
 	kfree(params);
 	return retval;
 }
+EXPORT_SYMBOL_GPL(snd_ctl_effect_set_params);
 
 int snd_ctl_effect_get_params(struct snd_card *card, void *arg)
 {
@@ -121,6 +126,7 @@ int snd_ctl_effect_get_params(struct snd_card *card, void *arg)
 	struct snd_effect_params inparams;
 	struct snd_effect_params *outparams;
 	unsigned int offset;
+	char *params_ptr;
 	char __user *argp = (char __user *)arg;
 
 	if (copy_from_user((void *)&inparams, argp, sizeof(inparams)))
@@ -131,17 +137,19 @@ int snd_ctl_effect_get_params(struct snd_card *card, void *arg)
 		return -ENOMEM;
 
 	memcpy(outparams, &inparams, sizeof(inparams));
-	outparams->buffer = kmalloc(inparams.size, GFP_KERNEL);
-	if (!outparams->buffer) {
+	params_ptr = kmalloc(inparams.size, GFP_KERNEL);
+	if (!params_ptr) {
 		retval = -ENOMEM;
 		goto free_out;
 	}
 
-	if (copy_from_user((void *)outparams->buffer, inparams.buffer,
+	if (copy_from_user((void *)params_ptr, (void *)inparams.buffer_ptr,
 							inparams.size)) {
 		retval = -EFAULT;
 		goto free_buf;
 	}
+
+	outparams->buffer_ptr = (unsigned long)params_ptr;
 
 	mutex_lock(&card->effect_lock);
 	retval = card->effect_ops->get_params(card, outparams);
@@ -163,16 +171,17 @@ int snd_ctl_effect_get_params(struct snd_card *card, void *arg)
 								sizeof(u32)))
 			retval = -EFAULT;
 
-		if (copy_to_user(inparams.buffer, outparams->buffer,
-							outparams->size))
+		if (copy_to_user((void *)inparams.buffer_ptr,
+				(void *) outparams->buffer_ptr, outparams->size))
 			retval = -EFAULT;
 	}
 free_buf:
-	kfree(outparams->buffer);
+	kfree(params_ptr);
 free_out:
 	kfree(outparams);
 	return retval;
 }
+EXPORT_SYMBOL_GPL(snd_ctl_effect_get_params);
 
 int snd_ctl_effect_query_num_effects(struct snd_card *card, void *arg)
 {
@@ -189,16 +198,18 @@ int snd_ctl_effect_query_num_effects(struct snd_card *card, void *arg)
 out:
 	return retval;
 }
+EXPORT_SYMBOL_GPL(snd_ctl_effect_query_num_effects);
 
 int snd_ctl_effect_query_effect_caps(struct snd_card *card, void *arg)
 {
 	int retval = 0;
 	struct snd_effect_caps *caps;
 	unsigned int offset, insize;
+	char *caps_ptr;
 	char __user *argp = (char __user *)arg;
 	char __user *bufp;
 
-	caps = kmalloc(sizeof(*caps), GFP_KERNEL);
+	caps = kzalloc(sizeof(*caps), GFP_KERNEL);
 	if (!caps)
 		return -ENOMEM;
 
@@ -206,13 +217,16 @@ int snd_ctl_effect_query_effect_caps(struct snd_card *card, void *arg)
 		retval = -EFAULT;
 		goto out;
 	}
-	bufp = caps->buffer;
+
+	bufp = (void __user *)caps->buffer_ptr;
 	insize = caps->size;
-	caps->buffer = kmalloc(caps->size, GFP_KERNEL);
-	if (!caps->buffer) {
+	caps_ptr = kmalloc(caps->size, GFP_KERNEL);
+	if (!caps_ptr) {
 		retval = -ENOMEM;
 		goto out;
 	}
+
+	caps->buffer_ptr = (unsigned long)caps_ptr;
 
 	mutex_lock(&card->effect_lock);
 	retval = card->effect_ops->query_effect_caps(card, caps);
@@ -233,15 +247,16 @@ int snd_ctl_effect_query_effect_caps(struct snd_card *card, void *arg)
 		goto free_buf;
 	}
 
-	if (copy_to_user(bufp, caps->buffer, caps->size))
+	if (copy_to_user(bufp, (void *)caps->buffer_ptr, caps->size))
 		retval = -EFAULT;
 
 free_buf:
-	kfree(caps->buffer);
+	kfree(caps_ptr);
 out:
 	kfree(caps);
 	return retval;
 }
+EXPORT_SYMBOL_GPL(snd_ctl_effect_query_effect_caps);
 
 /**
  * snd_effect_register - register compressed device

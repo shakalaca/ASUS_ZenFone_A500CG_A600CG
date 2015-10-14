@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -76,6 +76,10 @@
 #define VTSS_APIC_TSKPRI_HI 0x00f0
 
 #define VTSS_X2APIC_ENABLED 0x0c00ULL
+
+#ifndef preempt_enable_no_resched
+#define preempt_enable_no_resched() preempt_enable()
+#endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
 #ifdef CONFIG_RESOURCES_64BIT
@@ -181,6 +185,7 @@ static void vtss_apic_init_phase2(void *ctx)
 
     if (smp_processor_id() == cpu) {
         if (pcb_cpu.apic_linear_addr == NULL) {
+            TRACE("Map apic now!");
             pcb_cpu.apic_linear_addr =
                 ioremap_nocache((resource_size_t)((size_t)pcb_cpu.apic_physical_addr & 0x00000000fffff000ULL),
                                 (resource_size_t)0x1000);
@@ -251,14 +256,10 @@ static void vtss_apic_init_phase3(void* ctx)
     }
 }
 
-void vtss_apic_init(void)
+int vtss_apic_map(void)
 {
-    TRACE("IDT vector 0x%u is used for PMU interrupts.", CPU_PERF_VECTOR);
-    /* 1. collect APIC physical addresses or check for x2apic */
-    on_each_cpu(vtss_apic_init_phase1, NULL, SMP_CALL_FUNCTION_ARGS);
     if (!vtss_x2apic_mode) {
         int cpu;
-
         preempt_disable();
         cpu = smp_processor_id();
         /* 2.a map APIC physical address to logical address space */
@@ -267,29 +268,59 @@ void vtss_apic_init(void)
         smp_call_function(vtss_apic_init_phase2, (void*)(size_t)cpu, SMP_CALL_FUNCTION_ARGS);
         preempt_enable_no_resched();
         /* 3. enable local APIC for SP systems */
-        on_each_cpu(vtss_apic_init_phase3, NULL, SMP_CALL_FUNCTION_ARGS);
+//        on_each_cpu(vtss_apic_init_phase3, NULL, SMP_CALL_FUNCTION_ARGS);
     }
+    TRACE("APIC map");
+    return 0;
+}
+void vtss_apic_init(void)
+{
+    TRACE("IDT vector 0x%u is used for PMU interrupts.", CPU_PERF_VECTOR);
+    /* 1. collect APIC physical addresses or check for x2apic */
+    on_each_cpu(vtss_apic_init_phase1, NULL, SMP_CALL_FUNCTION_ARGS);
+
+    /* 2.a map APIC physical address to logical address space */
+    /* 2.b initialize PMI entry in LVT for MP systems */
+    /* 3. enable local APIC for SP systems */
+    vtss_apic_map();
     /* 4. disable PMI on each CPU */
     on_each_cpu(vtss_apic_pmi_disable_on_cpu, NULL, SMP_CALL_FUNCTION_ARGS);
     TRACE("APIC init");
 }
 
-/* unmap APIC logical address range */
-static void vtss_apic_fini_phase1(void *ctx)
+static void vtss_apic_unmap_cpu(void *ctx)
 {
     int cpu = (int)(size_t)ctx;
     char *apic = (char*)pcb_cpu.apic_linear_addr;
 
     if (smp_processor_id() == cpu && apic != NULL) {
+        TRACE("Unmap apic now!\n");
         iounmap(apic);
     }
     pcb_cpu.apic_linear_addr = NULL;
 }
 
+
+/* unmap APIC logical address range */
+static void vtss_apic_fini_phase1(void *ctx)
+{
+    vtss_apic_unmap_cpu(ctx);
+}
+
+void vtss_apic_unmap(void)
+{
+    if (!vtss_x2apic_mode) {
+        preempt_disable();
+        on_each_cpu(vtss_apic_unmap_cpu, (void*)(size_t)smp_processor_id(), SMP_CALL_FUNCTION_ARGS);
+        preempt_enable();
+        TRACE("APIC unmap");
+    }
+}
 void vtss_apic_fini(void)
 {
     on_each_cpu(vtss_apic_pmi_disable_on_cpu, NULL, SMP_CALL_FUNCTION_ARGS);
     if (!vtss_x2apic_mode) {
+        TRACE("!vtss_x2apic_mode");
         /* unmap APIC logical address range */
         preempt_disable();
         on_each_cpu(vtss_apic_fini_phase1, (void*)(size_t)smp_processor_id(), SMP_CALL_FUNCTION_ARGS);

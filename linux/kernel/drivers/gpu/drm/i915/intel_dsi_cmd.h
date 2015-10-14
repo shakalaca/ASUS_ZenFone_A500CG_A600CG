@@ -47,6 +47,8 @@ int dsi_vc_dcs_read(struct intel_dsi *intel_dsi, int channel, u8 dcs_cmd,
 int dsi_vc_generic_read(struct intel_dsi *intel_dsi, int channel,
 			u8 *reqdata, int reqlen, u8 *buf, int buflen);
 
+void wait_for_dsi_fifo_empty(struct intel_dsi *intel_dsi);
+
 int dpi_send_cmd(struct intel_dsi *intel_dsi, u32 cmd);
 
 /* XXX: questionable write helpers */

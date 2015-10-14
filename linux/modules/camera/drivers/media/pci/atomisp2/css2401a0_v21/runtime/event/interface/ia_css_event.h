@@ -22,18 +22,7 @@
 #ifndef _IA_CSS_EVENT_H
 #define _IA_CSS_EVENT_H
 
-#ifndef __KERNEL__
-/* bool */
-#include <stdbool.h>
-/* NULL */
-#include <stddef.h>
-#endif
-
-#include "system_types.h"
-
-#include "ia_css_binary.h"
-#include "sh_css_internal.h"
-#include "ia_css_types.h"
+#include <type_support.h>
 #include "sw_event_global.h"    /*event macros.TODO : Change File Name..???*/
 
 bool ia_css_event_encode(

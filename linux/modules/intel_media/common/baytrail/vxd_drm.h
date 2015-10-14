@@ -142,8 +142,8 @@ struct psb_validate_rep {
 #define PSB_USE_PRESUMED     (1 << 0)
 
 struct psb_validate_arg {
-	int handled;
-	int ret;
+	uint64_t handled;
+	uint64_t ret;
 	union {
 		struct psb_validate_req req;
 		struct psb_validate_rep rep;
@@ -203,7 +203,7 @@ enum lnc_getparam_key {
 };
 
 struct drm_lnc_video_getparam_arg {
-	enum lnc_getparam_key key;
+	uint64_t key;
 	uint64_t arg;		/* argument pointer */
 	uint64_t value;		/* feed back pointer */
 };
@@ -272,8 +272,8 @@ enum drm_cmd_status {
 };
 
 struct drm_psb_getpageaddrs_arg {
-	uint32_t handle;
-	unsigned long *page_addrs;
-	unsigned long gtt_offset;
+	uint64_t handle;
+	uint64_t page_addrs;
+	uint64_t gtt_offset;
 };
 #endif				/* _IVXD_DRM_H_ */

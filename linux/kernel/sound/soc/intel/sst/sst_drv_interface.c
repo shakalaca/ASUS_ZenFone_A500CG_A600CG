@@ -78,7 +78,6 @@ void sst_restore_fw_context(void)
 		return;
 	}
 
-	sst_drv_ctx->sst_state = SST_FW_CTXT_RESTORE;
 	sst_fill_header(&msg->header, IPC_IA_SET_FW_CTXT, 1, 0);
 
 	msg->header.part.data = sizeof(fw_context) + sizeof(u32);
@@ -107,7 +106,7 @@ int sst_download_fw(void)
 	retval = sst_load_fw();
 	if (retval)
 		return retval;
-	pr_info("fw loaded successful!!!\n");
+	pr_debug("fw loaded successful!!!\n");
 
 	if (sst_drv_ctx->ops->restore_dsp_context)
 		sst_drv_ctx->ops->restore_dsp_context();
@@ -144,7 +143,7 @@ static int sst_send_algo_param(struct snd_ppp_params *algo_params)
 			 - sizeof(algo_params->params) + algo_params->size;
 	u32 offset = 0;
 
-	if (ipc_msg_size > SST_MAILBOX_SIZE)
+	if (ipc_msg_size > sst_drv_ctx->mailbox_size)
 		return -ENOMEM;
 	if (sst_create_ipc_msg(&msg, true))
 		return -ENOMEM;
@@ -177,7 +176,7 @@ static int sst_send_lpe_mixer_algo_params(void)
 		return retval;
 	}
 
-	mutex_lock(&sst_drv_ctx->mixer_ctrl_lock);
+	mutex_lock(&sst_drv_ctx->sst_lock);
 	input_mixer = (sst_drv_ctx->device_input_mixer)
 				& SST_INPUT_STREAM_MIXED;
 	pr_debug("Input Mixer settings %d", input_mixer);
@@ -185,13 +184,13 @@ static int sst_send_lpe_mixer_algo_params(void)
 	algo_param.algo_id = SST_ALGO_MIXER;
 	algo_param.str_id = stream_device_id;
 	algo_param.enable = 1;
-	algo_param.reserved = 0;
-	algo_param.size = sizeof(algo_param);
+	algo_param.operation = SST_SET_ALGO;
+	algo_param.size = sizeof(mixer_param);
 	mixer_param.type = SST_ALGO_PARAM_MIXER_STREAM_CFG;
 	mixer_param.input_stream_bitmap = input_mixer;
 	mixer_param.size = sizeof(input_mixer);
 	algo_param.params = &mixer_param;
-	mutex_unlock(&sst_drv_ctx->mixer_ctrl_lock);
+	mutex_unlock(&sst_drv_ctx->sst_lock);
 	pr_debug("setting pp param\n");
 	pr_debug("Algo ID %d Str id %d Enable %d Size %d\n",
 			algo_param.algo_id, algo_param.str_id,
@@ -382,15 +381,27 @@ int intel_sst_check_device(void)
 
 	pm_runtime_get_sync(sst_drv_ctx->dev);
 	atomic_inc(&sst_drv_ctx->pm_usage_count);
+
+	pr_debug("%s: count is %d now\n", __func__,
+				atomic_read(&sst_drv_ctx->pm_usage_count));
+
 	mutex_lock(&sst_drv_ctx->sst_lock);
-	if (sst_drv_ctx->sst_state == SST_UN_INIT) {
-		sst_drv_ctx->sst_state = SST_START_INIT;
+
+	if (sst_drv_ctx->sst_state == SST_RECOVERY) {
+		pr_debug("LPE is in recovery state\n");
+		mutex_unlock(&sst_drv_ctx->sst_lock);
+		sst_pm_runtime_put(sst_drv_ctx);
+		return -EAGAIN;
+	}
+
+	if (sst_drv_ctx->sst_state == SST_RESET) {
+
 		/* FW is not downloaded */
 		pr_debug("DSP Downloading FW now...\n");
 		retval = sst_download_fw();
 		if (retval) {
 			pr_err("FW download fail %x\n", retval);
-			sst_drv_ctx->sst_state = SST_UN_INIT;
+			sst_drv_ctx->sst_state = SST_RESET;
 			mutex_unlock(&sst_drv_ctx->sst_lock);
 			sst_pm_runtime_put(sst_drv_ctx);
 			return retval;
@@ -456,10 +467,13 @@ static int sst_open_pcm_stream(struct snd_sst_params *str_param)
 	if (retval)
 		return retval;
 	retval = sst_get_stream(str_param);
-	if (retval > 0)
+	if (retval > 0) {
 		sst_drv_ctx->stream_cnt++;
-	else
+	} else {
+		pr_err("sst_get_stream returned err %d\n", retval);
 		sst_pm_runtime_put(sst_drv_ctx);
+	}
+
 	return retval;
 }
 
@@ -496,19 +510,38 @@ static int sst_cdev_close(unsigned int str_id)
 	int retval;
 	struct stream_info *stream;
 
-	pr_debug("%s: doing rtpm_put\n", __func__);
+	pr_debug("%s: Entry\n", __func__);
 	stream = get_stream_info(str_id);
-	if (!stream)
+	if (!stream) {
+		pr_err("stream info is NULL for str %d!!!\n", str_id);
 		return -EINVAL;
+	}
+
+	if (stream->status == STREAM_RESET) {
+		/* silently fail here as we have cleaned the stream */
+		pr_debug("stream in reset state...\n");
+		stream->status = STREAM_UN_INIT;
+
+		retval = 0;
+		goto put;
+	}
+
 	retval = sst_free_stream(str_id);
+put:
 	stream->compr_cb_param = NULL;
 	stream->compr_cb = NULL;
 
-	/* If stream free returns error, put already done in open so skip */
-	/* Do put only in valid free stream case */
-	if (!retval)
+	/* The free_stream will return a error if there is no stream to free,
+	(i.e. the alloc failure case). And in this case the open does a put in
+	the error scenario, so skip in this case.
+		In the close we need to handle put in the success scenario and
+	the timeout error(EBUSY) scenario. */
+	if (!retval || (retval == -EBUSY))
 		sst_pm_runtime_put(sst_drv_ctx);
+	else
+		pr_err("%s: free stream returned err %d\n", __func__, retval);
 
+	pr_debug("%s: End\n", __func__);
 	return retval;
 
 }
@@ -593,6 +626,10 @@ static int sst_cdev_set_metadata(unsigned int str_id,
 static int sst_cdev_control(unsigned int cmd, unsigned int str_id)
 {
 	pr_debug("recieved cmd %d on stream %d\n", cmd, str_id);
+
+	if (sst_drv_ctx->sst_state != SST_FW_RUNNING)
+		return 0;
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		return sst_pause_stream(str_id);
@@ -663,23 +700,9 @@ static int sst_cdev_codec_caps(struct snd_compr_codec_caps *codec)
 {
 
 	if (codec->codec == SND_AUDIOCODEC_MP3) {
-		codec->num_descriptors = 2;
-		codec->descriptor[0].max_ch = 2;
-		codec->descriptor[0].sample_rates = SNDRV_PCM_RATE_8000_48000;
-		codec->descriptor[0].bit_rate[0] = 320; /* 320kbps */
-		codec->descriptor[0].bit_rate[1] = 192;
-		codec->descriptor[0].num_bitrates = 2;
-		codec->descriptor[0].profiles = 0;
 		codec->descriptor[0].modes = SND_AUDIOCHANMODE_MP3_STEREO;
 		codec->descriptor[0].formats = 0;
 	} else if (codec->codec == SND_AUDIOCODEC_AAC) {
-		codec->num_descriptors = 2;
-		codec->descriptor[1].max_ch = 2;
-		codec->descriptor[1].sample_rates = SNDRV_PCM_RATE_8000_48000;
-		codec->descriptor[1].bit_rate[0] = 320; /* 320kbps */
-		codec->descriptor[1].bit_rate[1] = 192;
-		codec->descriptor[1].num_bitrates = 2;
-		codec->descriptor[1].profiles = 0;
 		codec->descriptor[1].modes = 0;
 		codec->descriptor[1].formats =
 			(SND_AUDIOSTREAMFORMAT_MP4ADTS |
@@ -687,6 +710,19 @@ static int sst_cdev_codec_caps(struct snd_compr_codec_caps *codec)
 	} else {
 		return -EINVAL;
 	}
+
+	codec->num_descriptors = 2;
+	codec->descriptor[1].max_ch = 2;
+	codec->descriptor[0].sample_rates[0] = 48000;
+	codec->descriptor[0].sample_rates[1] = 44100;
+	codec->descriptor[0].sample_rates[2] = 32000;
+	codec->descriptor[0].sample_rates[3] = 16000;
+	codec->descriptor[0].sample_rates[4] = 8000;
+	codec->descriptor[0].num_sample_rates = 5;
+	codec->descriptor[1].bit_rate[0] = 320; /* 320kbps */
+	codec->descriptor[1].bit_rate[1] = 192;
+	codec->descriptor[1].num_bitrates = 2;
+	codec->descriptor[1].profiles = 0;
 
 	return 0;
 }
@@ -714,21 +750,39 @@ static int sst_close_pcm_stream(unsigned int str_id)
 	struct stream_info *stream;
 	int retval = 0;
 
-	pr_debug("%s: doing rtpm_put\n", __func__);
+	pr_debug("%s: Entry\n", __func__);
 	stream = get_stream_info(str_id);
-	if (!stream)
+	if (!stream) {
+		pr_err("stream info is NULL for str %d!!!\n", str_id);
 		return -EINVAL;
+	}
+
+	if (stream->status == STREAM_RESET) {
+		/* silently fail here as we have cleaned the stream */
+		pr_debug("stream in reset state...\n");
+
+		retval = 0;
+		goto put;
+	}
+
 	retval = free_stream_context(str_id);
+put:
 	stream->pcm_substream = NULL;
 	stream->status = STREAM_UN_INIT;
 	stream->period_elapsed = NULL;
 	sst_drv_ctx->stream_cnt--;
 
-	/* If stream free returns error, put already done in open so skip */
-	/* Do put only in valid free stream case */
-	if (!retval)
+	/* The free_stream will return a error if there is no stream to free,
+	(i.e. the alloc failure case). And in this case the open does a put in
+	the error scenario, so skip in this case.
+		In the close we need to handle put in the success scenario and
+	the timeout error(EBUSY) scenario. */
+	if (!retval || (retval == -EBUSY))
 		sst_pm_runtime_put(sst_drv_ctx);
+	else
+		pr_err("%s: free stream returned err %d\n", __func__, retval);
 
+	pr_debug("%s: Exit\n", __func__);
 	return 0;
 }
 
@@ -812,7 +866,7 @@ static int sst_device_control(int cmd, void *arg)
 {
 	int retval = 0, str_id = 0;
 
-	if (sst_drv_ctx->sst_state == SST_UN_INIT)
+	if (sst_drv_ctx->sst_state != SST_FW_RUNNING)
 		return 0;
 
 	switch (cmd) {
@@ -937,13 +991,12 @@ static int sst_set_generic_params(enum sst_controls cmd, void *arg)
 	int ret_val = 0;
 	pr_debug("Enter:%s, cmd:%d\n", __func__, cmd);
 
-	if (NULL == arg)
-		return -EINVAL;
-
 	switch (cmd) {
 	case SST_SET_RUNTIME_PARAMS: {
 		struct snd_sst_runtime_params *src;
 		struct snd_sst_runtime_params *dst;
+		if (NULL == arg)
+			return -EINVAL;
 
 		src = (struct snd_sst_runtime_params *)arg;
 		dst = &(sst_drv_ctx->runtime_param.param);
@@ -951,15 +1004,20 @@ static int sst_set_generic_params(enum sst_controls cmd, void *arg)
 		break;
 		}
 	case SST_SET_ALGO_PARAMS: {
-		unsigned int device_input_mixer = *((unsigned int *)arg);
+		unsigned int device_input_mixer;
+		if (NULL == arg)
+			return -EINVAL;
+		device_input_mixer = *((unsigned int *)arg);
 		pr_debug("LPE mixer algo param set %x\n", device_input_mixer);
-		mutex_lock(&sst_drv_ctx->mixer_ctrl_lock);
+		mutex_lock(&sst_drv_ctx->sst_lock);
 		sst_drv_ctx->device_input_mixer = device_input_mixer;
-		mutex_unlock(&sst_drv_ctx->mixer_ctrl_lock);
+		mutex_unlock(&sst_drv_ctx->sst_lock);
 		ret_val = sst_send_lpe_mixer_algo_params();
 		break;
 	}
 	case SST_SET_BYTE_STREAM: {
+		if (NULL == arg)
+			return -EINVAL;
 		ret_val = intel_sst_check_device();
 		if (ret_val)
 			return ret_val;
@@ -970,6 +1028,8 @@ static int sst_set_generic_params(enum sst_controls cmd, void *arg)
 	}
 	case SST_GET_PROBE_BYTE_STREAM: {
 		struct snd_sst_probe_bytes *prb_bytes = (struct snd_sst_probe_bytes *)arg;
+		if (NULL == arg)
+			return -EINVAL;
 
 		if (sst_drv_ctx->probe_bytes) {
 			prb_bytes->len = sst_drv_ctx->probe_bytes->len;
@@ -979,6 +1039,8 @@ static int sst_set_generic_params(enum sst_controls cmd, void *arg)
 	}
 	case SST_SET_PROBE_BYTE_STREAM: {
 		struct snd_sst_probe_bytes *prb_bytes = (struct snd_sst_probe_bytes *)arg;
+		if (NULL == arg)
+			return -EINVAL;
 
 		if (sst_drv_ctx->probe_bytes) {
 			sst_drv_ctx->probe_bytes->len = prb_bytes->len;
@@ -1000,7 +1062,18 @@ static int sst_set_generic_params(enum sst_controls cmd, void *arg)
 		ret_val = sst_send_vtsv_data_to_fw(sst_drv_ctx);
 		if (ret_val)
 			pr_err("vtsv data send failed\n");
-		pm_runtime_put(sst_drv_ctx->dev);
+		sst_pm_runtime_put(sst_drv_ctx);
+		break;
+	}
+	case SST_SET_VTSV_LIBS: {
+		struct snd_sst_vtsv_path *vtsv_path = (struct snd_sst_vtsv_path *)arg;
+		memcpy(sst_drv_ctx->vtsv_path.bytes, vtsv_path->bytes, vtsv_path->len);
+		ret_val = sst_cache_vtsv_libs(sst_drv_ctx);
+		break;
+	}
+	case SST_SET_MONITOR_LPE: {
+		if (sst_drv_ctx->pdata->start_recovery_timer)
+			ret_val = sst_set_timer(&sst_drv_ctx->monitor_lpe, *(bool *)arg);
 		break;
 	}
 	default:
@@ -1035,7 +1108,18 @@ static struct sst_device sst_dsp_device = {
 	.dev = NULL,
 	.ops = &pcm_ops,
 	.compr_ops = &compr_ops,
+	.cb_ops	   = NULL,
 };
+
+int sst_platform_cb(struct sst_platform_cb_params *cb_params)
+{
+	if (sst_dsp_device.cb_ops && sst_dsp_device.cb_ops->async_cb) {
+		return sst_dsp_device.cb_ops->async_cb(cb_params);
+	} else {
+		pr_info("Async ops not defined\n");
+		return 0;
+	}
+}
 
 /*
  * register_sst - function to register DSP

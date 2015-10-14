@@ -189,8 +189,9 @@ void i915_gem_cleanup_stolen(struct drm_device *dev)
 		return;
 
 	if (dev_priv->vlv_pctx) {
-
+		mutex_lock(&dev->struct_mutex);
 		drm_gem_object_unreference(&dev_priv->vlv_pctx->base);
+		mutex_unlock(&dev->struct_mutex);
 		dev_priv->vlv_pctx = NULL;
 	}
 
@@ -502,13 +503,20 @@ i915_gem_object_move_to_stolen(struct drm_i915_gem_object *obj)
 		}
 	}
 
+	ret = i915_mutex_lock_interruptible(dev);
+	if (ret) {
+		DRM_ERROR("Mutex lock failed\n");
+		return;
+	}
+
 	stolen = drm_mm_search_free(&dev_priv->mm.stolen, size, 4096, 0);
 	if (stolen)
 		stolen = drm_mm_get_block(stolen, size, 4096);
 
 	if (stolen == NULL) {
-		DRM_DEBUG_DRIVER("ran out of stolen space\n");
-		return;
+		DRM_DEBUG_DRIVER("ran out of stolen space on obj=%p,size=%x\n",
+				 obj, size);
+		goto out;
 	}
 	/* Set up the object to use the stolen memory,
 	 * backing store no longer managed by shmem layer */
@@ -518,8 +526,10 @@ i915_gem_object_move_to_stolen(struct drm_i915_gem_object *obj)
 
 	obj->pages = i915_pages_create_for_stolen(dev,
 						stolen->start, stolen->size);
-	if (obj->pages == NULL)
-		goto cleanup;
+	if (obj->pages == NULL) {
+		drm_mm_put_block(stolen);
+		goto out;
+	}
 	i915_gem_object_pin_pages(obj);
 	list_add_tail(&obj->global_list, &dev_priv->mm.unbound_list);
 	obj->has_dma_mapping = true;
@@ -535,10 +545,8 @@ i915_gem_object_move_to_stolen(struct drm_i915_gem_object *obj)
 	if (ret)
 		i915_memset_stolen_obj_sw(obj);
 
-	return;
-
-cleanup:
-	drm_mm_put_block(stolen);
+out:
+	mutex_unlock(&dev->struct_mutex);
 	return;
 }
 

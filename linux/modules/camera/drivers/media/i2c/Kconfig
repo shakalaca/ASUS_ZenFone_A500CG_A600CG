@@ -6,11 +6,24 @@ source "drivers/external_drivers/camera/drivers/media/i2c/mt9e013/Kconfig"
 source "drivers/external_drivers/camera/drivers/media/i2c/ov5693/Kconfig"
 source "drivers/external_drivers/camera/drivers/media/i2c/imx/Kconfig"
 source "drivers/external_drivers/camera/drivers/media/i2c/imx135VB/Kconfig"
+
 source "drivers/external_drivers/camera/drivers/media/i2c/imx219/Kconfig"
 source "drivers/external_drivers/camera/drivers/media/i2c/imx111/Kconfig"
-source "drivers/external_drivers/camera/drivers/media/i2c/t4k37/Kconfig"
 source "drivers/external_drivers/camera/drivers/media/i2c/t4k35/Kconfig"
 source "drivers/external_drivers/camera/drivers/media/i2c/t4k35_180/Kconfig"
+source "drivers/external_drivers/camera/drivers/media/i2c/t4k37/Kconfig"
+
+
+
+config VIDEO_MN34130
+       tristate "Panasonic MN34130 sensor support"
+       depends on I2C && VIDEO_V4L2 && VIDEO_ATOMISP
+       ---help---
+         This is a Video4Linux2 sensor-level driver for the Panasonic
+         mn34130 13MP RAW sensor.
+
+         It currently only works with the atomisp driver.
+	 
 
 config VIDEO_OV9724
        tristate "OVT ov9724 sensor support"
@@ -34,6 +47,34 @@ config VIDEO_OV2722
 
          It currently only works with the atomisp driver.
 
+config VIDEO_M10MO
+	tristate "Fujitsu M10MO driver"
+	depends on I2C && VIDEO_V4L2
+	---help---
+	  This is a Video4Linux2 isp driver for the Fujitsu.
+
+	  It currently depends on internal V4L2 extensions defined in
+	  atomisp driver.
+
+config VIDEO_M10MO_FAKE_SFI_TABLE
+	bool "Add fake SFI entry for Fujitsu M10MO on VV board + AOB"
+	depends on VIDEO_M10MO
+	---help---
+	  Enable this when working with VV board with Fujitsu AOB.
+
+	  Not needed if device IFWI already has M10MO in the SFI table.
+
+config VIDEO_GC2235
+       tristate "Galaxy gc2235 sensor support"
+       depends on I2C && VIDEO_V4L2
+       ---help---
+         This is a Video4Linux2 sensor-level driver for the OVT
+         GC2235 raw camera.
+
+         GC2235 is a 2M raw sensor.
+
+         It currently only works with the atomisp driver.
+
 config VIDEO_OV8830
        tristate "Omnivision ov8830 sensor support"
        depends on I2C && VIDEO_V4L2 && VIDEO_ATOMISP
@@ -43,14 +84,22 @@ config VIDEO_OV8830
 
          It currently only works with the atomisp driver.
 
-config VIDEO_MN34130
-       tristate "Panasonic MN34130 sensor support"
+config VIDEO_OV8858
+       tristate "Omnivision ov8858 sensor support"
        depends on I2C && VIDEO_V4L2 && VIDEO_ATOMISP
        ---help---
-         This is a Video4Linux2 sensor-level driver for the Panasonic
-         mn34130 13MP RAW sensor.
+         This is a Video4Linux2 sensor-level driver for the Omnivision
+         ov8858 8MP RAW sensor.
 
          It currently only works with the atomisp driver.
+
+config VIDEO_CSI_XACTOR
+        tristate "csi xactor"
+        depends on I2C && VIDEO_V4L2 && VIDEO_ATOMISP
+        ---help---
+          Use this if you need to send data through external csi data generator
+
+          To compile this driver as a module, choose M here.
 
 config VIDEO_MSRLIST_HELPER
        tristate "Helper library to load, parse and apply large register lists."
@@ -68,6 +117,15 @@ config VIDEO_S5K8AAY
        ---help---
          This is a Video4Linux2 sensor-level driver for the Samsung
          S5K8AAY (EVT1) 1/8" 1.2MP SoC sensor.
+
+         It currently only works with the atomisp driver.
+
+config VIDEO_S5K6B2YX
+       tristate "Samsung S5K6B2YX (VS) sensor support"
+       depends on I2C && VIDEO_V4L2 && VIDEO_ATOMISP && VIDEO_MSRLIST_HELPER
+       ---help---
+         This is a Video4Linux2 sensor-level driver for the Samsung
+         S5K6B2YX (VS) 1/6" 2MP RAW sensor.
 
          It currently only works with the atomisp driver.
 
@@ -89,48 +147,6 @@ config VIDEO_MT9M114
          mt9m114 1.3 Mpixel camera.
 
          mt9m114 is video camrea sensor.
-config VIDEO_GC0339
-       tristate "Gcoreinc gc0339 sensor support"
-       depends on I2C && VIDEO_V4L2
-       ---help---
-         This is a Video4Linux2 sensor-level driver for the Gcoreinc
-         gc0339 0.3 Mpixel camera.
-
-         gc0339 is video camera sensor.
-
-         It currently only works with the atomisp driver.
-
-config VIDEO_GC0310
-       tristate "Gcoreinc gc0310 sensor support"
-       depends on I2C && VIDEO_V4L2
-       ---help---
-         This is a Video4Linux2 sensor-level driver for the Gcoreinc
-         gc0310 0.3 Mpixel camera.
-
-         gc0310 is video camera sensor.
-
-         It currently only works with the atomisp driver.
-
-config VIDEO_HM2056
-       tristate "Himax hm2056 sensor support"
-       depends on I2C && VIDEO_V4L2
-       ---help---
-         This is a Video4Linux2 sensor-level driver for the Himax
-         hm2056 2M camera.
-
-         hm2056 is video camrea sensor.
-
-config VIDEO_GC2155
-       tristate "Gcoreinc gc2155 sensor support"
-       depends on I2C && VIDEO_V4L2
-       ---help---
-         This is a Video4Linux2 sensor-level driver for the Gcoreinc
-         gc2155 2 Mpixel camera.
-
-         gc2155 is video camera sensor.
-
-         It currently only works with the atomisp driver.
-
 config VIDEO_MT9V113
        tristate "Aptina mt9v113 sensor support"
        depends on I2C && VIDEO_V4L2
@@ -153,6 +169,28 @@ config VIDEO_OV5640
 
          It currently only works with the atomisp driver.
 
+config VIDEO_AR0543_RAW
+        tristate "Aptina ar5693_raw with raw sensor support"
+        depends on I2C && VIDEO_V4L2
+        ---help---
+           This is a Video4Linux2 sensor-level driver for the Aptina
+           ar0543 5 Mpixel camera.
+
+           ar0543 is video camrea sensor.
+
+           It currently only works with the atomisp driver.
+
+config VIDEO_HM2056_RAW
+        tristate "Himax hm2056_raw with raw sensor support"
+        depends on I2C && VIDEO_V4L2
+        ---help---
+           This is a Video4Linux2 sensor-level driver for the Himax
+           hm2056_raw 2 Mpixel camera.
+
+           hm2056_raw is video camrea sensor.
+
+           It currently only works with the atomisp driver.
+
 config VIDEO_AP1302
        tristate "AP1302 external ISP support"
        depends on I2C && VIDEO_V4L2
@@ -164,6 +202,44 @@ config VIDEO_AP1302
 
          It currently only works with the atomisp driver.
 
+config VIDEO_PIXTER
+       tristate "Pixter 2+ MIPI CSI simulator"
+       depends on I2C && VIDEO_V4L2
+       ---help---
+         This is a Video4Linux2 sensor-level driver for Pixter2+.
+         Pixter 2+ is a MIPI CSI simulator.
+
+config VIDEO_OV680
+       tristate "OV680 external ISP support"
+       depends on I2C && VIDEO_V4L2
+       ---help---
+         This is a Video4Linux2 sensor-level driver for the external
+         ISP OV680.
+
+         OV680 is an external ISP.
+
+         It currently only works with the atomisp driver.
+	 
+config VIDEO_HM2056		
+	   tristate "Himax hm2056 sensor support"
+	   depends on I2C && VIDEO_V4L2
+	   ---help---
+		 This is a Video4Linux2 sensor-level driver for the Himax
+		 hm2056 2M camera.
+
+		 hm2056 is video camrea sensor.
+
+config VIDEO_GC2155
+       tristate "Gcoreinc gc2155 sensor support"
+       depends on I2C && VIDEO_V4L2
+       ---help---
+         This is a Video4Linux2 sensor-level driver for the Gcoreinc
+         gc2155 2 Mpixel camera.
+
+         gc2155 is video camera sensor.
+
+         It currently only works with the atomisp driver.
+	 
 #
 # Kconfig for flash drivers
 #
@@ -178,6 +254,17 @@ config VIDEO_LM3554
          To compile this driver as a module, choose M here: the
          module will be called lm3554
 
+config VIDEO_LM3642
+       tristate "LM3642 flash light driver"
+       depends on VIDEO_V4L2 && I2C
+       ---help---
+         This is a Video4Linux2 sub-dev driver for the LM3642
+         flash light driver.
+
+         To compile this driver as a module, choose M here: the
+         module will be called lm3642
+
+
 config VIDEO_LM3559
        tristate "LM3559 flash light driver"
        depends on VIDEO_V4L2 && I2C
@@ -187,7 +274,6 @@ config VIDEO_LM3559
 
          To compile this driver as a module, choose M here: the
          module will be called lm3559
-
 
 config VIDEO_RT8515
         tristate "RT8515 flash light driver"

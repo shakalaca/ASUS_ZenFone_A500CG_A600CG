@@ -874,9 +874,8 @@ void disassociate_ctty(int on_exit)
 	spin_lock_irq(&current->sighand->siglock);
 	put_pid(current->signal->tty_old_pgrp);
 	current->signal->tty_old_pgrp = NULL;
-	spin_unlock_irq(&current->sighand->siglock);
 
-	tty = get_current_tty();
+	tty = tty_kref_get(current->signal->tty);
 	if (tty) {
 		unsigned long flags;
 		spin_lock_irqsave(&tty->ctrl_lock, flags);
@@ -893,6 +892,7 @@ void disassociate_ctty(int on_exit)
 #endif
 	}
 
+	spin_unlock_irq(&current->sighand->siglock);
 	/* Now clear signal->tty under the lock */
 	read_lock(&tasklist_lock);
 	session_clear_tty(task_session(current));
@@ -1560,8 +1560,8 @@ static void release_one_tty(struct work_struct *work)
 		tty->ops->cleanup(tty);
 
 	tty->magic = 0;
-	tty_driver_kref_put(driver);
 	module_put(driver->owner);
+	tty_driver_kref_put(driver);
 
 	spin_lock(&tty_files_lock);
 	list_del_init(&tty->tty_files);

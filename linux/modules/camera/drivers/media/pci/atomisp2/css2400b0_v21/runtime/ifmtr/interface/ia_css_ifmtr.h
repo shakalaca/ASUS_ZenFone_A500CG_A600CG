@@ -22,8 +22,9 @@
 #ifndef __IA_CSS_IFMTR_H__
 #define __IA_CSS_IFMTR_H__
 
-#include "ia_css.h"
-#include "ia_css_binary.h"
+#include <type_support.h>
+#include <ia_css_stream_public.h>
+#include <ia_css_binary.h>
 
 extern bool ifmtr_set_if_blocking_mode_reset;
 

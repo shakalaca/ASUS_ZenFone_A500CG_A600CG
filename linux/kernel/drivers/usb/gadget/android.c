@@ -33,6 +33,7 @@
 #include "f_fs.c"
 #include "f_audio_source.c"
 #include "f_mass_storage.c"
+#include "f_pclink.c"
 #include "f_mtp.c"
 #include "f_accessory.c"
 #define USB_ETH_RNDIS y
@@ -380,6 +381,43 @@ static void *functionfs_acquire_dev_callback(const char *dev_name)
 static void functionfs_release_dev_callback(struct ffs_data *ffs_data)
 {
 }
+
+/*-------------------------------------------------------------------------*/
+/* Supported functions initialization. Jeffrey: ASUS PCLink AP new adb, f_pclink.c */
+
+struct conn_gadget_data {
+	bool opened;
+	bool enabled;
+};
+
+static int pclink_function_init(struct android_usb_function *f,
+		struct usb_composite_dev *cdev)
+{
+	f->config = kzalloc(sizeof(struct conn_gadget_data), GFP_KERNEL);
+	if (!f->config)
+		return -ENOMEM;
+
+	return conn_gadget_setup();
+}
+
+static void pclink_function_cleanup(struct android_usb_function *f)
+{
+	conn_gadget_cleanup();
+	kfree(f->config);
+}
+
+static int pclink_function_bind_config(struct android_usb_function *f,
+		struct usb_configuration *c)
+{
+	return conn_gadget_bind_config(c);
+}
+
+static struct android_usb_function pclink_function = {
+	.name = "pclink",
+	.init = pclink_function_init,
+	.cleanup = pclink_function_cleanup,
+	.bind_config = pclink_function_bind_config,
+};
 
 #define MAX_ACM_INSTANCES 4
 struct acm_function_config {
@@ -1250,6 +1288,7 @@ static struct android_usb_function dvctrace_function = {
 
 static struct android_usb_function *supported_functions[] = {
 	&ffs_function,
+	&pclink_function,
 	&acm_function,
 	&mtp_function,
 	&ptp_function,

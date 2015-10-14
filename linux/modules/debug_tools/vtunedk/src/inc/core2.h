@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -33,11 +33,20 @@
 
 extern DISPATCH_NODE  core2_dispatch;
 extern DISPATCH_NODE  corei7_dispatch;
+extern DISPATCH_NODE  corei7_dispatch_nehalem;
 extern DISPATCH_NODE  corei7_dispatch_htoff_mode;
 extern DISPATCH_NODE  corei7_dispatch_2;
 extern DISPATCH_NODE  corei7_dispatch_htoff_mode_2;
 
 #define CORE2UNC_BLBYPASS_BITMASK      0x00000001
 #define CORE2UNC_DISABLE_BL_BYPASS_MSR 0x39C
+
+#if defined(DRV_IA32)
+#define LBR_DATA_BITS                  32
+#else
+#define LBR_DATA_BITS                  48
+#endif
+
+#define LBR_BITMASK                    ((1ULL << LBR_DATA_BITS) -1)
 
 #endif 

@@ -26,6 +26,17 @@
 #define IPCMSG_SCULOG_CTRL	0xE1 /* SCU logging control message */
 #define IPCMSG_STORE_NV_DATA	0xCD /* Store the Non Volatile data to RAM */
 
+#define IPCMSG_SCULOG_TRACE	0x90 /* SCU trace logging message */
+
+#define IPC_CMD_SCU_LOG_DISABLE 0x00
+#define IPC_CMD_SCU_LOG_ENABLE	0x01
+#define IPC_CMD_SCU_LOG_DUMP	0x02
+#define IPC_CMD_SCU_LOG_DIS_RB	0x03
+#define IPC_CMD_SCU_LOG_EN_RB	0x04
+#define IPC_CMD_SCU_LOG_ADDR	0x05
+#define IPC_CMD_SCU_LOG_IATRACE	0x06
+#define IPC_CMD_SCU_EN_STATUS	0x07
+
 #define IPC_CMD_UMIP_RD     0
 #define IPC_CMD_UMIP_WR     1
 #define IPC_CMD_SMIP_RD     2

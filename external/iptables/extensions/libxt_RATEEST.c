@@ -1,212 +1,449 @@
+/*
+ * Copyright (c) 2008-2013 Patrick McHardy <kaber@trash.net>
+ */
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <getopt.h>
-#include <math.h>
 
 #include <xtables.h>
-#include <linux/netfilter/x_tables.h>
-#include <linux/netfilter/xt_RATEEST.h>
+#include <linux/netfilter/xt_rateest.h>
 
-/* hack to pass raw values to final_check */
-static struct xt_rateest_target_info *RATEEST_info;
-static unsigned int interval;
-static unsigned int ewma_log;
-
-static void
-RATEEST_help(void)
+static void rateest_help(void)
 {
 	printf(
-"RATEEST target options:\n"
-"  --rateest-name name		Rate estimator name\n"
-"  --rateest-interval sec	Rate measurement interval in seconds\n"
-"  --rateest-ewmalog value	Rate measurement averaging time constant\n");
+"rateest match options:\n"
+" --rateest1 name		Rate estimator name\n"
+" --rateest2 name		Rate estimator name\n"
+" --rateest-delta		Compare difference(s) to given rate(s)\n"
+" --rateest-bps1 [bps]		Compare bps\n"
+" --rateest-pps1 [pps]		Compare pps\n"
+" --rateest-bps2 [bps]		Compare bps\n"
+" --rateest-pps2 [pps]		Compare pps\n"
+" [!] --rateest-lt		Match if rate is less than given rate/estimator\n"
+" [!] --rateest-gt		Match if rate is greater than given rate/estimator\n"
+" [!] --rateest-eq		Match if rate is equal to given rate/estimator\n");
 }
 
-enum RATEEST_options {
-	RATEEST_OPT_NAME,
-	RATEEST_OPT_INTERVAL,
-	RATEEST_OPT_EWMALOG,
+enum rateest_options {
+	OPT_RATEEST1,
+	OPT_RATEEST2,
+	OPT_RATEEST_BPS1,
+	OPT_RATEEST_PPS1,
+	OPT_RATEEST_BPS2,
+	OPT_RATEEST_PPS2,
+	OPT_RATEEST_DELTA,
+	OPT_RATEEST_LT,
+	OPT_RATEEST_GT,
+	OPT_RATEEST_EQ,
 };
 
-static const struct option RATEEST_opts[] = {
-	{.name = "rateest-name",     .has_arg = true, .val = RATEEST_OPT_NAME},
-	{.name = "rateest-interval", .has_arg = true, .val = RATEEST_OPT_INTERVAL},
-	{.name = "rateest-ewmalog",  .has_arg = true, .val = RATEEST_OPT_EWMALOG},
+static const struct option rateest_opts[] = {
+	{.name = "rateest1",      .has_arg = true,  .val = OPT_RATEEST1},
+	{.name = "rateest",       .has_arg = true,  .val = OPT_RATEEST1}, /* alias for absolute mode */
+	{.name = "rateest2",      .has_arg = true,  .val = OPT_RATEEST2},
+	{.name = "rateest-bps1",  .has_arg = false, .val = OPT_RATEEST_BPS1},
+	{.name = "rateest-pps1",  .has_arg = false, .val = OPT_RATEEST_PPS1},
+	{.name = "rateest-bps2",  .has_arg = false, .val = OPT_RATEEST_BPS2},
+	{.name = "rateest-pps2",  .has_arg = false, .val = OPT_RATEEST_PPS2},
+	{.name = "rateest-bps",   .has_arg = false, .val = OPT_RATEEST_BPS2}, /* alias for absolute mode */
+	{.name = "rateest-pps",   .has_arg = false, .val = OPT_RATEEST_PPS2}, /* alias for absolute mode */
+	{.name = "rateest-delta", .has_arg = false, .val = OPT_RATEEST_DELTA},
+	{.name = "rateest-lt",    .has_arg = false, .val = OPT_RATEEST_LT},
+	{.name = "rateest-gt",    .has_arg = false, .val = OPT_RATEEST_GT},
+	{.name = "rateest-eq",    .has_arg = false, .val = OPT_RATEEST_EQ},
 	XT_GETOPT_TABLEEND,
 };
 
-/* Copied from iproute */
-#define TIME_UNITS_PER_SEC	1000000
+/* Copied from iproute. See http://physics.nist.gov/cuu/Units/binary.html */
+static const struct rate_suffix {
+	const char *name;
+	double scale;
+} suffixes[] = {
+	{ "bit",	1. },
+	{ "Kibit",	1024. },
+	{ "kbit",	1000. },
+	{ "Mibit",	1024.*1024. },
+	{ "mbit",	1000000. },
+	{ "Gibit",	1024.*1024.*1024. },
+	{ "gbit",	1000000000. },
+	{ "Tibit",	1024.*1024.*1024.*1024. },
+	{ "tbit",	1000000000000. },
+	{ "Bps",	8. },
+	{ "KiBps",	8.*1024. },
+	{ "KBps",	8000. },
+	{ "MiBps",	8.*1024*1024. },
+	{ "MBps",	8000000. },
+	{ "GiBps",	8.*1024.*1024.*1024. },
+	{ "GBps",	8000000000. },
+	{ "TiBps",	8.*1024.*1024.*1024.*1024. },
+	{ "TBps",	8000000000000. },
+	{NULL},
+};
 
 static int
-RATEEST_get_time(unsigned int *time, const char *str)
+rateest_get_rate(uint32_t *rate, const char *str)
 {
-	double t;
 	char *p;
+	double bps = strtod(str, &p);
+	const struct rate_suffix *s;
 
-	t = strtod(str, &p);
 	if (p == str)
 		return -1;
 
-	if (*p) {
-		if (strcasecmp(p, "s") == 0 || strcasecmp(p, "sec")==0 ||
-		    strcasecmp(p, "secs")==0)
-			t *= TIME_UNITS_PER_SEC;
-		else if (strcasecmp(p, "ms") == 0 || strcasecmp(p, "msec")==0 ||
-			 strcasecmp(p, "msecs") == 0)
-			t *= TIME_UNITS_PER_SEC/1000;
-		else if (strcasecmp(p, "us") == 0 || strcasecmp(p, "usec")==0 ||
-			 strcasecmp(p, "usecs") == 0)
-			t *= TIME_UNITS_PER_SEC/1000000;
-		else
-			return -1;
+	if (*p == '\0') {
+		*rate = bps / 8.;	/* assume bytes/sec */
+		return 0;
 	}
 
-	*time = t;
-	return 0;
-}
+	for (s = suffixes; s->name; ++s) {
+		if (strcasecmp(s->name, p) == 0) {
+			*rate = (bps * s->scale) / 8.;
+			return 0;
+		}
+	}
 
-static void
-RATEEST_print_time(unsigned int time)
-{
-	double tmp = time;
-
-	if (tmp >= TIME_UNITS_PER_SEC)
-		printf(" %.1fs", tmp / TIME_UNITS_PER_SEC);
-	else if (tmp >= TIME_UNITS_PER_SEC/1000)
-		printf(" %.1fms", tmp / (TIME_UNITS_PER_SEC / 1000));
-	else
-		printf(" %uus", time);
+	return -1;
 }
 
 static int
-RATEEST_parse(int c, char **argv, int invert, unsigned int *flags,
-	      const void *entry, struct xt_entry_target **target)
+rateest_parse(int c, char **argv, int invert, unsigned int *flags,
+	      const void *entry, struct xt_entry_match **match)
 {
-	struct xt_rateest_target_info *info = (void *)(*target)->data;
-
-	RATEEST_info = info;
+	struct xt_rateest_match_info *info = (void *)(*match)->data;
+	unsigned int val;
 
 	switch (c) {
-	case RATEEST_OPT_NAME:
+	case OPT_RATEEST1:
+		if (invert)
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: rateest can't be inverted");
+
 		if (*flags & (1 << c))
 			xtables_error(PARAMETER_PROBLEM,
-				   "RATEEST: can't specify --rateest-name twice");
+				   "rateest: can't specify --rateest1 twice");
 		*flags |= 1 << c;
 
-		strncpy(info->name, optarg, sizeof(info->name) - 1);
+		strncpy(info->name1, optarg, sizeof(info->name1) - 1);
 		break;
 
-	case RATEEST_OPT_INTERVAL:
+	case OPT_RATEEST2:
+		if (invert)
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: rateest can't be inverted");
+
 		if (*flags & (1 << c))
 			xtables_error(PARAMETER_PROBLEM,
-				   "RATEEST: can't specify --rateest-interval twice");
+				   "rateest: can't specify --rateest2 twice");
 		*flags |= 1 << c;
 
-		if (RATEEST_get_time(&interval, optarg) < 0)
-			xtables_error(PARAMETER_PROBLEM,
-				   "RATEEST: bad interval value `%s'", optarg);
-
+		strncpy(info->name2, optarg, sizeof(info->name2) - 1);
+		info->flags |= XT_RATEEST_MATCH_REL;
 		break;
 
-	case RATEEST_OPT_EWMALOG:
+	case OPT_RATEEST_BPS1:
+		if (invert)
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: rateest-bps can't be inverted");
+
 		if (*flags & (1 << c))
 			xtables_error(PARAMETER_PROBLEM,
-				   "RATEEST: can't specify --rateest-ewmalog twice");
+				   "rateest: can't specify --rateest-bps1 twice");
 		*flags |= 1 << c;
 
-		if (RATEEST_get_time(&ewma_log, optarg) < 0)
-			xtables_error(PARAMETER_PROBLEM,
-				   "RATEEST: bad ewmalog value `%s'", optarg);
+		info->flags |= XT_RATEEST_MATCH_BPS;
 
+		/* The rate is optional and only required in absolute mode */
+		if (!argv[optind] || *argv[optind] == '-' || *argv[optind] == '!')
+			break;
+
+		if (rateest_get_rate(&info->bps1, argv[optind]) < 0)
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: could not parse rate `%s'",
+				   argv[optind]);
+		optind++;
+		break;
+
+	case OPT_RATEEST_PPS1:
+		if (invert)
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: rateest-pps can't be inverted");
+
+		if (*flags & (1 << c))
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: can't specify --rateest-pps1 twice");
+		*flags |= 1 << c;
+
+		info->flags |= XT_RATEEST_MATCH_PPS;
+
+		/* The rate is optional and only required in absolute mode */
+		if (!argv[optind] || *argv[optind] == '-' || *argv[optind] == '!')
+			break;
+
+		if (!xtables_strtoui(argv[optind], NULL, &val, 0, UINT32_MAX))
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: could not parse pps `%s'",
+				   argv[optind]);
+		info->pps1 = val;
+		optind++;
+		break;
+
+	case OPT_RATEEST_BPS2:
+		if (invert)
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: rateest-bps can't be inverted");
+
+		if (*flags & (1 << c))
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: can't specify --rateest-bps2 twice");
+		*flags |= 1 << c;
+
+		info->flags |= XT_RATEEST_MATCH_BPS;
+
+		/* The rate is optional and only required in absolute mode */
+		if (!argv[optind] || *argv[optind] == '-' || *argv[optind] == '!')
+			break;
+
+		if (rateest_get_rate(&info->bps2, argv[optind]) < 0)
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: could not parse rate `%s'",
+				   argv[optind]);
+		optind++;
+		break;
+
+	case OPT_RATEEST_PPS2:
+		if (invert)
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: rateest-pps can't be inverted");
+
+		if (*flags & (1 << c))
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: can't specify --rateest-pps2 twice");
+		*flags |= 1 << c;
+
+		info->flags |= XT_RATEEST_MATCH_PPS;
+
+		/* The rate is optional and only required in absolute mode */
+		if (!argv[optind] || *argv[optind] == '-' || *argv[optind] == '!')
+			break;
+
+		if (!xtables_strtoui(argv[optind], NULL, &val, 0, UINT32_MAX))
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: could not parse pps `%s'",
+				   argv[optind]);
+		info->pps2 = val;
+		optind++;
+		break;
+
+	case OPT_RATEEST_DELTA:
+		if (invert)
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: rateest-delta can't be inverted");
+
+		if (*flags & (1 << c))
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: can't specify --rateest-delta twice");
+		*flags |= 1 << c;
+
+		info->flags |= XT_RATEEST_MATCH_DELTA;
+		break;
+
+	case OPT_RATEEST_EQ:
+		if (*flags & (1 << c))
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: can't specify lt/gt/eq twice");
+		*flags |= 1 << c;
+
+		info->mode = XT_RATEEST_MATCH_EQ;
+		if (invert)
+			info->flags |= XT_RATEEST_MATCH_INVERT;
+		break;
+
+	case OPT_RATEEST_LT:
+		if (*flags & (1 << c))
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: can't specify lt/gt/eq twice");
+		*flags |= 1 << c;
+
+		info->mode = XT_RATEEST_MATCH_LT;
+		if (invert)
+			info->flags |= XT_RATEEST_MATCH_INVERT;
+		break;
+
+	case OPT_RATEEST_GT:
+		if (*flags & (1 << c))
+			xtables_error(PARAMETER_PROBLEM,
+				   "rateest: can't specify lt/gt/eq twice");
+		*flags |= 1 << c;
+
+		info->mode = XT_RATEEST_MATCH_GT;
+		if (invert)
+			info->flags |= XT_RATEEST_MATCH_INVERT;
 		break;
 	}
 
 	return 1;
 }
 
-static void
-RATEEST_final_check(unsigned int flags)
+static void rateest_final_check(struct xt_fcheck_call *cb)
 {
-	struct xt_rateest_target_info *info = RATEEST_info;
+	struct xt_rateest_match_info *info = cb->data;
 
-	if (!(flags & (1 << RATEEST_OPT_NAME)))
-		xtables_error(PARAMETER_PROBLEM, "RATEEST: no name specified");
-	if (!(flags & (1 << RATEEST_OPT_INTERVAL)))
-		xtables_error(PARAMETER_PROBLEM, "RATEEST: no interval specified");
-	if (!(flags & (1 << RATEEST_OPT_EWMALOG)))
-		xtables_error(PARAMETER_PROBLEM, "RATEEST: no ewmalog specified");
+	if (info == NULL)
+		xtables_error(PARAMETER_PROBLEM, "rateest match: "
+		           "you need to specify some flags");
+	if (!(info->flags & XT_RATEEST_MATCH_REL))
+		info->flags |= XT_RATEEST_MATCH_ABS;
+}
 
-	for (info->interval = 0; info->interval <= 5; info->interval++) {
-		if (interval <= (1 << info->interval) * (TIME_UNITS_PER_SEC / 4))
-			break;
+static void
+rateest_print_rate(uint32_t rate, int numeric)
+{
+	double tmp = (double)rate*8;
+
+	if (numeric)
+		printf(" %u", rate);
+	else if (tmp >= 1000.0*1000000.0)
+		printf(" %.0fMbit", tmp/1000000.0);
+	else if (tmp >= 1000.0 * 1000.0)
+		printf(" %.0fKbit", tmp/1000.0);
+	else
+		printf(" %.0fbit", tmp);
+}
+
+static void
+rateest_print_mode(const struct xt_rateest_match_info *info,
+                   const char *prefix)
+{
+	if (info->flags & XT_RATEEST_MATCH_INVERT)
+		printf(" !");
+
+	switch (info->mode) {
+	case XT_RATEEST_MATCH_EQ:
+		printf(" %seq", prefix);
+		break;
+	case XT_RATEEST_MATCH_LT:
+		printf(" %slt", prefix);
+		break;
+	case XT_RATEEST_MATCH_GT:
+		printf(" %sgt", prefix);
+		break;
+	default:
+		exit(1);
+	}
+}
+
+static void
+rateest_print(const void *ip, const struct xt_entry_match *match, int numeric)
+{
+	const struct xt_rateest_match_info *info = (const void *)match->data;
+
+	printf(" rateest match ");
+
+	printf("%s", info->name1);
+	if (info->flags & XT_RATEEST_MATCH_DELTA)
+		printf(" delta");
+
+	if (info->flags & XT_RATEEST_MATCH_BPS) {
+		printf(" bps");
+		if (info->flags & XT_RATEEST_MATCH_DELTA)
+			rateest_print_rate(info->bps1, numeric);
+		if (info->flags & XT_RATEEST_MATCH_ABS) {
+			rateest_print_rate(info->bps2, numeric);
+			rateest_print_mode(info, "");
+		}
+	}
+	if (info->flags & XT_RATEEST_MATCH_PPS) {
+		printf(" pps");
+		if (info->flags & XT_RATEEST_MATCH_DELTA)
+			printf(" %u", info->pps1);
+		if (info->flags & XT_RATEEST_MATCH_ABS) {
+			rateest_print_mode(info, "");
+			printf(" %u", info->pps2);
+		}
 	}
 
-	if (info->interval > 5)
-		xtables_error(PARAMETER_PROBLEM,
-			   "RATEEST: interval value is too large");
-	info->interval -= 2;
+	if (info->flags & XT_RATEEST_MATCH_REL) {
+		rateest_print_mode(info, "");
 
-	for (info->ewma_log = 1; info->ewma_log < 32; info->ewma_log++) {
-		double w = 1.0 - 1.0 / (1 << info->ewma_log);
-		if (interval / (-log(w)) > ewma_log)
-			break;
+		printf(" %s", info->name2);
+
+		if (info->flags & XT_RATEEST_MATCH_BPS) {
+			printf(" bps");
+			if (info->flags & XT_RATEEST_MATCH_DELTA)
+				rateest_print_rate(info->bps2, numeric);
+		}
+		if (info->flags & XT_RATEEST_MATCH_PPS) {
+			printf(" pps");
+			if (info->flags & XT_RATEEST_MATCH_DELTA)
+				printf(" %u", info->pps2);
+		}
 	}
-	info->ewma_log--;
-
-	if (info->ewma_log == 0 || info->ewma_log >= 31)
-		xtables_error(PARAMETER_PROBLEM,
-			   "RATEEST: ewmalog value is out of range");
 }
+
+static void __rateest_save_rate(const struct xt_rateest_match_info *info,
+                                const char *name, uint32_t r1, uint32_t r2,
+                                int numeric)
+{
+	if (info->flags & XT_RATEEST_MATCH_DELTA) {
+		printf(" --rateest-%s1", name);
+		rateest_print_rate(r1, numeric);
+		rateest_print_mode(info, "--rateest-");
+		printf(" --rateest-%s2", name);
+	} else {
+		rateest_print_mode(info, "--rateest-");
+		printf(" --rateest-%s", name);
+	}
+
+	if (info->flags & (XT_RATEEST_MATCH_ABS|XT_RATEEST_MATCH_DELTA))
+		rateest_print_rate(r2, numeric);
+}
+
+static void rateest_save_rates(const struct xt_rateest_match_info *info)
+{
+	if (info->flags & XT_RATEEST_MATCH_BPS)
+		__rateest_save_rate(info, "bps", info->bps1, info->bps2, 0);
+	if (info->flags & XT_RATEEST_MATCH_PPS)
+		__rateest_save_rate(info, "pps", info->pps1, info->pps2, 1);
+}
+
 
 static void
-__RATEEST_print(const struct xt_entry_target *target, const char *prefix)
+rateest_save(const void *ip, const struct xt_entry_match *match)
 {
-	const struct xt_rateest_target_info *info = (const void *)target->data;
-	unsigned int local_interval;
-	unsigned int local_ewma_log;
+	const struct xt_rateest_match_info *info = (const void *)match->data;
 
-	local_interval = (TIME_UNITS_PER_SEC << (info->interval + 2)) / 4;
-	local_ewma_log = local_interval * (1 << (info->ewma_log));
+	if (info->flags & XT_RATEEST_MATCH_DELTA)
+		printf(" --rateest-delta");
 
-	printf(" %sname %s", prefix, info->name);
-	printf(" %sinterval", prefix);
-	RATEEST_print_time(local_interval);
-	printf(" %sewmalog", prefix);
-	RATEEST_print_time(local_ewma_log);
+	if (info->flags & XT_RATEEST_MATCH_REL) {
+		printf(" --rateest1 %s", info->name1);
+		rateest_save_rates(info);
+		printf(" --rateest2 %s", info->name2);
+	} else { /* XT_RATEEST_MATCH_ABS */
+		printf(" --rateest %s", info->name1);
+		rateest_save_rates(info);
+	}
 }
 
-static void
-RATEEST_print(const void *ip, const struct xt_entry_target *target,
-	      int numeric)
-{
-	__RATEEST_print(target, "");
-}
-
-static void
-RATEEST_save(const void *ip, const struct xt_entry_target *target)
-{
-	__RATEEST_print(target, "--rateest-");
-}
-
-static struct xtables_target rateest_tg_reg = {
+static struct xtables_match rateest_mt_reg = {
 	.family		= NFPROTO_UNSPEC,
-	.name		= "RATEEST",
+	.name		= "rateest",
 	.version	= XTABLES_VERSION,
-	.size		= XT_ALIGN(sizeof(struct xt_rateest_target_info)),
-	.userspacesize	= XT_ALIGN(sizeof(struct xt_rateest_target_info)),
-	.help		= RATEEST_help,
-	.parse		= RATEEST_parse,
-	.final_check	= RATEEST_final_check,
-	.print		= RATEEST_print,
-	.save		= RATEEST_save,
-	.extra_opts	= RATEEST_opts,
+	.size		= XT_ALIGN(sizeof(struct xt_rateest_match_info)),
+	.userspacesize	= XT_ALIGN(offsetof(struct xt_rateest_match_info, est1)),
+	.help		= rateest_help,
+	.parse		= rateest_parse,
+	.x6_fcheck	= rateest_final_check,
+	.print		= rateest_print,
+	.save		= rateest_save,
+	.extra_opts	= rateest_opts,
 };
 
 void _init(void)
 {
-	xtables_register_target(&rateest_tg_reg);
+	xtables_register_match(&rateest_mt_reg);
 }

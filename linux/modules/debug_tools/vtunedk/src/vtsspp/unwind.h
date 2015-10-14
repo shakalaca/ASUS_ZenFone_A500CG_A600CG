@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -56,6 +56,7 @@
 #define CALLNI_OPEXT  0x10      /// xx010xxx
 #define CALLNI_OPMASK 0x38      /// 00111xxx
 
+#define VTSS_STACK_CACHE_SIZE 0x1000
 /**
 // Data Types
 */
@@ -142,7 +143,10 @@ typedef struct _stack_control_t
     stkptr_t fp;                      /// frame pointer for the current sample
     stkptr_t ip;                /// IP for the current sample
     stkptr_t sp;                /// SP for the current sample
+
+    char value_cache[VTSS_STACK_CACHE_SIZE];
 } stack_control_t;
+
 
 /**
 // Function Declarations

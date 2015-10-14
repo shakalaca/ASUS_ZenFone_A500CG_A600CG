@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -94,6 +94,11 @@ int vtss_check_trace(const char* func_name, int* flag)
 #endif
 #endif
 
+#if defined(CONFIG_COMPAT)
+#define VTSS_SYMBOL_PROC_COMPAT_EXEC     "compat_do_execve"
+#define VTSS_SYMBOL_PROC_COMPAT_EXEC1   "compat_sys_execve"
+#endif
+
 #define VTSS_SYMBOL_PROC_EXIT     "do_exit"
 #define VTSS_SYMBOL_MMAP_REGION   "mmap_region"
 #ifdef VTSS_SYSCALL_TRACE
@@ -155,6 +160,7 @@ static void tp_sched_process_fork(VTSS_TP_PROTO struct task_struct *task, struct
 }
 #endif
 
+
 static int rp_sched_process_fork_enter(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
     /* Skip kernel threads or if no memory */
@@ -192,6 +198,67 @@ struct rp_sched_process_exec_data
     char config[VTSS_FILENAME_SIZE];
 };
 
+static int rp_sched_process_compat_exec_enter(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+printk("compat exec enter!!!");
+return 0;
+}
+
+static int rp_sched_process_compat_exec_leave(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+printk("compat exec leave!!!");
+return 0;
+}
+
+
+// The reason of creating the function below and copping all context from envp rp_sched_process_exec_enter
+// is the crash during attempt to get environment in the case when compat_do_execve called.
+// TODO: solve the problem and remove this workaround.
+static int rp_sched_process_exec_compat_enter(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+    int i;
+    size_t size = 0;
+    char *filename, **envp;
+    struct rp_sched_process_exec_data *data = (struct rp_sched_process_exec_data*)ri->data;
+
+    if (current->mm == NULL)
+        return 1; /* Skip kernel threads or if no memory */
+#if defined(CONFIG_X86_32)
+    filename =  (char*)REG(ax, regs);
+    envp     = (char**)REG(cx, regs);
+#elif defined(CONFIG_X86_64)
+    filename =  (char*)REG(di, regs);
+#if 0
+    envp     = (char**)REG(dx, regs);
+#endif
+#endif
+    if (filename != NULL) {
+        char *p = strrchr(filename, '/');
+        p = p ? p+1 : filename;
+        TRACE("filename: '%s' => '%s'", filename, p);
+        size = min((size_t)VTSS_FILENAME_SIZE-1, (size_t)strlen(p));
+        memcpy(data->filename, p, size);
+    }
+    data->filename[size] = '\0';
+    size = 0;
+
+#if 0
+    for (i = 0; envp[i] != NULL; i++) {
+        TRACE("env[%d]: '%s'\n", i, envp[i]);
+        if (!strncmp(envp[i], "INTEL_VTSS_PROFILE_ME=", 22 /*==strlen("INTEL_VTSS_PROFILE_ME=")*/)) {
+            char *config = envp[i]+22; /*==strlen("INTEL_VTSS_PROFILE_ME=")*/
+            size = min((size_t)VTSS_FILENAME_SIZE-1, (size_t)strlen(config));
+            memcpy(data->config, config, size);
+            break;
+        }
+    }
+#endif
+    data->config[size] = '\0';
+    TRACE("ri=0x%p, data=0x%p, filename='%s', config='%s'", ri, data, data->filename, data->config);
+    vtss_target_exec_enter(ri->task, data->filename, data->config);
+    return 0;
+}
+
 static int rp_sched_process_exec_enter(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
     int i;
@@ -217,6 +284,7 @@ static int rp_sched_process_exec_enter(struct kretprobe_instance *ri, struct pt_
     }
     data->filename[size] = '\0';
     size = 0;
+
     for (i = 0; envp[i] != NULL; i++) {
         TRACE("env[%d]: '%s'\n", i, envp[i]);
         if (!strncmp(envp[i], "INTEL_VTSS_PROFILE_ME=", 22 /*==strlen("INTEL_VTSS_PROFILE_ME=")*/)) {
@@ -231,7 +299,6 @@ static int rp_sched_process_exec_enter(struct kretprobe_instance *ri, struct pt_
     vtss_target_exec_enter(ri->task, data->filename, data->config);
     return 0;
 }
-
 static int rp_sched_process_exec_leave(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
     struct rp_sched_process_exec_data *data = (struct rp_sched_process_exec_data*)ri->data;
@@ -276,6 +343,7 @@ struct rp_mmap_region_data
     unsigned int  flags;
 };
 
+static int vtss_mmap_count = 0;
 static int rp_mmap_region_enter(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
     struct rp_mmap_region_data *data = (struct rp_mmap_region_data*)ri->data;
@@ -287,16 +355,29 @@ static int rp_mmap_region_enter(struct kretprobe_instance *ri, struct pt_regs *r
     data->addr  = REG(dx, regs);
     data->size  = REG(cx, regs);
     /* get the rest from stack */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
     data->flags = ((int32_t*)&REG(sp, regs))[2]; /* vm_flags */
     data->pgoff = data->file ? ((int32_t*)&REG(sp, regs))[3] : 0;
+#else
+    data->flags = ((int32_t*)&REG(sp, regs))[1]; /* vm_flags */
+    data->pgoff = data->file ? ((int32_t*)&REG(sp, regs))[2] : 0;
+#endif
 #elif defined(CONFIG_X86_64)
     data->file  = (struct file*)REG(di, regs);
     data->addr  = REG(si, regs);
     data->size  = REG(dx, regs);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
     data->flags = REG(r8, regs); /* vm_flags */
     data->pgoff = data->file ? REG(r9, regs) : 0;
+#else
+    data->flags = REG(cx, regs); /* vm_flags */
+    data->pgoff = data->file ? REG(r8, regs) : 0;
 #endif
+#endif
+    if (vtss_mmap_count < 100){
+    vtss_mmap_count++;
     TRACE("ri=0x%p, data=0x%p: (0x%p, 0x%lx, %lu, %lu, 0x%x)", ri, data, data->file, data->addr, data->size, data->pgoff, data->flags);
+    }
     return 0;
 }
 
@@ -305,14 +386,31 @@ static int rp_mmap_region_leave(struct kretprobe_instance *ri, struct pt_regs *r
     struct rp_mmap_region_data *data = (struct rp_mmap_region_data*)ri->data;
     unsigned long rc = regs_return_value(regs);
 
-    TRACE("ri=0x%p, data=0x%p: rc=0x%lx", ri, data, rc);
+//    TRACE("ri=0x%p, data=0x%p: rc=0x%lx", ri, data, rc);
+//#if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
     if ((rc == data->addr) &&
         (data->flags & VM_EXEC) && !(data->flags & VM_WRITE) &&
         data->file && data->file->f_dentry)
     {
-        TRACE("file=0x%p, addr=0x%lx, pgoff=%lu, size=%lu", data->file, data->addr, data->pgoff, data->size);
+        if (vtss_mmap_count < 100)TRACE("file=0x%p, addr=0x%lx, pgoff=%lu, size=%lu", data->file, data->addr, data->pgoff, data->size);
         vtss_mmap(data->file, data->addr, data->pgoff, data->size);
+    } else
+    {
+        if (vtss_mmap_count < 100)TRACE("Address range was not added to the map, addr=0x%lx, pgoff=%lu, size=%lu, rc = %lx", data->addr, data->pgoff, data->size, rc);
     }
+/*#else
+    if (rc == data->addr)
+    {
+        if (vtss_mmap_count < 100) TRACE("file=0x%p, addr=0x%lx, pgoff=%lu, size=%lu", data->file, data->addr, data->pgoff, data->size);
+        
+        vtss_mmap_reload(data->file, data->addr);
+    } else
+    {
+        if (vtss_mmap_count < 100)TRACE("Address range was not added to the map, addr=0x%lx, pgoff=%lu, size=%lu, rc = %lx", data->addr, data->pgoff, data->size, rc);
+    }
+
+
+#endif*/
     return 0;
 }
 
@@ -419,9 +517,11 @@ static struct jprobe _jp_##name_aux = { \
     .kp.addr = (kprobe_opcode_t*)NULL, \
     .entry = (kprobe_opcode_t*)jp_##name \
 }; \
+static int used_##name_aux = 0;\
 static int probe_##name(void) \
 { \
     int rc = 0; \
+    used_##name_aux = 0;\
     _REGISTER_TRACE(name) \
     { \
         _LOOKUP_SYMBOL_NAME(_jp_##name.kp,symbol) \
@@ -430,6 +530,7 @@ static int probe_##name(void) \
             rc = register_jprobe(&_jp_##name); \
         } \
         if (rc){\
+        used_##name_aux = 1;\
         _LOOKUP_SYMBOL_NAME(_jp_##name_aux.kp,symbol_aux) \
         { \
             _SET_KPROBE_FLAGS(_jp_##name_aux.kp) \
@@ -444,8 +545,13 @@ static int unprobe_##name(void) \
 { \
     int rc = 0; \
     _UNREGISTER_TRACE(name) \
-    if (_jp_##name.kp.addr) unregister_jprobe(&_jp_##name); \
-    _jp_##name.kp.addr = NULL; \
+    if (used_##name_aux == 0){\
+        if (_jp_##name.kp.addr) unregister_jprobe(&_jp_##name); \
+        _jp_##name.kp.addr = NULL; \
+    } else {\
+        if (_jp_##name_aux.kp.addr) unregister_jprobe(&_jp_##name_aux); \
+        _jp_##name_aux.kp.addr = NULL; \
+    }\
     return rc; \
 }
 
@@ -490,6 +596,11 @@ static int unprobe_##name(void) \
 #define _UNREGISTER_TRACE(name) /* empty */
 
 DEFINE_RP_STUB(sched_process_exec, VTSS_SYMBOL_PROC_EXEC,   sizeof(struct rp_sched_process_exec_data))
+//#if defined(CONFIG_COMPAT)
+//DEFINE_RP_STUB(sched_process_compat_exec, VTSS_SYMBOL_PROC_COMPAT_EXEC,   sizeof(struct rp_sched_process_exec_data))
+//DEFINE_RP_STUB(sched_process_compat_exec, VTSS_SYMBOL_PROC_COMPAT_EXEC1,  sizeof(struct rp_sched_process_exec_data))
+//#endif
+
 DEFINE_RP_STUB(mmap_region,        VTSS_SYMBOL_MMAP_REGION, sizeof(struct rp_mmap_region_data))
 #ifdef VTSS_SYSCALL_TRACE
 DEFINE_KP_STUB(syscall_enter,      VTSS_SYMBOL_SYSCALL_ENTER)
@@ -499,6 +610,9 @@ DEFINE_KP_STUB(syscall_leave,      VTSS_SYMBOL_SYSCALL_LEAVE)
 /* ------------------------------------------------------------------------- */
 /* stubs with tracepoints */
 #if defined(CONFIG_TRACEPOINTS) && defined(VTSS_AUTOCONF_TRACE_EVENTS_SCHED)
+DEFINE_TRACE(sched_switch)
+DEFINE_TRACE(sched_process_fork)
+DEFINE_TRACE(sched_process_exit)
 #undef _REGISTER_TRACE
 #undef _UNREGISTER_TRACE
 #define _REGISTER_TRACE(name) \
@@ -545,22 +659,81 @@ static int unprobe_kmodules(void)
     return unregister_module_notifier(&vtss_kmodules_nb);
 }
 
+#ifdef CONFIG_COMPAT
+//kretprobes
+static struct kretprobe _rp_sched_process_exec_compat = {
+#ifdef VTSS_AUTOCONF_KPROBE_SYMBOL_NAME
+    .kp.symbol_name = VTSS_SYMBOL_PROC_COMPAT_EXEC,
+#endif
+    .kp.addr       = (kprobe_opcode_t*)NULL,
+    .entry_handler = rp_sched_process_exec_compat_enter,
+    .handler       = rp_sched_process_exec_leave,
+    .data_size     = sizeof(struct rp_sched_process_exec_data),
+    .maxactive     = 16 /* probe up to 16 instances concurrently */
+};
+
+//DEFINE_KRETPROBE_STRUCT(sched_process_exec, VTSS_SYMBOL_PROC_COMPAT_EXEC,   sizeof(struct rp_sched_process_exec_data))
+int probe_sched_process_exec_compat( void )
+{
+    int rc = 0;
+#ifndef VTSS_AUTOCONF_KPROBE_SYMBOL_NAME
+    int used_exec1_symbol = 0;
+    _rp_sched_process_exec_compat.addr = (kprobe_opcode_t*)kallsyms_lookup_name(VTSS_SYMBOL_PROC_COMPAT_EXEC);
+    if (!_rp_sched_process_exec_compat.addr) {
+        INFO("Lookup the name of kretprobe %s failed. Trying to find %s name", VTSS_SYMBOL_PROC_COMPAT_EXEC, VTSS_SYMBOL_PROC_COMPAT_EXEC1 );
+        _rp_sched_process_exec_compat.addr = (kprobe_opcode_t*)kallsyms_lookup_name(VTSS_SYMBOL_PROC_COMPAT_EXEC);
+        used_exec1_symbol = 1;
+        if (!_rp_sched_process_exec_compat.addr) {
+             ERROR("Unable to find symbol '%s'", VTSS_SYMBOL_PROC_COMPAT_EXEC1);
+             return -1;
+        }
+    }
+#endif
+    _SET_KPROBE_FLAGS(_rp_sched_process_exec_compat.kp)
+    rc = register_kretprobe(&_rp_sched_process_exec_compat);
+    if (rc){
+#ifdef VTSS_AUTOCONF_KPROBE_SYMBOL_NAME
+         INFO("Registering the prob on %s failed. Trying to register %s.", VTSS_SYMBOL_PROC_COMPAT_EXEC, VTSS_SYMBOL_PROC_COMPAT_EXEC1);
+         _rp_sched_process_exec_compat.kp.symbol_name = VTSS_SYMBOL_PROC_COMPAT_EXEC1;
+         rc = register_kretprobe(&_rp_sched_process_exec_compat);
+         if (rc)
+             ERROR("register_kretprobe('%s') failed: %d", VTSS_SYMBOL_PROC_COMPAT_EXEC1, rc);
+#else
+         ERROR("register_kretprobe('%s') failed: %d", (used_exec1_symbol == 0) ? VTSS_SYMBOL_PROC_COMPAT_EXEC :  VTSS_SYMBOL_PROC_COMPAT_EXEC1, rc);
+#endif
+    }
+    return rc;
+}
+
+int unprobe_sched_process_exec_compat( void )
+{
+    int rc = 0;
+    if (_rp_sched_process_exec_compat.kp.addr) unregister_kretprobe(&_rp_sched_process_exec_compat);
+    _rp_sched_process_exec_compat.kp.addr = NULL;
+    if (_rp_sched_process_exec_compat.nmissed) INFO("Missed probing %d instances of '%s'", _rp_sched_process_exec_compat.nmissed, VTSS_SYMBOL_PROC_COMPAT_EXEC);
+    return rc;
+}
+#endif
+
 int vtss_probe_init(void)
 {
     int rc = 0;
-
 #ifdef VTSS_SYSCALL_TRACE
     rc |= probe_syscall_leave();
     rc |= probe_syscall_enter();
 #endif
     rc |= probe_sched_process_exit();
     rc |= probe_sched_process_fork();
+#ifdef CONFIG_COMPAT
+    rc = probe_sched_process_exec_compat();
+#endif
     rc |= probe_sched_process_exec();
     rc |= probe_mmap_region();
     rc |= probe_kmodules();
 #if !defined(CONFIG_PREEMPT_NOTIFIERS) || !defined(VTSS_USE_PREEMPT_NOTIFIERS)
     rc |= probe_sched_switch();
 #endif
+    vtss_mmap_count = 0;
     return rc;
 }
 
@@ -572,6 +745,9 @@ void vtss_probe_fini(void)
     unprobe_kmodules();
     unprobe_mmap_region();
     unprobe_sched_process_exec();
+#ifdef CONFIG_COMPAT
+    unprobe_sched_process_exec_compat();
+#endif
     unprobe_sched_process_fork();
     unprobe_sched_process_exit();
 #ifdef VTSS_SYSCALL_TRACE

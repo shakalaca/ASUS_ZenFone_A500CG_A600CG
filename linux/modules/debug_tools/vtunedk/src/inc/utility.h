@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -56,7 +56,7 @@
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 25)
 #define SYS_Write_MSR(msr,val)       wrmsr((U32)msr, (unsigned long)(val&0xFFFFFFFFLL), (unsigned long)(val>>32))  // void..(unsigned int msr, unsigned long long val)
 #else
-#define SYS_Write_MSR(msr,val)       native_write_msr(msr,(unsigned long)(val&0xFFFFFFFFLL), (unsigned long)(val>>32))  // void..(unsigned int msr, unsigned long long val)
+#define SYS_Write_MSR(msr,val)       wrmsr_safe(msr,(unsigned long)(val&0xFFFFFFFFLL), (unsigned long)(val>>32))  // void..(unsigned int msr, unsigned long long val)
 #endif
 
 #endif
@@ -75,61 +75,6 @@ SYS_Read_MSR (U32 msr);
 #else
 #define DRV_GET_UID(p)      p->uid
 #endif
-
-#if defined(DRV_IA64)
-extern U64
-UTILITY_Read_PMV (void);
-
-#define SYS_Read_CPUID(index)        ia64_get_cpuid(index)
-
-#define SYS_Read_PMC(index)          ia64_get_pmc(index)
-#define SYS_Read_PMD(index)          ia64_get_pmd(index)
-
-#define SYS_Write_PMC(index, val)    ia64_set_pmc(index, val)
-#define SYS_Write_PMD(index, val)    ia64_set_pmd(index, val)
-
-#define SYS_Read_PMV()               UTILITY_Read_PMV()
-
-#if (KERNEL_VERSION(2, 6, 0) <= LINUX_VERSION_CODE) && (LINUX_VERSION_CODE < KERNEL_VERSION(2, 7, 0))
-  #define SYS_Write_PMV(a) \
-      asm volatile ("mov cr.pmv=%0" :: "r"(a) : "memory")
-#else
-  #define SYS_Write_PMV(a)           ia64_set_pmv(a)
-#endif
-
-extern VOID
-UTILITY_Set_PMV_Mask (VOID);
-
-extern VOID
-UTILITY_Clear_PMV_Mask (VOID);
-#define SYS_Set_PMV_Mask()        UTILITY_Set_PMV_Mask()
-#define SYS_Clear_PMV_Mask()      UTILITY_Clear_PMV_Mask()
-
-extern void
-UTILITY_Set_PSR_PP (void);
-
-extern void
-UTILITY_Clear_PSR_PP (void);
-#define SYS_Set_PSR_PP()          UTILITY_Set_PSR_PP()
-#define SYS_Clear_PSR_PP()        UTILITY_Clear_PSR_PP()
-
-extern void
-UTILITY_Set_PSR_UP (void);
-
-extern void
-UTILITY_Clear_PSR_UP (void);
-#define SYS_Set_PSR_UP()          UTILITY_Set_PSR_UP()
-#define SYS_Clear_PSR_UP()        UTILITY_Clear_PSR_UP()
-
-extern void
-UTILITY_Set_DCR_PP (void);
-
-extern void
-UTILITY_Clear_DCR_PP (void);
-#define SYS_Set_DCR_PP()          UTILITY_Set_DCR_PP()
-#define SYS_Clear_DCR_PP()        UTILITY_Clear_DCR_PP()
-
-#endif /* DRV_IA64 */
 
 extern void SYS_Perfvec_Handler (void);
 
@@ -199,9 +144,7 @@ UTILITY_Configure_CPU (U32);
 asmlinkage void SYS_Get_CSD (U32, U32 *, U32 *);
 #endif
 
-#if defined(BUILD_CHIPSET)
 extern  CS_DISPATCH
 UTILITY_Configure_Chipset (void);
-#endif
 
 #endif 

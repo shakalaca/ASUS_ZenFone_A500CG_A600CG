@@ -1,4 +1,4 @@
-/*  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+/*  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -39,6 +39,7 @@
 #include "lbr.h"
 #include "pebs.h"
 #include "time.h"
+#include "nmiwd.h"
 
 #include <linux/spinlock.h>
 #include <linux/hardirq.h>
@@ -67,6 +68,10 @@
 #define MODULES_VADDR VMALLOC_START
 #endif
 
+#ifndef preempt_enable_no_resched
+#define preempt_enable_no_resched() preempt_enable()
+#endif
+
 #define SAFE       1
 #define NOT_SAFE   0
 #define IN_IRQ     1
@@ -89,6 +94,7 @@
 #define VTSS_COLLECTOR_RUNNING 2
 #define VTSS_COLLECTOR_PAUSED  3
 #define VTSS_COLLECTOR_IS_READY atomic_read(&vtss_collector_state) >= VTSS_COLLECTOR_RUNNING
+
 static const char* state_str[4] = { "STOPPED", "INITING", "RUNNING", "PAUSED" };
 
 #define VTSS_EVENT_LOST_MODULE_ADDR 2
@@ -104,6 +110,8 @@ static atomic_t  vtss_target_count      = ATOMIC_INIT(0);
 static atomic_t  vtss_start_paused      = ATOMIC_INIT(0);
 static uid_t     vtss_session_uid       = 0;
 static gid_t     vtss_session_gid       = 0;
+
+atomic_t  vtss_mmap_reg_callcnt  = ATOMIC_INIT(0);
 
 // collector cannot work if transport uninitialized as  pointer "task->trnd" (transport)
 // is not set to NULL  during tranport "fini".
@@ -130,6 +138,8 @@ unsigned int vtss_client_minor_ver = 0;
 /*-----------------------------*/
 #define VTSS_ST_NOTIFIER   (1<<12)
 #define VTSS_ST_PMU_SET    (1<<13)
+#define VTSS_ST_MMAP_INIT  (1<<14)  //modules currently writing to the trace first time in different thread.
+
 static const char* task_state_str[] = {
     "-NEWTASK-",
     "-SOFTCFG-",
@@ -144,7 +154,8 @@ static const char* task_state_str[] = {
     "CPUEVT",
     "(COMPLETE)",
     "(NOTIFIER)",
-    "(PMU_SET)"
+    "(PMU_SET)",
+    "(MMAP_INIT)",
 };
 
 #define VTSS_IN_CONTEXT(x)            ((x)->state & VTSS_ST_IN_CONTEXT)
@@ -155,9 +166,13 @@ static const char* task_state_str[] = {
 #define VTSS_IS_NOTIFIER(x)           ((x)->state & VTSS_ST_NOTIFIER)
 #define VTSS_IS_PMU_SET(x)            ((x)->state & VTSS_ST_PMU_SET)
 
+#define VTSS_IS_MMAP_INIT(x)          ((x)->state & VTSS_ST_MMAP_INIT)
+#define VTSS_SET_MMAP_INIT(x)         (x)->state |= VTSS_ST_MMAP_INIT
+#define VTSS_CLEAR_MMAP_INIT(x)       (x)->state &= ~VTSS_ST_MMAP_INIT
+
 #define VTSS_NEED_STORE_NEWTASK(x)    ((x)->state & VTSS_ST_NEWTASK)
 #define VTSS_NEED_STORE_SOFTCFG(x)    (((x)->state & (VTSS_ST_NEWTASK | VTSS_ST_SOFTCFG)) == VTSS_ST_SOFTCFG)
-#define VTSS_NEED_STORE_PAUSE(x)      (((x)->state & (VTSS_ST_NEWTASK | VTSS_ST_SOFTCFG | VTSS_ST_PAUSE)) == VTSS_ST_PAUSE)
+#define VTSS_NEED_STORE_PAUSE(x)      ((((x)->state & (VTSS_ST_NEWTASK | VTSS_ST_SOFTCFG | VTSS_ST_PAUSE)) == VTSS_ST_PAUSE) && (atomic_read(&vtss_collector_state)== VTSS_COLLECTOR_PAUSED) )
 #define VTSS_NEED_STACK_SAVE(x)       (((x)->state & (VTSS_ST_STKDUMP | VTSS_ST_STKSAVE)) == VTSS_ST_STKSAVE)
 
 #define VTSS_ERROR_STORE_SAMPLE(x)    ((x)->state & VTSS_ST_SAMPLE)
@@ -213,13 +228,14 @@ struct vtss_task_data
     unsigned char    bts_buff[VTSS_BTS_MAX*sizeof(vtss_bts_t)];
 #endif
     char             filename[VTSS_FILENAME_SIZE];
+    char             taskname[VTSS_TASKNAME_SIZE];
     cpuevent_t       cpuevent_chain[VTSS_CFG_CHAIN_SIZE];
 //  chipevent_t      chipevent_chain[VTSS_CFG_CHAIN_SIZE];
     void*            from_ip;
 };
 
-static void vtss_mmap_all(struct vtss_task_data*, struct task_struct*);
-static void vtss_kmap_all(struct vtss_task_data*);
+static int vtss_mmap_all(struct vtss_task_data*, struct task_struct*);
+static int vtss_kmap_all(struct vtss_task_data*);
 
 #ifdef CONFIG_PREEMPT_RT
 static DEFINE_RAW_RWLOCK(vtss_recovery_rwlock);
@@ -297,6 +313,18 @@ static struct task_struct* vtss_find_task_by_tid(pid_t tid)
     return task;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0)
+static char *vtss_get_task_comm(char *taskname, struct task_struct *task)
+{
+    task_lock(task);
+    strncpy(taskname, task->comm, sizeof(task->comm));
+    task_unlock(task);
+    return taskname;
+}
+#else  /* LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0) */
+#define vtss_get_task_comm get_task_comm
+#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0) */
+
 #ifdef VTSS_AUTOCONF_INIT_WORK_TWO_ARGS
 static void vtss_cmd_stop_work(struct work_struct *work)
 #else
@@ -307,12 +335,49 @@ static void vtss_cmd_stop_work(void *work)
     kfree(work);
 }
 
+static void vtss_target_transport_wake_up(struct vtss_transport_data* trnd, struct vtss_transport_data* trnd_aux)
+{
+    if (trnd){
+        if (trnd_aux && trnd_aux != trnd) {
+            char *transport_path_aux = vtss_transport_get_filename(trnd_aux);
+//            printk("wakeup for %s\n", transport_path_aux);
+            vtss_procfs_ctrl_wake_up(transport_path_aux, strlen(transport_path_aux) + 1);
+        } else {
+            char *transport_path = vtss_transport_get_filename(trnd);
+            TRACE("wakeup for %s", transport_path);
+//            printk("wakeup for %s\n", transport_path);
+            vtss_procfs_ctrl_wake_up(transport_path, strlen(transport_path) + 1);
+        }
+    }
+}
 struct vtss_target_fork_data
 {
     vtss_task_map_item_t* item;
     pid_t                 tid;
     pid_t                 pid;
 };
+
+void vtss_target_del_empty_transport(struct vtss_transport_data* trnd, struct vtss_transport_data* trnd_aux)
+{
+
+    unsigned long flags = 0;
+    if (!trnd && !trnd_aux) return;
+    read_lock_irqsave(&vtss_transport_init_rwlock, flags);
+    if (atomic_read(&vtss_transport_initialized) != 0 && trnd != NULL) {
+        if (trnd == trnd_aux)trnd_aux = NULL;
+        if (trnd_aux && vtss_transport_delref(trnd_aux) == 0) {
+            vtss_transport_complete(trnd_aux);
+            TRACE("COMPLETE empty aux transport");
+        }
+        if (trnd && vtss_transport_delref(trnd) == 0) {
+            vtss_transport_complete(trnd);
+            TRACE("COMPLETE empty transport");
+        }
+        /* NOTE: tskd->trnd will be destroyed in vtss_transport_fini() */
+    }
+    read_unlock_irqrestore(&vtss_transport_init_rwlock, flags);
+}
+
 
 #ifdef VTSS_AUTOCONF_INIT_WORK_TWO_ARGS
 static void vtss_target_fork_work(struct work_struct *work)
@@ -323,11 +388,15 @@ static void vtss_target_fork_work(void *work)
     struct vtss_work* my_work = (struct vtss_work*)work;
     struct vtss_target_fork_data* data = (struct vtss_target_fork_data*)(&my_work->data);
     struct vtss_task_data* tskd = (struct vtss_task_data*)&(data->item->data);
+    int rc = 0;
 
     TRACE("(%d:%d)=>(%d:%d): data=0x%p, u=%d, n=%d",
           tskd->tid, tskd->pid, data->tid, data->pid,
           tskd, atomic_read(&data->item->usage), atomic_read(&vtss_target_count));
-    vtss_target_new(data->tid, data->pid, tskd->pid, tskd->filename, NULL, NULL);
+    rc = vtss_target_new(data->tid, data->pid, tskd->pid, tskd->filename, NULL, NULL);
+    if (unlikely(rc)){
+        ERROR("(%d:%d): Error in vtss_target_new()=%d. Fork work failed", tskd->tid, tskd->pid, rc);
+    }
     /* release data */
     vtss_task_map_put_item(data->item);
     kfree(work);
@@ -377,7 +446,9 @@ static void vtss_target_exec_work(void *work)
         /* item was replaced successfully, so remove it */
         vtss_target_del(item);
     } else {
-        TRACE("(%d:%d): Error in vtss_target_new()=%d", tskd->tid, tskd->pid, rc);
+        ERROR("(%d:%d): Error in vtss_target_new()=%d", tskd->tid, tskd->pid, rc);
+        //delete transport as it was notassigned to the new item
+        vtss_target_del_empty_transport(data->new_trnd, data->new_trnd_aux);
         /* release old data */
         vtss_task_map_put_item(item);
     }
@@ -389,6 +460,8 @@ struct vtss_target_exec_attach_data
     struct task_struct *task;
     char filename[VTSS_FILENAME_SIZE];
     char config[VTSS_FILENAME_SIZE];
+    struct vtss_transport_data* new_trnd;
+    struct vtss_transport_data* new_trnd_aux;
 };
 
 #ifdef VTSS_AUTOCONF_INIT_WORK_TWO_ARGS
@@ -401,9 +474,10 @@ static void vtss_target_exec_attach_work(void *work)
     struct vtss_work* my_work = (struct vtss_work*)work;
     struct vtss_target_exec_attach_data* data = (struct vtss_target_exec_attach_data*)(&my_work->data);
 
-    rc = vtss_target_new(TASK_TID(data->task), TASK_PID(data->task), TASK_PID(TASK_PARENT(data->task)), data->filename, NULL, NULL);
+    rc = vtss_target_new(TASK_TID(data->task), TASK_PID(data->task), TASK_PID(TASK_PARENT(data->task)), data->filename, data->new_trnd, data->new_trnd_aux);
     if (rc) {
         TRACE("(%d:%d): Error in vtss_target_new()=%d", TASK_TID(data->task), TASK_PID(data->task), rc);
+        vtss_target_del_empty_transport(data->new_trnd, data->new_trnd_aux);
     }
     kfree(work);
 } 
@@ -426,6 +500,72 @@ static void vtss_overflow_work(void *work)
     INFO("Stop  busy loop...");
     kfree(work);
 }
+
+#ifdef VTSS_AUTOCONF_INIT_WORK_TWO_ARGS
+static void vtss_target_add_mmap_work(struct work_struct *work)
+#else
+static void vtss_target_add_mmap_work(void *work)
+#endif
+{
+    //This function load module map in the case if smth was wrong during first time loading
+    //This is workaround on the problem:
+    //During attach the "transfer loop" is not activated till the collection staryted.
+    //The ring buffer is overflow on module loading as nobody reads it and for huge module maps we have unknowns.
+    //So, we have to schedule the new task and try again.
+    struct vtss_work* my_work = (struct vtss_work*)work;
+    vtss_task_map_item_t* item = NULL;
+    struct vtss_task_data* tskd = NULL;
+    struct task_struct* task = NULL;
+    int cnt = 0x10;
+    if (my_work == NULL){
+        ERROR("Internal error: vtss_target_add_map_work: work == NULL");
+        return;
+    }
+    item = *((vtss_task_map_item_t**)(&my_work->data));
+    if (item == NULL){
+        ERROR("Internal error: vtss_target_add_map_work: item == NULL");
+        return;
+    }
+    tskd = (struct vtss_task_data*)&item->data;
+    if (tskd == NULL){
+        ERROR("Internal error: vtss_target_add_map_work: tskd == NULL");
+        goto out;
+    }
+    if (tskd->trnd_aux == NULL){
+        ERROR("Internal error: vtss_target_add_map_work: tskd->trnd_aux == NULL");
+        goto out;
+    }
+    if (VTSS_IS_COMPLETE(tskd)){
+         //No needs to add module map
+         TRACE("task is complete, no needs to load modules anymore");
+         goto out;
+    }
+    task = vtss_find_task_by_tid(tskd->tid);
+    if (tskd == NULL){
+        ERROR("Internal error: vtss_target_add_map_work: tskd == NULL");
+        goto out;
+    }
+
+    while (vtss_transport_is_ready(tskd->trnd_aux)==0 && cnt >0){
+        cnt--;
+        INFO("Awaiting when transport is ready to write module map");
+        msleep_interruptible(100);
+    }
+    if (vtss_mmap_all(tskd, task)){
+        msleep_interruptible(10); //wait again!
+        ERROR("Module map was not loaded completely to the trace!");
+    }
+    if (vtss_kmap_all(tskd)){
+        ERROR("Kernel map was not loaded completely to the trace!");
+    }
+    TRACE("(%d:%d): data=0x%p, u=%d, n=%d",
+            tskd->tid, tskd->pid, tskd, atomic_read(&item->usage), atomic_read(&vtss_target_count));
+out:
+    /* release data */
+    vtss_task_map_put_item(item);
+    kfree(work);
+}
+
 
 #ifdef VTSS_AUTOCONF_INIT_WORK_TWO_ARGS
 typedef void (vtss_work_func_t) (struct work_struct *work);
@@ -539,7 +679,6 @@ static void vtss_profiling_resume(vtss_task_map_item_t* item, int bts_resume)
     read_lock_irqsave(&vtss_transport_init_rwlock, flags);
     // VTSS_COLLECTOR_IS_READY garantee that transport initialized
     if (!VTSS_COLLECTOR_IS_READY || unlikely(!vtss_cpu_active(smp_processor_id()) || VTSS_IS_COMPLETE(tskd))) {
-//        if (cnt <50)printk("resume: pause in resume\n");
         vtss_profiling_pause();
         read_unlock_irqrestore(&vtss_transport_init_rwlock, flags);
         return;
@@ -552,7 +691,6 @@ static void vtss_profiling_resume(vtss_task_map_item_t* item, int bts_resume)
         if (vtss_transport_is_overflowing(tskd->trnd)) {
 #ifdef VTSS_OVERFLOW_PAUSE
             vtss_cmd_pause();
-//        if (cnt<50)printk("resume: pause in resume 2");
             vtss_profiling_pause();
             read_unlock_irqrestore(&vtss_transport_init_rwlock, flags);
             return;
@@ -569,7 +707,6 @@ static void vtss_profiling_resume(vtss_task_map_item_t* item, int bts_resume)
             vtss_cmd_resume();
 #endif
     default:
-//        if (cnt<50)printk("resume: pause in resume 3");
         vtss_profiling_pause();
         read_unlock_irqrestore(&vtss_transport_init_rwlock, flags);
         return;
@@ -606,8 +743,20 @@ static void vtss_target_dtr(vtss_task_map_item_t* item, void* args)
 {
     int cpu;
     unsigned long flags;
+    struct task_struct *task = NULL;
     struct vtss_task_data* tskd = (struct vtss_task_data*)&item->data;
     TRACE(" (%d:%d): fini='%s'", tskd->tid, tskd->pid, tskd->filename);
+    /* Set thread name in case of detach (exit has not been called) */
+    if (tskd->taskname[0] == '\0')  {
+        task = vtss_find_task_by_tid(tskd->tid);
+        if (task != NULL) { /* task exist */
+            vtss_get_task_comm(tskd->taskname, task);
+            tskd->taskname[VTSS_TASKNAME_SIZE-1] = '\0';
+        } else {
+            ERROR(" (%d:%d): u=%d, n=%d task don't exist",
+                    tskd->tid, tskd->pid, atomic_read(&item->usage), atomic_read(&vtss_target_count));
+        }
+    }
 #if defined(CONFIG_PREEMPT_NOTIFIERS) && defined(VTSS_USE_PREEMPT_NOTIFIERS)
     if (VTSS_IS_NOTIFIER(tskd)) {
         /* If forceful destruction from vtss_task_map_fini() */
@@ -631,6 +780,9 @@ static void vtss_target_dtr(vtss_task_map_item_t* item, void* args)
     read_lock_irqsave(&vtss_transport_init_rwlock, flags);
     if (atomic_read(&vtss_transport_initialized) != 0 && tskd->trnd != NULL) {
         if (tskd->trnd == tskd->trnd_aux)tskd->trnd_aux = NULL;
+        if (vtss_record_thread_name(tskd->trnd, tskd->tid, (const char*)tskd->taskname, NOT_SAFE)) {
+            TRACE("vtss_record_thread_name() FAIL");
+        }
         if (vtss_record_thread_stop(tskd->trnd, tskd->tid, tskd->pid, tskd->cpu, NOT_SAFE)) {
             TRACE("vtss_record_thread_stop() FAIL");
         }
@@ -651,6 +803,8 @@ static void vtss_target_dtr(vtss_task_map_item_t* item, void* args)
             vtss_transport_complete(tskd->trnd);
             TRACE(" (%d:%d): COMPLETE", tskd->tid, tskd->pid);
         }
+        tskd->trnd = NULL;
+        tskd->trnd_aux = NULL;
         /* NOTE: tskd->trnd will be destroyed in vtss_transport_fini() */
     }
     read_unlock_irqrestore(&vtss_transport_init_rwlock, flags);
@@ -667,6 +821,7 @@ int vtss_target_new(pid_t tid, pid_t pid, pid_t ppid, const char* filename, stru
     vtss_task_map_item_t *item;
 
 
+    TRACE("vtss_target_new(%d,%d,%d) \n",tid, pid, ppid);
     if (atomic_read(&vtss_transport_initialized) == 0){
         ERROR(" (%d:%d): Transport not initialized", tid, pid);
         return VTSS_RET_CANCEL;
@@ -675,14 +830,14 @@ int vtss_target_new(pid_t tid, pid_t pid, pid_t ppid, const char* filename, stru
     item = vtss_task_map_alloc(tid, sizeof(struct vtss_task_data), vtss_target_dtr, (GFP_KERNEL | __GFP_ZERO));
 
     if (item == NULL) {
-        ERROR(" (%d:%d): Unable to allocate", tid, pid);
+        ERROR(" (%d:%d): Unable to allocate, size = %d", tid, pid, (int)sizeof(struct vtss_task_data));
         return -ENOMEM;
     }
     tskd = (struct vtss_task_data*)&item->data;
     tskd->tid        = tid;
     tskd->pid        = pid;
     tskd->trnd       = NULL;
-    tskd->trnd_aux       = NULL;
+    tskd->trnd_aux   = NULL;
     tskd->ppid       = ppid;
 
     tskd->m32        = 0; /* unknown so far, assume native */
@@ -713,6 +868,7 @@ int vtss_target_new(pid_t tid, pid_t pid, pid_t ppid, const char* filename, stru
         memcpy(tskd->filename, filename, size);
     }
     tskd->filename[size] = '\0';
+    tskd->taskname[0] = '\0';
     /* Transport initialization */
     read_lock_irqsave(&vtss_transport_init_rwlock, flags);
     if (atomic_read(&vtss_transport_initialized) != 0){
@@ -723,14 +879,15 @@ int vtss_target_new(pid_t tid, pid_t pid, pid_t ppid, const char* filename, stru
             tskd->trnd_aux = trnd_aux ? trnd_aux : tskd->trnd;
         }
         if (tskd->trnd != NULL && tskd->trnd_aux != NULL) {
-            char *transport_path = vtss_transport_get_filename(tskd->trnd);
-            char *transport_path_aux = vtss_transport_get_filename(tskd->trnd_aux);
+//            char *transport_path = vtss_transport_get_filename(tskd->trnd);
+//            char *transport_path_aux = vtss_transport_get_filename(tskd->trnd_aux);
             if (!trnd)
             {
                 //transport has just been created
-                vtss_procfs_ctrl_wake_up(transport_path, strlen(transport_path) + 1);
+                vtss_target_transport_wake_up(tskd->trnd, tskd->trnd_aux);
+                //vtss_procfs_ctrl_wake_up(transport_path, strlen(transport_path) + 1);
                 //temp code. delete the next line
-                if (tskd->trnd != tskd->trnd_aux) vtss_procfs_ctrl_wake_up(transport_path_aux, strlen(transport_path_aux) + 1);
+                //if (tskd->trnd != tskd->trnd_aux) vtss_procfs_ctrl_wake_up(transport_path_aux, strlen(transport_path_aux) + 1);
             }
             if (vtss_record_magic(tskd->trnd, SAFE)) {
                 TRACE("vtss_record_magic() FAIL");
@@ -760,7 +917,7 @@ int vtss_target_new(pid_t tid, pid_t pid, pid_t ppid, const char* filename, stru
         if (tskd->trnd != NULL) {
             vtss_transport_addref(tskd->trnd);
         }
-        if (tskd->trnd_aux != NULL) {
+        if (tskd->trnd!=tskd->trnd_aux && tskd->trnd_aux != NULL) {
             vtss_transport_addref(tskd->trnd_aux);
         }
         vtss_task_map_put_item(item0);
@@ -831,16 +988,21 @@ int vtss_target_new(pid_t tid, pid_t pid, pid_t ppid, const char* filename, stru
                 TRACE("vtss_record_module() FAIL");
             }
 #endif
-            vtss_mmap_all(tskd, task);
-            vtss_kmap_all(tskd);
+            if (vtss_mmap_all(tskd, task) || vtss_kmap_all(tskd)){
+                 // we have to try load map again!
+                 vtss_task_map_item_t* item_temp = vtss_task_map_get_item(tskd->tid);
+                 if (item == item_temp){
+                     INFO("Map file was not loaded completely. Arranged the task to finish this");
+                     if (vtss_queue_work(-1, vtss_target_add_mmap_work, &item, sizeof(item))){
+                            ERROR("Internal error: add mmap task was not arranged");
+                            vtss_task_map_put_item(item_temp);
+                     }
+                } else {
+                    vtss_task_map_put_item(item_temp);
+                    ERROR("Internal error: task map error");
+                }
+            }
         }
-        /* ========================================================= */
-        /* Add new item in task map. Tracing starts after this call. */
-        /* ========================================================= */
-        atomic_inc(&vtss_target_count);
-        vtss_task_map_add_item(item);
-        TRACE(" (%d:%d): u=%d, n=%d, init='%s'",
-            tskd->tid, tskd->pid, atomic_read(&item->usage), atomic_read(&vtss_target_count), tskd->filename);
 #if defined(CONFIG_PREEMPT_NOTIFIERS) && defined(VTSS_USE_PREEMPT_NOTIFIERS)
         /**
          * TODO: add to task, not to current !!!
@@ -862,9 +1024,9 @@ int vtss_target_new(pid_t tid, pid_t pid, pid_t ppid, const char* filename, stru
             dbgmsg[rc] = '\0';
             vtss_record_debug_info(tskd->trnd, dbgmsg, 0);
         }
-        TRACE(" (%d:%d): u=%d, n=%d, done='%s'",
+        INFO("The new task is not valid. The task is not added to profile (%d:%d): u=%d, n=%d, done='%s'",
                 tskd->tid, tskd->pid, atomic_read(&item->usage), atomic_read(&vtss_target_count), tskd->filename);
-        vtss_task_map_put_item(item);
+        vtss_target_del(item);
         read_unlock_irqrestore(&vtss_transport_init_rwlock, flags);
         return 0;
     }
@@ -883,8 +1045,9 @@ int vtss_target_del(vtss_task_map_item_t* item)
 
     TRACE(" (%d:%d): u=%d, n=%d, file='%s'",
             tskd->tid, tskd->pid, atomic_read(&item->usage), atomic_read(&vtss_target_count), tskd->filename);
-    vtss_task_map_del_item(item);
-    vtss_task_map_put_item(item);
+    if (vtss_task_map_del_item(item) == 0){
+        vtss_task_map_put_item(item);
+    }
     if (atomic_dec_and_test(&vtss_target_count)) {
         vtss_procfs_ctrl_wake_up(NULL, 0);
     }
@@ -919,27 +1082,59 @@ void vtss_target_fork(struct task_struct *task, struct task_struct *child)
                 }
                 // NOTE: vtss_task_map_put_item(item) in vtss_target_fork_work() 
             } else {
-                vtss_target_new(TASK_TID(child), TASK_PID(child), tskd->pid, tskd->filename, NULL, NULL);
+                int rc = 0;
+                rc = vtss_target_new(TASK_TID(child), TASK_PID(child), tskd->pid, tskd->filename, NULL, NULL);
+                if (unlikely(rc)) ERROR("(%d:%d): Error in vtss_target_new()=%d. Fork failed!", tskd->tid, tskd->pid, rc);
                 vtss_task_map_put_item(item);
             }
         }
     }
 }
 
+/*void vtss_target_attach(struct task_struct *task, const char *filename)
+{
+    struct vtss_target_exec_attach_data* data = (struct vtss_target_exec_attach_data*)kmalloc(sizeof(struct vtss_target_exec_attach_data), GFP_ATOMIC);
+    size_t size = min((size_t)VTSS_FILENAME_SIZE-1, (size_t)strlen(filename));
+    TRACE("(%d:%d): n=%d, file='%s', config='%s'",
+            TASK_TID(task), TASK_PID(task),
+            atomic_read(&vtss_target_count), filename, config);
+    if (data == NULL) {
+            ERROR("No memory for vtss_target_exec_attach_data");
+            return;
+        }
+        data->task = task;
+        if (vtss_client_major_ver > 1 || (vtss_client_major_ver ==1 && vtss_client_minor_ver >=1)){
+                data->new_trnd = vtss_transport_create(TASK_PID(TASK_PARENT(task)), TASK_PID(task), vtss_session_uid, vtss_session_gid);
+                data->new_trnd_aux = vtss_transport_create_aux(data->new_trnd, vtss_session_uid, vtss_session_gid);
+        }
+        else {
+                data->new_trnd = NULL;
+                data->new_trnd_aux = NULL;
+        }
+        memcpy(data->filename, filename, size);
+        data->filename[size] = '\0';
+        size = min((size_t)VTSS_FILENAME_SIZE-1, (size_t)strlen(config));
+        memcpy(data->config, config, size);
+        data->config[size] = '\0';
+        if (!vtss_queue_work(-1, vtss_target_exec_attach_work, data, sizeof(struct vtss_target_exec_attach_data))) {
+            set_tsk_need_resched(task);
+            vtss_target_transport_wake_up(data->new_trnd, data->new_trnd_aux);
+        } else{
+                vtss_target_del_empty_transport(data->new_trnd, data->new_trnd_aux);
+        }
+        kfree(data);
+}*/
+
 void vtss_target_exec_enter(struct task_struct *task, const char *filename, const char *config)
 {
     vtss_task_map_item_t* item;
 
-//    printk("resume: pause in exec enter");
     vtss_profiling_pause();
     if(!VTSS_COLLECTOR_IS_READY){
          //vtss collector is unitialized
          return;
     }
     if (atomic_read(&vtss_transport_initialized)==0) return;
-    if (atomic_read(&vtss_target_count) == 0 ) {
-        return;
-    }
     item = vtss_task_map_get_item(TASK_TID(task));
     if (item != NULL) {
         struct vtss_task_data* tskd = (struct vtss_task_data*)&item->data;
@@ -953,7 +1148,7 @@ void vtss_target_exec_enter(struct task_struct *task, const char *filename, cons
         }
 #endif
         tskd->state |= VTSS_ST_COMPLETE;
-        tskd->state &= ~VTSS_ST_PMU_SET;
+//        tskd->state &= ~VTSS_ST_PMU_SET;
         vtss_task_map_put_item(item);
     }
 }
@@ -979,26 +1174,21 @@ void vtss_target_exec_leave(struct task_struct *task, const char *filename, cons
             tskd->filename[size] = '\0';
             tskd->cpu = smp_processor_id();
             data.item = item;
-            printk("major=%d, minor=%d\n", vtss_client_major_ver, vtss_client_minor_ver);
             if (vtss_client_major_ver > 1 || (vtss_client_major_ver ==1 && vtss_client_minor_ver >=1)){
                 data.new_trnd = vtss_transport_create(tskd->ppid, tskd->pid, vtss_session_uid, vtss_session_gid);
                 data.new_trnd_aux = vtss_transport_create_aux(data.new_trnd, vtss_session_uid, vtss_session_gid);
+//                vtss_target_transport_wake_up(tskd->trnd, tskd->trnd_aux);
             }
             else {
-                printk("everithing is 0: major=%d, minor=%d\n", vtss_client_major_ver, vtss_client_minor_ver);
                 data.new_trnd = NULL;
                 data.new_trnd_aux = NULL;
             }
             if (vtss_queue_work(-1, vtss_target_exec_work, &data, sizeof(data))) {
-                if (data.new_trnd) vtss_transport_complete(data.new_trnd);
-                if (data.new_trnd_aux) vtss_transport_complete(data.new_trnd_aux);
+                vtss_target_del_empty_transport(data.new_trnd, data.new_trnd_aux);
                 vtss_task_map_put_item(item);
             } else {
-                if (data.new_trnd){
-                    char *transport_path = data.new_trnd_aux ? vtss_transport_get_filename(data.new_trnd_aux):vtss_transport_get_filename(data.new_trnd);
-                    vtss_procfs_ctrl_wake_up(transport_path, strlen(transport_path) + 1);
-                }
                 set_tsk_need_resched(task);
+                vtss_target_transport_wake_up(data.new_trnd, data.new_trnd_aux);
             }
 /*
             if (irqs_disabled()) {
@@ -1030,6 +1220,7 @@ void vtss_target_exec_leave(struct task_struct *task, const char *filename, cons
             tskd->state |= VTSS_ST_NOTIFIER;
 #endif
             tskd->state &= ~VTSS_ST_COMPLETE;
+            tskd->state |= VTSS_ST_PMU_SET;
             vtss_task_map_put_item(item);
         }
     } else if (*config != '\0' && rc == 0) { /* attach to current process */
@@ -1043,6 +1234,14 @@ void vtss_target_exec_leave(struct task_struct *task, const char *filename, cons
             return;
         }
         data->task = task;
+        if (vtss_client_major_ver > 1 || (vtss_client_major_ver ==1 && vtss_client_minor_ver >=1)){
+                data->new_trnd = vtss_transport_create(TASK_PID(TASK_PARENT(task)), TASK_PID(task), vtss_session_uid, vtss_session_gid);
+                data->new_trnd_aux = vtss_transport_create_aux(data->new_trnd, vtss_session_uid, vtss_session_gid);
+        }
+        else {
+                data->new_trnd = NULL;
+                data->new_trnd_aux = NULL;
+        }
         memcpy(data->filename, filename, size);
         data->filename[size] = '\0';
         size = min((size_t)VTSS_FILENAME_SIZE-1, (size_t)strlen(config));
@@ -1050,6 +1249,9 @@ void vtss_target_exec_leave(struct task_struct *task, const char *filename, cons
         data->config[size] = '\0';
         if (!vtss_queue_work(-1, vtss_target_exec_attach_work, data, sizeof(struct vtss_target_exec_attach_data))) {
             set_tsk_need_resched(task);
+            vtss_target_transport_wake_up(data->new_trnd, data->new_trnd_aux);
+        } else{
+                vtss_target_del_empty_transport(data->new_trnd, data->new_trnd_aux);
         }
         kfree(data);
     }
@@ -1059,11 +1261,7 @@ void vtss_target_exit(struct task_struct *task)
 {
     vtss_task_map_item_t* item;
 
-//    printk("resume: pause in exit");
     vtss_profiling_pause();
-    if (atomic_read(&vtss_target_count) ==0 ) {
-        return;
-    }
     item = vtss_task_map_get_item(TASK_TID(task));
     if (item != NULL) {
         struct vtss_task_data* tskd = (struct vtss_task_data*)&item->data;
@@ -1078,10 +1276,14 @@ void vtss_target_exit(struct task_struct *task)
 #endif
         tskd->cpu = smp_processor_id();
         tskd->state |= VTSS_ST_COMPLETE;
-        tskd->state &= ~VTSS_ST_PMU_SET;
+//        tskd->state &= ~VTSS_ST_PMU_SET;
+        vtss_get_task_comm(tskd->taskname, task);
+        tskd->taskname[VTSS_TASKNAME_SIZE-1] = '\0';
         if (irqs_disabled()) {
             if (vtss_queue_work(-1, vtss_target_exit_work, &item, sizeof(item))) {
                 vtss_target_del(item);
+            } else {
+                set_tsk_need_resched(task);
             }
             /* NOTE: vtss_task_map_put_item(item) in vtss_target_exit_work() */
         } else {
@@ -1162,18 +1364,24 @@ void vtss_syscall_leave(struct pt_regs* regs)
 
 #endif /* VTSS_SYSCALL_TRACE */
 
-static void vtss_kmap_all(struct vtss_task_data* tskd)
+static int vtss_kmap_all(struct vtss_task_data* tskd)
 {
     struct module* mod;
     struct list_head* modules;
     long long cputsc, realtsc;
+    int repeat = 0;
 
+    if (VTSS_IS_MMAP_INIT(tskd)){
+        ERROR("Kernel map was not loaded because currently the map is in initialized state");
+        return 1;
+    }
 #ifdef VTSS_AUTOCONF_MODULE_MUTEX
     mutex_lock(&module_mutex);
 #endif
+    VTSS_SET_MMAP_INIT(tskd);
     vtss_time_get_sync(&cputsc, &realtsc);
     for(modules = THIS_MODULE->list.prev; (unsigned long)modules > MODULES_VADDR; modules = modules->prev);
-    list_for_each_entry(mod, modules, list) {
+    list_for_each_entry(mod, modules, list){
         const char *name   = mod->name;
         unsigned long addr = (unsigned long)mod->module_core;
         unsigned long size = mod->core_size;
@@ -1182,43 +1390,61 @@ static void vtss_kmap_all(struct vtss_task_data* tskd)
             TRACE("module: addr=0x%lx, size=%lu, name='%s'", addr, size, name);
             if (vtss_record_module(tskd->trnd_aux, 0, addr, size, name, 0, cputsc, realtsc, SAFE)) {
                 TRACE("vtss_record_module() FAIL");
+                repeat = 1;
             }
         }
     }
+    VTSS_CLEAR_MMAP_INIT(tskd);
 #ifdef VTSS_AUTOCONF_MODULE_MUTEX
     mutex_unlock(&module_mutex);
 #endif
+    return repeat;
 }
 
 void vtss_kmap(struct task_struct* task, const char* name, unsigned long addr, unsigned long pgoff, unsigned long size)
 {
     unsigned long flags;
-    vtss_task_map_item_t* item = vtss_task_map_get_item(TASK_TID(task));
-
+    vtss_task_map_item_t* item = NULL;
+    
+    if (!task){
+        return;
+    }
+    item = vtss_task_map_get_item(TASK_TID(task));
     read_lock_irqsave(&vtss_transport_init_rwlock, flags);
     if (atomic_read(&vtss_transport_initialized) != 0 && item != NULL) {
         struct vtss_task_data* tskd = (struct vtss_task_data*)&item->data;
-
         long long cputsc, realtsc;
-        vtss_time_get_sync(&cputsc, &realtsc);
-        TRACE("addr=0x%lx, size=%lu, name='%s', pgoff=%lu", addr, size, name, pgoff);
-        if (vtss_record_module(tskd->trnd_aux, 0, addr, size, name, pgoff, cputsc, realtsc, SAFE)) {
-            TRACE("vtss_record_module() FAIL");
+
+        if (!VTSS_IS_MMAP_INIT(tskd)){
+            vtss_time_get_sync(&cputsc, &realtsc);
+            TRACE("addr=0x%lx, size=%lu, name='%s', pgoff=%lu", addr, size, name, pgoff);
+            if (vtss_record_module(tskd->trnd_aux, 0, addr, size, name, pgoff, cputsc, realtsc, SAFE)) {
+                 ERROR("vtss_record_module() FAIL");
+            }
         }
-        vtss_task_map_put_item(item);
     }
     read_unlock_irqrestore(&vtss_transport_init_rwlock, flags);
+    if (item != NULL) vtss_task_map_put_item(item);
 }
-
-static void vtss_mmap_all(struct vtss_task_data* tskd, struct task_struct* task)
+static int vtss_mmap_all(struct vtss_task_data* tskd, struct task_struct* task)
 {
     struct mm_struct *mm;
     char *pname, *tmp = (char*)__get_free_page(GFP_TEMPORARY | __GFP_NORETRY | __GFP_NOWARN);
+    int repeat = 0;
 
-    if (tmp && ((mm = get_task_mm(task)) != NULL)) {
+    if (!tmp){
+        ERROR("No memory");
+        return 1;
+    }
+    if (VTSS_IS_MMAP_INIT(tskd)){
+        ERROR("Module map was not loaded because currently the map is in initialized state");
+        return 1;
+    }
+    if ((mm = get_task_mm(task)) != NULL) {
         int is_vdso_found = 0;
         struct vm_area_struct* vma;
         long long cputsc, realtsc;
+        VTSS_SET_MMAP_INIT(tskd);
         vtss_time_get_sync(&cputsc, &realtsc);
         down_read(&mm->mmap_sem);
         for (vma = mm->mmap; vma != NULL; vma = vma->vm_next) {
@@ -1231,6 +1457,7 @@ static void vtss_mmap_all(struct vtss_task_data* tskd, struct task_struct* task)
                     TRACE("addr=0x%lx, size=%lu, file='%s', pgoff=%lu", vma->vm_start, (vma->vm_end - vma->vm_start), pname, vma->vm_pgoff);
                     if (vtss_record_module(tskd->trnd_aux, tskd->m32, vma->vm_start, (vma->vm_end - vma->vm_start), pname, vma->vm_pgoff, cputsc, realtsc, SAFE)) {
                         TRACE("vtss_record_module() FAIL");
+                        repeat = 1;
                     }
                 }
             } else if (vma->vm_mm && vma->vm_start == (long)vma->vm_mm->context.vdso) {
@@ -1238,6 +1465,7 @@ static void vtss_mmap_all(struct vtss_task_data* tskd, struct task_struct* task)
                 TRACE("addr=0x%lx, size=%lu, name='%s', pgoff=%lu", vma->vm_start, (vma->vm_end - vma->vm_start), "[vdso]", 0UL);
                 if (vtss_record_module(tskd->trnd_aux, tskd->m32, vma->vm_start, (vma->vm_end - vma->vm_start), "[vdso]", 0, cputsc, realtsc, SAFE)) {
                     TRACE("vtss_record_module() FAIL");
+                    repeat = 1;
                 }
             }
         }
@@ -1245,13 +1473,16 @@ static void vtss_mmap_all(struct vtss_task_data* tskd, struct task_struct* task)
             TRACE("addr=0x%p, size=%lu, name='%s', pgoff=%lu", mm->context.vdso, PAGE_SIZE, "[vdso]", 0UL);
             if (vtss_record_module(tskd->trnd_aux, tskd->m32, (unsigned long)((size_t)mm->context.vdso), PAGE_SIZE, "[vdso]", 0, cputsc, realtsc, SAFE)) {
                 TRACE("vtss_record_module() FAIL");
+                repeat = 1;
             }
         }
         up_read(&mm->mmap_sem);
+        VTSS_CLEAR_MMAP_INIT(tskd);
         mmput(mm);
     }
     if (tmp)
         free_page((unsigned long)tmp);
+    return repeat;
 }
 
 void vtss_mmap(struct file *file, unsigned long addr, unsigned long pgoff, unsigned long size)
@@ -1262,10 +1493,10 @@ void vtss_mmap(struct file *file, unsigned long addr, unsigned long pgoff, unsig
     read_lock_irqsave(&vtss_transport_init_rwlock, flags);
     if (atomic_read(&vtss_transport_initialized) != 0 && item != NULL) {
         struct vtss_task_data* tskd = (struct vtss_task_data*)&item->data;
-
+        atomic_inc(&vtss_mmap_reg_callcnt);
         if (unlikely(VTSS_IS_COMPLETE(tskd)))
             tskd = vtss_wait_for_completion(&item);
-        if (tskd != NULL) {
+        if (tskd != NULL && (!VTSS_IS_MMAP_INIT(tskd))) {
             char *tmp = (char*)__get_free_page(GFP_NOWAIT | __GFP_NORETRY | __GFP_NOWARN);
             long long cputsc, realtsc;
             vtss_time_get_sync(&cputsc, &realtsc);
@@ -1286,6 +1517,49 @@ void vtss_mmap(struct file *file, unsigned long addr, unsigned long pgoff, unsig
     read_unlock_irqrestore(&vtss_transport_init_rwlock, flags);
 }
 
+#if 0
+void vtss_mmap_reload(struct file *file, unsigned long addr)
+{
+    unsigned long flags;
+    vtss_task_map_item_t* item = vtss_task_map_get_item(TASK_TID(current));
+    if (item!=NULL){
+        struct mm_struct *mm =  current->mm;
+        read_lock_irqsave(&vtss_transport_init_rwlock, flags);
+        if (atomic_read(&vtss_transport_initialized) != 0 && mm != NULL) {
+            struct vtss_task_data* tskd = (struct vtss_task_data*)&item->data;
+            if (unlikely(VTSS_IS_COMPLETE(tskd)))
+                tskd = vtss_wait_for_completion(&item);
+            if (tskd != NULL) {
+                char *pname, *tmp = (char*)__get_free_page(GFP_NOWAIT | __GFP_NORETRY | __GFP_NOWARN);
+                if (tmp != NULL)
+                {
+                    long long cputsc, realtsc;
+                    struct vm_area_struct* vma = NULL;
+                    down_read(&mm->mmap_sem);
+                    vma = find_vma(mm, addr);
+                    vtss_time_get_sync(&cputsc, &realtsc);
+                    if (vma!=0 && tmp!=0 && (vma->vm_flags & VM_EXEC) && !(vma->vm_flags & VM_WRITE) &&
+                                                            vma->vm_file && vma->vm_file->f_dentry)
+                    {
+                        pname = D_PATH(vma->vm_file, tmp, PAGE_SIZE);
+                        if (!IS_ERR(pname)) {
+                           TRACE("addr=0x%lx, size=%lu, file='%s', pgoff=%lu", vma->vm_start, (vma->vm_end - vma->vm_start), pname, vma->vm_pgoff);
+                           if (vtss_record_module(tskd->trnd_aux, tskd->m32, vma->vm_start, (vma->vm_end - vma->vm_start), pname, vma->vm_pgoff, cputsc, realtsc, SAFE)) {
+                               TRACE("vtss_record_module() FAIL");
+                           }
+                        }
+                    }
+                    up_read(&mm->mmap_sem);
+                    free_page((unsigned long)tmp);
+                }
+            }
+        }
+        read_unlock_irqrestore(&vtss_transport_init_rwlock, flags);
+        vtss_task_map_put_item(item);
+    }
+}
+#endif
+        
 static void vtss_sched_switch_from(vtss_task_map_item_t* item, struct task_struct* task, void* bp, void* ip)
 {
     unsigned long flags;
@@ -1293,21 +1567,18 @@ static void vtss_sched_switch_from(vtss_task_map_item_t* item, struct task_struc
     struct vtss_task_data* tskd = (struct vtss_task_data*)&item->data;
     int is_preempt = (task->state == TASK_RUNNING) ? 1 : 0;
 
-//    printk("from\n");
 
 
 #ifdef VTSS_DEBUG_STACK
     unsigned long stack_size = ((unsigned long)(&stack_size)) & (THREAD_SIZE-1);
     if (unlikely(stack_size < (VTSS_MIN_STACK_SPACE + sizeof(struct thread_info)))) {
         ERROR("(%d:%d): LOW STACK %lu", TASK_PID(current), TASK_TID(current), stack_size);
-//        printk("switch: pause in switch from");
         vtss_profiling_pause();
         tskd->state &= ~VTSS_ST_PMU_SET;
         return;
     }
 #endif
     if (unlikely(!vtss_cpu_active(smp_processor_id()) || VTSS_IS_COMPLETE(tskd))) {
-//        printk("switch from: pause in switch from");
         vtss_profiling_pause();
         tskd->state &= ~VTSS_ST_PMU_SET;
         return;
@@ -1390,14 +1661,12 @@ static void vtss_sched_switch_to(vtss_task_map_item_t* item, struct task_struct*
     int state = atomic_read(&vtss_collector_state);
     struct vtss_task_data* tskd = (struct vtss_task_data*)&item->data;
 
-//    printk("to\n");
 #ifdef VTSS_DEBUG_STACK
     unsigned long stack_size = ((unsigned long)(&stack_size)) & (THREAD_SIZE-1);
     if (unlikely(stack_size < (VTSS_MIN_STACK_SPACE + sizeof(struct thread_info)))) {
         ERROR("(%d:%d): LOW STACK %lu", TASK_PID(current), TASK_TID(current), stack_size);
-//        printk("switch to: pause in switch to");
         vtss_profiling_pause();
-        tskd->state &= ~VTSS_ST_PMU_SET;
+        tskd->state &= ~VTSS_ST_PMU_SET;hu
         return;
     }
 #endif
@@ -1408,12 +1677,12 @@ static void vtss_sched_switch_to(vtss_task_map_item_t* item, struct task_struct*
     }
 
 #ifdef VTSS_KERNEL_CONTEXT_SWITCH
-    if ((!ip) && (!tskd->from_ip)) {
+//    if ((!ip) && (!tskd->from_ip)) {
 //        printk("switch to: pause in switch to");
-        vtss_profiling_pause();
-        tskd->state &= ~VTSS_ST_PMU_SET;
-        return;
-    }
+//        vtss_profiling_pause();
+//        tskd->state &= ~VTSS_ST_PMU_SET;
+//        return;
+//    }
 #endif
     local_irq_save(flags);
     preempt_disable();
@@ -1477,9 +1746,9 @@ static void vtss_sched_switch_to(vtss_task_map_item_t* item, struct task_struct*
             {
                 ip = tskd->from_ip;
             }
-#else
-            ip = (void*)KSTK_EIP(task);
+            if (!ip)
 #endif
+                ip = (void*)KSTK_EIP(task);
             if (reqcfg.trace_cfg.trace_flags & VTSS_CFGTRACE_CTX) {
                 VTSS_STORE_SAMPLE(tskd, tskd->cpu, NULL, NOT_SAFE);
                 VTSS_STORE_SWAPIN(tskd, cpu, ip, NOT_SAFE);
@@ -1495,7 +1764,7 @@ static void vtss_sched_switch_to(vtss_task_map_item_t* item, struct task_struct*
                 tskd->cpu = cpu;
                 if (likely(VTSS_NEED_STACK_SAVE(tskd) &&
                     (reqcfg.trace_cfg.trace_flags & VTSS_CFGTRACE_STACKS) &&
-                    tskd->stk.trylock(&tskd->stk)))
+                       tskd->stk.trylock(&tskd->stk)))
                 {
                     VTSS_STACK_SAVE(tskd, NOT_SAFE);
                     tskd->stk.unlock(&tskd->stk);
@@ -1506,9 +1775,7 @@ static void vtss_sched_switch_to(vtss_task_map_item_t* item, struct task_struct*
         tskd->state |= VTSS_ST_SWAPIN;
     }
     VTSS_STORE_STATE(tskd, 1, VTSS_ST_CPUEVT);
-//    if (cnt <50)printk("switch_to: before profiling resume\n");
     vtss_profiling_resume(item, 0);
-//    if (cnt<50)printk("switch_to: after profiling resume\n");
     preempt_enable_no_resched();
     local_irq_restore(flags);
 }
@@ -1535,7 +1802,8 @@ static void vtss_notifier_sched_in(struct preempt_notifier *notifier, int cpu)
 {
     vtss_task_map_item_t* item = vtss_task_map_get_item(TASK_TID(current));
     if (item != NULL) {
-        void* bp = vtss_get_current_bp(bp);
+        void* bp;
+        vtss_get_current_bp(bp);
         VTSS_PROFILE(ctx, vtss_sched_switch_to(item, current, (void*)_THIS_IP_));
         vtss_task_map_put_item(item);
     } else {
@@ -1733,10 +2001,13 @@ asmlinkage void vtss_pmi_handler(struct pt_regs *regs)
     int bts_enable = 0;
     vtss_task_map_item_t* item = NULL;
 
-//    printk("enter vtss_pmi_handler\n");
     if (unlikely(!vtss_apic_read_priority())) {
         ERROR("INT 0xFE was called");
         return;
+    }
+    if (!VTSS_COLLECTOR_IS_READY){
+       INFO("PMI is called When VTSS collector is not ready");
+       return;
     }
     local_irq_save(flags);
     preempt_disable();
@@ -1752,15 +2023,12 @@ asmlinkage void vtss_pmi_handler(struct pt_regs *regs)
         bts_enable = is_bts_enable(tskd);
         VTSS_PROFILE(pmi, vtss_pmi_dump(regs, item, is_bts_overflowed));
     } else {
-       
-//        if (cnt <50)printk("pmi handler: pause in pmi handler\n");
         vtss_profiling_pause();
     }
     vtss_apic_ack_eoi();
     vtss_pmi_enable();
     if (likely(item != NULL)) {
         VTSS_PROFILE(pmi, vtss_pmi_record(regs, item, is_bts_overflowed));
-//        if (cnt <50) printk("pmi handler:before profiling resume\n");
         vtss_profiling_resume(item, bts_enable);
         vtss_task_map_put_item(item);
     }
@@ -1818,6 +2086,10 @@ int vtss_cmd_set_target(pid_t pid)
             struct mm_struct *mm;
             struct pid *pgrp;
 
+            struct vtss_transport_data* trnd = NULL;
+            struct vtss_transport_data* trnd_aux = NULL;
+
+
             rcu_read_lock();
             pgrp = get_pid(task->pids[PIDTYPE_PID].pid);
             rcu_read_unlock();
@@ -1839,10 +2111,24 @@ int vtss_cmd_set_target(pid_t pid)
                     fput(exe_file);
                 }
             }
+            rc = -ENOENT;
             do_each_pid_thread(pgrp, PIDTYPE_PID, p) {
                 TRACE("<%d>: tid=%d, pid=%d, pathname='%s'", pid, TASK_TID(p), TASK_PID(p), pathname);
-                rc = vtss_target_new(TASK_TID(p), TASK_PID(p), TASK_PID(TASK_PARENT(p)), pathname, NULL, NULL);
+                if ((TASK_TID(p) == TASK_PID(p)) && (vtss_client_major_ver > 1 || (vtss_client_major_ver ==1 && vtss_client_minor_ver >=1))){
+                    trnd = vtss_transport_create(TASK_PID(TASK_PARENT(p)), TASK_PID(p), vtss_session_uid, vtss_session_gid);
+                    trnd_aux = vtss_transport_create_aux(trnd, vtss_session_uid, vtss_session_gid);
+                    vtss_target_transport_wake_up(trnd, trnd_aux);
+                }
+//                printk("profile the process <%d>: tid=%d, pid=%d, ppid = %d, pathname='%s'\n", pid, TASK_TID(task), TASK_PID(task), TASK_PID(TASK_PARENT(p)),pathname);
+                if (!vtss_target_new(TASK_TID(p), TASK_PID(p), TASK_PID(TASK_PARENT(p)), pathname, trnd, trnd_aux)) {
+                    rc = 0;
+                } else if((TASK_TID(p) == TASK_PID(p)) && (vtss_client_major_ver > 1 || (vtss_client_major_ver ==1 && vtss_client_minor_ver >=1))){
+                    vtss_target_del_empty_transport(trnd, trnd_aux);
+                }
             } while_each_pid_thread(pgrp, PIDTYPE_PID, p);
+            if (rc != 0) {
+                ERROR("Error: cannot profile the process <%d>: tid=%d, pid=%d,  pathname='%s'", pid, TASK_TID(task), TASK_PID(task), pathname);
+            }
             put_pid(pgrp);
             if (tmp)
                 free_page((unsigned long)tmp);
@@ -1852,6 +2138,10 @@ int vtss_cmd_set_target(pid_t pid)
     return rc;
 }
 
+static void vtss_collector_pmi_disable_on_cpu(void *ctx)
+{
+    vtss_pmi_disable();
+}
 int vtss_collection_fini(void)
 {
     unsigned long flags = 0;
@@ -1871,9 +2161,14 @@ int vtss_collection_fini(void)
     vtss_session_uid = 0;
     vtss_session_gid = 0;
     vtss_time_limit  = 0ULL; /* set default value */
+    TRACE("watchdog state repair");
+    //workaround on the problem when pmi enabling while the collection is stopping, but some threads is still collecting data
+    on_each_cpu(vtss_collector_pmi_disable_on_cpu, NULL, SMP_CALL_FUNCTION_ARGS);
+    vtss_nmi_watchdog_enable(0);
     atomic_set(&vtss_start_paused, 0);
     atomic_set(&vtss_collector_state, VTSS_COLLECTOR_STOPPED);
     INFO("vtss++ collection stopped");
+    
     VTSS_PROFILE_PRINT(printk);
     return 0;
 }
@@ -1885,8 +2180,12 @@ int vtss_cmd_start(void)
     int old_state = atomic_cmpxchg(&vtss_collector_state, VTSS_COLLECTOR_STOPPED, VTSS_COLLECTOR_INITING);
     if (old_state != VTSS_COLLECTOR_STOPPED) {
         TRACE("Already running");
-        return rc;
+        return VTSS_ERR_START_IN_RUN;
     }
+
+    //workaround on the problem when pmi enabling while the collection is stopping, but some threads is still collecting data
+    on_each_cpu(vtss_collector_pmi_disable_on_cpu, NULL, SMP_CALL_FUNCTION_ARGS);
+   vtss_nmi_watchdog_disable(0);
 
     INFO("Starting vtss++ collection");
 #ifdef VTSS_DEBUG_PROFILE
@@ -1914,14 +2213,26 @@ int vtss_cmd_start(void)
     vtss_profile_clk_unw  = 0;
 #endif
     atomic_set(&vtss_target_count, 0);
+    atomic_set(&vtss_mmap_reg_callcnt, 1);
     cpumask_copy(&vtss_collector_cpumask, vtss_procfs_cpumask());
+#if defined CONFIG_UIDGID_STRICT_TYPE_CHECKS || (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
+    {
+    kuid_t uid;
+    kgid_t gid;
+    current_uid_gid(&uid, &gid);
+    vtss_session_uid = uid.val;
+    vtss_session_gid = gid.val;
+    }
+#else
     current_uid_gid(&vtss_session_uid, &vtss_session_gid);
+#endif
     vtss_procfs_ctrl_flush();
     rc |= vtss_transport_init();
     atomic_set(&vtss_transport_initialized, 1);
     rc |= vtss_task_map_init();
     rc |= vtss_dsa_init();
     rc |= vtss_lbr_init();
+    INFO("Starting vtss++ collection continue 1");
     rc |= vtss_bts_init(reqcfg.bts_cfg.brcount);
     rc |= vtss_pebs_init();
     rc |= vtss_cpuevents_init_pmu(vtss_procfs_defsav());
@@ -1937,6 +2248,7 @@ int vtss_cmd_start(void)
         INFO("Collection was not started because of initialization error.");
         vtss_collection_fini();
     }
+    INFO("Starting vtss++ collection continue 10");
     return rc;
 }
 

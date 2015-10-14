@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright 2009-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2009-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -46,7 +46,7 @@
 #include "control.h"
 #include "pax_shared.h"
 
-MODULE_AUTHOR("Copyright(c) 2009-2012 Intel Corporation");
+MODULE_AUTHOR("Copyright (C) 2009-2014 Intel Corporation");
 MODULE_VERSION(PAX_NAME"_"PAX_VERSION_STR);
 MODULE_LICENSE("Dual BSD/GPL");
 
@@ -407,31 +407,7 @@ pax_Reserve_All (
     if ( (reservation == PAX_PMU_UNRESERVED) &&
          (pax_status.is_reserved == PAX_PMU_RESERVED) )
     {
-      /*
-        // TODO: define a GUID that uniquely identifies the session
-        ts.tv_sec = current->start_time.tv_sec;
-        ts.tv_nsec = current->start_time.tv_nsec;
-        pax_status.guid = (U64)timespec_to_ns(&ts);
-        // NOTE: the following "wallclock" kernel functions/structures are not exported ...
-           #include <linux/time.h>
-           struct timespec ts;
-           struct timesval tv;
-           do_gettimeofday(&tv)
-           getnstimeofday(&ts)
-           current_kernel_time()
-           (U64)timespec_to_ns(&ts)
-      */
-#if defined(DRV_IA32) || defined(DRV_EM64T)
         rdtscll(*(&pax_status.start_time));
-#elif defined(DRV_IA64)
-        {
-            unsigned long result;
-
-            __asm__ __volatile__("mov %0=ar.itc":"=r"(result)::"memory");
-
-            *(&pax_status.start_time) = result;
-        }
-#endif
         pax_status.pid = current->pid;
 
         return OS_SUCCESS;
@@ -456,7 +432,7 @@ pax_Reserve_All (
  * <I>Special Notes</I>
  */
 extern IOCTL_OP_TYPE
-pax_Service_IOCTL (
+lwpmu_Service_IOCTL (
     IOCTL_USE_INODE
     struct   file   *filp,
     unsigned int     cmd,
@@ -515,7 +491,7 @@ pax_Device_Control (
         status = copy_from_user(&local_args, (IOCTL_ARGS)arg, sizeof(IOCTL_ARGS_NODE)); 
         }
 
-    status = pax_Service_IOCTL (IOCTL_USE_INODE filp, cmd, local_args);
+    status = lwpmu_Service_IOCTL (IOCTL_USE_INODE filp, cmd, local_args);
     return status;
 }
 
@@ -531,6 +507,8 @@ pax_Device_Control_Compat (
     IOCTL_COMPAT_ARGS_NODE  local_args_compat;
     IOCTL_ARGS_NODE         local_args;
 
+    memset(&local_args_compat, 0, sizeof(IOCTL_COMPAT_ARGS_NODE));
+
     if (arg) {
         status = copy_from_user(&local_args_compat, (IOCTL_COMPAT_ARGS)arg, sizeof(IOCTL_COMPAT_ARGS_NODE)); 
         }
@@ -544,7 +522,7 @@ pax_Device_Control_Compat (
         cmd = PAX_IOCTL_INFO;
     }
 
-    status = pax_Service_IOCTL (filp, cmd, local_args);
+    status = lwpmu_Service_IOCTL (filp, cmd, local_args);
 
     return status;
 }

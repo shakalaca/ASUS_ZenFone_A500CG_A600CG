@@ -289,7 +289,8 @@ void i915_gem_context_fini(struct drm_device *dev)
 	 * to default context. So we need to unreference the base object once
 	 * to offset the do_switch part, so that i915_gem_context_unreference()
 	 * can then free the base object correctly. */
-	drm_gem_object_unreference(&dctx->obj->base);
+	if (dev_priv->ring[RCS].last_context == dctx)
+		drm_gem_object_unreference(&dctx->obj->base);
 	i915_gem_context_unreference(dctx);
 }
 
@@ -441,6 +442,13 @@ static int do_switch(struct i915_hw_context *to)
 	if (ret)
 		return ret;
 
+	/*
+	 * Pin can switch back to the default context if we end up calling into
+	 * evict_everything - as a last ditch gtt defrag effort that also
+	 * switches to the default context. Hence we need to reload from here.
+	 */
+	from = ring->last_context;
+
 	/* Clear this page out of any CPU caches for coherent swap-in/out. Note
 	 * that thanks to write = false in this call and us not setting any gpu
 	 * write domains when putting a context object onto the active list
@@ -490,13 +498,14 @@ static int do_switch(struct i915_hw_context *to)
 
 		ret = i915_add_request(ring, NULL);
 		if (ret) {
-			/* Too late, we've already scheduled a context switch.
-			 * Try to undo the change so that the hw state is
-			 * consistent with out tracking. In case of emergency,
-			 * scream.
+			/* Too late, we've already scheduled a context switch*/
+			DRM_ERROR("Retire context failed to add request\n");
+			/*
+			 * It is on the active list so it is safe to go ahead
+			 * and unpin/unreference it. It will be retired once new
+			 * work is added to the ring and the ring advances
+			 * beyond from->obj->last_read_seqno
 			 */
-			WARN_ON(mi_set_context(ring, from, MI_RESTORE_INHIBIT));
-			return ret;
 		}
 
 		i915_gem_object_unpin(from->obj);
@@ -539,7 +548,10 @@ void i915_gem_context_restore(struct drm_device *dev,
 		DRM_DEBUG("Restore default context for ring %d\n", ring->id);
 		ret = mi_set_context(ring, to, MI_RESTORE_INHIBIT);
 		if (ret) {
+			/* Retire the context as we failed to restore it */
+			ring->last_context = NULL;
 			i915_gem_object_unpin(to->obj);
+			i915_gem_context_unreference(to);
 			DRM_ERROR("Set context failed for ring %d\n",
 					ring->id);
 		}

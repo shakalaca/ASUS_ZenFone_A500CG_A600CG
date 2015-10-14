@@ -57,6 +57,39 @@
 #define DSI_HFP_PACKET_EXTRA_SIZE 6
 #define DSI_EOTP_PACKET_SIZE 4
 
+#define PMIC_PANEL_EN	0x52
+#define PMIC_PWM_EN	0x51
+
+#define GPI0_NC_0_HV_DDI0_HPD           0x4130
+#define GPIO_NC_0_HV_DDI0_PAD           0x4138
+#define GPIO_NC_1_HV_DDI0_DDC_SDA       0x4120
+#define GPIO_NC_1_HV_DDI0_DDC_SDA_PAD   0x4128
+#define GPIO_NC_2_HV_DDI0_DDC_SCL       0x4110
+#define GPIO_NC_2_HV_DDI0_DDC_SCL_PAD   0x4118
+#define GPIO_NC_3_PANEL0_VDDEN          0x4140
+#define GPIO_NC_3_PANEL0_VDDEN_PAD      0x4148
+#define GPIO_NC_4_PANEL0_BLKEN          0x4150
+#define GPIO_NC_4_PANEL0_BLKEN_PAD      0x4158
+#define GPIO_NC_5_PANEL0_BLKCTL         0x4160
+#define GPIO_NC_5_PANEL0_BLKCTL_PAD     0x4168
+#define GPIO_NC_6_PCONF0                0x4180
+#define GPIO_NC_6_PAD                   0x4188
+#define GPIO_NC_7_PCONF0                0x4190
+#define GPIO_NC_7_PAD                   0x4198
+#define GPIO_NC_8_PCONF0                0x4170
+#define GPIO_NC_8_PAD                   0x4178
+#define GPIO_NC_9_PCONF0                0x4100
+#define GPIO_NC_9_PAD                   0x4108
+#define GPIO_NC_10_PCONF0               0x40E0
+#define GPIO_NC_10_PAD                  0x40E8
+#define GPIO_NC_11_PCONF0               0x40F0
+#define GPIO_NC_11_PAD                  0x40F8
+
+/* Dual Link support */
+#define MIPI_DUAL_LINK_NONE		0
+#define MIPI_DUAL_LINK_FRONT_BACK	1
+#define MIPI_DUAL_LINK_PIXEL_ALT	2
+
 struct intel_dsi_device {
 	unsigned int panel_id;
 	const char *name;
@@ -135,10 +168,13 @@ struct intel_dsi {
 	u32 video_mode_format;
 
 	/* eot for MIPI_EOT_DISABLE register */
-	u32 eot_disable;
+	u8 eotp_pkt;
+	u8 clock_stop;
 
 	u16 dsi_clock_freq;
 	u8 operation_mode;
+	u8 dual_link;
+	u8 pixel_overlap;
 	u8 video_mode_type;
 	u32 data_width;
 	u8 dither;
@@ -146,18 +182,26 @@ struct intel_dsi {
 	u8 escape_clk_div;
 	u32 lp_rx_timeout;
 	u8 turn_arnd_val;
+	u16 burst_mode_ratio;
 	u16 init_count;
 	u16 rst_timer_val;
-	u16 hs_to_lp_count;
-	u16 lp_byte_clk;
+	u32 hs_to_lp_count;
+	u32 lp_byte_clk;
 	u32 bw_timer;
-	u16 clk_lp_to_hs_count;
-	u16 clk_hs_to_lp_count;
+	u32 clk_lp_to_hs_count;
+	u32 clk_hs_to_lp_count;
 	u32 video_frmt_cfg_bits;
 	u32 dphy_reg;
+	u32 pclk;
+	u16 port;
 
-	u8 backlight_off_delay; /*in ms*/
-	u8 backlight_on_delay; /*in ms*/
+	/* all delays in ms */
+	u8 backlight_off_delay;
+	u8 backlight_on_delay;
+	u8 panel_on_delay;
+	u8 panel_off_delay;
+	u8 panel_pwr_cycle_delay;
+
 	bool send_shutdown;
 	u8 shutdown_pkt_delay; /*in ms*/
 	enum panel_fitter pfit;

@@ -19,10 +19,10 @@
  *
  */
 
-#include <stddef.h>             /* NULL */
-#include "assert_support.h"
-#include "tag_local.h"
 #include "tag.h"
+#include <platform_support.h>	/* NULL */
+#include <assert_support.h>
+#include "tag_local.h"
 
 /**
  * @brief	Creates the tag description from the given parameters.
@@ -100,4 +100,3 @@ sh_css_encode_tag_descr(struct sh_css_tag_descr *tag)
 	}
 	return encoded_tag;
 }
-

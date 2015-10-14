@@ -42,7 +42,9 @@
 #include <linux/gpio.h>
 #include <linux/seq_file.h>
 
+
 #define PROCFS_NAME_SIM_ID "sim_id"
+/*#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))*/
 
 static int sim_id_gpionumber = 0;
 
@@ -91,6 +93,7 @@ static void intel_mid_reboot(void)
 	if (intel_scu_ipc_fw_update()) {
 		pr_debug("intel_scu_fw_update: IFWI upgrade failed...\n");
 	}
+
 	if (reboot_force) {
 		if (force_cold_boot)
 			rpmsg_send_generic_simple_command(IPCMSG_COLD_BOOT, 0);
@@ -117,7 +120,7 @@ static unsigned long __init intel_mid_calibrate_tsc(void)
 	return 0;
 }
 
-extern void xen_time_init();
+extern void xen_time_init(void);
 
 #ifdef CONFIG_XEN
 static void __init intel_mid_time_init(void)
@@ -169,9 +172,6 @@ static void __cpuinit intel_mid_arch_setup(void)
 		break;
 	case 0x5A:
 		__intel_mid_cpu_chip = INTEL_MID_CPU_CHIP_ANNIEDALE;
-		break;
-	case 0x5D:
-		__intel_mid_cpu_chip = INTEL_MID_CPU_CHIP_CARBONCANYON;
 		break;
 	case 0x27:
 	default:
@@ -284,7 +284,7 @@ static int sim_id_proc_show(struct seq_file *m, void *v) {
 
 static int sim_id_proc_open(struct inode *inode, struct  file *file) {
 
-        printk(KERN_ALERT "[YTLI]: build sim_id_proc_open \r\n");
+        printk(KERN_ALERT "[SAMCHOU]: build sim_id_proc_open \r\n");
         return single_open(file, sim_id_proc_show, NULL);
 }
 
@@ -293,7 +293,6 @@ static ssize_t sim_id_proc_write(struct file *file, const char __user *buffer,
 {
         return count;
 }
-
 
 static const struct file_operations sim_id_proc_fops = {
         .owner = THIS_MODULE,
@@ -304,61 +303,56 @@ static const struct file_operations sim_id_proc_fops = {
         .release = single_release,
 };
 
-void set_force_cold_boot(int cold_reboot)
-{
-        force_cold_boot = cold_reboot;
-        pr_info("%s: force_cold_boot=%d\n",  __func__, force_cold_boot);
-}
-EXPORT_SYMBOL(set_force_cold_boot);
-
-
 static int __init intel_mid_platform_post_init(void)
 {
-        int ret;
-        struct proc_dir_entry *our_proc_file;
+    int ret;
+    struct proc_dir_entry *our_proc_file;
 
-        sim_id_gpionumber = get_gpio_by_name("SIM_ID");
+    sim_id_gpionumber = get_gpio_by_name("SIM_ID");
 
-        printk(KERN_ALERT "[YTLI]: sim_id_num:%d\r\n",sim_id_gpionumber);
-        if (gpio_is_valid(sim_id_gpionumber))
+    printk(KERN_ALERT "[SAMCHOU]: sim_id_num:%d\r\n",sim_id_gpionumber);
+    if (gpio_is_valid(sim_id_gpionumber))
+    {
+        ret = gpio_request(sim_id_gpionumber,"SIM_ID\n");
+
+        if (ret)
         {
-                ret = gpio_request(sim_id_gpionumber,"SIM_ID\n");
-
-                if (ret)
-                {
-                        printk(KERN_ALERT "[YTLI]: failed to request SIM_ID gpio\n");
-                }
-                /* create the /proc file */
-                #if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))
-                our_proc_file = proc_create(PROCFS_NAME_SIM_ID, 0664, NULL, &sim_id_proc_fops);
-                #else
-                our_proc_file = create_proc_entry(PROCFS_NAME_SIM_ID, 0644, NULL);
-                #endif
-                if(our_proc_file == NULL){
-                        remove_proc_entry(PROCFS_NAME_SIM_ID, NULL);
-                        printk(KERN_ALERT "Error: Could not initialize /proc/%s\n",
-                                PROCFS_NAME_SIM_ID);
-                        return -ENOMEM;
-                }
-                #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
-                our_proc_file->read_proc  = sim_id_proc_read;
-                our_proc_file->write_proc = sim_id_proc_write;
-                #endif
+            printk(KERN_ALERT "[SAMCHOU]: failed to request SIM_ID gpio\n");
         }
-        else
-        {
-                printk(KERN_ALERT "[YTLI]: gpio number is invalid\r\n");
-        }
+        /* create the /proc file */
 
-        printk(KERN_INFO "[YTLI]: /proc/%s created\n", PROCFS_NAME_SIM_ID);
-        return 0;       /* everything is ok*/
+        /*#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 10, 0))*/
+        our_proc_file = proc_create(PROCFS_NAME_SIM_ID, 0664, NULL, &sim_id_proc_fops);
+        /*#else*/
+        /*our_proc_file = create_proc_entry(PROCFS_NAME_SIM_ID, 0644, NULL);*/
+        /*#endif*/
+        if(our_proc_file == NULL){
+            remove_proc_entry(PROCFS_NAME_SIM_ID, NULL);
+            printk(KERN_ALERT "Error: Could not initialize /proc/%s\n",
+                    PROCFS_NAME_SIM_ID);
+            return -ENOMEM;
+        }
+        /*
+        #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0))
+            our_proc_file->read_proc  = sim_id_proc_read;
+            our_proc_file->write_proc = sim_id_proc_write;
+        #endif
+        */
+    }
+    else
+    {
+        printk(KERN_ALERT "[SAMCHOU]: gpio number is invalid\r\n");
+    }
+    
+    printk(KERN_INFO "[SAMCHOU]: /proc/%s created\n", PROCFS_NAME_SIM_ID);
+    return 0;       /* everything is ok*/
 
 }
-
 
 static void __exit intel_mid_platform_post_exit(void)
 {
-          remove_proc_entry(PROCFS_NAME_SIM_ID, NULL);
+    remove_proc_entry(PROCFS_NAME_SIM_ID, NULL);
 }
+
 module_init(intel_mid_platform_post_init);
 module_exit(intel_mid_platform_post_exit);

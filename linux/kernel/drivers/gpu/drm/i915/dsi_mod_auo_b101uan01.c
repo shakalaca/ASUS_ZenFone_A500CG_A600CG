@@ -54,7 +54,6 @@ void  b101uan01_vid_get_panel_info(int pipe, struct drm_connector *connector)
 bool b101uan01_init(struct intel_dsi_device *dsi)
 {
 	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
-
 	/* create private data, slam to dsi->dev_priv. could support many panels
 	 * based on dsi->name. This panal supports both command and video mode,
 	 * so check the type. */
@@ -72,7 +71,7 @@ bool b101uan01_init(struct intel_dsi_device *dsi)
 	intel_dsi->hs = true;
 	intel_dsi->channel = 0;
 	intel_dsi->lane_count = 4;
-	intel_dsi->eot_disable = 1;
+	intel_dsi->eotp_pkt = 0;
 	intel_dsi->video_mode_type = DSI_VIDEO_NBURST_SPULSE;
 	intel_dsi->pixel_format = VID_MODE_FORMAT_RGB888;
 	intel_dsi->port_bits = 0;
@@ -85,7 +84,8 @@ bool b101uan01_init(struct intel_dsi_device *dsi)
 	intel_dsi->clk_hs_to_lp_count = 0x14;
 	intel_dsi->video_frmt_cfg_bits = 0;
 	intel_dsi->dphy_reg = 0x3c1fc51f;
-
+	intel_dsi->port = 0; /* PORT_A by default */
+	intel_dsi->burst_mode_ratio = 100;
 	intel_dsi->backlight_off_delay = 20;
 	intel_dsi->send_shutdown = true;
 	intel_dsi->shutdown_pkt_delay = 20;

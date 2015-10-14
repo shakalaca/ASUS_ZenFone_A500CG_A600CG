@@ -39,6 +39,8 @@
 
 #include "hm2056.h"
 
+
+
 #define to_hm2056_raw_sensor(sd) container_of(sd, struct hm2056_raw_device, sd)
 
 static int
@@ -277,6 +279,7 @@ static int hm2056_raw_s_power(struct v4l2_subdev *sd, int power)
 	struct hm2056_raw_device *dev = to_hm2056_raw_sensor(sd);
 	int ret;
 
+	
 	dev_info(&client->dev, "%s on/off %d\n", __func__, power);
 
 	mutex_lock(&dev->input_lock);
@@ -289,6 +292,8 @@ static int hm2056_raw_s_power(struct v4l2_subdev *sd, int power)
 		}
 	}
 	mutex_unlock(&dev->input_lock);
+	
+	
 	return ret;
 }
 
@@ -370,8 +375,8 @@ static int hm2056_raw_get_intg_factor(struct i2c_client *client,
 				const struct hm2056_raw_res_struct *res)
 {
 	struct atomisp_sensor_mode_data *buf = &info->data;
-	u32 reg_val_l, reg_val_h;
-	int ret;
+	//	u32 reg_val_l, reg_val_h;		leong
+	// int ret;				leong
 
 	dev_info(&client->dev, "%s\n", __func__);
 	if (info == NULL || res == NULL)
@@ -409,6 +414,8 @@ static int hm2056_raw_get_intg_factor(struct i2c_client *client,
 		buf->crop_vertical_start, buf->crop_vertical_end,
 		buf->frame_length_lines, buf->line_length_pck,
 		buf->read_mode,	buf->binning_factor_x, buf->binning_factor_y);
+		
+		
 
 	return 0;
 }
@@ -539,7 +546,7 @@ static long hm2056_raw_s_exposure(struct v4l2_subdev *sd,
 	u8 digital_gain = 0;
 	u32 reg_val_l, reg_val_h;
 	u32 dit_dig_gain = 0;
-	unsigned int frame_length_lines = 0;
+	//	unsigned int frame_length_lines = 0;
 	unsigned int real_gain = exposure->gain[0];
 
 	dev_info(&client->dev, "%s(%d %d %d %d)\n", __func__,
@@ -1188,6 +1195,7 @@ static int hm2056_raw_probe(struct i2c_client *client,
 {
 	struct hm2056_raw_device *dev;
 	int ret;
+	
 
 	/* Setup sensor configuration structure */
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
@@ -1200,7 +1208,7 @@ static int hm2056_raw_probe(struct i2c_client *client,
 	dev->fmt_idx = 0;
 	dev->hm2056_raw_res = hm2056_raw_res_still;
 	dev->n_res = N_RES_STILL;
-
+	
 	v4l2_i2c_subdev_init(&dev->sd, client, &hm2056_raw_ops);
 
 	if (client->dev.platform_data) {
@@ -1217,12 +1225,14 @@ static int hm2056_raw_probe(struct i2c_client *client,
 	dev->pad.flags = MEDIA_PAD_FL_SOURCE;
 	dev->format.code = V4L2_MBUS_FMT_SGRBG8_1X8;
 	dev->sd.entity.type = MEDIA_ENT_T_V4L2_SUBDEV_SENSOR;
-
+	
 	ret = media_entity_init(&dev->sd.entity, 1, &dev->pad, 0);
+	
 	if (ret) {
 		hm2056_raw_remove(client);
 	}
-
+	
+	
 	return ret;
 }
 

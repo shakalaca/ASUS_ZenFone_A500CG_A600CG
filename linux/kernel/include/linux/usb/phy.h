@@ -129,6 +129,8 @@ struct usb_phy {
 
 	/* check charger status */
 	int	(*get_chrg_status)(struct usb_phy *x, void *data);
+	/* check ID status */
+	int	(*get_id_status)(struct usb_phy *x, void *data);
 
 	/* for a_bus_drop handler fromed user space */
 	void (*a_bus_drop)(struct usb_phy *phy);
@@ -328,6 +330,15 @@ otg_get_chrg_status(struct usb_phy *x, void *data)
 {
 	if (x && x->get_chrg_status)
 		return x->get_chrg_status(x, data);
+
+	return -ENOTSUPP;
+}
+
+static inline int
+otg_get_id_status(struct usb_phy *x, void *data)
+{
+	if (x && x->get_id_status)
+		return x->get_id_status(x, data);
 
 	return -ENOTSUPP;
 }

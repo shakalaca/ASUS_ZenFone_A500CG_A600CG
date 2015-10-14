@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -40,6 +40,7 @@
 #include <linux/pagemap.h>      /* for page_cache_release() */
 #include <asm/page.h>
 #include <asm/processor.h>
+#include <linux/nmi.h>
 
 #include "unwind.c"
 
@@ -47,13 +48,12 @@
 #define VTSS_STACK_LIMIT 0x200000 /* 2Mb */
 #endif
 
-#if defined(VTSS_AUTOCONF_STACKTRACE_OPS_WALK_STACK)
-#include <asm/stacktrace.h>
-
 #if defined(CONFIG_X86_64)
 const unsigned long vtss_koffset = (unsigned long)__START_KERNEL_map;
+const unsigned long vtss_max_user_space = 0x7fffffffffff;
 #else
 const unsigned long vtss_koffset = (unsigned long)PAGE_OFFSET;
+const unsigned long vtss_max_user_space = 0x7fffffff;
 #endif
 
 #if defined(CONFIG_X86_64)
@@ -61,6 +61,10 @@ const unsigned long vtss_kstart = (unsigned long)__START_KERNEL_map + ((CONFIG_P
 #else
 const unsigned long vtss_kstart = (unsigned long)PAGE_OFFSET + ((CONFIG_PHYSICAL_START + (CONFIG_PHYSICAL_ALIGN - 1)) & ~(CONFIG_PHYSICAL_ALIGN - 1));
 #endif
+
+#if defined(VTSS_AUTOCONF_STACKTRACE_OPS_WALK_STACK)
+#include <asm/stacktrace.h>
+
 #ifdef VTSS_AUTOCONF_STACKTRACE_OPS_WARNING
 static void vtss_warning(void *data, char *msg)
 {
@@ -78,6 +82,7 @@ typedef struct kernel_stack_control_t
     int* kernel_callchain_size;
     int* kernel_callchain_pos;
     unsigned long prev_addr;
+//    struct vtss_transport_data* trnd;
 } kernel_stack_control_t;
 
 
@@ -94,6 +99,7 @@ static void vtss_stack_address(void *data, unsigned long addr, int reliable)
     int j;
     kernel_stack_control_t* stk = (kernel_stack_control_t*)data;
     TRACE("%s%pB %d", reliable ? "" : "? ", (void*)addr, *stk->kernel_callchain_pos);
+    touch_nmi_watchdog();
     if (!reliable){
         return;
     }
@@ -149,6 +155,17 @@ static unsigned long vtss_stack_walk(
     if (!stk){
         return bp;
     }
+    if (!stack){
+        ERROR("Broken stack pointer!");
+        return bp;
+    }
+    if (stack <= (unsigned long*)vtss_max_user_space){
+//        char dbgmsg[100];
+//        snprintf(dbgmsg, sizeof(dbgmsg)-1, "vtss_stack_walk: stack_ptr=%p, vtss_koffset=%lx, vtss_kstart=%lx", stack, vtss_koffset, vtss_kstart);
+//        vtss_record_debug_info(stk->trnd, dbgmsg, 0);
+        ERROR("Stack pointer belongs user space. We will not process it. stack_ptr=%p", stack);
+        return bp;
+    }
     TRACE("bp=0x%p, stack=0x%p, end=0x%p", (void*)stk->bp, stack, end);
     bp = print_context_stack(tinfo, stack, stk->bp, ops, data, end, graph);
     if (stk != NULL && bp < vtss_kstart) {
@@ -179,8 +196,7 @@ int vtss_stack_dump(struct vtss_transport_data* trnd, stack_control_t* stk, stru
     void *reg_ip, *reg_sp;
     int kernel_stack = 0;
     struct pt_regs* regs = regs_in;
-    
-    if ((!regs && reg_fp >= (void*)__PAGE_OFFSET) || (regs && (!user_mode_vm(regs)))) kernel_stack = 1; 
+    if ((!regs && reg_fp >= (void*)vtss_koffset) || (regs && (!user_mode_vm(regs)))) kernel_stack = 1;
 #ifndef CONFIG_FRAME_POINTER
     if (!regs) kernel_stack = 0; 
 #endif
@@ -189,7 +205,9 @@ int vtss_stack_dump(struct vtss_transport_data* trnd, stack_control_t* stk, stru
     }
     if (unlikely(regs == NULL)) {
         
-        rc = snprintf(stk->dbgmsg, sizeof(stk->dbgmsg)-1, "tid=0x%08x, cpu=0x%08x: incorrect regs",
+        strcat(stk->dbgmsg, "Stack_dump1: dump start!");
+        vtss_record_debug_info(trnd, stk->dbgmsg, 0);
+        rc = snprintf(stk->dbgmsg, sizeof(stk->dbgmsg)-1, "Stack_dump2: tid=0x%08x, cpu=0x%08x: incorrect regs",
                         task->pid, smp_processor_id());
         if (rc > 0 && rc < sizeof(stk->dbgmsg)-1) {
             stk->dbgmsg[rc] = '\0';
@@ -211,8 +229,9 @@ int vtss_stack_dump(struct vtss_transport_data* trnd, stack_control_t* stk, stru
     if (kernel_stack)
     { /* Unwind kernel stack and get user BP if possible */
         kernel_stack_control_t k_stk;
+//        k_stk.trnd=trnd;
 
-        if ((unsigned long)reg_fp < 0x1000) reg_fp = 0;//error instead of bp;
+        if ((unsigned long)reg_fp < 0x1000 || (unsigned long)reg_fp == (unsigned long)-1) reg_fp = 0;//error instead of bp;
         k_stk.bp = (unsigned long)reg_fp;
 //        if (k_stk.bp < 0x1000){
              //error instead of bp
@@ -265,10 +284,11 @@ int vtss_stack_dump(struct vtss_transport_data* trnd, stack_control_t* stk, stru
             vtss_record_debug_info(trnd, stk->dbgmsg, 0);
             dump_stack();
 #endif
+            strcat(stk->dbgmsg, "Stack_dump3: cannot get user mode registers!");
+            vtss_record_debug_info(trnd, stk->dbgmsg, 0);
             return -EFAULT;
         }
     }
-
     /* Get IP and SP registers from user space */
     reg_ip = (void*)REG(ip, regs);
     reg_sp = (void*)REG(sp, regs);
@@ -296,6 +316,8 @@ int vtss_stack_dump(struct vtss_transport_data* trnd, stack_control_t* stk, stru
                     vtss_record_debug_info(trnd, stk->dbgmsg, 0);
                 }
 #endif
+                strcat(stk->dbgmsg, "Stack_dump4: not valid vma!");
+                vtss_record_debug_info(trnd, stk->dbgmsg, 0);
                 return -EFAULT;
             }
         } else {
@@ -307,6 +329,8 @@ int vtss_stack_dump(struct vtss_transport_data* trnd, stack_control_t* stk, stru
                 vtss_record_debug_info(trnd, stk->dbgmsg, 0);
             }
 #endif
+            strcat(stk->dbgmsg, "Stack_dump5: no vma on ip!");
+            vtss_record_debug_info(trnd, stk->dbgmsg, 0);
             return -EFAULT;
         }
 #endif /* VTSS_CHECK_IP_IN_MAP */
@@ -329,6 +353,8 @@ int vtss_stack_dump(struct vtss_transport_data* trnd, stack_control_t* stk, stru
                     vtss_record_debug_info(trnd, stk->dbgmsg, 0);
                 }
 #endif
+                strcat(stk->dbgmsg, "Stack_dump6: not valid fma!");
+                vtss_record_debug_info(trnd, stk->dbgmsg, 0);
                 return -EFAULT;
             }
             if (!((unsigned long)stack_base >= vm_start &&
@@ -371,22 +397,27 @@ int vtss_stack_dump(struct vtss_transport_data* trnd, stack_control_t* stk, stru
         stk->bp.vdp == stack_base &&
         stk->user_fp.vdp == reg_fp)
     {
-        strcat(stk->dbgmsg, "The same context");
+        strcat(stk->dbgmsg, "Stack_dump7: The same context");
         vtss_record_debug_info(trnd, stk->dbgmsg, 0);
-        return 0; /* Assume that nothing was changed */
+//        return 0; /* Assume that nothing was changed */
     }
 
     /* Try to lock vm accessor */
-    acc = vtss_user_vm_accessor_init(in_irq, vtss_time_limit);
-    if (unlikely((acc == NULL) || acc->trylock(acc, task))) {
-        vtss_user_vm_accessor_fini(acc);
-        strcat(stk->dbgmsg, "Unable to lock vm accessor");
+//    if (stk->acc == NULL)
+//    {
+//        stk->acc = vtss_user_vm_accessor_init(in_irq, vtss_time_limit);
+ //   }
+//    acc = vtss_user_vm_accessor_init(in_irq, vtss_time_limit);
+    if (unlikely((stk->acc == NULL) || stk->acc->trylock(stk->acc, task))) {
+//        vtss_user_vm_accessor_fini(stk->acc);
+//        stk->acc=NULL;
+        strcat(stk->dbgmsg, "Stack_dump8:Unable to lock vm accessor");
         vtss_record_debug_info(trnd, stk->dbgmsg, 0);
         return -EBUSY;
     }
 
     /* stk->setup(stk, acc, reg_ip, reg_sp, stack_base, reg_fp, stk->wow64); */
-    stk->acc    = acc;
+  //  stk->acc    = acc;
     stk->user_ip.vdp = reg_ip;
     stk->user_sp.vdp = reg_sp;
     stk->bp.vdp = stack_base;
@@ -403,7 +434,8 @@ int vtss_stack_dump(struct vtss_transport_data* trnd, stack_control_t* stk, stru
             strcat(stk->dbgmsg, "Not enough memory - ");
         }
     }
-    vtss_user_vm_accessor_fini(acc);
+    stk->acc->unlock(stk->acc);
+//    vtss_user_vm_accessor_fini(acc);
     if (unlikely(rc)) {
         stk->clear(stk);
         strcat(stk->dbgmsg, "Unwind error");
@@ -423,6 +455,8 @@ int vtss_stack_record_kernel(struct vtss_transport_data* trnd, stack_control_t* 
     if (stklen == 0)
     {
         // kernel is empty
+        strcat(stk->dbgmsg, "Stack_record_k1: Unable to lock vm accessor");
+        vtss_record_debug_info(trnd, stk->dbgmsg, 0);
         return 0;
     }
     TRACE("ip=0x%p, sp=0x%p, fp=0x%p: Trace %d bytes", stk->ip.vdp, stk->sp.vdp, stk->fp.vdp, stklen);
@@ -441,6 +475,8 @@ int vtss_stack_record_kernel(struct vtss_transport_data* trnd, stack_control_t* 
     stkrec.size += (unsigned short)sktlen;
     if (vtss_transport_record_write(trnd, &stkrec, sizeof(stkrec) - (stk->wow64*8), stk->kernel_callchain, stklen, is_safe)) {
         TRACE("STACK_record_write() FAIL");
+        strcat(stk->dbgmsg, "Stack_record_k2: Unable to wrie the record");
+        vtss_record_debug_info(trnd, stk->dbgmsg, 0);
         rc = -EFAULT;
     }
 
@@ -449,6 +485,8 @@ int vtss_stack_record_kernel(struct vtss_transport_data* trnd, stack_control_t* 
     if (stklen == 0)
     {
         // kernel is empty
+        strcat(stk->dbgmsg, "Stack_record_k3: Stack size is 0");
+        vtss_record_debug_info(trnd, stk->dbgmsg, 0);
         return 0;
     }
     TRACE("ip=0x%p, sp=0x%p, fp=0x%p: Trace %d bytes", stk->ip.vdp, stk->sp.vdp, stk->fp.vdp, stklen);
@@ -481,6 +519,8 @@ int vtss_stack_record(struct vtss_transport_data* trnd, stack_control_t* stk, pi
     /// collect LBR call stacks if so requested
     if(reqcfg.trace_cfg.trace_flags & VTSS_CFGTRACE_LBRCSTK)
     {
+//        strcat(stk->dbgmsg, "Stack_record_u1: Write lbrs");
+ //       vtss_record_debug_info(trnd, stk->dbgmsg, 0);
         return vtss_stack_record_lbr(trnd, stk, tid, cpu, is_safe);
     }
     sktlen = stk->compress(stk);
@@ -496,6 +536,8 @@ int vtss_stack_record(struct vtss_transport_data* trnd, stack_control_t* stk, pi
             stk->dbgmsg[rc] = '\0';
             vtss_record_debug_info(trnd, stk->dbgmsg, is_safe);
         }
+        strcat(stk->dbgmsg, "Stack_record_u2: Write strlen = 0");
+        vtss_record_debug_info(trnd, stk->dbgmsg, 0);
         return -EFAULT;
     }
 
@@ -543,6 +585,8 @@ int vtss_stack_record(struct vtss_transport_data* trnd, stack_control_t* stk, pi
             lstkrec.sp       = stkrec.sp;
             lstkrec.fp       = stkrec.fp;
             if (vtss_transport_record_write(trnd, &lstkrec, sizeof(lstkrec) - (stk->wow64*8), stk->data(stk), sktlen, is_safe)) {
+                strcat(stk->dbgmsg, "Record was not written");
+                vtss_record_debug_info(trnd, stk->dbgmsg, 0);
                 TRACE("STACK_record_write() FAIL");
                 rc = -EFAULT;
             }
@@ -551,6 +595,8 @@ int vtss_stack_record(struct vtss_transport_data* trnd, stack_control_t* stk, pi
             stkrec.size += (unsigned short)sktlen;
             if (vtss_transport_record_write(trnd, &stkrec, sizeof(stkrec) - (stk->wow64*8), stk->data(stk), sktlen, is_safe)) {
                 TRACE("STACK_record_write() FAIL");
+                strcat(stk->dbgmsg, "Record was not written");
+                vtss_record_debug_info(trnd, stk->dbgmsg, 0);
                 rc = -EFAULT;
             }
         }
@@ -563,6 +609,8 @@ int vtss_stack_record(struct vtss_transport_data* trnd, stack_control_t* stk, pi
             stk->dbgmsg[rc] = '\0';
             vtss_record_debug_info(trnd, stk->dbgmsg, is_safe);
         }
+        strcat(stk->dbgmsg, "Stack4: Too big stk len");
+        vtss_record_debug_info(trnd, stk->dbgmsg, 0);
         return -EFAULT;
     } else {
         void* entry;
@@ -590,6 +638,10 @@ int vtss_stack_record(struct vtss_transport_data* trnd, stack_control_t* stk, pi
             }
             memcpy((char*)stkrec+sizeof(stk_trace_record_t)-(stk->wow64*8), stk->compressed, sktlen);
             rc = vtss_transport_record_commit(trnd, entry, is_safe);
+            if (rc != 0){
+               strcat(stk->dbgmsg, "Stack_record5: Cannot write the record");
+               vtss_record_debug_info(trnd, stk->dbgmsg, 0);
+            }
         }
     }
 #endif /* VTSS_USE_UEC */

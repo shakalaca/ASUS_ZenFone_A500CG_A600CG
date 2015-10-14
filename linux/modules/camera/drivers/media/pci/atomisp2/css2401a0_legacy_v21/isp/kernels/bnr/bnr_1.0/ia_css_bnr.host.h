@@ -28,10 +28,14 @@
 #include "ia_css_bnr_param.h"
 
 void
-ia_css_bnr_encode(struct sh_css_isp_bnr_params *to,
-		  const struct ia_css_nr_config *from);
-		  
+ia_css_bnr_encode(
+	struct sh_css_isp_bnr_params *to,
+	const struct ia_css_nr_config *from,
+	unsigned size);
+
 void
-ia_css_bnr_dump(const struct sh_css_isp_bnr_params *bnr, unsigned level);
+ia_css_bnr_dump(
+	const struct sh_css_isp_bnr_params *bnr,
+	unsigned level);
 
 #endif /* __IA_CSS_DP_HOST_H */

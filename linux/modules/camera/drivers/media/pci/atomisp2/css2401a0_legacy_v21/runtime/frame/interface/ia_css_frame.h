@@ -22,7 +22,8 @@
 #ifndef __IA_CSS_FRAME_H__
 #define __IA_CSS_FRAME_H__
 
-#include "ia_css.h"
+#include <ia_css_frame_format.h>
+#include <ia_css_frame_public.h>
 #include "dma.h"
 
 /*********************************************************************
@@ -38,7 +39,7 @@
  */
 void ia_css_frame_info_set_width(struct ia_css_frame_info *info,
 	unsigned int width,
-	unsigned int aligned);
+	unsigned int min_padded_width);
 
 /** @brief Sets the given format to the frame info
  *

@@ -3,9 +3,6 @@
 #
 ccflags-y += -DDEBUG
 
-ifeq (user,$(TARGET_BUILD_VARIANT))
-  KBUILD_CFLAGS += -DWA_FOR_PDU_WRONG_SIZE
-endif
 
 obj-$(CONFIG_HSI_LOGICAL) += hsi_flash.o
 obj-$(CONFIG_HSI_LOGICAL) += hsi_logical.o

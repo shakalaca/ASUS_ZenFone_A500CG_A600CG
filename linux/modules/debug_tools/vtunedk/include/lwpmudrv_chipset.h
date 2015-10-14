@@ -5,7 +5,7 @@
  *  agreement or nondisclosure agreement with Intel Corporation and may not
  *  be copied or disclosed except in accordance with the terms of that
  *  agreement.
- *        Copyright (c) 2007-2012 Intel Corporation.  All Rights Reserved.
+ *        Copyright (C) 2007-2014 Intel Corporation.  All Rights Reserved.
  * -------------------------------------------------------------------------
 **COPYRIGHT*/
 

@@ -131,6 +131,12 @@ struct mtx_pci_ops {
 	unsigned long port_island;
 };
 
+struct mtx_soc_perf {
+	char *ptr_data_usr;
+	unsigned long data_size;
+	unsigned long operation;
+};
+
 /* PCI info for a real pci device */
 struct pci_config {
 	unsigned long bus;
@@ -164,6 +170,10 @@ struct lookup_table {
 	unsigned long cfg_db_init_length;
 	unsigned long cfg_db_init_wb;
 
+	struct mtx_soc_perf *soc_perf_init;
+	unsigned long soc_perf_init_length;
+	unsigned long soc_perf_init_wb;
+
 	/*Poll Data */
 	struct mtx_msr *msrs_poll;
 	unsigned long msr_poll_length;
@@ -186,6 +196,11 @@ struct lookup_table {
 	struct scu_config scu_poll;
 	unsigned long scu_poll_length;
 
+	struct mtx_soc_perf *soc_perf_poll;
+	unsigned long soc_perf_poll_length;
+	unsigned long soc_perf_poll_wb;
+	unsigned long soc_perf_records;
+
 	/*Term Data */
 	struct mtx_msr *msrs_term;
 	unsigned long msr_term_length;
@@ -202,6 +217,10 @@ struct lookup_table {
 	unsigned long *cfg_db_term;
 	unsigned long cfg_db_term_length;
 	unsigned long cfg_db_term_wb;
+
+	struct mtx_soc_perf *soc_perf_term;
+	unsigned long soc_perf_term_length;
+	unsigned long soc_perf_term_wb;
 };
 
 /*
@@ -244,6 +263,12 @@ struct mtx_pci_ops32 {
 	compat_ulong_t port_island;
 };
 
+struct mtx_soc_perf32 {
+	compat_caddr_t ptr_data_usr;
+	compat_ulong_t data_size;
+	compat_ulong_t operation;
+};
+
 struct pci_config32 {
 	compat_ulong_t bus;
 	compat_ulong_t device;
@@ -277,6 +302,10 @@ struct lookup_table32 {
 	compat_ulong_t cfg_db_init_length;
 	compat_ulong_t cfg_db_init_wb;
 
+	compat_caddr_t soc_perf_init;
+	compat_ulong_t soc_perf_init_length;
+	compat_ulong_t soc_perf_init_wb;
+
 	/*Poll Data */
 	compat_caddr_t msrs_poll;
 	compat_ulong_t msr_poll_length;
@@ -299,6 +328,11 @@ struct lookup_table32 {
 	struct scu_config32 scu_poll;
 	compat_ulong_t scu_poll_length;
 
+	compat_caddr_t soc_perf_poll;
+	compat_ulong_t soc_perf_poll_length;
+	compat_ulong_t soc_perf_poll_wb;
+	compat_ulong_t soc_perf_records;
+
 	/*Term Data */
 	compat_caddr_t msrs_term;
 	compat_ulong_t msr_term_length;
@@ -315,6 +349,10 @@ struct lookup_table32 {
 	compat_caddr_t cfg_db_term;
 	compat_ulong_t cfg_db_term_length;
 	compat_ulong_t cfg_db_term_wb;
+
+	compat_caddr_t soc_perf_term;
+	compat_ulong_t soc_perf_term_length;
+	compat_ulong_t soc_perf_term_wb;
 };
 
 struct mtx_msr_container32 {
@@ -337,6 +375,16 @@ struct mt_msr_buffer {
 	u32 edx_MSB;
 };
 
+#define MAX_SOC_PERF_VALUES 10
+
+struct soc_perf_buffer {
+	unsigned long long values[MAX_SOC_PERF_VALUES];
+};
+
+struct mt_soc_perf_buffer {
+	u64 values[MAX_SOC_PERF_VALUES];
+};
+
 struct xchange_buffer {
 	struct msr_buffer *ptr_msr_buff;
 	unsigned long msr_length;
@@ -346,30 +394,22 @@ struct xchange_buffer {
 	unsigned long pci_ops_length;
 	unsigned long *ptr_cfg_db_buff;
 	unsigned long cfg_db_length;
+	struct soc_perf_buffer *ptr_soc_perf_buff;
+	unsigned long soc_perf_length;
 };
 
-#if 0
-struct mt_xchange_buffer {
-	u64 ptr_msr_buff;
-	u32 msr_length;
-	u64 ptr_mem_buff;
-	u32 mem_length;
-	u64 ptr_pci_ops_buff;
-	u32 pci_ops_length;
-	u64 ptr_cfg_db_buff;
-	u32 cfg_db_length;
-};
-#endif // if 0
 struct mt_xchange_buffer {
 	u64 ptr_msr_buff;
 	u64 ptr_mem_buff;
 	u64 ptr_pci_ops_buff;
 	u64 ptr_cfg_db_buff;
-	u32 pci_ops_length;
-	u32 cfg_db_length;
+	u64 ptr_soc_perf_buff;
 	u32 msr_length;
 	u32 mem_length;
-        // u32 padding;           // Required to keep sizeof(mt_xchange_buffer) the same on 32b and 64b systems 
+	u32 pci_ops_length;
+	u32 cfg_db_length;
+	u32 soc_perf_length;
+        u32 padding;           // Required to keep sizeof(mt_xchange_buffer) the same on 32b and 64b systems 
                                // in the absence of #pragma pack(XXX) directives!
 };
 
@@ -419,6 +459,9 @@ struct mtx_size_info {
 	unsigned int poll_cfg_db_size;
 	unsigned int poll_scu_drv_size;
 	unsigned int total_mem_bytes_req;
+	unsigned int init_soc_perf_size;
+	unsigned int term_soc_perf_size;
+	unsigned int poll_soc_perf_size;
 };
 
 #define IOCTL_INIT_SCAN _IOR(0xF8, 0x00000001, unsigned long)

@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2013 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -56,9 +56,8 @@
 #include "inc/ecb_iterators.h"
 
 
-#if defined(BUILD_CHIPSET)
 #include "lwpmudrv_chipset.h"
-#endif
+#include "pci.h"
 
 #if defined(DRV_IA32) || defined(DRV_EM64T)
 #include "apic.h"
@@ -68,15 +67,10 @@
 #include "utility.h"
 #include "control.h"
 #if defined(DRV_IA32) || defined(DRV_EM64T)
-#include "core.h"
 #include "core2.h"
 #endif
 #include "pmi.h"
 
-#if defined(DRV_IA64)
-#include "montecito.h"
-#include "poulson.h"
-#endif
 #include "output.h"
 #include "linuxos.h"
 #include "sys_info.h"
@@ -84,9 +78,14 @@
 #if defined(DRV_IA32) || defined(DRV_EM64T)
 #include "pebs.h"
 #endif
-#include "pci.h"
 
-MODULE_AUTHOR("Copyright(c) 2007-2011 Intel Corporation");
+#if defined(CONFIG_TRACING) && defined(CONFIG_TRACEPOINTS)
+#define CREATE_TRACE_POINTS
+#include <linux/string.h>
+#include "lwpmudrv_trace.h"
+#endif
+
+MODULE_AUTHOR("Copyright (C) 2007-2014 Intel Corporation");
 MODULE_VERSION(SEP_NAME"_"SEP_VERSION_STR);
 MODULE_LICENSE("Dual BSD/GPL");
 
@@ -108,6 +107,8 @@ SEP_VERSION_NODE        drv_version;
 U64                    *read_counter_info     = NULL;
 U64                    *read_unc_ctr_info     = NULL;
 VOID                  **PMU_register_data     = NULL;
+U64                    *prev_counter_data     = NULL;
+U64                     prev_counter_size     = 0;
 #if defined(DRV_IA32) || defined(DRV_EM64T)
 #endif
 VOID                  **desc_data             = NULL;
@@ -125,6 +126,7 @@ EVENT_CONFIG            global_ec             = NULL;
 DRV_CONFIG              pcfg                  = NULL;
 volatile pid_t          control_pid           = 0;
 volatile S32            abnormal_terminate    = 0;
+U64                    *interrupt_counts      = NULL;
 #if defined(DRV_IA32) || defined(DRV_EM64T)
 LBR                     lbr                   = NULL;
 PWR                     pwr                   = NULL;
@@ -140,6 +142,9 @@ U32                     num_devices            = 0;
 U32                     cur_device             = 0;
 LWPMU_DEVICE            devices                = NULL;
 U32                     invoking_processor_id  = 0;
+static U32              uncore_em_factor       = 0;
+
+#define UNCORE_EM_GROUP_SWAP_FACTOR   100
 
 #if defined(DRV_USE_UNLOCKED_IOCTL)
 static   struct mutex   ioctl_lock;
@@ -147,12 +152,9 @@ static   struct mutex   ioctl_lock;
 volatile int            in_finish_code         = 0;
 
 #define  PMU_DEVICES            2   // pmu, mod
-#define  OTHER_PMU_DEVICES      1   // mod
 
-#if defined(BUILD_CHIPSET)
 CHIPSET_CONFIG          pma               = NULL;
 CS_DISPATCH             cs_dispatch       = NULL;
-#endif
 static S8              *cpu_mask_bits     = NULL;
 
 /*
@@ -165,8 +167,8 @@ static dev_t     lwpmu_DevNum;  /* the major and minor parts for SEP3 base */
 static dev_t     lwsamp_DevNum; /* the major and minor parts for SEP3 percpu */
 
 #if defined (DRV_ANDROID)
-#define DRV_DEVICE_DELIMITER "_"  
-static struct class         *pmu_class   = NULL; 
+#define DRV_DEVICE_DELIMITER "_"
+static struct class         *pmu_class   = NULL;
 #endif
 
 extern volatile int      config_done;
@@ -177,6 +179,10 @@ U32               *core_to_package_map = NULL;
 U32                num_packages        = 0;
 U64               *pmu_state           = NULL;
 U64               *tsc_info            = NULL;
+U64               *restore_bl_bypass        = NULL;
+U32               **restore_ha_direct2core  = NULL;
+U32               **restore_qpi_direct2core = NULL;
+UNCORE_TOPOLOGY_INFO_NODE uncore_topology;
 
 #if defined EMON
 static U64              cpu0_TSC       = 0;
@@ -225,6 +231,10 @@ lwpmudrv_PWR_Info (
     // First things first: Make a copy of the data for global use.
     //
     pwr = CONTROL_Allocate_Memory((int)arg->w_len);
+    if (!pwr) {
+        return OS_NO_MEM;
+    }
+
     if (copy_from_user(pwr, arg->w_buf, arg->w_len)) {
         return OS_FAULT;
     }
@@ -248,7 +258,7 @@ lwpmudrv_Allocate_Restore_Buffer (
 )
 {
     int i = 0;
- 
+
     if (!restore_ha_direct2core) {
         restore_ha_direct2core  = CONTROL_Allocate_Memory(GLOBAL_STATE_num_cpus(driver_state) * sizeof(U32 *));
         if (!restore_ha_direct2core) {
@@ -402,6 +412,35 @@ lwpmudrv_Fill_TSC_Info (
 
 /* ------------------------------------------------------------------------- */
 /*!
+ * @fn static void lwpmudrv_Dump_Tracer(const char *)
+ *
+ * @param Name of the tracer
+ *
+ * @return void
+ *
+ * @brief  Function that handles the generation of markers into the ftrace stream
+ *
+ * <I>Special Notes</I>
+ */
+static void
+lwpmudrv_Dump_Tracer (
+    const char    *name,
+    U64            tsc
+)
+{
+#if defined(CONFIG_TRACING) && defined(CONFIG_TRACEPOINTS)
+    if (tsc == 0) {
+        preempt_disable();
+        UTILITY_Read_TSC(&tsc);
+        tsc -= TSC_SKEW(CONTROL_THIS_CPU());
+        preempt_enable();
+    }
+    trace_lwpmudrv_marker(name, tsc);
+#endif
+}
+
+/* ------------------------------------------------------------------------- */
+/*!
  * @fn  static OS_STATUS lwpmudrv_Version(IOCTL_ARGS arg)
  *
  * @param arg - pointer to the IOCTL_ARGS structure
@@ -503,14 +542,17 @@ lwpmudrv_Clean_Up (
 #if defined(DRV_IA32) || defined(DRV_EM64T)
     if (devices) {
         U32           id;
+        EVENT_CONFIG  ec;
         for (id = 0; id < num_devices; id++) {
             if (LWPMU_DEVICE_PMU_register_data(&devices[id])) {
-                for (i = 0; i < EVENT_CONFIG_num_groups_unc(global_ec); i++) {
+                ec =  LWPMU_DEVICE_ec(&devices[id]);
+                for (i = 0; i < EVENT_CONFIG_num_groups_unc(ec); i++) {
                     CONTROL_Free_Memory(LWPMU_DEVICE_PMU_register_data(&devices[id])[i]);
                 }
                 LWPMU_DEVICE_PMU_register_data(&devices[id]) = CONTROL_Free_Memory(LWPMU_DEVICE_PMU_register_data(&devices[id]));
             }
             LWPMU_DEVICE_pcfg(&devices[id]) = CONTROL_Free_Memory(LWPMU_DEVICE_pcfg(&devices[id]));
+            LWPMU_DEVICE_ec(&devices[id])   = CONTROL_Free_Memory(LWPMU_DEVICE_ec(&devices[id]));
 
             if (LWPMU_DEVICE_acc_per_thread(&devices[id])) {
                 for (i = 0; i < GLOBAL_STATE_num_cpus(driver_state); i++) {
@@ -527,7 +569,6 @@ lwpmudrv_Clean_Up (
         }
         devices = CONTROL_Free_Memory(devices);
     }
-
 #endif
 
     if (desc_data) {
@@ -539,6 +580,22 @@ lwpmudrv_Clean_Up (
     desc_data               = CONTROL_Free_Memory(desc_data);
     global_ec               = CONTROL_Free_Memory(global_ec);
     pcfg                    = CONTROL_Free_Memory(pcfg);
+    if (restore_bl_bypass) {
+        restore_bl_bypass = CONTROL_Free_Memory(restore_bl_bypass);
+    }
+    if (restore_qpi_direct2core) {
+        for (i = 0; i < GLOBAL_STATE_num_cpus(driver_state); i++) {
+              restore_qpi_direct2core[i]= CONTROL_Free_Memory(restore_qpi_direct2core[i]);
+        }
+        restore_qpi_direct2core = CONTROL_Free_Memory(restore_qpi_direct2core);
+    }
+    if (restore_ha_direct2core) {
+        for (i = 0; i < GLOBAL_STATE_num_cpus(driver_state); i++) {
+              restore_ha_direct2core[i]= CONTROL_Free_Memory(restore_ha_direct2core[i]);
+        }
+        restore_ha_direct2core = CONTROL_Free_Memory(restore_ha_direct2core);
+    }
+
 #if defined(DRV_IA32) || defined(DRV_EM64T)
     lbr                     = CONTROL_Free_Memory(lbr);
 #else
@@ -615,6 +672,16 @@ lwpmudrv_Initialize (
         return OS_FAULT;
     }
 
+    if (DRV_CONFIG_enable_cp_mode(pcfg)) {
+        interrupt_counts = CONTROL_Allocate_Memory(GLOBAL_STATE_num_cpus(driver_state) *
+                                                   DRV_CONFIG_num_events(pcfg) *
+                                                   sizeof(U64));
+        SEP_PRINT("interrupt_counts allocated\n");
+        if (interrupt_counts == NULL) {
+            return OS_FAULT;    // no memory?
+        }
+    }
+
     if (DRV_CONFIG_use_pcl(pcfg) == TRUE) {
         return OS_SUCCESS;
     }
@@ -629,17 +696,20 @@ lwpmudrv_Initialize (
     if (!pmu_state) {
         return OS_NO_MEM;
     }
-
+    uncore_em_factor = 0;
     for (cpu_num = 0; cpu_num < GLOBAL_STATE_num_cpus(driver_state); cpu_num++) {
         CPU_STATE_accept_interrupt(&pcb[cpu_num])   = 1;
         CPU_STATE_initial_mask(&pcb[cpu_num])       = 1;
         CPU_STATE_group_swap(&pcb[cpu_num])         = 1;
         CPU_STATE_reset_mask(&pcb[cpu_num])         = 0;
-        CPU_STATE_num_samples(&pcb[cpu_num])      = 0;
+        CPU_STATE_num_samples(&pcb[cpu_num])        = 0;
+#if (defined(DRV_IA32) || defined(DRV_EM64T))
+        CPU_STATE_last_p_state_valid(&pcb[cpu_num]) = FALSE;
+#endif
     }
 
     if (dispatch == NULL) {
-        dispatch = UTILITY_Configure_CPU(DRV_CONFIG_dispatch_id(pcfg));
+    dispatch = UTILITY_Configure_CPU(DRV_CONFIG_dispatch_id(pcfg));
     }
     if (dispatch == NULL) {
         return OS_FAULT;
@@ -677,6 +747,15 @@ lwpmudrv_Initialize (
             lwpmudrv_Clean_Up(FALSE);
             return status;
         }
+
+#if defined(DRV_USE_NMI)
+        status = OUTPUT_Initialize_Timers();
+        if (status != OS_SUCCESS) {
+            GLOBAL_STATE_current_phase(driver_state) = DRV_STATE_UNINITIALIZED;
+            lwpmudrv_Clean_Up(FALSE);
+            return status;
+        }
+#endif
         SEP_PRINT_DEBUG("lwpmudrv_Initialize: After OUTPUT_Initialize\n");
 
         /*
@@ -738,7 +817,7 @@ lwpmudrv_Initialize_Num_Devices (
     cur_device = 0;
 
     SEP_PRINT_DEBUG("lwpmudrv_Initialize_Num_Devices: num_devices=%d, devices=0x%p\n", num_devices, devices);
-    
+
     return OS_SUCCESS;
 }
 
@@ -767,7 +846,7 @@ lwpmudrv_Initialize_UNC (
     DRV_CONFIG  pcfg;
 
     SEP_PRINT_DEBUG("Entered lwpmudrv_Initialize_UNC\n");
-    
+
     if (GLOBAL_STATE_current_phase(driver_state) != DRV_STATE_IDLE) {
         return OS_IN_PROGRESS;
     }
@@ -800,6 +879,10 @@ lwpmudrv_Initialize_UNC (
         SEP_PRINT_ERROR("Unable to configure CPU");
         return OS_FAULT;
     }
+
+    LWPMU_DEVICE_em_groups_count(&devices[cur_device]) = 0;
+    LWPMU_DEVICE_num_units(&devices[cur_device])       = 0;
+    LWPMU_DEVICE_cur_group(&devices[cur_device])       = 0;
 
     SEP_PRINT_DEBUG("LWP: ebc unc = %d\n",DRV_CONFIG_event_based_counts(pcfg));
     SEP_PRINT_DEBUG("LWP Config : unc dispatch id   = %d\n", DRV_CONFIG_dispatch_id(pcfg));
@@ -881,7 +964,7 @@ lwpmudrv_Switch_To_Next_Group (
 
     return;
 }
-#endif // EMON
+#endif
 
 /* ------------------------------------------------------------------------- */
 /*!
@@ -968,7 +1051,7 @@ lwpmudrv_Pause (
              dispatch_unc = LWPMU_DEVICE_dispatch(&devices[j]);
 
              if (pcfg_unc                                &&
-                 DRV_CONFIG_event_based_counts(pcfg_unc) &&
+                 (DRV_CONFIG_event_based_counts(pcfg_unc) || DRV_CONFIG_emon_mode(pcfg_unc)) &&
                  dispatch_unc                            &&
                  dispatch_unc->freeze) {
                     SEP_PRINT_DEBUG("LWP: calling UNC Pause\n");
@@ -1047,10 +1130,13 @@ lwpmudrv_Resume (
             dispatch_unc = LWPMU_DEVICE_dispatch(&devices[j]);
 
             if (pcfg_unc                                &&
-                DRV_CONFIG_event_based_counts(pcfg_unc) &&
+                (DRV_CONFIG_event_based_counts(pcfg_unc) || DRV_CONFIG_emon_mode(pcfg_unc)) &&
                 dispatch_unc                            &&
                 dispatch_unc->restart) {
                    SEP_PRINT_DEBUG("LWP: calling UNC Resume\n");
+                    preempt_disable();
+                    invoking_processor_id = CONTROL_THIS_CPU();
+                    preempt_enable();
                    CONTROL_Invoke_Parallel(dispatch_unc->restart, (VOID *)&j);
             }
        }
@@ -1105,6 +1191,66 @@ lwpmudrv_Switch_Group (
     return status;
 }
 
+
+/* ------------------------------------------------------------------------- */
+/*!
+ * @fn  static OS_STATUS lwpmudrv_Uncore_Switch_Group(void)
+ *
+ * @param none
+ *
+ * @return OS_STATUS
+ *
+ * @brief Switch the current group that is being collected.
+ *
+ * <I>Special Notes</I>
+ *     This routine is called from the user mode code to handle the multiple group
+ *     situation.  4 distinct steps are taken:
+ *     Step 1: Pause the sampling
+ *     Step 2: Increment the current group count
+ *     Step 3: Write the new group to the PMU
+ *     Step 4: Resume sampling
+ */
+static OS_STATUS
+lwpmudrv_Uncore_Switch_Group (
+    VOID
+)
+{
+    OS_STATUS      status        = OS_SUCCESS;
+    U32            current_state = GLOBAL_STATE_current_phase(driver_state);
+    U32            i             = 0;
+    DRV_CONFIG     pcfg_unc;
+    DISPATCH       dispatch_unc;
+
+    if (current_state != DRV_STATE_RUNNING &&
+        current_state != DRV_STATE_PAUSED) {
+        return status;
+    }
+
+    status = lwpmudrv_Pause();
+
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    for(i = 0; i < num_devices; i++) {
+        pcfg_unc     = LWPMU_DEVICE_pcfg(&devices[i]);
+        dispatch_unc = LWPMU_DEVICE_dispatch(&devices[i]);
+        if (pcfg_unc && dispatch_unc) {
+            LWPMU_DEVICE_cur_group(&devices[i])++;
+            LWPMU_DEVICE_cur_group(&devices[i]) %= LWPMU_DEVICE_em_groups_count(&devices[i]);
+            SEP_PRINT("lwpmudrv_Switch_Group - Swap Group to %d for device %d\n",LWPMU_DEVICE_cur_group(&devices[i]), i);
+            preempt_disable();
+            invoking_processor_id = CONTROL_THIS_CPU();
+            preempt_enable();
+            CONTROL_Invoke_Parallel(dispatch_unc->write, (VOID*)&i);
+        }
+    }
+#endif
+
+    if (pcfg && (DRV_CONFIG_start_paused(pcfg) == FALSE)) {
+        lwpmudrv_Resume();
+    }
+
+    return status;
+}
+
 /* ------------------------------------------------------------------------- */
 /*!
  * @fn static OS_STATUS lwpmudrv_Trigger_Read(void)
@@ -1127,11 +1273,9 @@ lwpmudrv_Trigger_Read (
     DISPATCH   dispatch_unc = NULL;
     U32        i;
 
-#if defined(BUILD_CHIPSET)
     if (cs_dispatch && cs_dispatch->Trigger_Read) {
         cs_dispatch->Trigger_Read();
     }
-#endif
 
     if (pcfg && DRV_CONFIG_use_pcl(pcfg) == TRUE) {
         return OS_SUCCESS;
@@ -1143,8 +1287,15 @@ lwpmudrv_Trigger_Read (
         if (pcfg_unc  && dispatch_unc && dispatch_unc->trigger_read ) {
             dispatch_unc->trigger_read();
         }
-    }
 
+        if (LWPMU_DEVICE_em_groups_count(&devices[i]) > 1) {
+            uncore_em_factor++;
+            if (uncore_em_factor == UNCORE_EM_GROUP_SWAP_FACTOR) {
+                lwpmudrv_Uncore_Switch_Group();
+                uncore_em_factor = 0;
+            }
+        }
+    }
 #endif
 
     return OS_SUCCESS;
@@ -1165,16 +1316,27 @@ lwpmudrv_Trigger_Read (
  */
 static OS_STATUS
 lwpmudrv_Init_PMU (
-    VOID
+    IOCTL_ARGS args
 )
 {
 #if defined(DRV_IA32) || defined(DRV_EM64T)
     DRV_CONFIG pcfg_unc = NULL;
     DISPATCH   dispatch_unc = NULL;
     U32        i;
+    U32        emon_data_buffer_size  = 0;
+    S32        max_groups_unc;
 #endif
+    if (args->w_len == 0 || args->w_buf == NULL) {
+        return OS_NO_MEM;
+    }
 
-    if (pcfg && DRV_CONFIG_use_pcl(pcfg) == TRUE) {
+    emon_data_buffer_size = *(U32*)args->w_buf;
+    prev_counter_size     = emon_data_buffer_size;
+
+    if (!pcfg) {
+        return OS_FAULT;
+    }
+    if (DRV_CONFIG_use_pcl(pcfg) == TRUE) {
         return OS_SUCCESS;
     }
 
@@ -1186,6 +1348,22 @@ lwpmudrv_Init_PMU (
         SEP_PRINT_ERROR("Number of em groups is not set.\n");
         return OS_SUCCESS;
     }
+
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    // set cur_device's total groups to max groups of all devices
+    max_groups_unc = 0;
+    for (i = 0; i < num_devices; i++) {
+        if (max_groups_unc < LWPMU_DEVICE_em_groups_count(&devices[i])) {
+            max_groups_unc = LWPMU_DEVICE_em_groups_count(&devices[i]);
+        }
+    }
+    // now go back and up total groups for all devices
+    for (i = 0; i < num_devices; i++) {
+        if (LWPMU_DEVICE_em_groups_count(&devices[i]) < max_groups_unc) {
+            LWPMU_DEVICE_em_groups_count(&devices[i]) = max_groups_unc;
+        }
+    }
+#endif
 
     // allocate save/restore space before program the PMU
     lwpmudrv_Allocate_Restore_Buffer();
@@ -1213,6 +1391,42 @@ lwpmudrv_Init_PMU (
 #endif
 
     SEP_PRINT_DEBUG("lwpmudrv_Init_PMU: IOCTL_Init_PMU - finished initial Write\n");
+    if (DRV_CONFIG_counting_mode(pcfg) == TRUE) {
+        if (!read_counter_info) {
+            read_counter_info = CONTROL_Allocate_Memory(emon_data_buffer_size);
+            if (!read_counter_info) {
+                return OS_NO_MEM;
+            }
+        }
+        if (!read_unc_ctr_info) {
+            read_unc_ctr_info = CONTROL_Allocate_Memory(emon_data_buffer_size);
+            if (!read_unc_ctr_info) {
+                return OS_NO_MEM;
+            }
+        }
+        if (!prev_counter_data) {
+            prev_counter_data = CONTROL_Allocate_Memory(emon_data_buffer_size);
+            if (!prev_counter_data) {
+                return OS_NO_MEM;
+            }
+        }
+        // read the data registers
+        // yes, the counters are not enabled - we don't care
+        // we are capturing the read-only counter counts so we can get a diff when
+        // we collect the actual counts - other counts are also collected but are never used
+        CONTROL_Invoke_Parallel(dispatch->read_data, (VOID *)(size_t)0);
+        for (i = 0; i < num_devices; i++) {
+             pcfg_unc = (DRV_CONFIG)LWPMU_DEVICE_pcfg(&devices[i]);
+             dispatch_unc = LWPMU_DEVICE_dispatch(&devices[i]);
+             if (pcfg_unc && dispatch_unc && dispatch_unc->read_data && DRV_CONFIG_emon_mode(pcfg_unc)) {
+                 preempt_disable();
+                 invoking_processor_id = CONTROL_THIS_CPU();
+                 preempt_enable();
+                 CONTROL_Invoke_Parallel(dispatch_unc->read_data, (VOID*)&i);
+             }
+        }
+        memcpy(prev_counter_data, read_unc_ctr_info, emon_data_buffer_size);
+    }
 
     return OS_SUCCESS;
 }
@@ -1251,7 +1465,7 @@ lwpmudrv_Read_MSR (
       preempt_enable();
       return;
     }
-    
+
     MSR_DATA_value(this_node) = (U64)SYS_Read_MSR((U32)MSR_DATA_addr(this_node));
     preempt_enable();
 #endif
@@ -1295,7 +1509,7 @@ lwpmudrv_Read_MSR_All_Cores (
         SEP_PRINT_ERROR("NULL out_buf\n");
         return OS_SUCCESS;
     }
-    
+
     msr_data = CONTROL_Allocate_Memory(GLOBAL_STATE_num_cpus(driver_state)*sizeof(MSR_DATA_NODE));
     if (!msr_data) {
         return OS_NO_MEM;
@@ -1327,102 +1541,52 @@ lwpmudrv_Read_MSR_All_Cores (
 }
 
 #ifdef EMON
-#ifdef EMON_INTERNAL
+#endif
+
 /* ------------------------------------------------------------------------- */
 /*!
- * @fn static void lwpmudrv_Write_MSR(pvoid iaram)
+ * @fn static void lwpmudrv_Read_MSRs_Uncore(PVOID param)
  *
- * @param param - pointer to array containing the MSR address and the value to be written
+ * @param param   - dummy
  *
- * @return none
+ * @return void
  *
- * @brief
- * @brief  Read the U64 value at address in in_buf and
- * @brief  write the result into out_buf.
+ * @brief  Read all the uncore data counters at one shot
  *
  * <I>Special Notes</I>
  */
-static VOID
-lwpmudrv_Write_MSR (
-    PVOID param
+static void
+lwpmudrv_Read_MSRs_Uncore (
+    VOID*    param
 )
 {
-#if defined(DRV_IA32) || defined(DRV_EM64T)
-    U32       this_cpu;
-    MSR_DATA  this_node;
-    U32       reg_num;
-    U64       val;
+    DISPATCH    dispatch_unc;
+    U32         dev_idx;
+    DRV_CONFIG  pcfg_unc;
 
-    preempt_disable();
-    this_cpu  = CONTROL_THIS_CPU();
-    this_node = &msr_data[this_cpu];
-    reg_num   = (U32)MSR_DATA_addr(this_node);
-    val       = (U64)MSR_DATA_value(this_node);
-    // don't attempt to write MSR 0
-    if (reg_num == 0) {
-        preempt_enable();
+    if (devices == NULL) {
         return;
     }
-
-    SYS_Write_MSR(reg_num, val);
-    preempt_enable();
-#endif
+    for (dev_idx = 0; dev_idx < num_devices; dev_idx++) {
+        pcfg_unc      = (DRV_CONFIG)LWPMU_DEVICE_pcfg(&devices[dev_idx]);
+        if (pcfg_unc == NULL) {
+            continue;
+        }
+        if (!DRV_CONFIG_emon_mode(pcfg_unc)) {
+            continue;
+        }
+        dispatch_unc  = LWPMU_DEVICE_dispatch(&devices[dev_idx]);
+        if (dispatch_unc == NULL) {
+            continue;
+        }
+        if (dispatch_unc->read_data == NULL) {
+            continue;
+        }
+        dispatch_unc->read_data((VOID*)&dev_idx);
+    }
 
     return;
 }
-
-/* ------------------------------------------------------------------------- */
-/*!
- * @fn static OS_STATUS lwpmudrv_Write_MSR_All_Cores(IOCTL_ARGS arg)
- *
- * @param arg - pointer to the IOCTL_ARGS structure
- *
- * @return OS_STATUS
- *
- * @brief  Read the U64 value at address into in_buf and write
- * @brief  the result into out_buf.
- * @brief  Returns OS_SUCCESS if the write across all cores succeed,
- * @brief  otherwise OS_FAULT.
- *
- * <I>Special Notes</I>
- */
-static OS_STATUS
-lwpmudrv_Write_MSR_All_Cores (
-    IOCTL_ARGS    arg
-)
-{
-    EVENT_REG       in_buf;
-    U32             reg_num;
-    U64             val;
-    S32             i;
-    MSR_DATA        node;
-
-    if (arg->w_len == 0 || arg->w_buf == NULL) {
-        return OS_FAULT;
-    }
-    in_buf  = (EVENT_REG)arg->w_buf;
-    reg_num = (U32)EVENT_REG_reg_id(in_buf,0);
-    val     = (U64)EVENT_REG_reg_value(in_buf,0);
-
-    msr_data = CONTROL_Allocate_Memory(GLOBAL_STATE_num_cpus(driver_state)*sizeof(MSR_DATA_NODE));
-    if (!msr_data) {
-        return OS_NO_MEM;
-    }
-
-    for (i = 0; i < GLOBAL_STATE_num_cpus(driver_state); i++) {
-        node                 = &msr_data[i];
-        MSR_DATA_addr(node)  = reg_num;
-        MSR_DATA_value(node) = val;
-    }
-
-    CONTROL_Invoke_Parallel(lwpmudrv_Write_MSR, (VOID *)(size_t)0);
-
-    msr_data = CONTROL_Free_Memory(msr_data);
-
-    return OS_SUCCESS;
-}
-#endif
-#endif
 
 /* ------------------------------------------------------------------------- */
 /*!
@@ -1445,16 +1609,20 @@ lwpmudrv_Read_MSRs (
     OS_STATUS  status = OS_SUCCESS;
 #if defined(DRV_IA32) || defined(DRV_EM64T)
     DISPATCH    dispatch_unc;
-    ECB         pecb_unc;
-    U32         start_index, j;
+    U32         start_index, j, l;
     U32         dev_idx;
     U32         pkg_idx;
     DRV_CONFIG  pcfg_unc;
-    U32         evt_index          = 0;
-    U32         prev_ei         = 0;
-    U32         cur_ei          = 0;
-    U32         num_inst_idx       = 0;
-    U32         num_units          = 0;
+    U32         evt_index           = 0;
+    S32         prev_ei             = -1;
+    S32         cur_ei              = 0;
+    U32         num_inst_idx        = 0;
+    U32         num_units           = 0;
+    U32         cur_grp             = 0;
+    U32         package_event_count = 0;
+    U32         module_event_count  = 0;
+    U32         thread_event_count  = 0;
+    U32         num_cpus            = GLOBAL_STATE_num_cpus(driver_state);
 #endif
     if (arg->r_len == 0 || arg->r_buf == NULL ) {
         return status;
@@ -1462,40 +1630,70 @@ lwpmudrv_Read_MSRs (
     //
     // Transfer the data in the PMU registers to the output buffer
     //
-    read_counter_info = CONTROL_Allocate_Memory(arg->r_len);
     if (!read_counter_info) {
-         return OS_NO_MEM;
+        read_counter_info = CONTROL_Allocate_Memory(arg->r_len);
+        if (!read_counter_info) {
+            return OS_NO_MEM;
+        }
+    }
+    if (!read_unc_ctr_info) {
+        read_unc_ctr_info = CONTROL_Allocate_Memory(arg->r_len);
+        if (!read_unc_ctr_info) {
+            return OS_NO_MEM;
+        }
+    }
+    if (!prev_counter_data) {
+        prev_counter_data = CONTROL_Allocate_Memory(arg->r_len);
+        if (!prev_counter_data) {
+            return OS_NO_MEM;
+        }
     }
 
-    read_unc_ctr_info = CONTROL_Allocate_Memory(arg->r_len);
-    if (!read_unc_ctr_info) {
-         return OS_NO_MEM;
-    }
-    
     CONTROL_Invoke_Parallel(dispatch->read_data, (VOID *)(size_t)0);
 
 #if defined(DRV_IA32) || defined(DRV_EM64T)
+    if (devices == NULL) {
+        return status;
+    }
+    CONTROL_Invoke_Parallel(lwpmudrv_Read_MSRs_Uncore, (VOID *)(size_t)0);
+
     for (dev_idx = 0; dev_idx < num_devices; dev_idx++) {
         pcfg_unc      = (DRV_CONFIG)LWPMU_DEVICE_pcfg(&devices[dev_idx]);
+        if (pcfg_unc  == NULL) {
+            continue;
+        }
+        if (!DRV_CONFIG_emon_mode(pcfg_unc)) {
+            continue;
+        }
         dispatch_unc  = LWPMU_DEVICE_dispatch(&devices[dev_idx]);
+        if (dispatch_unc == NULL) {
+            continue;
+        }
+        if (dispatch_unc->read_data == NULL) {
+            continue;
+        }
         num_units     = LWPMU_DEVICE_num_units(&devices[dev_idx]);
-        if (pcfg_unc && dispatch_unc && dispatch_unc->read_data && DRV_CONFIG_emon_mode(pcfg_unc)) {
-             pecb_unc                = LWPMU_DEVICE_PMU_register_data(&devices[(dev_idx)])[0];
-             invoking_processor_id   = CONTROL_THIS_CPU();
-             start_index             = DRV_CONFIG_emon_unc_offset(pcfg_unc);
-             CONTROL_Invoke_Parallel(dispatch_unc->read_data, (VOID*)&dev_idx);
+        cur_grp       = LWPMU_DEVICE_cur_group(&devices[dev_idx]);
+        package_event_count = 0;
+        module_event_count  = 0;
+        thread_event_count  = 0;
+        prev_ei             = -1;
+        invoking_processor_id   = CONTROL_THIS_CPU();
+        start_index             = DRV_CONFIG_emon_unc_offset(pcfg_unc,cur_grp);
+
+        /* Populate the output buffers with the data that is read in the worker routine*/
              FOR_EACH_DATA_REG_UNC_VER2(pecb_unc,k, dev_idx ) {
 
-                 cur_ei = ECB_entries_event_id_index(pecb_unc, k);
+                 cur_ei = ECB_entries_group_index(pecb_unc, k);
                  CHECK_SAVE_RESTORE_EVENT_INDEX(prev_ei, cur_ei, evt_index);
 
-                 if (ECB_entries_is_multi_pkg_bit_set(pecb_unc,k)) { 
+            if (ECB_entries_is_multi_pkg_bit_set(pecb_unc,k)) {
                     for(pkg_idx = 0; pkg_idx < num_packages; pkg_idx++) {
                         for (num_inst_idx = 0; num_inst_idx < num_units; num_inst_idx++){
-                          j                = start_index + 
+                        j = start_index +
                                              evt_index * num_packages * num_units +
-                                             ECB_entries_event_id_index(pecb_unc,k) + 
-                                             num_inst_idx + 
+                            ECB_entries_group_index(pecb_unc,k) +
+                            num_inst_idx +
                                              pkg_idx * num_units;
 
                          read_counter_info[j] = read_unc_ctr_info[j];
@@ -1504,19 +1702,76 @@ lwpmudrv_Read_MSRs (
                      }
                  }
                  else {
-                    j                = start_index + ECB_entries_event_id_index(pecb_unc,k) + ECB_entries_emon_event_id_index_local(pecb_unc,k);
-                            read_counter_info[j] = read_unc_ctr_info[j];
-                    SEP_PRINT_DEBUG("j = %d value =0x%llx in final\n",j, read_counter_info[j]);
+                    for (l = 0; l < num_cpus; l++) {
+                        if (ECB_entries_event_scope(pecb_unc,k) == SYSTEM_EVENT && l > 0) {
+                            break;
                         }
+                        j = start_index + ECB_entries_group_index(pecb_unc,k) +
+                            package_event_count*num_packages +
+                            module_event_count*(GLOBAL_STATE_num_modules(driver_state)) +
+                            thread_event_count*num_cpus;
+                        if (ECB_entries_event_scope(pecb_unc,k) == 0) {
+                            continue;
+                        }
+                        if (ECB_entries_event_scope(pecb_unc,k) == PACKAGE_EVENT) {
+                            j = j + core_to_package_map[l];
+                            if (!CPU_STATE_socket_master(&pcb[l])) {
+                                continue;
+                            }
+                        }
+                        if (ECB_entries_event_scope(pecb_unc,k) == MODULE_EVENT) {
+                            j = j + CPU_STATE_cpu_module_num(&pcb[l]);
+                            if (!CPU_STATE_cpu_module_master(&pcb[l])) {
+                                continue;
+                            }
+                        }
+                        if (ECB_entries_event_scope(pecb_unc,k) == THREAD_EVENT) {
+                            j = j + l;
+                        }
+                        if (ECB_entries_counter_type(pecb_unc,k) == FREERUN_COUNTER) {
+                            if (read_unc_ctr_info[j] >= prev_counter_data[j]) {
+                                read_counter_info[j] = read_unc_ctr_info[j] - prev_counter_data[j];
+                                SEP_PRINT_DEBUG("Delta count j=%d start=%llu end=%llu count=%llu k=%d\n",
+                                                j,
+                                                prev_counter_data[j],
+                                                read_unc_ctr_info[j],
+                                                read_counter_info[j],
+                                                k);
+                            }
+                            else {
+                                read_counter_info[j] = read_unc_ctr_info[j] + (ECB_entries_max_bits(pecb_unc,k) - prev_counter_data[j]);
+                            }
+                            prev_counter_data[j] = read_unc_ctr_info[j];
+                        }
+                        else {
+                            read_counter_info[j] = read_unc_ctr_info[j];
+                            SEP_PRINT_DEBUG("Static count j=%d start=%llu end=%llu count=%llu k=%d\n",
+                                            j,
+                                            prev_counter_data[j],
+                                            read_unc_ctr_info[j],
+                                            read_counter_info[j],
+                                            k);
+                        }
+                    }
+                    if (ECB_entries_event_scope(pecb_unc,k) == PACKAGE_EVENT) {
+                        package_event_count++;
+                    }
+                    else if (ECB_entries_event_scope(pecb_unc,k) == MODULE_EVENT) {
+                        module_event_count++;
+                    }
+                    else if (ECB_entries_event_scope(pecb_unc,k) == THREAD_EVENT) {
+                        thread_event_count++;
+                    }
+                    SEP_PRINT_DEBUG("j=%d value=%llu in final\n",
+                                    j,
+                                    read_counter_info[j]);
+                 }
              } END_FOR_EACH_DATA_REG_UNC_VER2 ;
         }
-    }
 #endif
     if (copy_to_user(arg->r_buf, read_counter_info, arg->r_len)) {
         status = OS_FAULT;
     }
-    read_counter_info = CONTROL_Free_Memory(read_counter_info);
-    read_unc_ctr_info = CONTROL_Free_Memory(read_unc_ctr_info);
 
     return status;
 }
@@ -1564,7 +1819,7 @@ lwpmudrv_Read_Specific_TSC (
  *
  * <I>Special Notes</I>
  *     This routine is called from the user mode code to handle the multiple group
- *     situation.  9 distinct steps are taken:
+ *     situation.  11 distinct steps are taken:
  *     Step 1: Save the previously collected CPU 0 TSC value
  *     Step 2: Read CPU 0's TSC
  *     Step 3: Calculate the difference between the TSCs and save in the first U64 of the buffer
@@ -1574,7 +1829,9 @@ lwpmudrv_Read_Specific_TSC (
  *             Restore the old buffer ptr.
  *     Step 7: Increment the current group count
  *     Step 8: Write the new group to the PMU
- *     Step 9: Resume the counting PMUs
+ *     Step 9: Write the new uncore groups to the PMU
+ *     Step 10: Reread prev_tsc value for next collection (so read MSRs time not included in report)
+ *     Step 11: Resume the counting PMUs
  *
  */
 static OS_STATUS
@@ -1587,6 +1844,11 @@ lwpmudrv_Read_Counters_And_Switch_Group (
     U32            this_cpu;
     char          *orig_r_buf_ptr;
     OS_STATUS      status        = OS_SUCCESS;
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    DRV_CONFIG     pcfg_unc;
+    DISPATCH       dispatch_unc;
+    U32            i;
+#endif
 
     if (arg->r_buf == NULL || arg->r_len == 0) {
         return OS_FAULT;
@@ -1603,7 +1865,7 @@ lwpmudrv_Read_Counters_And_Switch_Group (
 
     if (this_cpu == 0) {
         UTILITY_Read_TSC(&cpu0_TSC);
-    } 
+    }
     else {
         CONTROL_Invoke_Cpu (0, lwpmudrv_Read_Specific_TSC, &cpu0_TSC);
     }
@@ -1620,6 +1882,7 @@ lwpmudrv_Read_Counters_And_Switch_Group (
     orig_r_buf_ptr = arg->r_buf;
     pBuffer += 1;
     arg->r_buf = (char *)pBuffer;
+
     // step 5
     status = lwpmudrv_Pause();
     // step 6
@@ -1631,7 +1894,67 @@ lwpmudrv_Read_Counters_And_Switch_Group (
     CONTROL_Invoke_Parallel(lwpmudrv_Switch_To_Next_Group, (VOID *)(size_t)0);
     // step 8
     CONTROL_Invoke_Parallel(dispatch->write, (VOID *)(size_t)0);
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    for(i = 0; i < num_devices; i++) {
+        pcfg_unc     = LWPMU_DEVICE_pcfg(&devices[i]);
+        dispatch_unc = LWPMU_DEVICE_dispatch(&devices[i]);
+        if (pcfg_unc && dispatch_unc && DRV_CONFIG_emon_mode(pcfg_unc)) {
+            LWPMU_DEVICE_cur_group(&devices[i])++;
+            if (CPU_STATE_current_group(&pcb[this_cpu]) == 0) {
+                LWPMU_DEVICE_cur_group(&devices[i]) = 0;
+            }
+            LWPMU_DEVICE_cur_group(&devices[i]) %= LWPMU_DEVICE_em_groups_count(&devices[i]);
+            SEP_PRINT_DEBUG("lwpmudrv_Read_Counters_And_Switch_Group - Swap Group to %d for device %d\n",
+                            LWPMU_DEVICE_cur_group(&devices[i]),
+                            i);
+            CONTROL_Invoke_Parallel(dispatch_unc->write, (VOID*)&i);
+        }
+    }
+#endif
     // step 9
+    // reset prev_counters for this group
+    if (!read_counter_info) {
+        read_counter_info = CONTROL_Allocate_Memory(prev_counter_size);
+        if (!read_counter_info) {
+            return OS_NO_MEM;
+        }
+    }
+    if (!read_unc_ctr_info) {
+        read_unc_ctr_info = CONTROL_Allocate_Memory(prev_counter_size);
+        if (!read_unc_ctr_info) {
+            return OS_NO_MEM;
+        }
+    }
+    if (!prev_counter_data) {
+        prev_counter_data = CONTROL_Allocate_Memory(prev_counter_size);
+        if (!prev_counter_data) {
+            return OS_NO_MEM;
+        }
+    }
+    // read the data registers (this is for FREERUN counters)
+    CONTROL_Invoke_Parallel(dispatch->read_data, (VOID *)(size_t)0);
+    for (i = 0; i < num_devices; i++) {
+        pcfg_unc = (DRV_CONFIG)LWPMU_DEVICE_pcfg(&devices[i]);
+        dispatch_unc = LWPMU_DEVICE_dispatch(&devices[i]);
+        if (pcfg_unc && dispatch_unc && dispatch_unc->read_data && DRV_CONFIG_emon_mode(pcfg_unc)) {
+            preempt_disable();
+            invoking_processor_id = CONTROL_THIS_CPU();
+            preempt_enable();
+            CONTROL_Invoke_Parallel(dispatch_unc->read_data, (VOID*)&i);
+        }
+    }
+    memcpy(prev_counter_data, read_unc_ctr_info, prev_counter_size);
+
+    // step 10
+    // reset cpu0_TSC for next collection interval
+    if (this_cpu == 0) {
+        UTILITY_Read_TSC(&cpu0_TSC);
+    }
+    else {
+        CONTROL_Invoke_Cpu (0, lwpmudrv_Read_Specific_TSC, &cpu0_TSC);
+    }
+
+    // step 11
     status = lwpmudrv_Resume();
 
     return status;
@@ -1658,7 +1981,9 @@ lwpmudrv_Read_Counters_And_Switch_Group (
  *     Step 6: Read the currently programmed data PMUs and copy the data into the output buffer
  *             Restore the old buffer ptr.
  *     Step 7: Write the new group to the PMU
- *     Step 8: Resume the counting PMUs
+ *     Step 8: Write the new uncore groups to the PMU
+ *     Step 9: Reread prev_tsc value for next collection (so read MSRs time not included in report)
+ *     Step 10: Resume the counting PMUs
  */
 static OS_STATUS
 lwpmudrv_Read_And_Reset_Counters (
@@ -1670,6 +1995,11 @@ lwpmudrv_Read_And_Reset_Counters (
     U32            this_cpu;
     char          *orig_r_buf_ptr;
     OS_STATUS      status        = OS_SUCCESS;
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    DRV_CONFIG     pcfg_unc;
+    DISPATCH       dispatch_unc;
+    U32            i;
+#endif
 
     if (arg->r_buf == NULL || arg->r_len == 0) {
         return OS_FAULT;
@@ -1686,7 +2016,7 @@ lwpmudrv_Read_And_Reset_Counters (
 
     if (this_cpu == 0) {
         UTILITY_Read_TSC(&cpu0_TSC);
-    } 
+    }
     else {
         CONTROL_Invoke_Cpu (0, lwpmudrv_Read_Specific_TSC, &cpu0_TSC);
     }
@@ -1711,7 +2041,62 @@ lwpmudrv_Read_And_Reset_Counters (
 
     // step 8
     CONTROL_Invoke_Parallel(dispatch->write, (VOID *)(size_t)0);
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    for(i=0;i<num_devices;i++){
+        pcfg_unc     = LWPMU_DEVICE_pcfg(&devices[i]);
+        dispatch_unc = LWPMU_DEVICE_dispatch(&devices[i]);
+        if (pcfg_unc && dispatch_unc && DRV_CONFIG_emon_mode(pcfg_unc)) {
+            SEP_PRINT_DEBUG("lwpmudrv_Read_And_Reset_Counters - Swap Group to %d for device %d\n",
+                            LWPMU_DEVICE_cur_group(&devices[i]),
+                            i);
+            CONTROL_Invoke_Parallel(dispatch_unc->write, (VOID*)&i);
+         }
+     }
+#endif
     // step 9
+    // reset prev_counters for this group
+    if (!read_counter_info) {
+        read_counter_info = CONTROL_Allocate_Memory(prev_counter_size);
+        if (!read_counter_info) {
+            return OS_NO_MEM;
+        }
+    }
+    if (!read_unc_ctr_info) {
+        read_unc_ctr_info = CONTROL_Allocate_Memory(prev_counter_size);
+        if (!read_unc_ctr_info) {
+            return OS_NO_MEM;
+        }
+    }
+    if (!prev_counter_data) {
+        prev_counter_data = CONTROL_Allocate_Memory(prev_counter_size);
+        if (!prev_counter_data) {
+            return OS_NO_MEM;
+        }
+    }
+    // read the data registers (this is for FREERUN counters)
+    CONTROL_Invoke_Parallel(dispatch->read_data, (VOID *)(size_t)0);
+    for (i = 0; i < num_devices; i++) {
+        pcfg_unc = (DRV_CONFIG)LWPMU_DEVICE_pcfg(&devices[i]);
+        dispatch_unc = LWPMU_DEVICE_dispatch(&devices[i]);
+        if (pcfg_unc && dispatch_unc && dispatch_unc->read_data && DRV_CONFIG_emon_mode(pcfg_unc)) {
+            preempt_disable();
+            invoking_processor_id = CONTROL_THIS_CPU();
+            preempt_enable();
+            CONTROL_Invoke_Parallel(dispatch_unc->read_data, (VOID*)&i);
+        }
+    }
+    memcpy(prev_counter_data, read_unc_ctr_info, prev_counter_size);
+
+    // step 10
+    // reset cpu0_TSC for next collection interval
+    if (this_cpu == 0) {
+        UTILITY_Read_TSC(&cpu0_TSC);
+    }
+    else {
+        CONTROL_Invoke_Cpu (0, lwpmudrv_Read_Specific_TSC, &cpu0_TSC);
+    }
+
+    // step 11
     status = lwpmudrv_Resume();
 
     return status;
@@ -1791,16 +2176,23 @@ lwpmudrv_Set_EM_Config_UNC (
     IOCTL_ARGS arg
 )
 {
+    EVENT_CONFIG    ec;
     SEP_PRINT_DEBUG("enter lwpmudrv_Set_EM_Config_UNC\n");
     if (GLOBAL_STATE_current_phase(driver_state) != DRV_STATE_IDLE) {
         return OS_IN_PROGRESS;
     }
 
-    SEP_PRINT_DEBUG("Num Groups UNCORE: %d\n", EVENT_CONFIG_num_groups_unc(global_ec));    
-
-    LWPMU_DEVICE_PMU_register_data(&devices[cur_device]) = CONTROL_Allocate_Memory(EVENT_CONFIG_num_groups_unc(global_ec) *
+    SEP_PRINT_DEBUG("Num Groups UNCORE: %d\n", EVENT_CONFIG_num_groups_unc(global_ec));
+    // allocate memory
+    LWPMU_DEVICE_ec(&devices[cur_device]) = CONTROL_Allocate_Memory(sizeof(EVENT_CONFIG_NODE));
+    if (copy_from_user(LWPMU_DEVICE_ec(&devices[cur_device]), arg->w_buf, arg->w_len)) {
+        return OS_FAULT;
+    }
+    // configure num_groups from ec of the specific device
+    ec = (EVENT_CONFIG)LWPMU_DEVICE_ec(&devices[cur_device]);
+    LWPMU_DEVICE_PMU_register_data(&devices[cur_device]) = CONTROL_Allocate_Memory(EVENT_CONFIG_num_groups_unc(ec) *
                                                                                    sizeof(VOID *));
-    
+
     LWPMU_DEVICE_em_groups_count(&devices[cur_device]) = 0;
 
     return OS_SUCCESS;
@@ -1826,6 +2218,8 @@ lwpmudrv_Configure_Events (
 )
 {
     int  uncopied;
+    U32 group_id = 0;
+    ECB ecb      = NULL;
 
     SEP_PRINT_DEBUG("lwpmudrv_Configure_Events: entered.\n");
     if (GLOBAL_STATE_current_phase(driver_state) != DRV_STATE_IDLE) {
@@ -1839,18 +2233,21 @@ lwpmudrv_Configure_Events (
     if (arg->w_buf == NULL || arg->w_len == 0) {
         return OS_FAULT;
     }
-    PMU_register_data[em_groups_count] = CONTROL_Allocate_Memory(arg->w_len);
-    if (!PMU_register_data[em_groups_count]) {
+
+    ecb                         = (ECB)arg->w_buf;
+    group_id                    = ECB_group_id(ecb);
+    PMU_register_data[group_id] = CONTROL_Allocate_Memory(arg->w_len);
+    if (!PMU_register_data[group_id]) {
         return OS_NO_MEM;
     }
     //
     // Make a copy of the data for global use.
     //
-    uncopied = copy_from_user(PMU_register_data[em_groups_count], arg->w_buf, arg->w_len);
+    uncopied = copy_from_user(PMU_register_data[group_id], arg->w_buf, arg->w_len);
     if (uncopied > 0) {
         return OS_NO_MEM;
     }
-    em_groups_count++;
+    em_groups_count = group_id + 1;
 
     return OS_SUCCESS;
 }
@@ -1879,6 +2276,10 @@ lwpmudrv_Configure_Events_UNC (
     ECB               ecb;
     S32               i;
     U32               j;
+    EVENT_CONFIG      ec_unc;
+    DRV_CONFIG        pcfg_unc;
+    U32               group_id = 0;
+    ECB               in_ecb   = NULL;
 
     if (GLOBAL_STATE_current_phase(driver_state) != DRV_STATE_IDLE) {
         return OS_IN_PROGRESS;
@@ -1886,9 +2287,11 @@ lwpmudrv_Configure_Events_UNC (
 
     em_groups_count_unc = LWPMU_DEVICE_em_groups_count(&devices[cur_device]);
     PMU_register_data_unc = LWPMU_DEVICE_PMU_register_data(&devices[cur_device]);
+    ec_unc                = LWPMU_DEVICE_ec(&devices[cur_device]);
+    pcfg_unc              = LWPMU_DEVICE_pcfg(&devices[cur_device]);
 
-    if (em_groups_count_unc >= GLOBAL_STATE_num_em_groups(driver_state)) {
-        SEP_PRINT_DEBUG("Number of Uncore EM groups exceeded the initial configuration.");
+    if (em_groups_count_unc >= (S32)EVENT_CONFIG_num_groups_unc(ec_unc)) {
+        SEP_PRINT("Number of Uncore EM groups exceeded the initial configuration.");
         return OS_SUCCESS;
     }
      if (arg->w_buf == NULL || arg->w_len == 0) {
@@ -1896,21 +2299,24 @@ lwpmudrv_Configure_Events_UNC (
     }
     //       size is in w_len, data is pointed to by w_buf
     //
-    PMU_register_data_unc[em_groups_count_unc] = CONTROL_Allocate_Memory(arg->w_len);
-    if (!PMU_register_data_unc[em_groups_count_unc]) {
+    in_ecb                          = (ECB)arg->w_buf;
+    group_id                        = ECB_group_id(in_ecb);
+    PMU_register_data_unc[group_id] = CONTROL_Allocate_Memory(arg->w_len);
+    if (!PMU_register_data_unc[group_id]) {
         return OS_NO_MEM;
     }
 
     //
     // Make a copy of the data for global use.
     //
-    if (copy_from_user(PMU_register_data_unc[em_groups_count_unc], arg->w_buf, arg->w_len)) {
+    if (copy_from_user(PMU_register_data_unc[group_id], arg->w_buf, arg->w_len)) {
         return OS_NO_MEM;
     }
 
-    // at this point, we know the number of uncore events for this device, 
-    // so allocate the results buffer per thread for uncore
-        ecb = PMU_register_data_unc[0];
+    // at this point, we know the number of uncore events for this device,
+    // so allocate the results buffer per thread for uncore only for SEP event based uncore counting
+    if (DRV_CONFIG_event_based_counts(pcfg_unc)) {
+        ecb = PMU_register_data_unc[group_id];
         LWPMU_DEVICE_num_events(&devices[cur_device]) = ECB_num_events(ecb);
 
         LWPMU_DEVICE_acc_per_thread(&devices[cur_device]) = CONTROL_Allocate_Memory(GLOBAL_STATE_num_cpus(driver_state) *
@@ -1926,10 +2332,9 @@ lwpmudrv_Configure_Events_UNC (
                   LWPMU_DEVICE_prev_val_per_thread(&devices[cur_device])[i][j] = 0LL;
              }
         }
- 
-    LWPMU_DEVICE_em_groups_count(&devices[cur_device])++;
+    }
+    LWPMU_DEVICE_em_groups_count(&devices[cur_device]) = group_id + 1;
 
-        
     return OS_SUCCESS;
 }
 #endif
@@ -1961,7 +2366,7 @@ lwpmudrv_Set_Sample_Descriptors (
 
     desc_count = 0;
     if (copy_from_user(&GLOBAL_STATE_num_descriptors(driver_state),
-                       arg->w_buf, 
+                       arg->w_buf,
                        sizeof(U32))) {
         return OS_FAULT;
     }
@@ -2053,6 +2458,10 @@ lwpmudrv_LBR_Info (
     //
 
     lbr = CONTROL_Allocate_Memory((int)arg->w_len);
+    if (!lbr) {
+        return OS_NO_MEM;
+    }
+    
     if (copy_from_user(lbr, arg->w_buf, arg->w_len)) {
         return OS_FAULT;
     }
@@ -2061,7 +2470,7 @@ lwpmudrv_LBR_Info (
 }
 
 #ifdef EMON
-#define CR4_PCE  0x00000100    //Performance-monitoring counter enable RDPMC  
+#define CR4_PCE  0x00000100    //Performance-monitoring counter enable RDPMC
 /* ------------------------------------------------------------------------- */
 /*!
  * @fn static void lwpmudrv_Set_CR4_PCE_Bit(PVOID param)
@@ -2079,7 +2488,7 @@ lwpmudrv_Set_CR4_PCE_Bit (
     PVOID  param
 )
 {
-#if defined(DRV_IA32) 
+#if defined(DRV_IA32)
   __asm__("movl %%cr4,%%eax\n\t"
           "orl %0,%%eax\n\t"
           "movl %%eax,%%cr4\n"
@@ -2134,43 +2543,6 @@ lwpmudrv_Clear_CR4_PCE_Bit (
 #endif
 #endif
 
-#if defined(DRV_IA64)
-
-/*
- * @fn OS_STATUS lwpmudrv_RO_Info(arg)
- *
- * @param        IN arg
- *
- * @returns      OS_STATUS
- *
- * @brief        Make a copy of the RO information that is passed in.
- *
- */
-static OS_STATUS
-lwpmudrv_RO_Info (
-    IOCTL_ARGS    arg
-)
-{
-    if (DRV_CONFIG_collect_ro(pcfg) == FALSE) {
-        SEP_PRINT_WARNING("lwpmudrv_RO_Info: RO capture has not been configured\n");
-        return OS_SUCCESS;
-    }
-
-    if (arg->w_len == 0 || arg->w_buf == NULL) {
-        return OS_FAULT;
-    }
-
-    //
-    // First things first: Make a copy of the data for global use.
-    //
-    ro = CONTROL_Allocate_Memory((int)arg->w_len);
-    if (copy_from_user(ro, arg->w_buf, arg->w_len)) {
-        return OS_FAULT;
-    }
-    return OS_SUCCESS;
-}
-
-#endif
 
 /* ------------------------------------------------------------------------- */
 /*!
@@ -2239,20 +2611,18 @@ lwpmudrv_Start (
         CONTROL_Invoke_Parallel(dispatch->restart, (PVOID)(size_t)0);
     }
 
-#if defined(BUILD_CHIPSET)
     if (DRV_CONFIG_enable_chipset(pcfg)) {
         cs_dispatch->start_chipset();
     }
-#endif
 
 #if defined(DRV_IA32) || defined(DRV_EM64T)
     for (i = 0; i < num_devices; i++) {
         pcfg_unc = (DRV_CONFIG)LWPMU_DEVICE_pcfg(&devices[i]);
         dispatch_unc = LWPMU_DEVICE_dispatch(&devices[i]);
 
-        if (pcfg_unc                                && 
-            DRV_CONFIG_event_based_counts(pcfg_unc) && 
-            dispatch_unc                            && 
+        if (pcfg_unc                                &&
+            (DRV_CONFIG_event_based_counts(pcfg_unc) || DRV_CONFIG_emon_mode(pcfg_unc))&&
+            dispatch_unc                            &&
             dispatch_unc->restart) {
             SEP_PRINT_DEBUG("LWP: calling UNC Start\n");
             CONTROL_Invoke_Parallel(dispatch_unc->restart, (VOID *)&i);
@@ -2261,6 +2631,7 @@ lwpmudrv_Start (
 #endif
 
     EVENTMUX_Start(global_ec);
+    lwpmudrv_Dump_Tracer ("start", 0);
 
 
     return status;
@@ -2319,13 +2690,11 @@ lwpmudrv_Prepare_Stop (
         CONTROL_Invoke_Parallel(dispatch->freeze, (PVOID)(size_t)0);
         SEP_PRINT_DEBUG("lwpmudrv_Prepare_Stop: Outside of all interrupts\n");
 
-#if defined(BUILD_CHIPSET)
         if (DRV_CONFIG_enable_chipset(pcfg)) {
             cs_dispatch->stop_chipset();
         }
-#endif
 
-        }
+    }
 
     if (pcfg == NULL) {
         return OS_SUCCESS;
@@ -2337,7 +2706,7 @@ lwpmudrv_Prepare_Stop (
         dispatch_unc = LWPMU_DEVICE_dispatch(&devices[i]);
 
         if (pcfg_unc                                &&
-            DRV_CONFIG_event_based_counts(pcfg_unc) &&
+            (DRV_CONFIG_event_based_counts(pcfg_unc) || DRV_CONFIG_emon_mode(pcfg_unc)) &&
             dispatch_unc                            &&
             dispatch_unc->freeze) {
             SEP_PRINT_DEBUG("LWP: calling UNC Stop\n");
@@ -2351,23 +2720,25 @@ lwpmudrv_Prepare_Stop (
     /*
      * Clean up all the control registers
      */
-    if (dispatch != NULL) {
-        CONTROL_Invoke_Parallel(dispatch->cleanup, (VOID *)(size_t)CONTROL_THIS_CPU());
+    if ((dispatch != NULL) && (dispatch->cleanup != NULL)) {
+        preempt_disable();
+        invoking_processor_id = CONTROL_THIS_CPU();
+        preempt_enable();
+        CONTROL_Invoke_Parallel(dispatch->cleanup, (VOID *)(size_t)invoking_processor_id);
         SEP_PRINT_DEBUG("Stop: Cleanup finished\n");
     }
     lwpmudrv_Free_Restore_Buffer();
+
 #ifdef EMON
 #if defined(DRV_IA32) || defined(DRV_EM64T)
     CONTROL_Invoke_Parallel(lwpmudrv_Clear_CR4_PCE_Bit, (VOID *)(size_t)0);
 #endif
 #endif
 
-#if defined(BUILD_CHIPSET)
     if (DRV_CONFIG_enable_chipset(pcfg) &&
         cs_dispatch && cs_dispatch->fini_chipset) {
         cs_dispatch->fini_chipset();
     }
-#endif
 
     return OS_SUCCESS;
 }
@@ -2395,6 +2766,9 @@ lwpmudrv_Finish_Stop (
        return OS_SUCCESS;
     }
     if (DRV_CONFIG_counting_mode(pcfg) == FALSE) {
+#if defined(DRV_USE_NMI)
+        OUTPUT_Delete_Timers();
+#endif
         if (abnormal_terminate == 0) {
             LINUXOS_Uninstall_Hooks();
             /*
@@ -2418,6 +2792,23 @@ lwpmudrv_Finish_Stop (
     GLOBAL_STATE_current_phase(driver_state) = DRV_STATE_STOPPED;
     in_finish_code                           = 0;
 
+    if (DRV_CONFIG_enable_cp_mode(pcfg)) {
+        if (interrupt_counts) {
+            S32 idx, cpu;
+            for (cpu = 0; cpu < GLOBAL_STATE_num_cpus(driver_state); cpu++) {
+                for(idx = 0; idx < DRV_CONFIG_num_events(pcfg); idx++) {
+                    SEP_PRINT("Interrupt count: CPU %d, event %d = %lld\n", cpu, idx, interrupt_counts[cpu * DRV_CONFIG_num_events(pcfg) + idx]);
+                }
+            }
+        }
+    }
+
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    read_counter_info = CONTROL_Free_Memory(read_counter_info);
+    read_unc_ctr_info = CONTROL_Free_Memory(read_unc_ctr_info);
+    prev_counter_data = CONTROL_Free_Memory(prev_counter_data);
+#endif
+    lwpmudrv_Dump_Tracer ("stop", 0);
     return status;
 }
 
@@ -2430,6 +2821,8 @@ lwpmudrv_Finish_Stop (
  * @return OS_STATUS
  *
  * @brief  Return the current value of the normalized TSC.
+ *         NOTE: knocked off check for pcb == NULL in order to get a valid
+ *         CPU frequency when running emon -v.
  *
  * <I>Special Notes</I>
  */
@@ -2445,12 +2838,10 @@ lwpmudrv_Get_Normalized_TSC (
         return OS_FAULT;
     }
 
-    if (pcb != NULL) {
     preempt_disable();
     UTILITY_Read_TSC(&tsc);
     tsc -= TSC_SKEW(CONTROL_THIS_CPU());
     preempt_enable();
-    }
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)
     if (pcfg && DRV_CONFIG_use_pcl(pcfg) == TRUE) {
         tsc = cpu_clock(CONTROL_THIS_CPU());
@@ -2460,6 +2851,7 @@ lwpmudrv_Get_Normalized_TSC (
         SEP_PRINT_DEBUG("lwpmudrv_Get_Normalized_TSC: copy_to_user() failed\n");
         return OS_FAULT;
     }
+    lwpmudrv_Dump_Tracer ("marker", tsc);
 
     return OS_SUCCESS;
 }
@@ -2753,7 +3145,6 @@ lwpmudrv_Samp_Read_Num_Of_Core_Counters (
 }
 
 
-#if defined(BUILD_CHIPSET)
 
 /* ------------------------------------------------------------------------- */
 /*!
@@ -3097,7 +3488,6 @@ lwpmudrv_Samp_Chipset_Init (
     return OS_SUCCESS;
 }
 
-#endif
 
 /* ------------------------------------------------------------------------- */
 /*!
@@ -3117,36 +3507,54 @@ lwpmudrv_Get_Platform_Info (
 )
 {
     U32                    size          = sizeof(DRV_PLATFORM_INFO_NODE);
-    int                    dispatchid    = -1;
-    OS_STATUS              status = OS_SUCCESS;
-    //DRV_PLATFORM_INFO_NODE platform_data;
-    DRV_PLATFORM_INFO      platform_data;
- 
-    if (!dispatch) {
-        if (args->r_len > 0 && args->r_buf != NULL) {
-            dispatchid = *((int *)args->r_buf);
-            if (dispatchid >= 0) {
-                dispatch = UTILITY_Configure_CPU(dispatchid);
-    }
+    OS_STATUS              status        = OS_SUCCESS;
+    DRV_PLATFORM_INFO      platform_data = NULL;
+    U32                   *dispatch_ids  = NULL;
+    DISPATCH               dispatch_ptr  = NULL;
+    U32                    i             = 0;
+    U32                    num_entries   = args->r_len/sizeof(U32); // # dispatch ids to process
+
+    if (!platform_data) {
+        platform_data = CONTROL_Allocate_Memory(sizeof(DRV_PLATFORM_INFO_NODE));
+        if (!platform_data) {
+            return OS_NO_MEM;
         }
     }
-    //memset(&platform_data, 0, sizeof(DRV_PLATFORM_INFO_NODE));
-    platform_data = CONTROL_Allocate_Memory(size);
-    if (!platform_data) {
-        return OS_FAULT;
+
+    memset(platform_data, 0, sizeof(DRV_PLATFORM_INFO_NODE));
+    if (args->r_len > 0 && args->r_buf != NULL) {
+        dispatch_ids = CONTROL_Allocate_Memory(args->r_len);
+        if (!dispatch_ids) {
+            return OS_NO_MEM;
+        }
+
+        status = copy_from_user(dispatch_ids, args->r_buf, args->r_len);
+        if (status) {
+            return status;
+        }
+        for (i = 0; i < num_entries; i++) {
+            if (dispatch_ids[i] != -1) {
+                dispatch_ptr = UTILITY_Configure_CPU(dispatch_ids[i]);
+                if (dispatch_ptr &&
+                    dispatch_ptr->platform_info) {
+                    dispatch_ptr->platform_info((PVOID)platform_data);
+                }
+            }
+        }
+        dispatch_ids = CONTROL_Free_Memory(dispatch_ids);
     }
-    
-    if (dispatch && dispatch->platform_info) {
+    else if (dispatch && dispatch->platform_info) {
         dispatch->platform_info((PVOID)platform_data);
     }
+
     if (args->w_len < size || args->w_buf == NULL) {
         return OS_FAULT;
     }
-    status = copy_to_user(args->w_buf, platform_data, size);
-    platform_data = CONTROL_Free_Memory(platform_data);
- 
-    return status;
 
+    status        = copy_to_user(args->w_buf, platform_data, size);
+    platform_data = CONTROL_Free_Memory(platform_data);
+
+    return status;
 }
 /* ------------------------------------------------------------------------- */
 /*!
@@ -3160,8 +3568,8 @@ lwpmudrv_Get_Platform_Info (
  *
  * <I>Special Notes:</I>
  *              This function was added to support abstract dll creation. Use
- *              this function to set the value of abnormal_terminate ouside of 
- *              sep_common.               
+ *              this function to set the value of abnormal_terminate ouside of
+ *              sep_common.
  */
 static OS_STATUS
 lwpmudrv_Setup_Cpu_Topology (
@@ -3171,7 +3579,7 @@ lwpmudrv_Setup_Cpu_Topology (
     S32               cpu_num;
     S32               iter;
     DRV_TOPOLOGY_INFO drv_topology, dt;
-    
+
     if (GLOBAL_STATE_current_phase(driver_state) != DRV_STATE_IDLE) {
         return OS_IN_PROGRESS;
     }
@@ -3191,6 +3599,7 @@ lwpmudrv_Setup_Cpu_Topology (
     /*
      *   Topology Initializations
      */
+    num_packages = 0;
     for (iter = 0; iter < GLOBAL_STATE_num_cpus(driver_state); iter++) {
         dt                                         = &drv_topology[iter];
         cpu_num                                    = DRV_TOPOLOGY_INFO_cpu_number(dt);
@@ -3231,7 +3640,7 @@ lwpmudrv_Get_Num_Samples (
 {
     S32               cpu_num;
     U64               samples = 0;
-    
+
     if (pcb == NULL) {
         SEP_PRINT_ERROR("PCB was not initialized\n");
         return OS_FAULT;
@@ -3244,7 +3653,7 @@ lwpmudrv_Get_Num_Samples (
     for (cpu_num = 0; cpu_num < GLOBAL_STATE_num_cpus(driver_state); cpu_num++) {
         samples += CPU_STATE_num_samples(&pcb[cpu_num]);
 
-        SEP_PRINT_DEBUG("Samples for cpu %d = %lld\n", 
+        SEP_PRINT_DEBUG("Samples for cpu %d = %lld\n",
                         cpu_num,
                         CPU_STATE_num_samples(&pcb[cpu_num]));
     }
@@ -3254,7 +3663,44 @@ lwpmudrv_Get_Num_Samples (
 
 /* ------------------------------------------------------------------------- */
 /*!
- * @fn  static OS_STATUS lwpmudrv_Get_Num_Samples(IOCTL_ARGS arg)
+ * @fn  static OS_STATUS lwpmudrv_Set_Device_Num_Units(IOCTL_ARGS arg)
+ *
+ * @param arg - Pointer to the IOCTL structure
+ *
+ * @return OS_STATUS
+ *
+ * @brief       Set the number of devices for the sampling run
+ *
+ * <I>Special Notes</I>
+ */
+static OS_STATUS
+lwpmudrv_Set_Device_Num_Units (
+    IOCTL_ARGS args
+)
+{
+    SEP_PRINT_DEBUG("Entered lwpmudrv_Set_Device_Num_Units\n");
+
+    if (GLOBAL_STATE_current_phase(driver_state) != DRV_STATE_IDLE) {
+
+        return OS_SUCCESS;
+    }
+     if (args->w_len == 0 || args->w_buf == NULL) {
+        return OS_NO_MEM;
+    }
+
+    LWPMU_DEVICE_num_units(&devices[cur_device]) = *(U32 *)args->w_buf;
+    SEP_PRINT_DEBUG("LWP: num_units = %d cur_device = %d\n",
+                    LWPMU_DEVICE_num_units(&devices[cur_device]),
+                    cur_device);
+    // on to the next device.
+    cur_device++;
+
+    return OS_SUCCESS;
+}
+
+/* ------------------------------------------------------------------------- */
+/*!
+ * @fn  static OS_STATUS lwpmudrv_Get_Interval_Counts(IOCTL_ARGS arg)
  *
  * @param arg - Pointer to the IOCTL structure
  *
@@ -3266,27 +3712,114 @@ lwpmudrv_Get_Num_Samples (
  * <I>Special Notes</I>
  */
 static OS_STATUS
-lwpmudrv_Set_Device_Num_Units (
+lwpmudrv_Get_Interval_Counts (
     IOCTL_ARGS args
 )
 {
-    SEP_PRINT_DEBUG("Entered lwpmudrv_Set_Device_Num_Units\n");
-    
-    if (GLOBAL_STATE_current_phase(driver_state) != DRV_STATE_IDLE) {
-       
-        return OS_SUCCESS;
+    if (!DRV_CONFIG_enable_cp_mode(pcfg)) {
+        SEP_PRINT_ERROR("[lwpmudrv_Get_Interval_Counts] Not in CP mode!\n");
+        return OS_FAULT;
     }
-     if (args->w_len == 0 || args->w_buf == NULL) {
+    if (pcb == NULL) {
+        SEP_PRINT_ERROR("PCB was not initialized\n");
+        return OS_FAULT;
+    }
+    if (args->r_len == 0 || args->r_buf == NULL) {
+        SEP_PRINT_ERROR("Interval Counts information has been misconfigured\n");
         return OS_NO_MEM;
     }
+    if (!interrupt_counts) {
+        return OS_FAULT;
+    }
 
-    LWPMU_DEVICE_num_units(&devices[cur_device]) = *(U32 *)args->w_buf; 
-    SEP_PRINT_DEBUG("LWP: num_units = %d cur_device = %d\n",LWPMU_DEVICE_num_units(&devices[cur_device]),cur_device);
-    // on to the next device.
-    cur_device++;
+    if (copy_to_user(args->r_buf, interrupt_counts, args->r_len)) {
+        return OS_FAULT;
+    }
+    return OS_SUCCESS;
+}
+
+/* ------------------------------------------------------------------------- */
+/*!
+ * @fn          U64 lwpmudrv_Set_Uncore_Topology_Info_And_Scan
+ *
+ * @brief       Reads the MSR_PLATFORM_INFO register if present
+ *
+ * @param arg   Pointer to the IOCTL structure
+ *
+ * @return      status
+ *
+ * <I>Special Notes:</I>
+ *              <NONE>
+ */
+static OS_STATUS
+lwpmudrv_Set_Uncore_Topology_Info_And_Scan (
+    IOCTL_ARGS args
+)
+{
+    return OS_SUCCESS;
+}
+/* ------------------------------------------------------------------------- */
+/*!
+ * @fn          U64 lwpmudrv_Get_Uncore_Topology
+ *
+ * @brief       Reads the MSR_PLATFORM_INFO register if present
+ *
+ * @param arg   Pointer to the IOCTL structure
+ *
+ * @return      status
+ *
+ * <I>Special Notes:</I>
+ *              <NONE>
+ */
+static OS_STATUS
+lwpmudrv_Get_Uncore_Topology (
+    IOCTL_ARGS args
+)
+{
+    
+    DISPATCH                          temp_dispatch;
+    U32                               dev;
+    U32                               temp_dispatch_id;
+    static UNCORE_TOPOLOGY_INFO_NODE  req_uncore_topology;
+
+    if (args->r_buf == NULL) {
+        return OS_FAULT;
+    }
+    if (args->r_len != sizeof(UNCORE_TOPOLOGY_INFO_NODE)) {
+        return OS_FAULT;
+    }
+
+    memset((char *)&req_uncore_topology, 0, sizeof(UNCORE_TOPOLOGY_INFO_NODE));
+    if (copy_from_user(&req_uncore_topology, args->r_buf, args->r_len)) {
+        return OS_FAULT;
+    }
+
+    for (dev = 0; dev < MAX_DEVICES; dev++) {
+        // skip if user does not require to scan this device
+        if (!UNCORE_TOPOLOGY_INFO_device_scan(&req_uncore_topology, dev)) {
+            continue;
+        }
+        // skip if this device has been discovered
+        if (UNCORE_TOPOLOGY_INFO_device_scan(&uncore_topology, dev)) {
+            continue;
+        }
+        memcpy((U8 *)&(UNCORE_TOPOLOGY_INFO_device(&uncore_topology, dev)), 
+               (U8 *)&(UNCORE_TOPOLOGY_INFO_device(&req_uncore_topology, dev)),
+               sizeof(UNCORE_PCIDEV_NODE));
+        temp_dispatch_id = UNCORE_TOPOLOGY_INFO_device_dispatch_id(&uncore_topology, dev);   
+        temp_dispatch    = UTILITY_Configure_CPU(temp_dispatch_id);
+        if (temp_dispatch && temp_dispatch->scan_for_uncore) {
+	    temp_dispatch->scan_for_uncore((VOID*)&dev);
+        }
+    }
+
+    if (copy_to_user(args->r_buf, &uncore_topology, args->r_len)) {
+        return OS_FAULT;
+    }
 
     return OS_SUCCESS;
 }
+
 /*******************************************************************************
  *  External Driver functions - Open
  *      This function is common to all drivers
@@ -3411,7 +3944,7 @@ lwpmu_Service_IOCTL (
 
         case DRV_OPERATION_INIT_PMU:
             SEP_PRINT_DEBUG("DRV_OPERATION_INIT_PMU\n");
-            status = lwpmudrv_Init_PMU();
+            status = lwpmudrv_Init_PMU(&local_args);
             break;
 
         case DRV_OPERATION_SET_CPU_MASK:
@@ -3541,12 +4074,6 @@ lwpmu_Service_IOCTL (
             break;
 
 #if defined(EMON)
-#if defined(EMON_INTERNAL)
-        case DRV_OPERATION_WRITE_MSR:
-            SEP_PRINT_DEBUG("DRV_OPERATION_WRITE_MSR\n");
-            status = lwpmudrv_Write_MSR_All_Cores(&local_args);
-            break;
-#endif  // EMON_INTERNAL
 
         case DRV_OPERATION_READ_SWITCH_GROUP:
             SEP_PRINT_DEBUG("DRV_OPERATION_READ_SWITCH_GROUP\n");
@@ -3557,18 +4084,8 @@ lwpmu_Service_IOCTL (
             SEP_PRINT_DEBUG("DRV_OPERATION_READ_AND_RESET\n");
             status = lwpmudrv_Read_And_Reset_Counters(&local_args);
             break;
-#endif  // EMON
-
-       /*
-        * Platform-specific IOCTL commands (IA64 only)
-        */
-
-#if defined(DRV_IA64)
-        case DRV_OPERATION_RO_INFO:
-            SEP_PRINT_DEBUG("DRV_OPERATION_RO_INFO\n");
-            status = lwpmudrv_RO_Info(&local_args);
-            break;
 #endif
+
 
        /*
         * Platform-specific IOCTL commands (IA32 and Intel64)
@@ -3614,8 +4131,24 @@ lwpmu_Service_IOCTL (
             SEP_PRINT_DEBUG("DRV_OPERATION_SET_DEVICE_NUM_UNITS\n");
             status = lwpmudrv_Set_Device_Num_Units(&local_args);
             break;
+
         case DRV_OPERATION_TIMER_TRIGGER_READ:
             lwpmudrv_Trigger_Read();
+            break;
+
+        case DRV_OPERATION_GET_INTERVAL_COUNTS:
+           SEP_PRINT_DEBUG("DRV_OPERATION_GET_INTERVAL_COUNTS\n");
+           lwpmudrv_Get_Interval_Counts(&local_args);
+           break;
+
+        case DRV_OPERATION_SET_SCAN_UNCORE_TOPOLOGY_INFO:
+            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_SET_SCAN_UNCORE_TOPOLOGY_INFO\n");
+            status = lwpmudrv_Set_Uncore_Topology_Info_And_Scan(&local_args);
+            break;
+
+        case DRV_OPERATION_GET_UNCORE_TOPOLOGY:
+            SEP_PRINT_DEBUG("LWPMUDRV_IOCTL_GET_UNCORE_TOPOLOGY\n");
+            status = lwpmudrv_Get_Uncore_Topology(&local_args);
             break;
 
        /*
@@ -3627,7 +4160,6 @@ lwpmu_Service_IOCTL (
         * Chipset IOCTL commands
         */
 
-#if defined(BUILD_CHIPSET)
         case DRV_OPERATION_PCI_READ:
             {
                 CHIPSET_PCI_ARG_NODE pci_data;
@@ -3682,7 +4214,8 @@ lwpmu_Service_IOCTL (
 
         case DRV_OPERATION_CHIPSET_INIT:
             SEP_PRINT_DEBUG("DRV_OPERATION_CHIPSET_INIT\n");
-            SEP_PRINT_DEBUG("lwpmudrv_Device_Control: enable_chipset=%d\n", (int)DRV_CONFIG_enable_chipset(pcfg));
+            SEP_PRINT_DEBUG("lwpmudrv_Device_Control: enable_chipset=%d\n",
+                            (int)DRV_CONFIG_enable_chipset(pcfg));
             status = lwpmudrv_Samp_Chipset_Init(&local_args);
             break;
 
@@ -3690,7 +4223,6 @@ lwpmu_Service_IOCTL (
             SEP_PRINT_DEBUG("DRV_OPERATION_GET_CHIPSET_DEVICE_ID\n");
             status = lwpmudrv_Samp_Read_PCI_Config(&local_args);
             break;
-#endif  // BUILD_CHIPSET
 
        /*
         * if none of the above, treat as unknown/illegal IOCTL command
@@ -3702,7 +4234,6 @@ lwpmu_Service_IOCTL (
             break;
     }
 cleanup:
-
     MUTEX_UNLOCK(ioctl_lock);
     if (cmd == DRV_OPERATION_STOP &&
         GLOBAL_STATE_current_phase(driver_state) == DRV_STATE_PREPARE_STOP) {
@@ -3745,7 +4276,7 @@ lwpmu_Device_Control (
 
     status = lwpmu_Service_IOCTL (IOCTL_USE_INODE filp, _IOC_NR(cmd), local_args);
 
-    return  status;
+    return status;
 }
 
 #if defined(HAVE_COMPAT_IOCTL) && defined(DRV_EM64T)
@@ -3760,6 +4291,7 @@ lwpmu_Device_Control_Compat (
     IOCTL_COMPAT_ARGS_NODE  local_args_compat;
     IOCTL_ARGS_NODE         local_args;
 
+    memset(&local_args_compat, 0, sizeof(IOCTL_COMPAT_ARGS_NODE));
     SEP_PRINT_DEBUG("Compat: type: %d, subcommand: %d\n", _IOC_TYPE(cmd), _IOC_NR(cmd));
 
     if (_IOC_TYPE(cmd) != LWPMU_IOC_MAGIC) {
@@ -3776,7 +4308,7 @@ lwpmu_Device_Control_Compat (
     local_args.w_buf = (char *) compat_ptr(local_args_compat.w_buf);
 
     status = lwpmu_Service_IOCTL (filp, _IOC_NR(cmd), local_args);
-    
+
     return status;
 }
 #endif
@@ -3784,9 +4316,9 @@ lwpmu_Device_Control_Compat (
 /*
  * @fn        LWPMUDRV_Abnormal_Terminate(void)
  *
- * @brief     This routine is called from linuxos_Exit_Task_Notify if the user process has 
+ * @brief     This routine is called from linuxos_Exit_Task_Notify if the user process has
  *            been killed by an uncatchable signal (example kill -9).  The state variable
- *            abormal_terminate is set to 1 and the clean up routines are called.  In this 
+ *            abormal_terminate is set to 1 and the clean up routines are called.  In this
  *            code path the OS notifier hooks should not be unloaded.
  *
  * @param     None
@@ -3946,7 +4478,7 @@ lwpmu_Load (
     lwpmu_control = CONTROL_Allocate_Memory(sizeof(LWPMU_DEV_NODE));
     lwmod_control = CONTROL_Allocate_Memory(sizeof(LWPMU_DEV_NODE));
     lwsamp_control= CONTROL_Allocate_Memory(num_cpus*sizeof(LWPMU_DEV_NODE));
-    
+
     if (!lwsamp_control || !lwpmu_control || !lwmod_control) {
         CONTROL_Free_Memory(lwpmu_control);
         CONTROL_Free_Memory(lwmod_control);
@@ -4028,35 +4560,27 @@ lwpmu_Load (
     MUTEX_INIT(ioctl_lock);
     in_finish_code = 0;
 
+    memset((char *)&uncore_topology, 0, sizeof(UNCORE_TOPOLOGY_INFO_NODE));
+
     /*
      *  Initialize the SEP driver version (done once at driver load time)
      */
     SEP_VERSION_NODE_major(&drv_version) = SEP_MAJOR_VERSION;
     SEP_VERSION_NODE_minor(&drv_version) = SEP_MINOR_VERSION;
     SEP_VERSION_NODE_api(&drv_version)   = SEP_API_VERSION;
+    SEP_VERSION_NODE_update(&drv_version)= SEP_UPDATE_VERSION;
 
     //
     // Display driver version information
     //
-    SEP_PRINT("PMU collection driver v%d.%d.%d%s has been loaded.\n",
+    SEP_PRINT("PMU collection driver v%d.%d.%d%s%s has been loaded.\n",
               SEP_VERSION_NODE_major(&drv_version),
               SEP_VERSION_NODE_minor(&drv_version),
               SEP_VERSION_NODE_api(&drv_version),
+              SEP_UPDATE_STRING,
               SEP_DRIVER_MODE);
 
-#if defined(DRV_IA64)
-#if defined(PERFMON_V2)
-    SEP_PRINT("Using Perfmon v2 infrastructure.\n");
-#elif defined(PERFMON_V2_ALT)
-    SEP_PRINT("Using alternate Perfmon v2 infrastructure.\n");
-#elif defined(PERFMON_V3)
-    SEP_PRINT("Using Perfmon v3 infrastructure.\n");
-#endif
-#endif
-
-#if defined(BUILD_CHIPSET)
     SEP_PRINT("Chipset support is enabled.\n");
-#endif
 
 
 #if defined(DRV_IA32) || defined(DRV_EM64T)
@@ -4130,10 +4654,11 @@ lwpmu_Unload (
     //
     // Display driver version information
     //
-    SEP_PRINT("PMU collection driver v%d.%d.%d%s has been unloaded.\n",
+    SEP_PRINT("PMU collection driver v%d.%d.%d%s%s has been unloaded.\n",
               SEP_VERSION_NODE_major(&drv_version),
               SEP_VERSION_NODE_minor(&drv_version),
               SEP_VERSION_NODE_api(&drv_version),
+              SEP_UPDATE_STRING,
               SEP_DRIVER_MODE);
 
     return;

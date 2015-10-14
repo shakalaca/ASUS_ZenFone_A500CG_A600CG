@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -29,6 +29,10 @@
 #ifndef _OUTPUT_H_
 #define _OUTPUT_H_
 
+#if defined (DRV_USE_NMI)
+#include <linux/timer.h>
+#endif
+
 /* 
  * Initial allocation 
  * Size of buffer     = 512KB (2^19)
@@ -48,17 +52,20 @@ extern  U32                   output_buffer_size;
 #define MODULE_BUFF_SIZE      2
 #endif
 
+
+
 /*
  *  Data type declarations and accessors macros
  */
 typedef struct {
-    spinlock_t    buffer_lock;
-    U32           remaining_buffer_size;
-    U32           current_buffer;
-    U32           total_buffer_size;
-    U32           next_buffer[OUTPUT_NUM_BUFFERS];
-    U32           buffer_full[OUTPUT_NUM_BUFFERS];
-    U8           *buffer[OUTPUT_NUM_BUFFERS];
+    spinlock_t  buffer_lock;
+    U32         remaining_buffer_size;
+    U32         current_buffer;
+    U32         total_buffer_size;
+    U32         next_buffer[OUTPUT_NUM_BUFFERS];
+    U32         buffer_full[OUTPUT_NUM_BUFFERS];
+    U8         *buffer[OUTPUT_NUM_BUFFERS];
+    U32         signal_full;
 } OUTPUT_NODE, *OUTPUT;
 
 #define OUTPUT_buffer_lock(x)            (x)->buffer_lock
@@ -67,7 +74,7 @@ typedef struct {
 #define OUTPUT_buffer(x,y)               (x)->buffer[(y)]
 #define OUTPUT_buffer_full(x,y)          (x)->buffer_full[(y)]
 #define OUTPUT_current_buffer(x)         (x)->current_buffer
-
+#define OUTPUT_signal_full(x)            (x)->signal_full
 /*
  *  Add an array of control buffer for per-cpu 
  */
@@ -96,4 +103,9 @@ extern ssize_t   OUTPUT_Module_Read (struct file *filp, char *buf, size_t count,
 extern ssize_t   OUTPUT_Sample_Read (struct file *filp, char *buf, size_t count, loff_t *f_pos);
 extern void*     OUTPUT_Reserve_Buffer_Space (BUFFER_DESC  bd, U32 size);
 
-#endif 
+#if defined (DRV_USE_NMI)
+extern OS_STATUS OUTPUT_Initialize_Timers(void);
+extern void      OUTPUT_Delete_Timers(void);
+#endif
+
+#endif

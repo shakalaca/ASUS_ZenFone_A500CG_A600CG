@@ -679,7 +679,7 @@ static int i8xx_do_reset(struct drm_device *dev)
 
 static int i965_reset_complete(struct drm_device *dev)
 {
-	u8 gdrst;
+	u8 gdrst = 0;
 	pci_read_config_byte(dev->pdev, I965_GDRST, &gdrst);
 	return (gdrst & GRDOM_RESET_ENABLE) == 0;
 }

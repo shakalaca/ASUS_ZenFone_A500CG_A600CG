@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -30,6 +30,7 @@
 #include "globals.h"
 #include "collector.h"
 #include "cpuevents.h"
+#include "nmiwd.h"
 
 #include <linux/list.h>         /* for struct list_head */
 #include <linux/module.h>
@@ -96,17 +97,28 @@ static ssize_t vtss_procfs_ctrl_write(struct file *file, const char __user * buf
     char chr;
     size_t buf_size = count;
     unsigned long flags = 0;
+/*    char in[200];
+    if (count >=200){
+           return -1;
+    }
+    if (vtss_copy_from_user(&in[0], buf, (int)count)){
+        return -1;
+    }
+    in[count]= '\0';
 
+    printk("income: %s, count = %d", in, (int)count);
+*/
     while (buf_size > 0) {
         if (get_user(chr, buf))
             return -EFAULT;
 
         buf += sizeof(char);
         buf_size -= sizeof(char);
-
         switch (chr) {
         case 'V': { /* VXXXXX.XXXXX client version */
                 int major = 1;
+                vtss_client_major_ver = 0;
+                vtss_client_minor_ver = 0;
 //                return -EINVAL;
                 while (buf_size > 0) {
                     if (get_user(chr, buf))
@@ -319,22 +331,48 @@ static ssize_t vtss_procfs_ctrl_write(struct file *file, const char __user * buf
             }
             break;
         case 'F': /* F - Finish or Stop */
-            TRACE("STOP");
+            INFO("STOP");
             vtss_cmd_stop();
             break;
         case 'P': /* P - Pause */
-            TRACE("PAUSE");
+            INFO("PAUSE");
             vtss_cmd_pause();
             break;
         case 'R': /* R - Resume */
-            TRACE("RESUME");
+            INFO("RESUME");
             vtss_cmd_resume();
             break;
         case 'M': /* M - Mark */
-            TRACE("MARK");
+            INFO("MARK");
             vtss_cmd_mark();
             break;
-        case ' ':
+        case 'W': /* W - Watchdog */
+            //W0 - disable watchdog
+            //W1 - enable watchdog
+            {
+              int st = 0;
+//              INFO("Watchdog");
+              if (get_user(chr, buf))
+                return -EFAULT;
+              buf += sizeof(char);
+              buf_size -= sizeof(char);
+              if (chr == '0') {
+              st = vtss_nmi_watchdog_disable(0);
+              } else if (chr == '1') {
+                st = vtss_nmi_watchdog_enable(0);
+              } else if (chr == 'd') { //internal API
+	        st = vtss_nmi_watchdog_disable(1); //for tests.this mode will not increment counter
+              } else if (chr == 'e') { //internal API
+                st = vtss_nmi_watchdog_enable(1); //for test. this mode will not decrement counter
+              } else {
+	        st = -1;
+                ERROR("Watchdog command is not recognized");
+              }
+	      if (st < 0) return -EINVAL;
+	      if (st > 0) count = count - 1; //ignore the command
+	    }
+            break;
+         case ' ':
         case '\n':
             break;
         default:
@@ -507,7 +545,7 @@ static int vtss_procfs_ctrl_open(struct inode *inode, struct file *file)
 static int vtss_procfs_ctrl_close(struct inode *inode, struct file *file)
 {
     if (atomic_dec_and_test(&vtss_procfs_attached)) {
-        INFO("Nobody is attached");
+        TRACE("Nobody is attached");
         vtss_procfs_ctrl_flush();
         vtss_cmd_stop_async();
         /* set defaults for next session */
@@ -687,7 +725,6 @@ static ssize_t vtss_procfs_defsav_write(struct file *file, const char __user * b
     }
     vtss_procfs_defsav_ = (int)(val < 1000000)    ? 1000000    : val;
     vtss_procfs_defsav_ = (int)(val > 2000000000) ? 2000000000 : val;
-    TRACE("defsav=%d (0x%0X)", vtss_procfs_defsav_, vtss_procfs_defsav_);
     return count;
 }
 
@@ -787,8 +824,14 @@ static ssize_t vtss_procfs_timesrc_write(struct file *file, const char __user * 
         return -EFAULT;
     }
     val[3] = '\0';
-    if (!strncmp(val, "tsc", 3))
-        vtss_time_source = 1;
+    if (!strncmp(val, "tsc", 3)) {
+        if (check_tsc_unstable()){
+            ERROR("TSC timesource is unstable. Switching to system time...");
+            //TODO: It's better to return error for the case.This change require testing on systems with TSC reliable and not reliable.
+        } else {
+            vtss_time_source = 1;
+        }
+    }
     if (!strncmp(val, "sys", 3))
         vtss_time_source = 0;
     TRACE("time source=%s", vtss_time_source ? "tsc" : "sys");
@@ -928,7 +971,15 @@ static int vtss_procfs_mkdir(void)
         vtss_procfs_root->uid = uid;
         vtss_procfs_root->gid = gid;
 #else
-        proc_set_user(vtss_procfs_root, uid, gid);
+#if defined CONFIG_UIDGID_STRICT_TYPE_CHECKS || (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
+       {
+          kuid_t kuid = KUIDT_INIT(uid);
+          kgid_t kgid = KGIDT_INIT(gid);
+          proc_set_user(vtss_procfs_root, kuid, kgid);
+       }
+#else
+          proc_set_user(vtss_procfs_root, uid, gid);
+#endif
 #endif
         }
     }
@@ -971,7 +1022,15 @@ static int vtss_procfs_create_entry(const char* name, const struct file_operatio
     pde->uid = uid;
     pde->gid = gid;
 #else
-    proc_set_user(pde, uid, gid);
+#if defined CONFIG_UIDGID_STRICT_TYPE_CHECKS || (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
+{
+      kuid_t kuid = KUIDT_INIT(uid);
+      kgid_t kgid = KGIDT_INIT(gid);
+      proc_set_user(pde, kuid, kgid);
+}
+#else
+          proc_set_user(pde, uid, gid);
+#endif
 #endif
     return 0;
 }

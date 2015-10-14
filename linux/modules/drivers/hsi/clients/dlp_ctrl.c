@@ -324,9 +324,10 @@ static int dlp_ctrl_send_response(struct dlp_channel *ch_ctx,
 					struct dlp_command_params *tx_params,
 					int response)
 {
-	int ret;
+	int ret, state;
 	struct hsi_msg *tx_msg;
 	struct dlp_command *dlp_cmd;
+	unsigned long flags;
 
 	/* Allocate the eDLP response */
 	dlp_cmd = dlp_ctrl_cmd_alloc(ch_ctx,
@@ -359,23 +360,34 @@ static int dlp_ctrl_send_response(struct dlp_channel *ch_ctx,
 	memcpy(sg_virt(tx_msg->sgt.sgl),
 	       &dlp_cmd->params, sizeof(struct dlp_command_params));
 
-	/* Send the TX HSI msg */
-	ret = hsi_async(tx_msg->cl, tx_msg);
-	if (ret) {
-		pr_err(DRVNAME ": TX xfer failed ! (cmd:0x%X, ret:%d)\n",
-			dlp_cmd->params.id, ret);
+	spin_lock_irqsave(&ch_ctx->lock, flags);
+	state = dlp_ctrl_get_channel_state(ch_ctx->ch_id);
+	if ((state != DLP_CH_STATE_OPENING) && (state != DLP_CH_STATE_OPENED) &&
+			(ch_ctx->ch_id != DLP_CHANNEL_TRACE))
+		spin_unlock_irqrestore(&ch_ctx->lock, flags);
 
-		/* Free the TX msg */
-		dlp_pdu_free(tx_msg, tx_msg->channel);
+	else {
+		spin_unlock_irqrestore(&ch_ctx->lock, flags);
+		/* Send the TX HSI msg */
+		ret = hsi_async(tx_msg->cl, tx_msg);
+		if (ret)
+			pr_err(DRVNAME ": TX xfer failed ! (cmd:0x%X, ret:%d)\n",
+				dlp_cmd->params.id, ret);
 
-		/* Delete the command */
-		kfree(dlp_cmd);
-	} else {
-		/* Dump the TX command */
-		if (EDLP_CTRL_TX_DATA_REPORT)
-			pr_debug(DRVNAME ": CTRL_TX (0x%X)\n",
-					*((u32 *)&dlp_cmd->params));
+		else {
+			/* Dump the TX command */
+			if (EDLP_CTRL_TX_DATA_REPORT)
+				pr_debug(DRVNAME ": CTRL_TX (0x%X)\n",
+						*((u32 *)&dlp_cmd->params));
+			return 0;
+		}
 	}
+
+	/* Free the TX msg */
+	dlp_pdu_free(tx_msg, tx_msg->channel);
+
+	/* Delete the command */
+	kfree(dlp_cmd);
 
 	return 0;
 }
@@ -395,11 +407,7 @@ static void dlp_ctrl_complete_tx(struct hsi_msg *msg)
 	struct dlp_command *dlp_cmd = msg->context;
 	struct dlp_channel *ch_ctx = dlp_cmd->channel;
 
-        if(EDLP_CTRL_TX_DATA_REPORT){
-                pr_err(DRVNAME ": dlp_ctrl_complete_tx cmd:0x%X status=%d\n",
-                                dlp_cmd->params.id, msg->status);
-        }
-        dlp_cmd->status = (msg->status == HSI_STATUS_COMPLETED) ? 0 : -EIO;
+	dlp_cmd->status = (msg->status == HSI_STATUS_COMPLETED) ? 0 : -EIO;
 
 	/* Command done, notify the sender */
 	complete(&ch_ctx->tx.cmd_xfer_done);
@@ -512,19 +520,33 @@ static void dlp_ctrl_complete_rx(struct hsi_msg *msg)
 		spin_lock_irqsave(&ctrl_ctx->open_lock, flags);
 		state = dlp_ctrl_get_channel_state(hsi_channel);
 		if ((state != DLP_CH_STATE_OPENING) && (state != DLP_CH_STATE_OPENED)) {
-			struct dlp_hsi_channel *hsi_ch;
-
-			hsi_ch = &dlp_drv.channels_hsi[hsi_channel];
-			memcpy(&hsi_ch->open_conn, &params, sizeof(params));
-			spin_unlock_irqrestore(&ctrl_ctx->open_lock, flags);
-
-			response = -1;
-
 			pr_debug(DRVNAME ": HSI CH%d OPEN_CONN received (postponed) when state is %d\n",
 					params.channel, state);
-			goto push_rx;
-		} else
-			spin_unlock_irqrestore(&ctrl_ctx->open_lock, flags);
+			/* Only CHANEL_TRACE can support this */
+			if (ch_ctx->ch_id == DLP_CHANNEL_TRACE) {
+				struct dlp_hsi_channel *hsi_ch;
+
+				hsi_ch = &dlp_drv.channels_hsi[hsi_channel];
+				memcpy(&hsi_ch->open_conn, &params, sizeof(params));
+				spin_unlock_irqrestore(&ctrl_ctx->open_lock, flags);
+
+				response = -1;
+				goto push_rx;
+			} else {
+				/* OPEN_CONN => NACK (Unexpected open when closed) */
+				spin_unlock_irqrestore(&ctrl_ctx->open_lock, flags);
+
+				pr_debug(DRVNAME ": Not allowed for this channel => answer NAK\n");
+				response = DLP_CMD_NACK;
+				/* Set the response params */
+				tx_params.data1 = params.id;
+				tx_params.data2 = 0;
+				struct dlp_command_params *params_pt = &params;
+				tx_params.data3 = CMD_ID_ERR(params_pt, EDLP_ERR_CH_ALREADY_CLOSED);
+				break;
+			}
+		}
+		spin_unlock_irqrestore(&ctrl_ctx->open_lock, flags);
 
 		pr_debug(DRVNAME ": HSI CH%d OPEN_CONN received (size: %d)\n",
 					params.channel,
@@ -682,6 +704,9 @@ static int dlp_ctrl_cmd_send(struct dlp_channel *ch_ctx,
 		pr_err(DRVNAME ": hsi_ch:%d, cmd:0x%X => TX timeout\n",
 			dlp_cmd->params.channel, dlp_cmd->params.id);
 
+		/* No need to call the complete sending call back,
+		 * because of failure */
+		tx_msg->complete = NULL;
 		tx_msg->context = NULL;
 		ret = -EIO;
 		/* free only the cmd, because
@@ -694,10 +719,9 @@ static int dlp_ctrl_cmd_send(struct dlp_channel *ch_ctx,
 
 	/* TX msg sent, check the status */
 	if (dlp_cmd->status) {
-		pr_err(DRVNAME ": Failed to send cmd:0x%X status=%d\n",
-				dlp_cmd->params.id, dlp_cmd->status);
+		pr_err(DRVNAME ": Failed to send cmd:0x%X\n",
+				dlp_cmd->params.id);
 
-		tx_msg->context = NULL;
 		ret = -EIO;
 		/* free only the command because
 		 * the message has been already freed by the complete_tx
@@ -724,7 +748,6 @@ static int dlp_ctrl_cmd_send(struct dlp_channel *ch_ctx,
 		pr_err(DRVNAME ": hsi_ch:%d, cmd:0x%X => RX timeout\n",
 			dlp_cmd->params.channel, dlp_cmd->params.id);
 
-		tx_msg->context = NULL;
 		ret = -EIO;
 		goto free_cmd;
 	}
@@ -1028,8 +1051,8 @@ int dlp_ctrl_close_channel(struct dlp_channel *ch_ctx)
 	ch_ctx->credits = 0;
 
 	/* Reset the RX/TX seq_num */
-	ch_ctx->rx.seq_num = 0 ;
-	ch_ctx->tx.seq_num = 0 ;
+	ch_ctx->rx.seq_num = 0;
+	ch_ctx->tx.seq_num = 0;
 
 	/* Check if the channel was correctly opened */
 	state = dlp_ctrl_get_channel_state(ch_ctx->hsi_channel);
@@ -1107,7 +1130,7 @@ int dlp_ctrl_send_ack_nack(struct dlp_channel *ch_ctx)
 						params->channel, response);
 
 			/* Respnse sent => clear the saved command */
-			hsi_ch->open_conn = 0 ;
+			hsi_ch->open_conn = 0;
 		}
 	}
 
@@ -1129,7 +1152,7 @@ void dlp_ctrl_clean_stored_cmd(void)
 	/* Get any saved OPEN_CONN params */
 	for (i = 0; i < DLP_CHANNEL_COUNT; i++) {
 		hsi_ch = &dlp_drv.channels_hsi[i];
-		hsi_ch->open_conn = 0 ;
+		hsi_ch->open_conn = 0;
 	}
 }
 

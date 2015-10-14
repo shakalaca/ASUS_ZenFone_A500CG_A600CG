@@ -1,13 +1,45 @@
 TARGET_BOARD_PLATFORM := clovertrail
-KERNEL_SRC_DIR := linux/kernel
-TARGET_DEVICE ?= a500cg
-PRODUCT_OUT := out/target/product/$(TARGET_DEVICE)
-TARGET_DEVICE_DIR := device/asus/$(TARGET_DEVICE)
-TARGET_TOOLS_PREFIX := prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.7/bin/x86_64-linux-android-
-TARGET_CC := prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.7/bin/x86_64-linux-android-gcc
-PATH := $(shell pwd)/prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.7/bin:$(PATH)
+TARGET_DEVICE ?= hd
+PRODUCT_OUT := out/target/product/asusctp_$(TARGET_DEVICE)
+TARGET_DEVICE_DIR := device/asus/$(TARGET_BOARD_PLATFORM)/asusctp_$(TARGET_DEVICE)
+KERNEL_DIFFCONFIG := $(TARGET_DEVICE_DIR)/asusctp_$(TARGET_DEVICE)_diffconfig
+
+ifeq ($(BOARD_USE_64BIT_USERSPACE),true)
+TARGET_ARCH := x86_64
+TARGET_CPU_ABI := x86_64
+TARGET_ARCH_VARIANT := silvermont
+
+TARGET_2ND_CPU_ABI := x86
+TARGET_2ND_ARCH := x86
+TARGET_2ND_ARCH_VARIANT := silvermont
+else
+TARGET_ARCH := x86
+TARGET_ARCH_VARIANT := x86-atom
+TARGET_CPU_VARIANT := x86
+TARGET_CPU_ABI := x86
+endif
+TARGET_CPU_SMP := true
+TARGET_NO_BOOTLOADER := false
+TARGET_NO_RADIOIMAGE := true
+TARGET_NO_RECOVERY := false
+TARGET_PRELINK_MODULE := false
+TARGET_PROVIDES_INIT_RC := true
+TARGET_USERIMAGES_USE_EXT4 := true
+TARGET_RIL_DISABLE_STATUS_POLLING := true
+TARGET_BOARD_KERNEL_HEADERS := $(COMMON_PATH)/kernel-headers
+KERNEL_SRC_DIR ?= linux/kernel
+
+
+
+TARGET_TOOLS_PREFIX := prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.8/bin/x86_64-linux-android-
+TARGET_CC := prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.8/bin/x86_64-linux-android-gcc
+PATH := $(shell pwd)/prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.8/bin:$(PATH)
 MINIGZIP := out/host/linux-x86/bin/minigzip
+
+$(info KERNEL_DIFFCONFIG ${KERNEL_DIFFCONFIG} )
 
 include device/intel/common/AndroidKernel.mk
 
 openssl: out/host/linux-x86/bin/openssl
+
+build_kernel: $(PRODUCT_OUT)/kernel

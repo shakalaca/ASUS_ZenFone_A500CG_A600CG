@@ -70,8 +70,11 @@ static RGX_TIMING_INFORMATION sRGXTimingInfo =
 {
 	.ui32CoreClockSpeed		= RGX_CORE_CLOCK_SPEED_DEFAULT,
 	.bEnableActivePM		= IMG_TRUE,
+#ifdef CONFIG_MOOREFIELD
+	.bEnableRDPowIsland		= IMG_TRUE,
+#else
 	.bEnableRDPowIsland		= IMG_FALSE,
-
+#endif
 	/* ui32ActivePMLatencyms */
 	.ui32ActivePMLatencyms		= RGX_APM_LATENCY_DEFAULT
 };
@@ -151,7 +154,7 @@ static PVRSRV_SYSTEM_CONFIG sSysConfig = {
 	.ui32BIFTilingHeapCount = IMG_ARR_NUM_ELEMS(gauiBIFTilingHeapXStrides),
 
 	/* no cache snooping */
-	.eCacheSnoopingMode = PVRSRV_SYSTEM_SNOOP_NONE,
+	.eCacheSnoopingMode = PVRSRV_SYSTEM_SNOOP_CPU_ONLY,
 };
 
 #define VENDOR_ID_MERRIFIELD        0x8086

@@ -607,7 +607,8 @@ otm_hdmi_ret_t ipil_hdmi_crtc_mode_set_program_pipeconf(hdmi_device_t *dev)
 	dspcntr |= IPIL_DSP_PLANE_ENABLE;
 
 	/* setup pipeconf */
-	pipeconf = hdmi_read32(IPIL_PIPEBCONF) | IPIL_PIPEACONF_ENABLE;
+	pipeconf = IPIL_PIPEACONF_ENABLE;
+
 
 	hdmi_write32(IPIL_PIPEBCONF, pipeconf);
 	hdmi_read32(IPIL_PIPEBCONF);

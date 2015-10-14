@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -38,6 +38,7 @@ int vtss_record_process_exec(struct vtss_transport_data* trnd, pid_t tid, pid_t 
 int vtss_record_process_exit(struct vtss_transport_data* trnd, pid_t tid, pid_t pid, int cpu, const char *filename, int is_safe);
 int vtss_record_thread_create(struct vtss_transport_data* trnd, pid_t tid, pid_t pid, int cpu, int is_safe);
 int vtss_record_thread_stop(struct vtss_transport_data* trnd, pid_t tid, pid_t pid, int cpu, int is_safe);
+int vtss_record_thread_name(struct vtss_transport_data* trnd, pid_t tid, const char *taskname, int is_safe);
 int vtss_record_switch_from(struct vtss_transport_data* trnd, int cpu, int is_preempt, int is_safe);
 int vtss_record_switch_to(struct vtss_transport_data* trnd, pid_t tid, int cpu, void* ip, int is_safe);
 int vtss_record_sample(struct vtss_transport_data* trnd, pid_t tid, int cpu, cpuevent_t* cpuevent_chain, void* ip, int is_safe);

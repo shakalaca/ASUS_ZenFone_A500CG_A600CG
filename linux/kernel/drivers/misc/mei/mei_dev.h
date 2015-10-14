@@ -22,9 +22,9 @@
 #include <linux/poll.h>
 #include <linux/mei.h>
 #include <linux/mei_cl_bus.h>
+#include <linux/sizes.h>
 
 #include "hw.h"
-#include "hw-me-regs.h"
 #include "hbm.h"
 
 /*
@@ -44,6 +44,8 @@
 
 #define MEI_RD_MSG_BUF_SIZE           (128 * sizeof(u32))
 
+/* write buffer limit multiplier (per hw client) in bytes */
+#define MEI_WRITE_BUF_LIMIT      SZ_128K
 
 /*
  * AMTHI Client UUID
@@ -54,6 +56,11 @@ extern const uuid_le mei_amthif_guid;
  * Number of Maximum MEI Clients
  */
 #define MEI_CLIENTS_MAX 256
+
+/*
+ * maximum number of consecutive resets
+ */
+#define MEI_MAX_CONSEC_RESET  3
 
 /*
  * Number of File descriptors/handles
@@ -349,6 +356,7 @@ enum mei_pg_state {
 /**
  * struct mei_device -  MEI private device struct
 
+ * @reset_count - limits the number of consecutive resets
  * @hbm_state - state of host bus message protocol
  *
  * @pg_event     - power gating event
@@ -357,6 +365,7 @@ enum mei_pg_state {
  * @hbuf_depth - depth of hardware host/write buffer is slots
  * @hbuf_is_ready - query if the host host/write buffer is ready
  * @wr_msg - the buffer for hbm control messages
+ * @write_mem_limit - limit write buffers, counted in bytes
  * @wr_ext_msg - the buffer for hbm control responses (set in read cycle)
  */
 struct mei_device {
@@ -394,6 +403,7 @@ struct mei_device {
 	/*
 	 * mei device  states
 	 */
+	unsigned long reset_count;
 	enum mei_dev_state dev_state;
 	enum mei_hbm_state hbm_state;
 	u16 init_clients_timer;
@@ -402,6 +412,9 @@ struct mei_device {
 	 * Power Gating support
 	 */
 	enum mei_pg_event pg_event;
+#ifdef CONFIG_PM_RUNTIME
+	struct dev_pm_domain pg_domain;
+#endif /* CONFIG_PM_RUNTIME */
 
 	unsigned char rd_msg_buf[MEI_RD_MSG_BUF_SIZE];	/* control messages */
 	u32 rd_msg_hdr;
@@ -409,6 +422,9 @@ struct mei_device {
 	/* write buffer */
 	u8 hbuf_depth;
 	bool hbuf_is_ready;
+
+	/* limit write buffers*/
+	size_t write_mem_limit;
 
 	/* used for control messages */
 	struct {
@@ -501,8 +517,9 @@ static inline u32 mei_slots2data(int slots)
  * mei init function prototypes
  */
 void mei_device_init(struct mei_device *dev);
-void mei_reset(struct mei_device *dev, int interrupts);
+int mei_reset(struct mei_device *dev);
 int mei_start(struct mei_device *dev);
+int mei_restart(struct mei_device *dev);
 void mei_stop(struct mei_device *dev);
 void mei_cancel_work(struct mei_device *dev);
 
@@ -573,7 +590,7 @@ int mei_wd_host_init(struct mei_device *dev);
  *   once we got connection to the WD Client
  * @dev - mei device
  */
-void mei_watchdog_register(struct mei_device *dev);
+int mei_watchdog_register(struct mei_device *dev);
 /*
  * mei_watchdog_unregister  - Unregistering watchdog interface
  * @dev - mei device

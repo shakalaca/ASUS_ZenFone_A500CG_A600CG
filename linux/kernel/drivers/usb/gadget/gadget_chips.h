@@ -32,7 +32,9 @@
 #define gadget_is_goku(g)		(!strcmp("goku_udc", (g)->name))
 #define gadget_is_middwc3tng(g)		((!strcmp("dwc3-gadget", (g)->name)) && \
 					 (intel_mid_identify_cpu() ==	\
-					  INTEL_MID_CPU_CHIP_TANGIER))
+					  INTEL_MID_CPU_CHIP_TANGIER || \
+					 intel_mid_identify_cpu() ==	\
+					  INTEL_MID_CPU_CHIP_ANNIEDALE))
 #define gadget_is_musbhdrc(g)		(!strcmp("musb-hdrc", (g)->name))
 #define gadget_is_net2280(g)		(!strcmp("net2280", (g)->name))
 #define gadget_is_pxa(g)		(!strcmp("pxa25x_udc", (g)->name))

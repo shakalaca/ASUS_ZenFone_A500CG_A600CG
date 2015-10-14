@@ -524,10 +524,12 @@ int drm_release(struct inode *inode, struct file *filp)
 	if (file_priv->is_master) {
 		struct drm_master *master = file_priv->master;
 		struct drm_file *temp;
-		list_for_each_entry(temp, &dev->filelist, lhead) {
-			if ((temp->master == file_priv->master) &&
-			    (temp != file_priv))
-				temp->authenticated = 0;
+		if (!list_empty(&dev->filelist)) {
+			list_for_each_entry(temp, &dev->filelist, lhead) {
+				if ((temp->master == file_priv->master) &&
+				    (temp != file_priv))
+					temp->authenticated = 0;
+			}
 		}
 
 		/**

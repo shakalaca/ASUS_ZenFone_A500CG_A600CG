@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -121,6 +121,40 @@ struct PEBS_REC_EXT1_NODE_S {
 #define PEBS_REC_EXT1_hle_info(x)              (x)->hle_info
 
 
+typedef struct PEBS_REC_EXT2_NODE_S  PEBS_REC_EXT2_NODE;
+typedef        PEBS_REC_EXT2_NODE   *PEBS_REC_EXT2;
+struct PEBS_REC_EXT2_NODE_S {
+    PEBS_REC_EXT1_NODE pebs_ext1;
+    U64                tsc; //Offset 0xC0
+};
+
+#define PEBS_REC_EXT2_r_flags(x)               (x)->pebs_ext1->pebs_ext.pebs_basic.r_flags
+#define PEBS_REC_EXT2_linear_ip(x)             (x)->pebs_ext1->pebs_ext.pebs_basic.linear_ip
+#define PEBS_REC_EXT2_rax(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.rax
+#define PEBS_REC_EXT2_rbx(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.rbx
+#define PEBS_REC_EXT2_rcx(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.rcx
+#define PEBS_REC_EXT2_rdx(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.rdx
+#define PEBS_REC_EXT2_rsi(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.rsi
+#define PEBS_REC_EXT2_rdi(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.rdi
+#define PEBS_REC_EXT2_rbp(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.rbp
+#define PEBS_REC_EXT2_rsp(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.rsp
+#define PEBS_REC_EXT2_r8(x)                    (x)->pebs_ext1->pebs_ext.pebs_basic.r8
+#define PEBS_REC_EXT2_r9(x)                    (x)->pebs_ext1->pebs_ext.pebs_basic.r9
+#define PEBS_REC_EXT2_r10(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.r10
+#define PEBS_REC_EXT2_r11(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.r11
+#define PEBS_REC_EXT2_r12(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.r12
+#define PEBS_REC_EXT2_r13(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.r13
+#define PEBS_REC_EXT2_r14(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.r14
+#define PEBS_REC_EXT2_r15(x)                   (x)->pebs_ext1->pebs_ext.pebs_basic.r15
+#define PEBS_REC_EXT2_glob_perf_overflow(x)    (x)->pebs_ext1->pebs_ext.glob_perf_overflow
+#define PEBS_REC_EXT2_data_linear_address(x)   (x)->pebs_ext1->pebs_ext.data_linear_address
+#define PEBS_REC_EXT2_data_source(x)           (x)->pebs_ext1->pebs_ext.data_source
+#define PEBS_REC_EXT2_latency(x)               (x)->pebs_ext1->pebs_ext.latency
+#define PEBS_REC_EXT2_eventing_ip(x)           (x)->pebs_ext1->eventing_ip
+#define PEBS_REC_EXT2_hle_info(x)              (x)->pebs_ext1->hle_info
+#define PEBS_REC_EXT2_tsc(x)                   (x)->tsc
+
+
 typedef struct DEAR_INFO_NODE_S   DEAR_INFO_NODE;
 typedef        DEAR_INFO_NODE     *DEAR_INFO;
 
@@ -190,6 +224,11 @@ PEBS_Modify_IP (
 );
 
 extern VOID
+PEBS_Modify_TSC (
+    void       *sample
+);
+
+extern VOID
 PEBS_Fill_Buffer (
     S8            *buffer,
     EVENT_DESC    evt_desc,
@@ -213,6 +252,7 @@ struct PEBS_DISPATCH_NODE_S {
     VOID (*initialize_threshold)(DTS_BUFFER_EXT, U32);
     U64  (*overflow)(S32, U64);
     VOID (*modify_ip)(void*, DRV_BOOL);
+    VOID (*modify_tsc)(void*);
 };
 
 #endif  

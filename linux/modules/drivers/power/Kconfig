@@ -28,3 +28,7 @@ config BQ24261_CHARGER
 	  makes use of power supply charging framework. So the driver gives
 	  the charger hardware abstraction only. Charging logic is abstracted
 	  in the charging framework.
+
+if A500CG
+source "drivers/external_drivers/drivers/power/ASUS_BATTERY/Kconfig"
+endif # A500CG

@@ -20,10 +20,10 @@
 #include <linux/interrupt.h>
 
 #include "mei_dev.h"
-#include "hw-me.h"
-
 #include "hbm.h"
 
+#include "hw-me.h"
+#include "hw-me-regs.h"
 
 /**
  * mei_me_reg_read - Reads 32bit data from the mei device
@@ -197,7 +197,7 @@ static int mei_me_hw_reset(struct mei_device *dev, bool intr_enable)
 
 	mei_me_reg_write(hw, H_CSR, hcsr);
 
-	if (dev->dev_state == MEI_DEV_POWER_DOWN)
+	if (intr_enable == false)
 		mei_me_hw_reset_release(dev);
 
 	dev_dbg(&dev->pdev->dev, "current HCSR = 0x%08x.\n", mei_hcsr_read(hw));
@@ -253,7 +253,7 @@ static int mei_me_hw_ready_wait(struct mei_device *dev)
 	mutex_unlock(&dev->device_lock);
 	err = wait_event_interruptible_timeout(dev->wait_hw_ready,
 			dev->recvd_hw_ready,
-			mei_secs_to_jiffies(MEI_INTEROP_TIMEOUT));
+			mei_secs_to_jiffies(MEI_HW_READY_TIMEOUT));
 	mutex_lock(&dev->device_lock);
 	if (!err && !dev->recvd_hw_ready) {
 		if (!err)
@@ -482,7 +482,7 @@ irqreturn_t mei_me_irq_thread_handler(int irq, void *dev_id)
 	struct mei_device *dev = (struct mei_device *) dev_id;
 	struct mei_cl_cb complete_list;
 	s32 slots;
-	int rets;
+	int rets = 0;
 
 	dev_dbg(&dev->pdev->dev, "function called after ISR to handle the interrupt processing.\n");
 	/* initialize our complete list */
@@ -495,15 +495,10 @@ irqreturn_t mei_me_irq_thread_handler(int irq, void *dev_id)
 		mei_clear_interrupts(dev);
 
 	/* check if ME wants a reset */
-	if (!mei_hw_is_ready(dev) &&
-	    dev->dev_state != MEI_DEV_RESETTING &&
-	    dev->dev_state != MEI_DEV_INITIALIZING &&
-	    dev->dev_state != MEI_DEV_POWER_DOWN &&
-	    dev->dev_state != MEI_DEV_POWER_UP) {
-		dev_dbg(&dev->pdev->dev, "FW not ready.\n");
-		mei_reset(dev, 1);
-		mutex_unlock(&dev->device_lock);
-		return IRQ_HANDLED;
+	if (!mei_hw_is_ready(dev) && dev->dev_state != MEI_DEV_RESETTING) {
+		dev_warn(&dev->pdev->dev, "FW not ready: resetting.\n");
+		schedule_work(&dev->reset_work);
+		goto end;
 	}
 
 	/*  check if we need to start the dev */
@@ -513,15 +508,12 @@ irqreturn_t mei_me_irq_thread_handler(int irq, void *dev_id)
 
 			dev->recvd_hw_ready = true;
 			wake_up_interruptible(&dev->wait_hw_ready);
-
-			mutex_unlock(&dev->device_lock);
-			return IRQ_HANDLED;
 		} else {
+
 			dev_dbg(&dev->pdev->dev, "Reset Completed.\n");
 			mei_me_hw_reset_release(dev);
-			mutex_unlock(&dev->device_lock);
-			return IRQ_HANDLED;
 		}
+		goto end;
 	}
 	/* check slots available for reading */
 	slots = mei_count_full_read_slots(dev);
@@ -529,21 +521,22 @@ irqreturn_t mei_me_irq_thread_handler(int irq, void *dev_id)
 		/* we have urgent data to send so break the read */
 		if (dev->wr_ext_msg.hdr.length)
 			break;
-		dev_dbg(&dev->pdev->dev, "slots =%08x\n", slots);
-		dev_dbg(&dev->pdev->dev, "call mei_irq_read_handler.\n");
+		dev_dbg(&dev->pdev->dev, "slots to read = %08x\n", slots);
 		rets = mei_irq_read_handler(dev, &complete_list, &slots);
-		if (rets)
+		if (rets && dev->dev_state != MEI_DEV_RESETTING) {
+			schedule_work(&dev->reset_work);
 			goto end;
+		}
 	}
 	rets = mei_irq_write_handler(dev, &complete_list);
-end:
-	dev_dbg(&dev->pdev->dev, "end of bottom half function.\n");
-	dev->hbuf_is_ready = mei_hbuf_is_ready(dev);
 
-	mutex_unlock(&dev->device_lock);
+	dev->hbuf_is_ready = mei_hbuf_is_ready(dev);
 
 	mei_irq_compl_handler(dev, &complete_list);
 
+end:
+	dev_dbg(&dev->pdev->dev, "interrupt thread end ret = %d\n", rets);
+	mutex_unlock(&dev->device_lock);
 	return IRQ_HANDLED;
 }
 static const struct mei_hw_ops mei_me_hw_ops = {

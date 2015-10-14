@@ -43,6 +43,8 @@
 #include <linux/delay.h>
 #include <linux/mdm_ctrl_board.h>
 
+#include "mdm_util.h"
+
 /**
  * mdm_ctrl_configure_gpio - Configure GPIOs
  * @gpio: GPIO to configure
@@ -55,7 +57,7 @@ static inline int mdm_ctrl_configure_gpio(int gpio,
 {
 	int ret;
 
-	ret = gpio_request(gpio, "ModemControl");
+	ret = gpio_request(gpio, desc);
 
 	if (direction)
 		ret += gpio_direction_output(gpio, value);
@@ -78,17 +80,17 @@ int cpu_init_gpio(void *data)
 	pr_debug("cpu_init");
 
 	/* Configure the RESET_BB gpio */
-	ret = mdm_ctrl_configure_gpio(cpu_data->gpio_rst_bbn, 1, 0, "RST_BB");
+	ret = mdm_ctrl_configure_gpio(cpu_data->gpio_rst_bbn, 1, 0, "ModemControl_RST_BB");
 	if (ret)
 		goto out;
 
 	/* Configure the ON gpio */
-	ret = mdm_ctrl_configure_gpio(cpu_data->gpio_pwr_on, 1, 0, "ON");
+	ret = mdm_ctrl_configure_gpio(cpu_data->gpio_pwr_on, 1, 0, "ModemControl_ON");
 	if (ret)
 		goto free_ctx5;
 
 	/* Configure the RESET_OUT gpio & irq */
-	ret = mdm_ctrl_configure_gpio(cpu_data->gpio_rst_out, 0, 0, "RST_OUT");
+	ret = mdm_ctrl_configure_gpio(cpu_data->gpio_rst_out, 0, 0, "ModemControl_RST_OUT");
 	if (ret)
 		goto free_ctx4;
 
@@ -98,7 +100,7 @@ int cpu_init_gpio(void *data)
 	}
 
 	/* Configure the CORE_DUMP gpio & irq */
-	ret = mdm_ctrl_configure_gpio(cpu_data->gpio_cdump, 0, 0, "CORE_DUMP");
+	ret = mdm_ctrl_configure_gpio(cpu_data->gpio_cdump, 0, 0, "ModemControl_CORE_DUMP");
 	if (ret)
 		goto free_ctx2;
 
@@ -174,3 +176,62 @@ int get_gpio_pwr(void *data)
 	struct mdm_ctrl_cpu_data *cpu_data = data;
 	return cpu_data->gpio_pwr_on;
 }
+
+int get_gpio_on(void *data)
+{
+	struct mdm_ctrl_cpu_data *cpu_data = data;
+	return cpu_data->gpio_on_key;
+}
+
+int cpu_init_gpio_ngff(void *data)
+{
+	struct mdm_ctrl_cpu_data *cpu_data = data;
+	int ret;
+
+	pr_debug("cpu_init");
+
+	/* Configure the RESET_BB gpio */
+	ret = mdm_ctrl_configure_gpio(cpu_data->gpio_rst_bbn, 1, 0, "RST_BB");
+	if (ret)
+		goto out;
+
+	ret = mdm_ctrl_configure_gpio(GPIO_RST_USBHUB, 1, 1, "USB_HUB_reset");
+
+	pr_info(DRVNAME ": GPIO (rst_bbn: %d, rst_usb_hub: %d)\n",
+		cpu_data->gpio_rst_bbn,GPIO_RST_USBHUB);
+
+	if (ret)
+		goto free_ctx1;
+
+	return 0;
+ free_ctx1:
+	gpio_free(cpu_data->gpio_rst_bbn);
+ out:
+	return -ENODEV;
+}
+
+int cpu_cleanup_gpio_ngff(void *data)
+{
+	struct mdm_ctrl_cpu_data *cpu_data = data;
+
+	gpio_free(cpu_data->gpio_rst_bbn);
+	gpio_free(GPIO_RST_USBHUB);
+
+	return 0;
+}
+
+int get_gpio_mdm_state_ngff(void *data)
+{
+	return 0;
+}
+
+int get_gpio_irq_cdump_ngff(void *data)
+{
+	return 0;
+}
+
+int get_gpio_irq_rst_ngff(void *data)
+{
+	return 0;
+}
+

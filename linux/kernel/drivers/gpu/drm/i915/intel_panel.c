@@ -34,6 +34,8 @@
 #include "intel_drv.h"
 #include "linux/mfd/intel_mid_pmic.h"
 #include <linux/pwm.h>
+#include <linux/platform_data/lp855x.h>
+#include <asm/spid.h>
 
 #define PCI_LBPC 0xf4 /* legacy/combination backlight modes */
 
@@ -187,9 +189,43 @@ void intel_gmch_panel_fitting(struct intel_crtc *intel_crtc,
 	struct drm_device *dev = intel_crtc->base.dev;
 	u32 pfit_control = 0, pfit_pgm_ratios = 0, border = 0;
 	struct drm_display_mode *mode, *adjusted_mode;
+	uint32_t scaling_src_w, scaling_src_h = 0;
+
+	intel_crtc->base.panning_en = false;
 
 	mode = &pipe_config->requested_mode;
 	adjusted_mode = &pipe_config->adjusted_mode;
+
+	if (IS_VALLEYVIEW(dev)) {
+		scaling_src_w = ((intel_crtc->scaling_src_size >>
+				SCALING_SRCSIZE_SHIFT) &
+				SCALING_SRCSIZE_MASK) + 1;
+		scaling_src_h = (intel_crtc->scaling_src_size &
+				SCALING_SRCSIZE_MASK) + 1;
+
+		/* The input src size should be < 2kx2k */
+		if ((scaling_src_w > PFIT_SIZE_LIMIT) ||
+			(scaling_src_h > PFIT_SIZE_LIMIT)) {
+			DRM_ERROR("Wrong panel fitter input src conf");
+			goto out;
+		}
+
+		if (fitting_mode == AUTOSCALE)
+			pfit_control = PFIT_SCALING_AUTO;
+		else if (fitting_mode == PILLARBOX)
+			pfit_control = PFIT_SCALING_PILLAR;
+		else if (fitting_mode == LETTERBOX)
+			pfit_control = PFIT_SCALING_LETTER;
+		else {
+			pipe_config->gmch_pfit.control &= ~PFIT_ENABLE;
+			intel_crtc->base.panning_en = false;
+			goto out1;
+		}
+		pfit_control |= (PFIT_ENABLE | (intel_crtc->pipe
+					<< PFIT_PIPE_SHIFT));
+		intel_crtc->base.panning_en = true;
+		goto out;
+	}
 
 	/* Native modes don't need fitting */
 	if (adjusted_mode->hdisplay == mode->hdisplay &&
@@ -302,6 +338,7 @@ out:
 	if ((pfit_control & PFIT_ENABLE) == 0) {
 		pfit_control = 0;
 		pfit_pgm_ratios = 0;
+		intel_crtc->scaling_src_size = 0;
 	}
 
 	/* Make sure pre-965 set dither correctly for 18bpp panels. */
@@ -309,6 +346,7 @@ out:
 		pfit_control |= PANEL_8TO6_DITHER_ENABLE;
 
 	pipe_config->gmch_pfit.control = pfit_control;
+out1:
 	pipe_config->gmch_pfit.pgm_ratios = pfit_pgm_ratios;
 	pipe_config->gmch_pfit.lvds_border_bits = border;
 }
@@ -365,13 +403,13 @@ static u32 i915_read_blc_pwm_ctl(struct drm_device *dev)
 	return val;
 }
 
-static u32 intel_panel_get_max_backlight(struct drm_device *dev)
+u32 intel_panel_get_max_backlight(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	u32 max;
 
 	if (IS_VALLEYVIEW(dev) && dev_priv->is_mipi)
-		return 0xFF;
+		return 0xff;
 
 	max = i915_read_blc_pwm_ctl(dev);
 
@@ -433,7 +471,11 @@ static u32 intel_panel_get_backlight(struct drm_device *dev)
 	 */
 	if (IS_VALLEYVIEW(dev) && dev_priv->is_mipi) {
 #ifdef CONFIG_CRYSTAL_COVE
-		val = intel_mid_pmic_readb(0x4E);
+		if (BYT_CR_CONFIG) {
+			val = lpio_bl_read(0, LPIO_PWM_CTRL);
+			val &= 0xff;
+		} else
+			val = intel_mid_pmic_readb(0x4E);
 #else
 		DRM_ERROR("Backlight not supported yet\n");
 #endif
@@ -449,7 +491,7 @@ static u32 intel_panel_get_backlight(struct drm_device *dev)
 			val >>= 1;
 
 		if (is_backlight_combination_mode(dev)) {
-			u8 lbpc;
+			u8 lbpc = 0;
 
 			pci_read_config_byte(dev->pdev, PCI_LBPC, &lbpc);
 			val *= lbpc;
@@ -512,8 +554,10 @@ void intel_panel_actually_set_backlight(struct drm_device *dev, u32 level)
 
 void intel_panel_actually_set_mipi_backlight(struct drm_device *dev, u32 level)
 {
+	struct drm_i915_private *dev_priv = dev->dev_private;
 #ifdef CONFIG_CRYSTAL_COVE
-	if (BYT_CR_CONFIG) {
+	/* For BYT-CR */
+	if (dev_priv->vbt.dsi.config->pmic_soc_blc) {
 		/* FixMe: if level is zero still a pulse is observed consuming
 		power. To fix this issue if requested level is zero then
 		disable pwm and enabled it again if brightness changes */
@@ -573,7 +617,10 @@ void intel_panel_disable_backlight(struct drm_device *dev)
 		intel_panel_actually_set_mipi_backlight(dev, 0);
 
 #ifdef CONFIG_CRYSTAL_COVE
-		if (BYT_CR_CONFIG) {
+		if (dev_priv->vbt.dsi.config->pmic_soc_blc) {
+			/* cancel any delayed work scheduled */
+			cancel_delayed_work_sync(&dev_priv->bkl_delay_enable_work);
+
 			/* disable the backlight enable signal */
 			vlv_gpio_nc_write(dev_priv, 0x40E0, 0x2000CC00);
 			vlv_gpio_nc_write(dev_priv, 0x40E8, 0x00000004);
@@ -581,7 +628,6 @@ void intel_panel_disable_backlight(struct drm_device *dev)
 			lpio_bl_write_bits(0, LPIO_PWM_CTRL, 0x00, 0x80000000);
 		} else {
 			intel_mid_pmic_writeb(0x51, 0x00);
-			intel_mid_pmic_writeb(0x52, 0x00);
 			intel_mid_pmic_writeb(0x4B, 0x7F);
 		}
 #else
@@ -592,6 +638,11 @@ void intel_panel_disable_backlight(struct drm_device *dev)
 	spin_lock_irqsave(&dev_priv->backlight.lock, flags);
 
 	dev_priv->backlight.enabled = false;
+
+	if (IS_VALLEYVIEW(dev) && dev_priv->is_mipi) {
+		spin_unlock_irqrestore(&dev_priv->backlight.lock, flags);
+		return;
+	}
 
 	if (INTEL_INFO(dev)->gen >= 4 &&
 				!(IS_VALLEYVIEW(dev) && dev_priv->is_mipi)) {
@@ -612,6 +663,57 @@ void intel_panel_disable_backlight(struct drm_device *dev)
 
 	spin_unlock_irqrestore(&dev_priv->backlight.lock, flags);
 }
+#ifdef CONFIG_CRYSTAL_COVE
+static void scheduled_led_chip_programming(struct work_struct *work)
+{
+	lp855x_ext_write_byte(LP8556_CFG9,
+			LP8556_VBOOST_MAX_NA_21V |
+			LP8556_JUMP_DIS |
+			LP8556_JMP_TSHOLD_10P |
+			LP8556_JMP_VOLT_0_5V);
+	lp855x_ext_write_byte(LP8556_CFG5,
+			LP8556_PWM_DRECT_DIS |
+			LP8556_PS_MODE_5P5D |
+			LP8556_PWM_FREQ_9616HZ);
+	lp855x_ext_write_byte(LP8556_CFG7,
+			LP8556_RSRVD_76 |
+			LP8556_DRV3_EN |
+			LP8556_DRV2_EN |
+			LP8556_RSRVD_32 |
+			LP8556_IBOOST_LIM_1_8A_NA);
+	lp855x_ext_write_byte(LP8556_LEDSTREN,
+			LP8556_5LEDSTR);
+}
+#endif
+
+static uint32_t compute_pwm_base(uint16_t freq)
+{
+	uint32_t base_unit;
+
+	if (freq < 400)
+		freq = 400;
+	/*The PWM block is clocked by the 25MHz oscillator clock.
+	* The output frequency can be estimated with the equation:
+	* Target frequency = XOSC * Base_unit_value/256
+	*/
+	base_unit = (freq * 256) / 25;
+
+	/* Also Base_unit_value need to converted to QM.N notation
+	* to program the value in register
+	* Using the following for converting to Q8.8 notation
+	* For QM.N representation, consider a floating point variable 'a' :
+	* Step 1: Calculate b = a* 2^N , where N is the fractional length of the variable.
+	* Note that a is represented in decimal.
+	* Step 2: Round the value of 'b' to the nearest integer value. For example:
+	* RoundOff (1.05) --> 1
+	* RoundOff (1.5)  --> 2
+	* Step 3: Convert 'b' from decimal to binary representation and name the new variable 'c'
+	*/
+	base_unit = base_unit * 256;
+	base_unit = DIV_ROUND_CLOSEST(base_unit, 1000000);
+
+	return base_unit;
+}
 
 void intel_panel_enable_backlight(struct drm_device *dev,
 				  enum pipe pipe)
@@ -620,18 +722,24 @@ void intel_panel_enable_backlight(struct drm_device *dev,
 	enum transcoder cpu_transcoder =
 		intel_pipe_to_cpu_transcoder(dev_priv, pipe);
 	unsigned long flags;
+	uint32_t pwm_base;
 
 	if (IS_VALLEYVIEW(dev) && dev_priv->is_mipi) {
 #ifdef CONFIG_CRYSTAL_COVE
 		uint32_t val;
-		if (BYT_CR_CONFIG) {
+		/* For BYT-CR */
+		if (dev_priv->vbt.dsi.config->pmic_soc_blc) {
 			/* GPIOC_94 config to PWM0 function */
 			val = vlv_gps_core_read(dev_priv, 0x40A0);
 			vlv_gps_core_write(dev_priv, 0x40A0, 0x2000CC01);
 			vlv_gps_core_write(dev_priv, 0x40A8, 0x5);
 
-			/* PWM enable */
-			lpio_bl_write(0, LPIO_PWM_CTRL, 0x20c00);
+			/* PWM enable
+			* Assuming only 1 LFP
+			*/
+			pwm_base = compute_pwm_base(dev_priv->vbt.pwm_frequency);
+			pwm_base = pwm_base << 8;
+			lpio_bl_write(0, LPIO_PWM_CTRL, pwm_base);
 			lpio_bl_update(0, LPIO_PWM_CTRL);
 			lpio_bl_write_bits(0, LPIO_PWM_CTRL, 0x80000000,
 							0x80000000);
@@ -641,14 +749,25 @@ void intel_panel_enable_backlight(struct drm_device *dev,
 			vlv_gpio_nc_write(dev_priv, 0x40E0, 0x2000CC00);
 			vlv_gpio_nc_write(dev_priv, 0x40E8, 0x00000005);
 			udelay(500);
+
+			if (lpdata)
+				schedule_delayed_work(&dev_priv->bkl_delay_enable_work,
+						msecs_to_jiffies(30));
+
 		} else {
 			intel_mid_pmic_writeb(0x4B, 0xFF);
-			intel_mid_pmic_writeb(0x4E, 0xFF);
 			intel_mid_pmic_writeb(0x51, 0x01);
-			intel_mid_pmic_writeb(0x52, 0x01);
+
+			/* Control Backlight Slope programming for LP8556 IC*/
+			if (lpdata && (spid.hardware_id == BYT_TABLET_BLK_8PR1)) {
+				mdelay(2);
+				if (lp855x_ext_write_byte(LP8556_CFG3, LP8556_MODE_SL_50MS_FL_HV_PWM_12BIT))
+					DRM_ERROR("Backlight slope programming failed\n");
+				else
+					DRM_INFO("Backlight slope programming success\n");
+				mdelay(2);
+			}
 		}
-		intel_panel_actually_set_mipi_backlight(dev,
-					dev_priv->backlight.level);
 #else
 		DRM_ERROR("Backlight not supported yet\n");
 #endif
@@ -713,6 +832,10 @@ set_level:
 						dev_priv->backlight.level);
 
 	spin_unlock_irqrestore(&dev_priv->backlight.lock, flags);
+
+	if (IS_VALLEYVIEW(dev) && dev_priv->is_mipi)
+		intel_panel_actually_set_mipi_backlight(dev,
+					dev_priv->backlight.level);
 }
 
 static void intel_panel_init_backlight(struct drm_device *dev)
@@ -721,6 +844,12 @@ static void intel_panel_init_backlight(struct drm_device *dev)
 
 	dev_priv->backlight.level = intel_panel_get_backlight(dev);
 	dev_priv->backlight.enabled = dev_priv->backlight.level != 0;
+
+#ifdef CONFIG_CRYSTAL_COVE
+	if (BYT_CR_CONFIG)
+		INIT_DELAYED_WORK(&dev_priv->bkl_delay_enable_work,
+				scheduled_led_chip_programming);
+#endif
 }
 
 enum drm_connector_status
@@ -825,11 +954,106 @@ void intel_panel_destroy_backlight(struct drm_device *dev)
 #endif
 
 int intel_panel_init(struct intel_panel *panel,
-		     struct drm_display_mode *fixed_mode)
+			struct drm_display_mode *fixed_mode,
+			struct drm_display_mode *downclock_mode)
 {
 	panel->fixed_mode = fixed_mode;
+	panel->downclock_mode = downclock_mode;
 
 	return 0;
+}
+
+/*
+ * intel_dsi_calc_panel_downclock - calculate the reduced downclock for DSI
+ * @dev: drm device
+ * @fixed_mode : panel native mode
+ * @connector: DSI connector
+ *
+ * Return downclock_avail
+ * Calculate the reduced downclock for DSI.
+ */
+
+struct drm_display_mode *
+intel_dsi_calc_panel_downclock(struct drm_device *dev,
+			struct drm_display_mode *fixed_mode,
+			struct drm_connector *connector)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drm_display_mode *downclock_mode = NULL;
+
+	if (dev_priv->vbt.drrs_min_vrefresh == 0)
+		return downclock_mode;
+
+	/* Allocate */
+	downclock_mode = drm_mode_duplicate(dev, fixed_mode);
+	if (!downclock_mode) {
+		DRM_DEBUG_KMS("%s: No memory\n", __func__);
+		return NULL;
+	}
+
+	downclock_mode->vrefresh = dev_priv->vbt.drrs_min_vrefresh;
+	DRM_DEBUG("drrs_min_vrefresh = %u\n", downclock_mode->vrefresh);
+	downclock_mode->clock =  downclock_mode->vrefresh *
+		downclock_mode->vtotal * downclock_mode->htotal / 1000;
+
+	return downclock_mode;
+}
+
+/*
+ * intel_find_panel_downclock - find the reduced downclock for LVDS in EDID
+ * @dev: drm device
+ * @fixed_mode : panel native mode
+ * @connector: LVDS/eDP connector
+ *
+ * Return downclock_avail
+ * Find the reduced downclock for LVDS/eDP in EDID.
+ */
+
+struct drm_display_mode *
+intel_find_panel_downclock(struct drm_device *dev,
+			struct drm_display_mode *fixed_mode,
+			struct drm_connector *connector)
+{
+	struct drm_display_mode *scan, *tmp_mode;
+	int temp_downclock;
+	if (!fixed_mode) {
+		DRM_ERROR("Mode can't be NULL\n");
+		return NULL;
+	}
+	temp_downclock = fixed_mode->clock;
+	tmp_mode = NULL;
+
+	list_for_each_entry(scan, &connector->probed_modes, head) {
+		/*
+		 * If one mode has the same resolution with the fixed_panel
+		 * mode while they have the different refresh rate, it means
+		 * that the reduced downclock is found. In such
+		 * case we can set the different FPx0/1 to dynamically select
+		 * between low and high frequency.
+		*/
+		if (scan->hdisplay == fixed_mode->hdisplay &&
+		scan->hsync_start == fixed_mode->hsync_start &&
+		scan->hsync_end == fixed_mode->hsync_end &&
+		scan->htotal == fixed_mode->htotal &&
+		scan->vdisplay == fixed_mode->vdisplay &&
+		scan->vsync_start == fixed_mode->vsync_start &&
+		scan->vsync_end == fixed_mode->vsync_end &&
+		scan->vtotal == fixed_mode->vtotal) {
+			if (scan->clock < temp_downclock) {
+				/*
+				 * The downclock is already found. But we
+				 * expect to find the lower downclock.
+				 */
+				temp_downclock = scan->clock;
+				tmp_mode = scan;
+			}
+		}
+	}
+
+	if (temp_downclock < fixed_mode->clock)
+		return drm_mode_duplicate(dev, tmp_mode);
+	else
+		return NULL;
 }
 
 void intel_panel_fini(struct intel_panel *panel)
@@ -839,4 +1063,8 @@ void intel_panel_fini(struct intel_panel *panel)
 
 	if (panel->fixed_mode)
 		drm_mode_destroy(intel_connector->base.dev, panel->fixed_mode);
+
+	if (panel->downclock_mode)
+		drm_mode_destroy(intel_connector->base.dev,
+				panel->downclock_mode);
 }

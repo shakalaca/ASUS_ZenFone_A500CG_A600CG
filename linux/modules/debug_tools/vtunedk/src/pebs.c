@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -250,6 +250,42 @@ pebs_Modify_IP_With_Eventing_IP (
     return;
 }
 
+/* ------------------------------------------------------------------------- */
+/*!
+ * @fn          VOID pebs_Modify_TSC (sample)
+ *
+ * @brief       Change the TSC field in the sample to that in the PEBS record
+ *
+ * @param       sample        - sample buffer
+ *
+ * @return      NONE
+ *
+ * <I>Special Notes:</I>
+ *              <NONE>
+ */
+static VOID
+pebs_Modify_TSC (
+    void        *sample
+)
+{
+    SampleRecordPC  *psamp = sample;
+    DTS_BUFFER_EXT   dtes  = CPU_STATE_dts_buffer(&pcb[CONTROL_THIS_CPU()]);
+    S8              *pebs_base, *pebs_index;
+    PEBS_REC_EXT2    pb;
+
+    if (dtes && psamp) {
+        pebs_base  = (S8 *)(UIOP)DTS_BUFFER_EXT_pebs_base(dtes);
+        pebs_index = (S8 *)(UIOP)DTS_BUFFER_EXT_pebs_index(dtes);
+        SEP_PRINT_DEBUG("In PEBS Fill Buffer: cpu %d\n", CONTROL_THIS_CPU());
+        if (pebs_base != pebs_index) {
+            pb = (PEBS_REC_EXT2)pebs_base;
+            SAMPLE_RECORD_tsc(psamp) = PEBS_REC_EXT2_tsc(pb);
+        }
+    }
+
+    return;
+}
+
 /*
  * Initialize the pebs micro dispatch tables
  */
@@ -257,28 +293,40 @@ PEBS_DISPATCH_NODE  core2_pebs =
 {
      pebs_Core2_Initialize_Threshold,
      pebs_Core2_Overflow,
-     pebs_Modify_IP
+     pebs_Modify_IP,
+     NULL
 };
 
 PEBS_DISPATCH_NODE  core2p_pebs =
 {
      pebs_Corei7_Initialize_Threshold,
      pebs_Core2_Overflow,
-     pebs_Modify_IP
+     pebs_Modify_IP,
+     NULL
 };
 
 PEBS_DISPATCH_NODE  corei7_pebs =
 {
      pebs_Corei7_Initialize_Threshold,
      pebs_Corei7_Overflow,
-     pebs_Modify_IP
+     pebs_Modify_IP,
+     NULL
 };
 
 PEBS_DISPATCH_NODE  haswell_pebs =
 {
      pebs_Corei7_Initialize_Threshold,
      pebs_Corei7_Overflow,
-     pebs_Modify_IP_With_Eventing_IP
+     pebs_Modify_IP_With_Eventing_IP,
+     NULL
+};
+
+PEBS_DISPATCH_NODE  perfver4_pebs =
+{
+     pebs_Corei7_Initialize_Threshold,
+     pebs_Corei7_Overflow,
+     pebs_Modify_IP_With_Eventing_IP,
+     pebs_Modify_TSC
 };
 
 #define PER_CORE_BUFFER_SIZE(record_size)  (sizeof(DTS_BUFFER_EXT_NODE) +  2 * (record_size) + 64)
@@ -507,6 +555,32 @@ PEBS_Modify_IP (
 
 /* ------------------------------------------------------------------------- */
 /*!
+ * @fn          VOID PEBS_Modify_TSC (sample)
+ *
+ * @brief       Change the TSC field in the sample to that in the PEBS record
+ *
+ * @param       sample        - sample buffer
+ *
+ * @return      NONE
+ *
+ * <I>Special Notes:</I>
+ *              <NONE>
+ */
+extern VOID
+PEBS_Modify_TSC (
+    void        *sample
+)
+{
+    if (pebs_dispatch->modify_tsc != NULL) {
+        pebs_dispatch->modify_tsc(sample);
+    }
+    return;
+}
+
+
+
+/* ------------------------------------------------------------------------- */
+/*!
  * @fn          VOID PEBS_Fill_Buffer (S8 *buffer, EVENT_CONFIG ec)
  *
  * @brief       Fill the buffer with the pebs data
@@ -529,6 +603,7 @@ PEBS_Fill_Buffer (
     DTS_BUFFER_EXT   dtes       = CPU_STATE_dts_buffer(&pcb[CONTROL_THIS_CPU()]);
     DEAR_INFO_NODE   dear_info  = {0};
     PEBS_REC_EXT1    pebs_base_ext1;
+    PEBS_REC_EXT2    pebs_base_ext2;
 
     if (dtes) {
         S8   *pebs_base  = (S8 *)(UIOP)DTS_BUFFER_EXT_pebs_base(dtes);
@@ -557,6 +632,10 @@ PEBS_Fill_Buffer (
                 memcpy(buffer + EVENT_DESC_latency_offset_in_sample(evt_desc),
                        &dear_info,
                        sizeof(DEAR_INFO_NODE) );
+            }
+            if (EVENT_DESC_pebs_tsc_offset(evt_desc)) {
+                pebs_base_ext2 = (PEBS_REC_EXT2)pebs_base;
+                *(U64*)(buffer + EVENT_DESC_pebs_tsc_offset(evt_desc)) = PEBS_REC_EXT2_tsc(pebs_base_ext2);
             }
         }
     }
@@ -605,6 +684,11 @@ PEBS_Initialize (
                 SEP_PRINT_DEBUG("Set up the Haswell dispatch table\n");
                 pebs_dispatch = &haswell_pebs;
                 pebs_record_size = sizeof(PEBS_REC_EXT1_NODE);
+                break;                
+            case 5:
+                SEP_PRINT_DEBUG("Set up the Perf version4 dispatch table\n");
+                pebs_dispatch = &perfver4_pebs;
+                pebs_record_size = sizeof(PEBS_REC_EXT2_NODE);
                 break;                
             default:
                 SEP_PRINT_DEBUG("Unknown PEBS type. Will not collect PEBS information\n");

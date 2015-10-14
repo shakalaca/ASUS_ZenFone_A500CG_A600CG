@@ -22,9 +22,10 @@
 #ifndef __QUEUE_ACCESS_H
 #define __QUEUE_ACCESS_H
 
-#include "type_support.h"
-#include "ia_css_queue_comm.h"
-#include "ia_css_circbuf.h"
+#include <type_support.h>
+#include <ia_css_queue_comm.h>
+#include <ia_css_circbuf.h>
+#include <error_support.h>
 
 #define QUEUE_IGNORE_START_FLAG	0x0001
 #define QUEUE_IGNORE_END_FLAG	0x0002

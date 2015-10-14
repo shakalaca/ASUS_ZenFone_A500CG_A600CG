@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2013 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -49,9 +49,9 @@
 #if defined(DRV_IA32) || defined(DRV_EM64T)
 #include "pebs.h"
 #endif
-
-#if defined(BUILD_CHIPSET)
 #include "lwpmudrv_chipset.h"
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+#include "sepdrv_p_state.h"
 #endif
 
 // Desc id #0 is used for module records
@@ -112,6 +112,7 @@ PMI_Interrupt_Handler (
     DISPATCH         dispatch_unc;
     U64             *result_buffer;
     U64              diff;
+    U64              lbr_tos_from_ip = 0;
 
     this_cpu = CONTROL_THIS_CPU();
     pcpu     = &pcb[this_cpu];
@@ -188,27 +189,38 @@ PMI_Interrupt_Handler (
                                      DRV_CONFIG_virt_phys_translation(pcfg));
                     }
                     PEBS_Modify_IP((S8 *)psamp, FALSE);
+                    PEBS_Modify_TSC((S8 *)psamp);
                 }
                 if (DRV_CONFIG_collect_lbrs(pcfg) && (DRV_EVENT_MASK_lbr_capture(&event_mask.eventmasks[i]))) {
-                    dispatch->read_lbrs(((S8 *)(psamp)+EVENT_DESC_lbr_offset(evt_desc)));
+                    lbr_tos_from_ip = dispatch->read_lbrs(!DRV_CONFIG_store_lbrs(pcfg) ? NULL:((S8 *)(psamp)+EVENT_DESC_lbr_offset(evt_desc)));
+                    if (DRV_EVENT_MASK_branch(&event_mask.eventmasks[i]) && DRV_CONFIG_precise_ip_lbrs(pcfg) && lbr_tos_from_ip) {
+                        SAMPLE_RECORD_eip(psamp)       = (U32) lbr_tos_from_ip;
+                        SEP_PRINT_DEBUG("UPDATED SAMPLE_RECORD_eip(psamp) %x\n", SAMPLE_RECORD_eip(psamp));
+                    }
                 }
                 if (DRV_CONFIG_power_capture(pcfg)) {
                     dispatch->read_power(((S8 *)(psamp)+EVENT_DESC_power_offset_in_sample(evt_desc)));
                 }
-#if defined(BUILD_CHIPSET)
                 if (DRV_CONFIG_enable_chipset(pcfg)) {
                     cs_dispatch->read_counters(((S8 *)(psamp)+DRV_CONFIG_chipset_offset(pcfg)));
                 }
-#endif
                 if (DRV_CONFIG_event_based_counts(pcfg)) {
-                    dispatch->read_counts(((S8 *)(psamp)+EVENT_DESC_ebc_offset(evt_desc)), DRV_EVENT_MASK_event_idx(&event_mask.eventmasks[i]));
+                    dispatch->read_counts((S8 *)psamp, DRV_EVENT_MASK_event_idx(&event_mask.eventmasks[i]));
                 }
+#if (defined(DRV_IA32) || defined(DRV_EM64T))
+                if (DRV_CONFIG_enable_p_state(pcfg)) {
+                    SEPDRV_P_STATE_Read((S8 *)(psamp)+EVENT_DESC_p_state_offset(evt_desc), pcpu);
+                    if (!DRV_CONFIG_event_based_counts(pcfg) && CPU_STATE_p_state_counting(pcpu)) {
+                        dispatch->read_counts((S8 *)psamp, DRV_EVENT_MASK_event_idx(&event_mask.eventmasks[i]));
+                    }
+                }
+#endif
                 // need to do this per device
                 for (dev_idx = 0; dev_idx < num_devices; dev_idx++) {
                     pcfg_unc = LWPMU_DEVICE_pcfg(&devices[dev_idx]);
                     dispatch_unc = LWPMU_DEVICE_dispatch(&devices[dev_idx]);
                     if (pcfg_unc && DRV_CONFIG_event_based_counts(pcfg_unc)) {
-                        dispatch_unc->read_counts(((S8 *)(psamp)+DRV_CONFIG_results_offset(pcfg_unc)), dev_idx);
+                        dispatch_unc->read_counts((S8 *)(psamp), dev_idx);
                         SAMPLE_RECORD_uncore_valid(psamp) = 1;
 
                         // skip first element because it's the group number
@@ -228,7 +240,7 @@ PMI_Interrupt_Handler (
                                 diff = result_buffer[event_idx] - LWPMU_DEVICE_prev_val_per_thread(&devices[dev_idx])[this_cpu][event_idx];
                             }
                             // accumulate current results into accumulator
-                            LWPMU_DEVICE_acc_per_thread(&devices[dev_idx])[this_cpu][event_idx] += diff;                            
+                            LWPMU_DEVICE_acc_per_thread(&devices[dev_idx])[this_cpu][event_idx] += diff;
                             // update previous results array
                             LWPMU_DEVICE_prev_val_per_thread(&devices[dev_idx])[this_cpu][event_idx] = result_buffer[event_idx];
                             // update results buffer for this thread
@@ -238,7 +250,7 @@ PMI_Interrupt_Handler (
                 }
             } // for
         }
-    } 
+    }
     if (DRV_CONFIG_pebs_mode(pcfg)) {
         PEBS_Reset_Index(this_cpu);
     }
@@ -341,6 +353,7 @@ PMI_Interrupt_Handler (
     U32              event_idx;
     U64             *result_buffer;
     U64              diff;
+    U64              lbr_tos_from_ip = 0;
 
     // Disable the counter control
     dispatch->freeze(NULL);
@@ -406,7 +419,7 @@ PMI_Interrupt_Handler (
                     SAMPLE_RECORD_eflags(psamp)        = REGS_eflags(regs);
                     SAMPLE_RECORD_ia64_pc(psamp)       = FALSE;
 
-                    SEP_PRINT_DEBUG("SAMPLE_RECORD_eip(psamp) %x\n", SAMPLE_RECORD_eip(psamp));
+                    SEP_PRINT_DEBUG("SAMPLE_RECORD_eip(psamp) 0x%x\n", SAMPLE_RECORD_eip(psamp));
                     SEP_PRINT_DEBUG("SAMPLE_RECORD_eflags(psamp) %x\n", SAMPLE_RECORD_eflags(psamp));
                 }
 
@@ -419,26 +432,43 @@ PMI_Interrupt_Handler (
                                      DRV_CONFIG_virt_phys_translation(pcfg));
                     }
                     PEBS_Modify_IP((S8 *)psamp, is_64bit_addr);
+                    PEBS_Modify_TSC((S8 *)psamp);
                 }
                 if (DRV_CONFIG_collect_lbrs(pcfg) && (DRV_EVENT_MASK_lbr_capture(&event_mask.eventmasks[i]))) {
-                    dispatch->read_lbrs(((S8 *)(psamp)+EVENT_DESC_lbr_offset(evt_desc)));
+                    lbr_tos_from_ip = dispatch->read_lbrs(!DRV_CONFIG_store_lbrs(pcfg) ? NULL:((S8 *)(psamp)+EVENT_DESC_lbr_offset(evt_desc)));
+                    if (DRV_EVENT_MASK_branch(&event_mask.eventmasks[i]) && DRV_CONFIG_precise_ip_lbrs(pcfg) && lbr_tos_from_ip) {
+                        if (is_64bit_addr) {
+                            SAMPLE_RECORD_iip(psamp)       = lbr_tos_from_ip;
+                            SEP_PRINT_DEBUG("UPDATED SAMPLE_RECORD_iip(psamp) 0x%llx\n", SAMPLE_RECORD_iip(psamp));
+                        }
+                        else {
+                            SAMPLE_RECORD_eip(psamp)       = (U32) lbr_tos_from_ip;
+                            SEP_PRINT_DEBUG("UPDATED SAMPLE_RECORD_eip(psamp) 0x%x\n", SAMPLE_RECORD_eip(psamp));
+                        }
+                    }
                 }
                 if (DRV_CONFIG_power_capture(pcfg)) {
                     dispatch->read_power(((S8 *)(psamp)+EVENT_DESC_power_offset_in_sample(evt_desc)));
                 }
-#if defined(BUILD_CHIPSET)
                 if (DRV_CONFIG_enable_chipset(pcfg)) {
                     cs_dispatch->read_counters(((S8 *)(psamp)+DRV_CONFIG_chipset_offset(pcfg)));
                 }
-#endif
                 if (DRV_CONFIG_event_based_counts(pcfg)) {
-                    dispatch->read_counts(((S8 *)(psamp)+EVENT_DESC_ebc_offset(evt_desc)), DRV_EVENT_MASK_event_idx(&event_mask.eventmasks[i]));
+                    dispatch->read_counts((S8 *)psamp, DRV_EVENT_MASK_event_idx(&event_mask.eventmasks[i]));
                 }
+#if (defined(DRV_IA32) || defined(DRV_EM64T))
+                if (DRV_CONFIG_enable_p_state(pcfg)) {
+                    SEPDRV_P_STATE_Read((S8 *)(psamp)+EVENT_DESC_p_state_offset(evt_desc), pcpu);
+                    if (!DRV_CONFIG_event_based_counts(pcfg) && CPU_STATE_p_state_counting(pcpu)) {
+                        dispatch->read_counts((S8 *) psamp, DRV_EVENT_MASK_event_idx(&event_mask.eventmasks[i]));
+                    }
+                }
+#endif
                 for (dev_idx = 0; dev_idx < num_devices; dev_idx++) {
                     pcfg_unc = LWPMU_DEVICE_pcfg(&devices[dev_idx]);
                     dispatch_unc = LWPMU_DEVICE_dispatch(&devices[dev_idx]);
                     if (pcfg_unc && DRV_CONFIG_event_based_counts(pcfg_unc)) {
-                        dispatch_unc->read_counts(((S8 *)(psamp)+DRV_CONFIG_results_offset(pcfg_unc)), dev_idx);
+                        dispatch_unc->read_counts((S8 *)(psamp), dev_idx);
                         SAMPLE_RECORD_uncore_valid(psamp) = 1;
 
                         // skip first element because it's the group number
@@ -458,7 +488,7 @@ PMI_Interrupt_Handler (
                                 diff = result_buffer[event_idx] - LWPMU_DEVICE_prev_val_per_thread(&devices[dev_idx])[this_cpu][event_idx];
                             }
                             // accumulate current results into accumulator
-                            LWPMU_DEVICE_acc_per_thread(&devices[dev_idx])[this_cpu][event_idx] += diff;                            
+                            LWPMU_DEVICE_acc_per_thread(&devices[dev_idx])[this_cpu][event_idx] += diff;
                             // update previous results array
                             LWPMU_DEVICE_prev_val_per_thread(&devices[dev_idx])[this_cpu][event_idx] = result_buffer[event_idx];
                             // update results buffer for this thread
@@ -487,208 +517,3 @@ PMI_Interrupt_Handler (
 }
 
 #endif
-
-
-#if defined(DRV_IA64)
-
-#define DISPATCH_read_ro(arg1, arg2, arg3)    \
-    if (dispatch->read_ro) dispatch->read_ro((arg1), (arg2), (arg3))
-
-/*
- * The parameters are different depending on if you are compiling IA32 or
- * Itanium(R)-based systems. In the end, what is really significant is that
- * for IA32, this routine is being called by assembly code, not the usual
- * Linux* OS interrupt handler. For IA32, we actually hijack the IDT directly
- * which lets us capture RO information which would otherwise be lost...
- *
- * @todo Is there anyway to make the func declaration the same? Is it worth it?
- *
- */
-static void
-pmi_Handler (
-    IN int             irq,
-    IN struct pt_regs *regs
-)
-{
-    SampleRecordPC *psamp;
-    CPU_STATE       pcpu;
-    BUFFER_DESC     bd;
-    DRV_MASKS_NODE  event_mask;
-    U32             this_cpu;
-    U32             i;
-    U32             pid;
-    U32             tid;
-    U64             itc;          // interval time counter for IPF
-    U32             desc_id;
-    EVENT_DESC      evt_desc;
-#if defined(SECURE_SEP)
-    uid_t           l_uid;
-#endif
-    U32             accept_interrupt = 1;
-
-    this_cpu = CONTROL_THIS_CPU();
-    pcpu     = &pcb[this_cpu];
-    bd       = &cpu_buf[this_cpu];
-    SYS_Locked_Inc(&CPU_STATE_in_interrupt(pcpu));
-
-    // Disable the counter control
-    dispatch->freeze(NULL);
-
-#if defined(SECURE_SEP)
-    l_uid            = DRV_GET_UID(current);
-    accept_interrupt = (l_uid == uid);
-#endif
-
-    if (GLOBAL_STATE_current_phase(driver_state) == DRV_STATE_RUNNING &&
-            CPU_STATE_accept_interrupt(&pcb[this_cpu])) {
-
-        dispatch->check_overflow(&event_mask);
-
-        if (accept_interrupt) {
-            UTILITY_Read_TSC(&itc);
-            pid = GET_CURRENT_TGID();
-            tid = current->pid;
-
-            for (i = 0; i < event_mask.masks_num; i++) {
-                desc_id   = COMPUTE_DESC_ID(DRV_EVENT_MASK_event_idx(&event_mask.eventmasks[i]));
-                evt_desc  = desc_data[desc_id];
-                psamp = (SampleRecordPC *)OUTPUT_Reserve_Buffer_Space(bd,
-                                                 EVENT_DESC_sample_size(evt_desc));
-                if (!psamp) {
-                    continue;
-                }
-
-                // There could be fields in the sample which are not used;  therefore must zero.
-                memset(psamp, 0, EVENT_DESC_sample_size(evt_desc));
-
-                CPU_STATE_num_samples(pcpu)           += 1;
-                /* Init bitfields. */
-                SAMPLE_RECORD_cpu_and_os(psamp)        = 0;
-                SAMPLE_RECORD_bit_fields2(psamp)       = 0;
-
-                SAMPLE_RECORD_descriptor_id(psamp)     = desc_id;
-
-                /* Build PC sample record based on addressing mode at the time of the
-                   profile interrupt.
-
-                   IPSR.is: 0=Itanium(R) processor, 1=IA32
-                 */
-                if (!(REGS_cr_ipsr(regs) & IA64_PSR_IS)) {
-                    SAMPLE_RECORD_iip(psamp)           = REGS_cr_iip(regs);
-                    SAMPLE_RECORD_ipsr(psamp)          = REGS_cr_ipsr(regs);
-                    SAMPLE_RECORD_cs(psamp)            = 0;
-                    SAMPLE_RECORD_ia64_pc(psamp)       = TRUE;
-                }
-                else {
-                    unsigned long eflag, csd;
-
-                    SAMPLE_RECORD_eip(psamp) = REGS_cr_iip(regs) & 0xffffffff;
-                    asm("mov %0=ar.eflag;"  // get IA32 eflags
-                            "mov %1=ar.csd;"    // get IA32 unscrambled code segment descriptor
-                            :    "=r"(eflag), "=r"(csd));
-                    SAMPLE_RECORD_eflags(psamp) = (U32) eflag;
-                    SAMPLE_RECORD_csd(psamp).u1.lowWord  = csd;
-                    SAMPLE_RECORD_csd(psamp).u2.highWord = csd >> 32;
-                    SEP_PRINT_DEBUG("csd %lx\n", csd);
-                    SAMPLE_RECORD_cs(psamp)            = (U32) regs->r17;
-                    SAMPLE_RECORD_ia64_pc(psamp)       = FALSE;
-                }
-
-                SAMPLE_RECORD_cpu_num(psamp)           = (U16) this_cpu;
-                SAMPLE_RECORD_tid(psamp)               = tid;
-                SAMPLE_RECORD_pid_rec_index(psamp)     = pid;
-                SAMPLE_RECORD_event_index(psamp)       = DRV_EVENT_MASK_event_idx(&event_mask.eventmasks[i]);
-                SAMPLE_RECORD_pid_rec_index_raw(psamp) = 1;
-                SAMPLE_RECORD_tsc(psamp)               = itc;
-
-                if (!(REGS_cr_ipsr(regs) & IA64_PSR_IS)) {
-                    SEP_PRINT_DEBUG("SAMPLE_RECORD_iip(psamp) %llx\n", SAMPLE_RECORD_iip(psamp));
-                    SEP_PRINT_DEBUG("SAMPLE_RECORD_ipsr(psamp) %llx\n", SAMPLE_RECORD_ipsr(psamp));
-                }
-                else {
-                    SEP_PRINT_DEBUG("SAMPLE_RECORD_eip(psamp) %x\n", SAMPLE_RECORD_eip(psamp));
-                    SEP_PRINT_DEBUG("SAMPLE_RECORD_eflags(psamp) %x\n", SAMPLE_RECORD_eflags(psamp));
-                    SEP_PRINT_DEBUG("SAMPLE_RECORD_csd(psamp).lowWord %x\n", SAMPLE_RECORD_csd(psamp).u1.lowWord);
-                    SEP_PRINT_DEBUG("SAMPLE_RECORD_csd(psamp).highWord %x\n", SAMPLE_RECORD_csd(psamp).u2.highWord);
-                }
-                SEP_PRINT_DEBUG("SAMPLE_RECORD_cs(psamp) %x\n", SAMPLE_RECORD_cs(psamp));
-                SEP_PRINT_DEBUG("SAMPLE_RECORD_cpu_num(psamp) %x\n", SAMPLE_RECORD_cpu_num(psamp));
-                SEP_PRINT_DEBUG("SAMPLE_RECORD_tid(psamp) %x\n", SAMPLE_RECORD_tid(psamp));
-                SEP_PRINT_DEBUG("SAMPLE_RECORD_pid_rec_index(psamp)  %x\n", SAMPLE_RECORD_pid_rec_index(psamp));
-
-                if (DRV_CONFIG_collect_ro(pcfg)) {
-                    if (DRV_EVENT_MASK_dear_capture(&event_mask.eventmasks[i]) == 1) {
-                        DISPATCH_read_ro(((S8 *)(psamp) + EVENT_DESC_ro_offset(evt_desc)), EVENT_DESC_dear_offset(evt_desc), EVENT_DESC_dear_count(evt_desc));
-                    }
-                    if (DRV_EVENT_MASK_iear_capture(&event_mask.eventmasks[i]) == 1) {
-                        DISPATCH_read_ro(((S8 *)(psamp) + EVENT_DESC_ro_offset(evt_desc)), EVENT_DESC_iear_offset(evt_desc), EVENT_DESC_iear_count(evt_desc));
-                    }
-                    if (DRV_EVENT_MASK_btb_capture(&event_mask.eventmasks[i]) == 1) {
-                        DISPATCH_read_ro(((S8 *)(psamp) + EVENT_DESC_ro_offset(evt_desc)), EVENT_DESC_btb_offset(evt_desc), EVENT_DESC_btb_count(evt_desc));
-                    }
-                    if (DRV_EVENT_MASK_ipear_capture(&event_mask.eventmasks[i]) == 1) {
-                        DISPATCH_read_ro(((S8 *)(psamp) + EVENT_DESC_ro_offset(evt_desc)), EVENT_DESC_ipear_offset(evt_desc), EVENT_DESC_ipear_count(evt_desc));
-                    }
-                }
-            } // for
-        }
-    }
-
-    // Re-enable the counter control
-    dispatch->restart(NULL);
-
-    atomic_set(&CPU_STATE_in_interrupt(&pcb[this_cpu]), 0);
-
-    return;
-}
-
-#if defined(PERFMON_V2_ALT)
-
-VOID
-PMI_Interrupt_Handler (
-  IN int             irq,
-  IN void           *arg,
-  IN struct pt_regs *regs
-)
-{
-    pmi_Handler (irq, regs);
-
-    return;
-}
-
-#elif defined(PERFMON_V2)
-
-int
-PMI_Interrupt_Handler (
-    IN struct task_struct *task,
-    IN void               *buf,
-    IN pfm_ovfl_arg_t     *arg,
-    IN struct pt_regs     *regs,
-    IN unsigned long       stamp
-)
-{
-    pmi_Handler (irq, regs);
-
-    arg->ovfl_ctrl.bits.notify_user     = 0;
-    arg->ovfl_ctrl.bits.block_task      = 0;
-    arg->ovfl_ctrl.bits.mask_monitoring = 0;
-    arg->ovfl_ctrl.bits.reset_ovfl_pmds = 1; /* Reset before returning from interrupt handler. */
-
-    return (E_OS_OK);
-}
-#else
-
-irqreturn_t
-PMI_Interrupt_Handler (
-    IN int             irq,
-    IN void           *arg,
-    IN struct pt_regs *regs
-)
-{
-    pmi_Handler (irq, regs);
-
-    return (irqreturn_t) IRQ_HANDLED;
-}
-#endif
-
-#endif  // DRV_IA64

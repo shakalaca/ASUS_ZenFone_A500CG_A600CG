@@ -45,24 +45,128 @@
 #include <linux/pm_runtime.h>
 #include <linux/intel_mid_pm.h>
 #include "psh_ia_common.h"
+#include <asm/intel_mid_rpmsg.h>
+#include <asm/intel-mid.h>
+#include <linux/kct.h>
 
 #ifdef VPROG2_SENSOR
 #include <asm/intel_scu_ipcutil.h>
 #endif
 
-#define APP_IMR_SIZE (1024 * 126)
-#define STATIC_IMR_ADDR 0x04819000
+#define APP_IMR_SIZE (1024 * 256)
+
+static bool disable_psh_recovery = false;
+static bool force_psh_recovery = false;
+
+module_param(disable_psh_recovery, bool, S_IRUGO);
+module_param(force_psh_recovery, bool, S_IRUGO | S_IWUSR);
+
+enum {
+	imr_allocate = 0,
+	imr_pci_shim = 1,
+};
 
 struct psh_plt_priv {
-	int stepping;
+	int imr_src;
 	struct device *hwmon_dev;
-	struct page *page_imr;	/* hack as imr before Chabbi ready */
-	void __iomem *io_imr;
-	void *imr;
-	u32 imr_phy;
+	struct device *dev;
+	void *imr2;		/* IMR2 */
+	void *ddr;		/* IMR3 */
+	uintptr_t imr2_phy;
+	uintptr_t ddr_phy;
 	struct loop_buffer lbuf;
-	struct page *pg;
 };
+
+
+
+static int psh_recovery = 0;
+
+
+
+int do_psh_recovery(struct psh_ia_priv *psh_ia_data)
+{
+	struct psh_plt_priv *plt_priv =
+			(struct psh_plt_priv *)psh_ia_data->platform_priv;
+	int ret = 0;
+
+	psh_err("PSH Recovery started, please wait ... \n");
+
+	psh_recovery = 1;
+	/* set to D0 state */
+	pm_runtime_get_sync(plt_priv->dev);
+
+	/* set recovery IPC cmd to SCU */
+	ret = rpmsg_send_generic_simple_command(0xA2, 0);
+	if (ret) {
+		psh_err("failed to send recovery cmd to SCU, ret=%d\n", ret);
+		goto f_out;
+	}
+	/* maybe may reduce the wait time */
+	msleep(2000);
+
+	ret = do_setup_ddr(plt_priv->dev);
+	if (ret) {
+		psh_err("failed to setup ddr during psh recovery\n");
+		goto f_out;
+	}
+	else {
+		psh_err("PSH recovery done \n");
+	}
+
+
+f_out:
+	/* Report recovery event in crashtool*/
+	/* Replace CT_ADDITIONAL_APLOG with
+	CT_ADDITIONAL_FWMSG|CT_ADDITIONAL_APLOG once online log is working */
+
+	kct_log(CT_EV_CRASH, "PSH", "RECOVERY", 0, "", "", "", "", "", "",
+		"", CT_ADDITIONAL_FWMSG | CT_ADDITIONAL_APLOG);
+
+	pm_runtime_put(plt_priv->dev);
+	psh_recovery = 0;
+
+	return ret;
+}
+
+
+int recovery_send_cmd(struct psh_ia_priv *psh_ia_data,
+                        struct ia_cmd *cmd, int len)
+{
+	int ret = 0;
+	static struct resp_cmd_ack cmd_ack;
+
+	cmd_ack.cmd_id = cmd->cmd_id;
+	psh_ia_data->cmd_ack = &cmd_ack;
+
+	psh_ia_data->cmd_in_progress = cmd->cmd_id;
+	ret = process_send_cmd(psh_ia_data, PSH2IA_CHANNEL0,
+			cmd, len);
+	psh_ia_data->cmd_in_progress = CMD_INVALID;
+	if (ret) {
+		psh_err("send cmd (id = %d) failed, ret=%d\n",
+			cmd->cmd_id, ret);
+		goto f_out;
+	}
+	if (cmd->cmd_id == CMD_FW_UPDATE)
+		goto f_out;
+
+ack_wait:
+	if (!wait_for_completion_timeout(&psh_ia_data->cmd_comp, 5 * HZ)) {
+		psh_err("no CMD_ACK for %d back, timeout!\n",
+			cmd_ack.cmd_id);
+		ret = -ETIMEDOUT;
+	} else if (cmd_ack.ret) {
+		if (cmd_ack.ret == E_CMD_ASYNC)
+			goto ack_wait;
+		psh_err("CMD %d return error %d!\n", cmd_ack.cmd_id,
+				cmd_ack.ret);
+		ret = -EREMOTEIO;
+	}
+
+f_out:
+	psh_ia_data->cmd_ack = NULL;
+	return ret;
+}
 
 int process_send_cmd(struct psh_ia_priv *psh_ia_data,
 			int ch, struct ia_cmd *cmd, int len)
@@ -111,37 +215,63 @@ int process_send_cmd(struct psh_ia_priv *psh_ia_data,
 f_out:
 	if (ch == PSH2IA_CHANNEL0 && cmd->cmd_id == CMD_RESET)
 		intel_psh_ipc_enable_irq();
+
+	
+	if (!disable_psh_recovery) {
+		if ((ret && (psh_recovery == 0)) || (force_psh_recovery))
+		{
+			if (force_psh_recovery) {
+				psh_err("forced PSH recovery\n");
+				force_psh_recovery = 0;
+			}
+			if (do_psh_recovery(psh_ia_data))
+				psh_err("PSH recovery failed\n");
+		}
+	}
+
 	return ret;
 }
 
-
+extern struct soft_platform_id spid;
 int do_setup_ddr(struct device *dev)
 {
 	struct psh_ia_priv *ia_data =
 			(struct psh_ia_priv *)dev_get_drvdata(dev);
 	struct psh_plt_priv *plt_priv =
 			(struct psh_plt_priv *)ia_data->platform_priv;
-	u32 ddr_phy = page_to_phys(plt_priv->pg);
-	u32 imr_phy = plt_priv->imr_phy;
+	uintptr_t ddr_phy = plt_priv->ddr_phy;
+	uintptr_t imr2_phy = plt_priv->imr2_phy;
 	const struct firmware *fw_entry;
 	struct ia_cmd cmd_user = {
 		.cmd_id = CMD_SETUP_DDR,
 		.sensor_id = 0,
 		};
 	static int fw_load_done;
+	int load_default = 0;
+	char fname[40];
 
-	if (fw_load_done)
+	if ((fw_load_done)&&(psh_recovery == 0))
 		return 0;
 
 #ifdef VPROG2_SENSOR
 	intel_scu_ipc_msic_vprog2(1);
+	msleep(500);
 #endif
-	if (!request_firmware(&fw_entry, "psh.bin", dev)) {
+	snprintf(fname, 40, "psh.bin.%04x.%04x.%04x.%04x.%04x.%04x",
+				(int)spid.customer_id,
+				(int)spid.vendor_id,
+				(int)spid.manufacturer_id,
+				(int)spid.platform_family_id,
+				(int)spid.product_line_id,
+				(int)spid.hardware_id);
+
+again:
+	if (!request_firmware(&fw_entry, fname, dev)) {
 		if (!fw_entry)
 			return -ENOMEM;
 
 		psh_debug("psh fw size %d virt:0x%p\n",
-				fw_entry->size, fw_entry->data);
+				(int)fw_entry->size, fw_entry->data);
 		if (fw_entry->size > APP_IMR_SIZE) {
 			psh_err("psh fw size too big\n");
 		} else {
@@ -150,9 +280,9 @@ int do_setup_ddr(struct device *dev)
 				.sensor_id = 0,
 				};
 
-			memcpy(plt_priv->imr, fw_entry->data,
+			memcpy(plt_priv->imr2, fw_entry->data,
 				fw_entry->size);
-			*(u32 *)(&cmd.param) = imr_phy;
+			*(uintptr_t *)(&cmd.param) = imr2_phy;
 			cmd.tran_id = 0x1;
 			if (process_send_cmd(ia_data, PSH2IA_CHANNEL3, &cmd, 7))
 				return -1;
@@ -162,10 +292,18 @@ int do_setup_ddr(struct device *dev)
 			fw_load_done = 1;
 		}
 		release_firmware(fw_entry);
+	} else {
+		psh_err("cannot find psh firmware(%s)\n", fname);
+		if (!load_default) {
+			psh_err("try to load default psh.bin\n");
+			snprintf(fname, 20, "psh.bin");
+			load_default = 1;
+			goto again;
+		}
 	}
 	ia_lbuf_read_reset(ia_data->lbuf);
 	*(unsigned long *)(&cmd_user.param) = ddr_phy;
-	return ia_send_cmd(ia_data, &cmd_user, 7);
+	return psh_recovery?recovery_send_cmd(ia_data, &cmd_user, 7):ia_send_cmd(ia_data, &cmd_user, 7);
 }
 
 static void psh2ia_channel_handle(u32 msg, u32 param, void *data)
@@ -178,16 +316,86 @@ static void psh2ia_channel_handle(u32 msg, u32 param, void *data)
 	u8 *dbuf = NULL;
 	u16 size = 0;
 
+	if (unlikely(ia_data->load_in_progress)) {
+		ia_data->load_in_progress = 0;
+		complete(&ia_data->cmd_load_comp);
+		return;
+	}
+
 	while (!ia_lbuf_read_next(ia_data,
 			&plt_priv->lbuf, &dbuf, &size)) {
 		ia_handle_frame(ia_data, dbuf, size);
 	}
 	sysfs_notify(&pdev->dev.kobj, NULL, "data_size");
+}
 
-	if (unlikely(ia_data->load_in_progress)) {
-		ia_data->load_in_progress = 0;
-		complete(&ia_data->cmd_load_comp);
+static int psh_imr_init(struct pci_dev *pdev,
+			int imr_src, uintptr_t *phy_addr, void **virt_addr,
+			unsigned size, int bar)
+{
+	struct page *pg;
+	void __iomem *mem;
+	int ret = 0;
+	unsigned long start = 0, len;
+
+	if (imr_src == imr_allocate) {
+		/* dynamic alloct memory region */
+		pg = alloc_pages(GFP_KERNEL | GFP_DMA32 | __GFP_ZERO,
+						get_order(size));
+		if (!pg) {
+			dev_err(&pdev->dev, "can not allocate app page imr buffer\n");
+			ret = -ENOMEM;
+			goto err;
+		}
+		*phy_addr = page_to_phys(pg);
+		*virt_addr = page_address(pg);
+	} else if (imr_src == imr_pci_shim) {
+		/* dedicate isolated memory region */
+		start = pci_resource_start(pdev, bar);
+		len = pci_resource_len(pdev, bar);
+		if (!start || !len) {
+			dev_err(&pdev->dev, "bar %d address not set\n", bar);
+			ret = -EINVAL;
+			goto err;
+		}
+
+		ret = pci_request_region(pdev, bar, "psh");
+		if (ret) {
+			dev_err(&pdev->dev, "failed to request psh region "
+				"0x%lx-0x%lx\n", start,
+				(unsigned long)pci_resource_end(pdev, bar));
+			goto err;
+		}
+
+		mem = ioremap_nocache(start, len);
+		if (!mem) {
+			dev_err(&pdev->dev, "can not ioremap app imr address\n");
+			ret = -EINVAL;
+			goto err_ioremap;
+		}
+
+		*phy_addr = start;
+		*virt_addr = (void *)mem;
+	} else {
+		dev_err(&pdev->dev, "Invalid chip imr source\n");
+		ret = -EINVAL;
+		goto err;
 	}
+
+	return 0;
+
+err_ioremap:
+	pci_release_region(pdev, bar);
+err:
+	return ret;
+}
+
+static void psh_imr_free(int imr_src, void *virt_addr, unsigned size)
+{
+	if (imr_src == imr_allocate)
+		__free_pages(virt_to_page(virt_addr), get_order(size));
+	else if (imr_src == imr_pci_shim)
+		iounmap((void __iomem *)virt_addr);
 }
 
 static int psh_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -196,49 +404,48 @@ static int psh_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct psh_ia_priv *ia_data;
 	struct psh_plt_priv *plt_priv;
 
-	/* No resource for this PCI device, it's only for probe */
-	/*
 	ret = pci_enable_device(pdev);
 	if (ret) {
 		dev_err(&pdev->dev, "fail to enable psh pci device\n");
 		goto pci_err;
 	}
-	*/
+
 	plt_priv = kzalloc(sizeof(*plt_priv), GFP_KERNEL);
 	if (!plt_priv) {
 		dev_err(&pdev->dev, "can not allocate plt_priv\n");
 		goto plt_err;
 	}
 
-	plt_priv->stepping = intel_mid_soc_stepping();
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)
-		plt_priv->stepping = 1;
-
-	if (plt_priv->stepping == 0) {
-		/* A stepping */
-		plt_priv->page_imr = alloc_pages(GFP_KERNEL | GFP_DMA32 | __GFP_ZERO,
-				get_order(APP_IMR_SIZE));
-		if (!plt_priv->page_imr) {
-			dev_err(&pdev->dev, "can not allocate app page imr buffer\n");
-			goto imr_err;
-		}
-		plt_priv->imr_phy = page_to_phys(plt_priv->page_imr);
-		plt_priv->imr = page_address(plt_priv->page_imr);
-		plt_priv->io_imr = NULL;
-	} else if (plt_priv->stepping == 1) {
-		/* B stepping */
-		plt_priv->io_imr = ioremap(STATIC_IMR_ADDR, APP_IMR_SIZE);
-		if (!plt_priv->io_imr) {
-			dev_err(&pdev->dev, "can not ioremap app imr address\n");
-			goto imr_err;
-		}
-		plt_priv->imr_phy = STATIC_IMR_ADDR;
-		plt_priv->imr = (void *)plt_priv->io_imr;
-		plt_priv->page_imr = NULL;
-	} else {
-		dev_err(&pdev->dev, "Invalid chip stepping\n");
-		goto plt_err;
+	switch (intel_mid_identify_cpu()) {
+	case INTEL_MID_CPU_CHIP_TANGIER:
+		if (intel_mid_soc_stepping() == 0)
+			plt_priv->imr_src = imr_allocate;
+		else
+			plt_priv->imr_src = imr_pci_shim;
+		break;
+	case INTEL_MID_CPU_CHIP_ANNIEDALE:
+		plt_priv->imr_src = imr_pci_shim;
+		break;
+	default:
+		dev_err(&pdev->dev, "error memory region\n");
+		goto psh_imr2_err;
+		break;
 	}
+
+	/* init IMR2 */
+	ret = psh_imr_init(pdev, plt_priv->imr_src,
+				&plt_priv->imr2_phy, &plt_priv->imr2,
+				APP_IMR_SIZE, 0);
+	if (ret)
+		goto psh_imr2_err;
+
+
+	/* init IMR3 */
+	ret = psh_imr_init(pdev, plt_priv->imr_src,
+				&plt_priv->ddr_phy, &plt_priv->ddr,
+				BUF_IA_DDR_SIZE, 1);
+	if (ret)
+		goto psh_ddr_err;
 
 	ret = psh_ia_common_init(&pdev->dev, &ia_data);
 	if (ret) {
@@ -246,14 +453,8 @@ static int psh_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto psh_ia_err;
 	}
 
-	plt_priv->pg = alloc_pages(GFP_KERNEL | GFP_DMA32 | __GFP_ZERO,
-			get_order(BUF_IA_DDR_SIZE));
-	if (!plt_priv->pg) {
-		dev_err(&pdev->dev, "can not allocate ddr buffer\n");
-		goto pg_err;
-	}
 	ia_lbuf_read_init(&plt_priv->lbuf,
-				page_address(plt_priv->pg),
+				plt_priv->ddr,
 				BUF_IA_DDR_SIZE, NULL);
 	ia_data->lbuf = &plt_priv->lbuf;
 
@@ -262,7 +463,7 @@ static int psh_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		dev_err(&pdev->dev, "fail to register hwmon device\n");
 		goto hwmon_err;
 	}
-
+	plt_priv->dev = &pdev->dev;
 	ia_data->platform_priv = plt_priv;
 
 	ret = intel_psh_ipc_bind(PSH_RECV_CH0, psh2ia_channel_handle, pdev);
@@ -279,20 +480,16 @@ static int psh_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 irq_err:
 	hwmon_device_unregister(plt_priv->hwmon_dev);
 hwmon_err:
-	__free_pages(plt_priv->pg, get_order(BUF_IA_DDR_SIZE));
-pg_err:
 	psh_ia_common_deinit(&pdev->dev);
 psh_ia_err:
-	if (plt_priv->page_imr)
-		__free_pages(plt_priv->page_imr, get_order(APP_IMR_SIZE));
-
-	if (plt_priv->io_imr)
-		iounmap(plt_priv->io_imr);
-imr_err:
+	psh_imr_free(plt_priv->imr_src, plt_priv->ddr, BUF_IA_DDR_SIZE);
+psh_ddr_err:
+	psh_imr_free(plt_priv->imr_src, plt_priv->imr2, APP_IMR_SIZE);
+psh_imr2_err:
 	kfree(plt_priv);
 plt_err:
-	/* pci_dev_put(pdev);
-pci_err: */
+	pci_dev_put(pdev);
+pci_err:
 	return ret;
 }
 
@@ -303,23 +500,16 @@ static void psh_remove(struct pci_dev *pdev)
 	struct psh_plt_priv *plt_priv =
 			(struct psh_plt_priv *)ia_data->platform_priv;
 
-	if (plt_priv->page_imr)
-		__free_pages(plt_priv->page_imr, get_order(APP_IMR_SIZE));
-
-	if (plt_priv->io_imr)
-		iounmap(plt_priv->io_imr);
+	psh_imr_free(plt_priv->imr_src, plt_priv->ddr, BUF_IA_DDR_SIZE);
+	psh_imr_free(plt_priv->imr_src, plt_priv->imr2, APP_IMR_SIZE);
 
 	intel_psh_ipc_unbind(PSH_RECV_CH0);
 
 	hwmon_device_unregister(plt_priv->hwmon_dev);
 
-	__free_pages(plt_priv->pg, get_order(BUF_IA_DDR_SIZE));
-
 	kfree(plt_priv);
 
 	psh_ia_common_deinit(&pdev->dev);
-
-	/* pci_dev_put(pdev); */
 }
 
 static int psh_suspend(struct device *dev)

@@ -1029,7 +1029,7 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		/*
 		 * Set bus speed.
 		 */
-        host->f_max_card = mmc_sd_get_max_clock(card);
+		host->f_max_card = mmc_sd_get_max_clock(card);
 		mmc_set_clock(host, host->f_max_card);
 
         if (host->caps2 & MMC_CAP2_BROKEN_MAX_CLK) {
@@ -1257,8 +1257,6 @@ int mmc_attach_sd(struct mmc_host *host)
 
 	BUG_ON(!host);
 	WARN_ON(!host->claimed);
-
-        pr_debug("enter %s %d\n", __func__, __LINE__);
 
 	err = mmc_send_app_op_cond(host, 0, &ocr);
 	if (err)

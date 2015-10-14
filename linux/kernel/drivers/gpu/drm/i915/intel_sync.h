@@ -45,6 +45,7 @@ struct i915_sync_timeline {
 		struct drm_device	*dev;
 
 		u32			value;
+		u32			cycle;
 		struct intel_ring_buffer *ring;
 	} pvt;
 };
@@ -54,6 +55,7 @@ struct i915_sync_pt {
 
 	struct {
 		u32		value;
+		u32		cycle;
 	} pvt;
 };
 

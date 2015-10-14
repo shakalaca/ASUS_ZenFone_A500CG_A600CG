@@ -436,6 +436,9 @@ DECLARE_PER_CPU_ALIGNED(struct stack_canary, stack_canary);
 extern unsigned int xstate_size;
 extern void free_thread_xstate(struct task_struct *);
 extern struct kmem_cache *task_xstate_cachep;
+#ifdef CONFIG_LBR_DUMP_ON_EXCEPTION
+extern unsigned int lbr_dump_on_exception;
+#endif
 
 struct perf_event;
 

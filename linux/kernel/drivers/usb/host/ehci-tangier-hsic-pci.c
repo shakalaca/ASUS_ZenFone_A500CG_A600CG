@@ -23,17 +23,24 @@
 #include <linux/gpio.h>
 #include <linux/usb/ehci-tangier-hsic-pci.h>
 #include <asm/intel-mid.h>
-#include <linux/wakelock.h>
 #include <linux/jiffies.h>
 #include <linux/usb.h>
 #include <linux/suspend.h>
 #include <linux/debugfs.h>
+#include <linux/seq_file.h>
+#include <linux/pm_qos.h>
+#include <linux/intel_mid_pm.h>
 
 static struct pci_dev	*pci_dev;
+static struct class *hsic_class;
+static struct device *hsic_class_dev;
+
 
 static int ehci_hsic_start_host(struct pci_dev  *pdev);
 static int ehci_hsic_stop_host(struct pci_dev *pdev);
 static int create_device_files(void);
+static int create_class_device_files(void);
+static void remove_class_device_files(void);
 static void remove_device_files(void);
 
 static int enabling_disabling;
@@ -50,7 +57,7 @@ static const char disabled[] = "disabled";
 static const char reset[] = "reset";
 
 
-static struct dentry *ipc_debug_root;
+static struct dentry *hsic_debugfs_root;
 static struct dentry *ipc_debug_control;
 static struct dentry *ipc_stats;
 
@@ -177,48 +184,6 @@ static const struct file_operations ipc_stats_fops = {
 	.llseek                 = seq_lseek,
 	.release                = single_release,
 };
-
-static int ipc_debugfs_init(void)
-{
-	int		retval;
-
-	ipc_debug_root = debugfs_create_dir("hsic", usb_debug_root);
-	if (!ipc_debug_root) {
-		retval = -ENOENT;
-		goto root_err;
-	}
-
-	ipc_debug_control = debugfs_create_file("ipc_control", S_IRUGO,
-						ipc_debug_root, NULL,
-						&ipc_control_fops);
-	if (!ipc_debug_control) {
-		retval = -ENOENT;
-		goto file_err;
-	}
-
-	ipc_stats = debugfs_create_file("ipc_stats", S_IRUGO,
-						ipc_debug_root, NULL,
-						&ipc_stats_fops);
-	if (!ipc_stats) {
-		retval = -ENOENT;
-		goto file_err;
-	}
-
-	stats_enable = STATS_DISABLE;
-	ipc_counter_init();
-	return 0;
-
-file_err:
-	debugfs_remove_recursive(ipc_debug_root);
-	ipc_debug_root = NULL;
-root_err:
-	return retval;
-}
-static void ipc_debugfs_cleanup(void)
-{
-	debugfs_remove_recursive(ipc_debug_root);
-	ipc_debug_root = NULL;
-}
 
 /* Workaround for OSPM, set PMCMD to ask SCU
  * power gate EHCI controller and DPHY
@@ -385,6 +350,7 @@ static irqreturn_t hsic_aux_gpio_irq(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
+	cancel_delayed_work(&hsic.wakeup_work);
 	if (delayed_work_pending(&hsic.hsic_aux)) {
 		dev_dbg(dev,
 			"%s---->Delayed work pending\n", __func__);
@@ -440,7 +406,7 @@ static int hsic_aux_irq_init(void)
 	gpio_direction_input(hsic.aux_gpio);
 	retval = request_irq(gpio_to_irq(hsic.aux_gpio),
 			hsic_aux_gpio_irq,
-			IRQF_SHARED | IRQF_TRIGGER_FALLING,
+			IRQF_SHARED | IRQF_TRIGGER_FALLING | IRQF_NO_SUSPEND,
 			"hsic_disconnect_request", &pci_dev->dev);
 	if (retval) {
 		dev_err(&pci_dev->dev,
@@ -476,7 +442,7 @@ static int hsic_wakeup_irq_init(void)
 	gpio_direction_input(hsic.wakeup_gpio);
 	retval = request_irq(gpio_to_irq(hsic.wakeup_gpio),
 			hsic_wakeup_gpio_irq,
-			IRQF_SHARED | IRQF_TRIGGER_RISING,
+			IRQF_SHARED | IRQF_TRIGGER_RISING | IRQF_NO_SUSPEND,
 			"hsic_remote_wakeup_request", &pci_dev->dev);
 	if (retval) {
 		dev_err(&pci_dev->dev,
@@ -544,15 +510,17 @@ static void hsic_notify(struct usb_device *udev, unsigned action)
 		/* Root hub */
 		if (!udev->parent) {
 			hsic.rh_dev = udev;
-			pr_debug("%s Disable autosuspend\n", __func__);
+			pr_debug("%s Enable autosuspend\n", __func__);
 			pm_runtime_set_autosuspend_delay(&udev->dev,
 					hsic.bus_inactivityDuration);
-			usb_disable_autosuspend(udev);
+			hsic.autosuspend_enable = 1;
+			usb_enable_autosuspend(udev);
 		} else {
 			/* Modem devices */
 			hsic.modem_dev = udev;
 			pm_runtime_set_autosuspend_delay
 				(&udev->dev, hsic.port_inactivityDuration);
+			udev->persist_enabled = 0;
 
 			if (hsic.remoteWakeup_enable) {
 				pr_debug("%s Modem dev remote wakeup enabled\n",
@@ -569,11 +537,9 @@ static void hsic_notify(struct usb_device *udev, unsigned action)
 				device_set_wakeup_capable
 					(&hsic.rh_dev->dev, 0);
 			}
-			if (!HSIC_AUTOSUSPEND)
-				pr_debug("%s Modem dev autosuspend disable\n",
-						 __func__);
+			pr_debug("%s Disable autosuspend\n", __func__);
 			usb_disable_autosuspend(hsic.modem_dev);
-			hsic.autosuspend_enable = HSIC_AUTOSUSPEND;
+			hsic.autosuspend_enable = 0;
 
 			pr_debug("%s----> Enable AUX irq\n", __func__);
 			retval = hsic_aux_irq_init();
@@ -588,6 +554,7 @@ static void hsic_notify(struct usb_device *udev, unsigned action)
 		if (!udev->parent) {
 			pr_debug("%s rh_dev deleted\n", __func__);
 			hsic.rh_dev = NULL;
+			hsic.autosuspend_enable = 1;
 		} else {
 			/* Modem devices */
 			pr_debug("%s----> modem dev deleted\n", __func__);
@@ -688,6 +655,8 @@ static void hsic_aux_work(struct work_struct *work)
 		return;
 	}
 
+	pm_qos_add_request(&hsic.pm_qos_req, PM_QOS_CPU_DMA_LATENCY, CSTATE_EXIT_LATENCY_S0i1-1);
+
 	mutex_lock(&hsic.hsic_mutex);
 	/* Free the aux irq */
 	hsic_aux_irq_free();
@@ -696,15 +665,19 @@ static void hsic_aux_work(struct work_struct *work)
 
 	if (hsic.hsic_stopped == 0)
 		ehci_hsic_stop_host(pci_dev);
-
 	hsic_enter_exit_d3(1);
 	usleep_range(5000, 6000);
 	hsic_enter_exit_d3(0);
 	ehci_hsic_start_host(pci_dev);
+
+	hsic.autosuspend_enable = 0;
+	usb_disable_autosuspend(hsic.rh_dev);
+
 	hsic.hsic_aux_finish = 1;
 	wake_up(&hsic.aux_wq);
 	mutex_unlock(&hsic.hsic_mutex);
 
+	pm_qos_remove_request(&hsic.pm_qos_req);
 	dev_dbg(&pci_dev->dev,
 		"%s<----\n", __func__);
 	return;
@@ -741,18 +714,36 @@ static void wakeup_work(struct work_struct *work)
 	return;
 }
 
-/* Interfaces for host resume */
-static ssize_t hsic_host_resume_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+static int hsic_debugfs_host_resume_show(struct seq_file *s, void *unused)
 {
-	dev_dbg(dev, "wakeup hsic\n");
-	queue_delayed_work(hsic.work_queue, &hsic.wakeup_work, 0);
-
-	return -EINVAL;
+	return 0;
+}
+static int hsic_debugfs_host_resume_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, hsic_debugfs_host_resume_show,
+						inode->i_private);
 }
 
-static DEVICE_ATTR(host_resume, S_IWUSR,
-		NULL, hsic_host_resume_store);
+
+static ssize_t hsic_debugfs_host_resume_write(struct file *file,
+		const char __user *ubuf, size_t count, loff_t *ppos)
+{
+	struct seq_file *s = file->private_data;
+	struct usb_hcd *hcd = s->private;
+
+	dev_dbg(hcd->self.controller, "wakeup hsic\n");
+	queue_delayed_work(hsic.work_queue, &hsic.wakeup_work, 0);
+
+	return count;
+}
+
+
+static const struct file_operations hsic_debugfs_host_resume_fops = {
+	.open			= hsic_debugfs_host_resume_open,
+	.read			= seq_read,
+	.write			= hsic_debugfs_host_resume_write,
+	.release		= single_release,
+};
 
 static ssize_t hsic_port_enable_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -804,15 +795,40 @@ static ssize_t hsic_port_enable_store(struct device *dev,
 		hsic_enter_exit_d3(1);
 		usleep_range(5000, 6000);
 		hsic_enter_exit_d3(0);
-		ehci_hsic_start_host(pci_dev);
+		retval = ehci_hsic_start_host(pci_dev);
+		if (retval < 0) {
+			dev_err(&pci_dev->dev,
+				"start host fail, retval %d\n", retval);
+			mutex_unlock(&hsic.hsic_mutex);
+			return retval;
+		}
+
+		hsic.autosuspend_enable = 0;
+		usb_disable_autosuspend(hsic.rh_dev);
 	} else {
 		dev_dbg(dev, "disable hsic\n");
+
+		/* If device enable auto suspend, disable it before disable hsic */
+		if (hsic.autosuspend_enable) {
+			dev_dbg(dev, "disable pm\n");
+			if (hsic.modem_dev != NULL) {
+				usb_disable_autosuspend(hsic.modem_dev);
+				hsic.autosuspend_enable = 0;
+			}
+			if (hsic.rh_dev != NULL) {
+				usb_disable_autosuspend(hsic.rh_dev);
+				hsic.autosuspend_enable = 0;
+			}
+		}
+
 		/* add this due to hcd release
 		 doesn't set hcd to NULL */
 		if (hsic.hsic_stopped == 0)
 			ehci_hsic_stop_host(pci_dev);
 	}
+
 	mutex_unlock(&hsic.hsic_mutex);
+
 	return size;
 }
 
@@ -882,6 +898,7 @@ static ssize_t hsic_autosuspend_enable_store(struct device *dev,
 
 	mutex_lock(&hsic.hsic_mutex);
 	hsic.autosuspend_enable = org_req;
+
 	if (hsic.modem_dev != NULL) {
 		if (hsic.autosuspend_enable == 0) {
 			dev_dbg(dev, "Modem dev autosuspend disable\n");
@@ -908,6 +925,54 @@ static ssize_t hsic_autosuspend_enable_store(struct device *dev,
 static DEVICE_ATTR(L2_autosuspend_enable, S_IRUGO | S_IWUSR | S_IROTH,
 		hsic_autosuspend_enable_show,
 		 hsic_autosuspend_enable_store);
+
+static ssize_t hsic_pm_enable_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", hsic.autosuspend_enable);
+}
+
+static ssize_t hsic_pm_enable_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	int rc;
+	u8 pm_enable;
+
+	if (size > HSIC_ENABLE_SIZE)
+		return -EINVAL;
+
+	if (sscanf(buf, "%d", &pm_enable) != 1) {
+		dev_dbg(dev, "Invalid, value\n");
+		return -EINVAL;
+	}
+
+	/*  pm_enable definition: 0b00 - L1 & L2 disabled, 0b01 - L2 only
+	  *  0b10 - L1 only, 0b11 - L1 + L2 enabled
+	   */
+	switch (pm_enable) {
+	case 0:
+		rc = hsic_autosuspend_enable_store(dev, attr, "0", size);
+		break;
+	case 1:
+		rc = hsic_autosuspend_enable_store(dev, attr, "1", size);
+		break;
+	case 2: /*Reserved for L1 only*/
+		break;
+	case 3: /* Reserved for L1 + L2*/
+		break;
+	default:
+		rc = -EINVAL;
+	}
+
+	if (rc == size)
+		return size;
+	else
+		return -EINVAL;
+}
+
+static DEVICE_ATTR(pm_enable, S_IRUGO | S_IWUSR | S_IROTH,
+		hsic_pm_enable_show,
+		 hsic_pm_enable_store);
 
 static ssize_t hsic_bus_inactivityDuration_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -993,20 +1058,13 @@ static ssize_t hsic_remoteWakeup_store(struct device *dev,
 static DEVICE_ATTR(remoteWakeup, S_IRUGO | S_IWUSR | S_IROTH,
 		hsic_remoteWakeup_show, hsic_remoteWakeup_store);
 
-static ssize_t
-show_registers(struct device *dev, struct device_attribute *attr, char *buf)
+static int hsic_debugfs_registers_show(struct seq_file *s, void *unused)
 {
-	struct usb_hcd	*hcd = dev_get_drvdata(dev);
-	char			*next;
-	unsigned		size;
-	unsigned		t;
+	struct usb_hcd	*hcd = s->private;
 
-	next = buf;
-	size = PAGE_SIZE;
+	pm_runtime_get_sync(hcd->self.controller);
 
-	pm_runtime_get_sync(dev);
-
-	t = scnprintf(next, size,
+	seq_printf(s,
 		"\n"
 		"USBCMD = 0x%08x\n"
 		"USBSTS = 0x%08x\n"
@@ -1030,39 +1088,108 @@ show_registers(struct device *dev, struct device_attribute *attr, char *buf)
 		readl(hcd->regs + 0xf8)
 		);
 
-	pm_runtime_put_sync(dev);
+	pm_runtime_put_sync(hcd->self.controller);
 
-	size -= t;
-	next += t;
-
-	return PAGE_SIZE - size;
+	return 0;
 }
 
-static DEVICE_ATTR(registers, S_IRUGO, show_registers, NULL);
+static int hsic_debugfs_registers_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, hsic_debugfs_registers_show, inode->i_private);
+}
 
-static int create_device_files()
+static const struct file_operations hsic_debugfs_registers_fops = {
+	.open			= hsic_debugfs_registers_open,
+	.read			= seq_read,
+	.release		= single_release,
+};
+
+static int create_class_device_files(void)
 {
 	int retval;
 
-	retval = device_create_file(&pci_dev->dev, &dev_attr_registers);
-	if (retval < 0) {
-		dev_dbg(&pci_dev->dev, "error create dev registers\n");
-		goto dump_registers;
+	hsic_class = class_create(NULL, "hsic");
+
+	if (IS_ERR(hsic_class))
+			return -EFAULT;
+
+	hsic_class_dev = device_create(hsic_class, &pci_dev->dev,
+			MKDEV(0, 0), NULL, "hsic0");
+
+	if (IS_ERR(hsic_class_dev)) {
+		retval = -EFAULT;
+		goto hsic_class_fail;
 	}
+
+	retval = device_create_file(hsic_class_dev, &dev_attr_hsic_enable);
+	if (retval < 0) {
+		dev_dbg(&pci_dev->dev, "error create hsic_enable\n");
+		goto hsic_class_dev_fail;
+	}
+	hsic.autosuspend_enable = 0;
+	retval = device_create_file(hsic_class_dev,
+			 &dev_attr_L2_autosuspend_enable);
+	if (retval < 0) {
+		dev_dbg(&pci_dev->dev, "Error create autosuspend_enable\n");
+		goto hsic_class_dev_fail;
+	}
+
+	hsic.port_inactivityDuration = HSIC_PORT_INACTIVITYDURATION;
+	retval = device_create_file(hsic_class_dev,
+			 &dev_attr_L2_inactivityDuration);
+	if (retval < 0) {
+		dev_dbg(&pci_dev->dev, "Error create port_inactiveDuration\n");
+		goto hsic_class_dev_fail;
+	}
+
+	hsic.bus_inactivityDuration = HSIC_BUS_INACTIVITYDURATION;
+	retval = device_create_file(hsic_class_dev,
+			 &dev_attr_bus_inactivityDuration);
+	if (retval < 0) {
+		dev_dbg(&pci_dev->dev, "Error create bus_inactiveDuration\n");
+		goto hsic_class_dev_fail;
+	}
+
+	hsic.remoteWakeup_enable = HSIC_REMOTEWAKEUP;
+	retval = device_create_file(hsic_class_dev, &dev_attr_remoteWakeup);
+	if (retval < 0) {
+		dev_dbg(&pci_dev->dev, "Error create remoteWakeup\n");
+		goto hsic_class_dev_fail;
+	}
+
+	retval = device_create_file(hsic_class_dev,
+		 &dev_attr_pm_enable);
+
+	if (retval == 0)
+		return retval;
+
+	dev_dbg(&pci_dev->dev, "Error create pm_enable\n");
+
+hsic_class_dev_fail:
+	device_destroy(hsic_class, hsic_class_dev->devt);
+hsic_class_fail:
+	class_destroy(hsic_class);
+
+	return retval;
+}
+
+static void remove_class_device_files(void)
+{
+	device_destroy(hsic_class, hsic_class_dev->devt);
+	class_destroy(hsic_class);
+}
+
+/* FixMe: create_device_files() need to be removed */
+static int create_device_files()
+{
+	int retval;
 
 	retval = device_create_file(&pci_dev->dev, &dev_attr_hsic_enable);
 	if (retval < 0) {
 		dev_dbg(&pci_dev->dev, "error create hsic_enable\n");
 		goto hsic_enable;
 	}
-
-	retval = device_create_file(&pci_dev->dev, &dev_attr_host_resume);
-	if (retval < 0) {
-		dev_dbg(&pci_dev->dev, "error create host_resume\n");
-		goto host_resume;
-	}
-
-	hsic.autosuspend_enable = HSIC_AUTOSUSPEND;
+	hsic.autosuspend_enable = 0;
 	retval = device_create_file(&pci_dev->dev,
 			 &dev_attr_L2_autosuspend_enable);
 	if (retval < 0) {
@@ -1099,12 +1226,11 @@ bus_duration:
 port_duration:
 	device_remove_file(&pci_dev->dev, &dev_attr_L2_autosuspend_enable);
 autosuspend:
-	device_remove_file(&pci_dev->dev, &dev_attr_host_resume);
 host_resume:
 	device_remove_file(&pci_dev->dev, &dev_attr_hsic_enable);
 hsic_enable:
-	device_remove_file(&pci_dev->dev, &dev_attr_registers);
-dump_registers:
+hsic_class_fail:
+
 	return retval;
 }
 
@@ -1114,9 +1240,76 @@ static void remove_device_files()
 	device_remove_file(&pci_dev->dev, &dev_attr_L2_inactivityDuration);
 	device_remove_file(&pci_dev->dev, &dev_attr_bus_inactivityDuration);
 	device_remove_file(&pci_dev->dev, &dev_attr_remoteWakeup);
-	device_remove_file(&pci_dev->dev, &dev_attr_host_resume);
 	device_remove_file(&pci_dev->dev, &dev_attr_hsic_enable);
-	device_remove_file(&pci_dev->dev, &dev_attr_registers);
+}
+
+static void hsic_debugfs_cleanup()
+{
+	debugfs_remove_recursive(hsic_debugfs_root);
+	hsic_debugfs_root = NULL;
+}
+
+static int hsic_debugfs_init(struct usb_hcd *hcd)
+{
+	int retval = 0;
+	struct dentry *file;
+
+	if (!hsic_debugfs_root) {
+		hsic_debugfs_root = debugfs_create_dir("hsic", usb_debug_root);
+		if (!hsic_debugfs_root) {
+			retval = -ENOMEM;
+			dev_dbg(hcd->self.controller, "	Error create debugfs root failed !");
+			return retval;
+		}
+		file = debugfs_create_file(
+				"registers",
+				S_IRUGO,
+				hsic_debugfs_root,
+				hcd,
+				&hsic_debugfs_registers_fops);
+		if (!file) {
+			retval = -ENOMEM;
+			dev_dbg(hcd->self.controller, "	Error create debugfs file registers failed !");
+			goto remove_debugfs;
+		}
+		file = debugfs_create_file(
+				"host_resume",
+				S_IRUGO | S_IWUSR | S_IROTH,
+				hsic_debugfs_root,
+				hcd,
+				&hsic_debugfs_host_resume_fops);
+		if (!file) {
+			retval = -ENOMEM;
+			dev_dbg(hcd->self.controller, "	Error create debugfs file host_resume failed !");
+			goto remove_debugfs;
+		}
+		ipc_debug_control = debugfs_create_file("ipc_control", S_IRUGO,
+						hsic_debugfs_root, NULL,
+						&ipc_control_fops);
+		if (!ipc_debug_control) {
+			retval = -ENOENT;
+			goto remove_debugfs;
+		}
+
+		ipc_stats = debugfs_create_file("ipc_stats", S_IRUGO,
+						hsic_debugfs_root, NULL,
+						&ipc_stats_fops);
+		if (!ipc_stats) {
+			retval = -ENOENT;
+			goto remove_debugfs;
+		}
+
+		stats_enable = STATS_DISABLE;
+		ipc_counter_init();
+	}
+
+	if (retval != 0)
+		goto remove_debugfs;
+
+	return retval;
+remove_debugfs:
+	hsic_debugfs_cleanup();
+	return retval;
 }
 
 static int ehci_hsic_probe(struct pci_dev *pdev,
@@ -1213,6 +1406,11 @@ static int ehci_hsic_probe(struct pci_dev *pdev,
 			goto release_mem_region;
 		}
 
+		retval = create_class_device_files();
+		if (retval < 0) {
+			dev_dbg(&pdev->dev, "error create device files\n");
+			goto release_mem_region;
+		}
 		hsic.hsic_enable_created = 1;
 	}
 
@@ -1233,7 +1431,7 @@ static int ehci_hsic_probe(struct pci_dev *pdev,
 
 	hcd->hsic_notify = hsic_notify;
 
-	retval = usb_add_hcd(hcd, irq, IRQF_DISABLED | IRQF_SHARED);
+	retval = usb_add_hcd(hcd, irq, IRQF_DISABLED | IRQF_SHARED | IRQF_NO_SUSPEND);
 	if (retval != 0)
 		goto unmap_registers;
 	dev_set_drvdata(&pdev->dev, hcd);
@@ -1254,11 +1452,9 @@ static int ehci_hsic_probe(struct pci_dev *pdev,
 	hsic_enable = 1;
 	hsic.s3_rt_state = RESUMED;
 	s3_wake_lock();
-
-	ipc_debugfs_init();
+	hsic_debugfs_init(hcd);
 
 	return retval;
-
 unmap_registers:
 	destroy_workqueue(hsic.work_queue);
 	if (driver->flags & HCD_MEMORY) {
@@ -1338,7 +1534,7 @@ static void ehci_hsic_remove(struct pci_dev *pdev)
 	wake_lock_destroy(&hsic.s3_wake_lock);
 	usb_unregister_notify(&hsic.hsic_pm_nb);
 	unregister_pm_notifier(&hsic.hsic_s3_entry_nb);
-	ipc_debugfs_cleanup();
+	hsic_debugfs_cleanup();
 }
 
 static void ehci_hsic_shutdown(struct pci_dev *pdev)
@@ -1461,6 +1657,7 @@ static int tangier_hsic_runtime_suspend(struct device *dev)
 
 	dev_dbg(dev, "%s --->\n", __func__);
 	retval = usb_hcd_pci_pm_ops.runtime_suspend(dev);
+	s3_wake_unlock();
 	count_ipc_stats(retval, D0I3_ENTRY);
 	dev_dbg(dev, "%s <--- retval = %d\n", __func__, retval);
 	return retval;

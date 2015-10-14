@@ -37,6 +37,7 @@
 #define RP_FW_UPDATE		0xFE
 #define RP_VRTC			0xFA
 #define RP_PMDB			0xE0
+#define RP_SCULOG_TRACE		0x90
 #define RP_WRITE_OEMNIB		0xDF	/* Command is used to write OEMNIB */
 					/* data. Used with extended OSHOB  */
 					/* OSNIB only.                     */

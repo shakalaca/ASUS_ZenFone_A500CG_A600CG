@@ -255,6 +255,17 @@
  * MAX number of C-state MSRs per C multi-msg
  */
 #define PW_MAX_C_STATE_MSRS_PER_MESSAGE 6
+/*
+ * MAX number of C-state MSRs per fixed-size C meta sample
+ */
+#define PW_MAX_MSRS_PER_META_SAMPLE 9
+/*
+ * MAX length of C-state MSR name
+ */
+#define PW_MAX_C_MSR_NAME 6
+
+
+#define PW_MAX_ELEMENTS_PER_BW_COMPONENT 12
 
 /*
  * MSR counter stuff.
@@ -332,7 +343,11 @@ typedef enum {
     S_RESIDENCY_STATES = 45, /* Used for S residency metadata for fixed-length samples only */
     MATRIX_MSG = 46, /* Used for Matrix messages */
     BANDWIDTH_ALL_APPROX = 47, /* Used for T-unit B/W messages */
-    SAMPLE_TYPE_END
+    C_STATE_META = 48, /* HACK! Used for CPU C-state metadata for fixed-length samples only! (temporary) */
+    GPU_C_STATE_META = 49, /* HACK! Used for GPU C-state metadata for fixed-length samples only! (temporary) */
+    BANDWIDTH_MULTI = 50,
+    BANDWIDTH_MULTI_META = 51, /* HACK! Used for elements of a BW compenent metadata for fixed-length samples only! (temporary) */
+   SAMPLE_TYPE_END
 } sample_type_t;
 #define FOR_EACH_SAMPLE_TYPE(idx) for ( idx = C_STATE; idx < SAMPLE_TYPE_END; ++idx )
 
@@ -355,8 +370,13 @@ typedef enum{
     PW_BREAK_TYPE_END = 9 // EOF
 }c_break_type_t;
 #define FOR_EACH_WAKEUP_TYPE(idx) for ( idx = PW_BREAK_TYPE_I; idx < PW_BREAK_TYPE_END; ++idx )
-static const char *s_wake_type_names[] = {"IRQ", "TIM", "SCHED", "IPI", "WRQ", "BDRY", "NONE", "ABRT", "UNK", "EOF"};
-static const char *s_wake_type_long_names[] = {"IRQ", "TIMER", "SCHEDULER", "IPI", "WORK QUEUE", "BOUNDARY", "NONE", "ABORT", "UNKNOWN", "EOF"};
+/*
+ * 's_wake_type_names' and 's_wake_type_long_names' are used mainly in Ring-3 debugging.
+ */
+#ifndef __KERNEL__
+    static const char *s_wake_type_names[] = {"IRQ", "TIM", "SCHED", "IPI", "WRQ", "BDRY", "NONE", "ABRT", "UNK", "EOF"};
+    static const char *s_wake_type_long_names[] = {"IRQ", "TIMER", "SCHEDULER", "IPI", "WORK QUEUE", "BOUNDARY", "NONE", "ABORT", "UNKNOWN", "EOF"};
+#endif // __KERNEL__
 
 #pragma pack(push) /* Store current alignment */
 #pragma pack(2) /* Set new alignment -- 2 byte boundaries */
@@ -373,9 +393,11 @@ typedef enum pw_msr_type {
 } pw_msr_type_t;
 /*
  * Names corresponding to C-state MSR types.
- * Debugging ONLY!
+ * Ring-3 Debugging ONLY!
  */
-static const char *s_pw_msr_type_names[] = {"Thread", "Core", "Module", "Package", "GPU"};
+#ifndef __KERNEL__
+    static const char *s_pw_msr_type_names[] = {"Thread", "Core", "Module", "Package", "GPU"};
+#endif // __KERNEL__
 /*
  * Specifier for GPU C-states.
  */
@@ -385,9 +407,11 @@ typedef enum pw_gpu_msr_subtype {
 } pw_gpu_msr_subtype_t;
 /*
  * Names corresponding to GPU C-state subtypes.
- * Debugging ONLY!
+ * Ring-3 Debugging ONLY!
  */
-static const char *s_pw_gpu_msr_subtype_names[] = {"RENDER", "MEDIA"};
+#ifndef __KERNEL__
+    static const char *s_pw_gpu_msr_subtype_names[] = {"RENDER", "MEDIA"};
+#endif // __KERNEL__
 
 /*
  * MSR specifiers
@@ -462,7 +486,7 @@ typedef struct c_msg {
      * Domain-specific wakeup data. Corresponds to "c_data" under c_message_t fixed-length scheme.
      * Meaning is as follows for the following wakeup_types:
      *    PW_BREAK_TYPE_I: IRQ number (used as index to get IRQ name using i_message_t)
-     *    PW_BREAK_TYPE_T: System call CPU TSC 
+     *    PW_BREAK_TYPE_T: System call CPU TSC
      *    All other types: field is ignored.
      */
     u64 wakeup_data;
@@ -761,6 +785,39 @@ typedef struct bw_msg {
     u64 duration;      // The unit should be TSC ticks.
 } bw_msg_t;
 
+
+typedef struct bw_multi_meta_data bw_multi_meta_data_t;
+struct bw_multi_meta_data {
+    u16 index;               // Array index to components defined in bw_meta_data. 
+                             // Index must be [0, num_components)
+                             // Currently, this is ALWAYS ZERO (because only one VISA metric can be collected at a time).
+    u16 num_names;           // Size of 'names' array, below
+    pw_string_type_t *names; // Individual names for each element in 'bw_multi_msg->data' e.g. "Read32", "WritePartial" "DDR-0 Rank-0 Read64"
+};
+#define BW_MULTI_META_MSG_HEADER_SIZE (sizeof(bw_multi_meta_data_t) - sizeof(pw_string_type_t *))
+
+typedef struct bw_multi_msg bw_multi_msg_t;
+struct bw_multi_msg {
+    u16 index;          // Array index to components defined in bw_meta_data. 
+                        // Index must be [0, num_components)
+                        // Currently, this is ALWAYS ZERO (because only one VISA metric can be collected at a time).
+    u16 num_data_elems; // Size of 'data' array, below
+    u64 duration;       // In TSC ticks
+    u64 p_data;          // Size of array == 'bw_multi_msg->num_data_elems' == 'bw_multi_meta_data->num_names'.
+};
+#define BW_MULTI_MSG_HEADER_SIZE() (sizeof(bw_multi_msg_t) - sizeof(u64))
+
+typedef struct bw_multi_sample bw_multi_sample_t;
+struct bw_multi_sample {
+    u16 index;          // Array index to components defined in bw_meta_data. 
+                        // Index must be [0, num_components)
+                        // Currently, this is ALWAYS ZERO (because only one VISA metric can be collected at a time).
+    u16 num_data_elems; // Size of 'data' array, below
+    u64 duration;       // In TSC ticks
+    u64 data[PW_MAX_ELEMENTS_PER_BW_COMPONENT];         // Size of array == 'bw_multi_meta_data->num_names'.
+};
+
+
 /*
  * Meta data used to describe FPS
  */
@@ -871,9 +928,11 @@ typedef enum pw_mt_msg_type {
     PW_MT_MSG_END=4
 } pw_mt_msg_type_t;
 /*
- * Debugging: names for the above msg types.
+ * Ring-3 Debugging: names for the above msg types.
  */
-static const char *s_pw_mt_msg_type_names[] = {"NONE", "INIT", "POLL", "TERM", "END"};
+#ifndef __KERNEL__
+    static const char *s_pw_mt_msg_type_names[] = {"NONE", "INIT", "POLL", "TERM", "END"};
+#endif // __KERNEL__
 /*
  * Encode information returned by the matrix driver.
  * Msg type == 'MATRIX_MSG'
@@ -1107,13 +1166,42 @@ struct c_meta_data {
 #define C_META_MSG_HEADER_SIZE (sizeof(c_meta_data_t) - sizeof(pw_c_state_msr_meta_data_t *))
 
 /*
+ * HACK! (JC)
+ * Meta data used to describe a single C-state and its associated MSR as a fixed-length sample.
+ */
+typedef struct pw_c_state_msr_meta_sample pw_c_state_msr_meta_sample_t;
+struct pw_c_state_msr_meta_sample {
+    pw_msr_identifier_t id; // The MSR identifier for this C-state
+    u16 acpi_mwait_hint; // The mwait hint corresponding to this C-state; GU: changed to "u16" for alignment reasons
+    u16 target_residency; // Target residency for this C-state
+    /*
+     * The "msr_name" field basically encodes the information present in "/sys/devices/system/cpu/cpu0/cpuidle/stateXXX/name"
+     */
+    char msr_name[PW_MAX_C_MSR_NAME]; // The actual C-state name (e.g. "CC6, MC0, PC6")
+};
+
+/*
+ * HACK! (JC)
+ * Temporary fixed-length Structure used to describe a single C-state fixed-length sample and its associated MSR.
+ * Multiple fixed-length samples may be chained to increase the available frequencies beyond PW_MAX_MSRS_PER_META_SAMPLE
+ * Used for CPU & GPU meta samples
+ */
+typedef struct c_meta_sample c_meta_sample_t;
+struct c_meta_sample {
+    u16 num_c_states; // The number of 'pw_c_state_msr_meta_data' instances encoded in the 'data' field below.
+    pw_c_state_msr_meta_sample_t data[PW_MAX_MSRS_PER_META_SAMPLE]; // An array of 'pw_c_state_msr_meta_sample' instances, one per C-state
+                                      // Length of the array is given by num_c_states.
+                                      // e.g. pw_c_state_msr_meta_sample_t data[num_c_states];
+};
+
+/*
  * Meta data used to describe P-state samples.
  */
 typedef struct p_meta_data p_meta_data_t;
 struct p_meta_data {
-    /* 
+    /*
      * GEH: Could we add an enum for processing unit (GPU, CPU, etc.) and add a field here to reference? Something like this:
-     * proc_unit_t proc_unit; 
+     * proc_unit_t proc_unit;
      */
     u16 num_available_freqs; // The # of frequencies in the 'data' field below; 256 freqs should be enough for anybody!
     u16 *available_freqs; // A (variable-length) array of 16bit frequencies, in MHz. 
@@ -1257,7 +1345,7 @@ struct meta_data_msg {
  */
 typedef struct PWCollector_msg PWCollector_msg_t; 
 struct PWCollector_msg {
-    u64 tsc;      // TSC of message. 
+    u64 tsc;      // TSC of message.
                   // GEH: Is this equal to wakeup TSC for c_msg_t samples?
     u16 data_len; // length of payload message in bytes (not including this header) represented by p_data.
     u16 cpuidx;   // GEH: Need to define what this is for post-processed samples
@@ -1287,11 +1375,11 @@ typedef struct c_sample {
     u32 tps_epoch; // Used to sync with SCHED_SAMPLE events
     /*
      * "c_data" is one of the following:
-     * (1) If "c_type" == 'I' ==> "c_data" is the IRQ of the interrupt
+     * (1) If "break_type" == 'I' ==> "c_data" is the IRQ of the interrupt
      * that caused the C-state break.
-     * (2) If "c_type" == 'D' || 'N' => "c_data" is the TSC that maps to the 
+     * (2) If "break_type" == 'D' || 'N' => "c_data" is the TSC that maps to the 
      * user-space call trace ID for the process which caused the C-state break.
-     * (3) If "c_type" == 'U' ==> "c_data" is undefined.
+     * (3) If "break_type" == 'U' ==> "c_data" is undefined.
      */
     u64 c_data;
     u64 c_state_res_counts[MAX_MSR_ADDRESSES];
@@ -1579,6 +1667,18 @@ typedef struct bw_comp_sample {
     char bw_comp_name[PW_MAX_METADATA_NAME]; // Names of component/pathway like Core to DDR0, Core to DDR1, ISP, GFX, IO, DISPLAY ...
 } bw_comp_sample_t;
 
+/*
+ * Temporary fixed-length Structure used to describe all elements of a single Bandwidth component/pathway.
+ * (Plan to switch to variable length samples for everything later.)
+ */
+typedef struct bw_multi_meta_sample {
+    u16 index;               // Array index to components defined in bw_meta_data. 
+                             // Index must be [0, num_components)
+                             // Currently, this is ALWAYS ZERO (because only one VISA metric can be collected at a time).
+    u16 bw_comp_element_index;           // Index used for matching individual element of a bandwidth component
+    char name[PW_MAX_METADATA_NAME]; // Individual names for each element in a component e.g. "Read32", "WritePartial" "DDR-0 Rank-0 Read64"
+} bw_multi_meta_sample_t;
+
 typedef struct dram_srr_comp_sample dram_srr_comp_sample_t;
 struct dram_srr_comp_sample {
     u16 comp_idx;                             // Index used for matching bandwidth component index in bw_sample
@@ -1646,6 +1746,14 @@ typedef struct PWCollector_sample {
         p_msg_t p_msg;
         tmp_c_state_msr_set_sample_t msr_set_sample;
         c_multi_msg_t c_multi_msg;
+        /*
+         * HACK!
+         *
+         */
+        c_meta_sample_t c_meta_sample;
+        c_meta_sample_t gpu_c_meta_sample;
+        bw_multi_sample_t bw_multi_sample;
+        bw_multi_meta_sample_t bw_multi_meta_sample;
     };
 } PWCollector_sample_t;
 
@@ -1730,11 +1838,11 @@ typedef enum power_data {
 #define POWER_ACPI_S3_STATE_MASK (1ULL << PW_ACPI_S3_STATE )
 #define POWER_SNAPSHOT_C_STATE_MASK (1ULL << PW_POWER_SNAPSHOT_C_STATE )
 #define POWER_BANDWIDTH_CORE_MODULE0_MASK (1ULL << PW_BANDWIDTH_CORE_MODULE0 )
-#define POWER_BANDWIDTH_CORE_MODULE1ULL_MASK (1ULL << PW_BANDWIDTH_CORE_MODULE1)
+#define POWER_BANDWIDTH_CORE_MODULE1_MASK (1ULL << PW_BANDWIDTH_CORE_MODULE1)
 #define POWER_BANDWIDTH_CORE_32BYTE_MASK (1ULL << PW_BANDWIDTH_CORE_32BYTE )
 #define POWER_BANDWIDTH_CORE_64BYTE_MASK (1ULL << PW_BANDWIDTH_CORE_64BYTE )
 #define POWER_BANDWIDTH_SRR_CH0_MASK (1ULL << PW_BANDWIDTH_SRR_CH0 )
-#define POWER_BANDWIDTH_SRR_CH1ULL_MASK (1ULL << PW_BANDWIDTH_SRR_CH1)
+#define POWER_BANDWIDTH_SRR_CH1_MASK (1ULL << PW_BANDWIDTH_SRR_CH1)
 #define POWER_BANDWIDTH_TUNIT_MASK (1ULL << PW_BANDWIDTH_TUNIT )
 
 #define SET_COLLECTION_SWITCH(m,s) ( (m) |= (1ULL << (s) ) )

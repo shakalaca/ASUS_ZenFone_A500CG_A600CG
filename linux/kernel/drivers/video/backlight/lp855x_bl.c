@@ -486,6 +486,7 @@ static int lp855x_probe(struct i2c_client *cl, const struct i2c_device_id *id)
 err_sysfs:
 	lp855x_backlight_unregister(lp);
 err_dev:
+	lpdata = NULL;
 	return ret;
 }
 

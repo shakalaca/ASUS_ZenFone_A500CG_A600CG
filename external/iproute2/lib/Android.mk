@@ -6,6 +6,7 @@ LOCAL_MODULE := libiprouteutil
 LOCAL_SYSTEM_SHARED_LIBRARIES := libc
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/../include
 LOCAL_CFLAGS := -O2 -g -W -Wall \
+	-DCONFDIR=\"/data/misc/net\" \
 	-DHAVE_UNISTD_H \
 	-DHAVE_ERRNO_H \
 	-DHAVE_NETINET_IN_H \
@@ -26,7 +27,11 @@ LOCAL_CFLAGS := -O2 -g -W -Wall \
 	-DHAVE_LSEEK64_PROTOTYPE \
 	-DHAVE_EXT2_IOCTLS \
 	-DHAVE_LINUX_FD_H \
-	-DHAVE_TYPE_SSIZE_T
+	-DHAVE_TYPE_SSIZE_T \
+	-Wno-pointer-arith \
+	-Wno-sign-compare \
+	-Werror
+
 include $(BUILD_SHARED_LIBRARY)
 
 include $(CLEAR_VARS)
@@ -55,6 +60,9 @@ LOCAL_CFLAGS := -O2 -g -W -Wall \
 	-DHAVE_LSEEK64_PROTOTYPE \
 	-DHAVE_EXT2_IOCTLS \
 	-DHAVE_LINUX_FD_H \
-	-DHAVE_TYPE_SSIZE_T
+	-DHAVE_TYPE_SSIZE_T \
+	-Wno-pointer-arith \
+	-Wno-sign-compare \
+	-Werror
 
 include $(BUILD_SHARED_LIBRARY)

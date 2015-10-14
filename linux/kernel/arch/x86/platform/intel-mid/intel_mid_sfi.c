@@ -30,7 +30,10 @@
 #include <linux/mmc/core.h>
 #include <linux/mmc/card.h>
 #include <linux/blkdev.h>
+
+//#if defined(CONFIG_ME372CL) || defined(CONFIG_PF450CL) || defined(CONFIG_A500CG)
 #include <linux/HWVersion.h>
+//#endif /* CONFIG_ME372CL || CONFIG_PF450CL || CONFIG_A500CG */
 
 #include <asm/setup.h>
 #include <asm/mpspec_def.h>
@@ -62,15 +65,26 @@ static int spi_next_dev;
 static int i2c_next_dev;
 static int i2c_bus[MAX_SCU_I2C];
 static int gpio_num_entry;
+static unsigned int watchdog_irq_num = 0xff;
 static u32 sfi_mtimer_usage[SFI_MTMR_MAX_NUM];
 int sfi_mrtc_num;
 int sfi_mtimer_num;
 
+#if defined(CONFIG_ME372CL) || defined(CONFIG_PF450CL)
+static int PROJECT_ID;
+static int HARDWARE_ID;
+static int PCB_ID;
+static int TP_ID;
+static int RC_VERSION;
+#endif /* CONFIG_ME372CL || CONFIG_PF450CL */
+
+//#ifdef CONFIG_A500CG
 static int PROJECT_ID;
 static int HARDWARE_ID;
 static int PCB_ID;
 static int TP_ID;
 static int LCD_ID;
+//#endif
 
 struct sfi_rtc_table_entry sfi_mrtc_array[SFI_MRTC_MAX];
 EXPORT_SYMBOL_GPL(sfi_mrtc_array);
@@ -79,51 +93,50 @@ struct blocking_notifier_head intel_scu_notifier =
 			BLOCKING_NOTIFIER_INIT(intel_scu_notifier);
 EXPORT_SYMBOL_GPL(intel_scu_notifier);
 
+unsigned int sfi_get_watchdog_irq(void)
+{
+	return watchdog_irq_num;
+}
+
+//#ifdef CONFIG_A500CG
 static int __init sfi_parse_oemr(struct sfi_table_header *table)
 {
-        struct sfi_table_oemr *sb;
-        struct sfi_oemr_table_entry *pentry;
+	struct sfi_table_oemr *sb;
+	struct sfi_oemr_table_entry *pentry;
 
-        sb = (struct sfi_table_oemr *)table;
-        pentry = (struct sfi_oemr_table_entry *)sb->pentry;
+	sb = (struct sfi_table_oemr *)table;
+	pentry = (struct sfi_oemr_table_entry *)sb->pentry;
 	HARDWARE_ID = pentry->hardware_id;
 	PROJECT_ID = pentry->project_id;
 	TP_ID = pentry->tp_id;
 	LCD_ID = pentry->lcd_id;
 	printk("Hardware ID = %x, Project ID = %x, TP ID = %x, LCD_ID = %x\n", HARDWARE_ID, PROJECT_ID, TP_ID, LCD_ID);
-	printk("MiniOS : %d\n", pentry->MiniOS);
-        switch (HARDWARE_ID)
-        {
-            case HW_ID_EVB:
-                pr_info("Hardware VERSION = EVB\n");
-                break;
-            case HW_ID_SR:
-                pr_info("Hardware VERSION = SR\n");
-                break;
-            case HW_ID_ER:
-                pr_info("Hardware VERSION = ER\n");
-                break;
-            case HW_ID_PR:
-                pr_info("Hardware VERSION = PR\n");
-                break;
-            case HW_ID_MP:
-                pr_info("Hardware VERSION = MP\n");
-                break;
-            default:
-                pr_info("Hardware VERSION is not defined\n");
-                break;
-        }
-        PCB_ID = pentry->touch_id | pentry->Camera_2M << 1 | pentry->lcd_id << 3 | pentry->hardware_id << 6 | pentry->project_id << 10 | pentry->Camera_8M << 11 | pentry->tp_id << 12;
-        printk("PCB ID=%x\n",PCB_ID);
+	switch (HARDWARE_ID) {
+	case HW_ID_EVB:
+		pr_info("Hardware VERSION = EVB\n");
+		break;
+	case HW_ID_SR:
+		pr_info("Hardware VERSION = SR\n");
+		break;
+	case HW_ID_ER:
+		pr_info("Hardware VERSION = ER\n");
+		break;
+	case HW_ID_PR:
+		pr_info("Hardware VERSION = PR\n");
+		break;
+	default:
+		pr_info("Hardware VERSION is not defined\n");
+		break;
+	}
+	PCB_ID = pentry->touch_id | pentry->Camera_2M << 1 | pentry->lcd_id << 2 | pentry->hardware_id << 3 | pentry->project_id << 6 | pentry->Camera_8M << 9 | pentry->tp_id << 10;
+	printk("PCB ID=%x\n", PCB_ID);
 #if 0
-        //Thomas add for ATD Tool atd_pcb_id {
-        atd_pcb_id = pentry->hardware_id << 3 | pentry->project_id;
-        pr_info("ATD PCB ID=%d\n",atd_pcb_id);
-        //Thomas add for ATD Tool atd_pcb_id }
+	atd_pcb_id = pentry->hardware_id << 3 | pentry->project_id;
+	pr_info("ATD PCB ID=%d\n", atd_pcb_id);
 #endif
-        return 0;
+	return 0;
 }
-
+//#endif
 
 /* parse all the mtimer info to a static mtimer array */
 int __init sfi_parse_mtmr(struct sfi_table_header *table)
@@ -475,6 +488,16 @@ static void __init sfi_handle_i2c_dev(struct sfi_device_table_entry *pentry,
 		i2c_register_board_info(pentry->host_num, &i2c_info, 1);
 }
 
+static void sfi_handle_hsu_dev(struct sfi_device_table_entry *pentry,
+					struct devs_id *dev)
+{
+	pr_info("HSU bus = %d, name = %16.16s port = %d\n",
+		pentry->host_num,
+		pentry->name,
+		pentry->addr);
+	dev->get_platform_data(pentry);
+}
+
 static void sfi_handle_hsi_dev(struct sfi_device_table_entry *pentry,
 					struct devs_id *dev)
 {
@@ -536,6 +559,18 @@ struct devs_id __init *get_device_id(u8 type, char *name)
 	return NULL;
 }
 
+
+#if 0   //Hacked sfi parse table.  // leong++
+static struct sfi_device_table_entry mn34130_entry = {
+	.type = SFI_DEV_TYPE_I2C,
+	.host_num = 4,
+	.addr = 0x37,		// D:\Work\spec\IMX219PQH5_3.0.0_DataSheet_ASUS.PDF		P18		slave address		00 10 0 00
+	.irq = 0xFF,
+	.max_freq = 400000,
+	.name = "mn34130",
+};
+#endif
+
 static int __init sfi_parse_devs(struct sfi_table_header *table)
 {
 	struct sfi_table_simple *sb;
@@ -553,9 +588,18 @@ static int __init sfi_parse_devs(struct sfi_table_header *table)
 	num = SFI_GET_NUM_ENTRIES(sb, struct sfi_device_table_entry);
 	pentry = (struct sfi_device_table_entry *)sb->pentry;
 
+	#if 0  //Hacked sfi parse table.  // leong++
+	printk("Parser mn34130 +++++. !!leong\n");
+	dev = get_device_id(SFI_DEV_TYPE_I2C, "mn34130");
+	if( dev && dev->device_handler){
+		printk("%s\t dev->device_handler(&mn34130_entry, dev); begin leong\n",__func__);
+		dev->device_handler(&mn34130_entry, dev);
+		printk("Parser mn34130 success. !!\n");
+	}	
+	#endif
+	
 	for (i = 0; i < num; i++, pentry++) {
 		int irq = pentry->irq;
-
 		if (irq != (u8)0xff) { /* native RTE case */
 			/* these SPI2 devices are not exposed to system as PCI
 			 * devices, but they have separate RTE entry in IOAPIC
@@ -582,15 +626,10 @@ static int __init sfi_parse_devs(struct sfi_table_header *table)
 					else
 						/* active high */
 						irq_attr.polarity = 0;
-				} else if (intel_mid_identify_cpu() ==
-					INTEL_MID_CPU_CHIP_CARBONCANYON) {
+					/* catch watchdog interrupt number */
 					if (!strncmp(pentry->name,
-							"vhsi_edlp_modem", 15))
-						/* active high */
-						irq_attr.polarity = 0;
-					else
-						/* active low */
-						irq_attr.polarity = 1;
+							"watchdog", 8))
+						watchdog_irq_num = (unsigned int) irq;
 				} else {
 					/* PNW and CLV go with active low */
 					irq_attr.polarity = 1;
@@ -601,6 +640,10 @@ static int __init sfi_parse_devs(struct sfi_table_header *table)
 					pentry->name, irq, ioapic);
 		}
 		dev = get_device_id(pentry->type, pentry->name);
+		#if 0		// leong++
+		pr_info("%s\t iafw %s  leong_p\n",pentry->name);
+		pr_info("%s\t board.c %s  leong_p\n",dev->name);	
+		#endif
 
 		if ((dev == NULL) || (dev->get_platform_data == NULL))
 			continue;
@@ -631,6 +674,8 @@ static int __init sfi_parse_devs(struct sfi_table_header *table)
 				sfi_handle_hsi_dev(pentry, dev);
 				break;
 			case SFI_DEV_TYPE_UART:
+				sfi_handle_hsu_dev(pentry, dev);
+				break;
 			default:
 				break;
 			}
@@ -701,6 +746,163 @@ static int __init sfi_parse_oemb(struct sfi_table_header *table)
 	return 0;
 }
 
+#if defined(CONFIG_ME372CL) || defined(CONFIG_PF450CL)
+static int __init sfi_parse_oemr(struct sfi_table_header *table)
+{
+	struct sfi_table_simple *sb;
+	struct sfi_oemr_table_entry *pentry;
+
+	sb = (struct sfi_table_simple *)table;
+	pentry = (struct sfi_oemr_table_entry *)sb->pentry;
+	HARDWARE_ID = pentry->hardware_id;
+	PROJECT_ID = pentry->project_id;
+	TP_ID = pentry->touch_id;
+	RC_VERSION = pentry->RC_VERSION;
+#if 1
+	if (PROJECT_ID == PROJ_ID_PF450CL) {
+		switch (pentry->hardware_id) {
+		case 0:
+			HARDWARE_ID = HW_ID_EVB;
+			pr_info("Hardware VERSION = EVB\n");
+			break;
+		case 1:
+			HARDWARE_ID = HW_ID_SR1;
+			pr_info("Hardware VERSION = SR1\n");
+			break;
+		case 2:
+			HARDWARE_ID = HW_ID_ER;
+			pr_info("Hardware VERSION = ER1\n");
+			break;
+		case 3:
+			HARDWARE_ID = HW_ID_ER2;
+			pr_info("Hardware VERSION = ER2\n");
+			break;
+		default:
+			HARDWARE_ID = HW_ID_ER2;
+			pr_info("default Hardware VERSION = ER2\n");
+			break;
+		}
+		/* HARDWARE_ID = HW_ID_EVB; */
+	}
+#endif
+	pr_info("HID=%x, PID=%x, TPID=%d, RCver=%d\n", HARDWARE_ID, PROJECT_ID, TP_ID, RC_VERSION);
+
+	if (PROJECT_ID == PROJ_ID_ME372CL || PROJECT_ID == PROJ_ID_PF450CL) {
+#if 0
+		switch (HARDWARE_ID) {
+		case HW_ID_EVB:
+			pr_info("Hardware VERSION = EVB\n");
+			break;
+		case HW_ID_SR2:
+			pr_info("Hardware VERSION = SR\n");
+			break;
+		case HW_ID_ER:
+			pr_info("Hardware VERSION = ER\n");
+			break;
+		case HW_ID_PR:
+			pr_info("Hardware VERSION = PR\n");
+			break;
+		case HW_ID_MP:
+			pr_info("Hardware VERSION = MP\n");
+			break;
+		default:
+			pr_info("Hardware VERSION is not defined\n");
+			break;
+		}
+#endif
+		PCB_ID = HARDWARE_ID | pentry->project_id << 3;
+	}
+	return 0;
+}
+
+#endif /* CONFIG_ME372CL || CONFIG_PF450CL */
+
+#if defined(CONFIG_ME372CL) || defined(CONFIG_PF450CL)
+/*Chipang add for detect build_vsersion and factory_mode ++*/
+/*
+ *build_vsersion mean TARGET_BUILD_VARIANT
+ *user:3
+ *userdebug:2
+ *eng:1
+ */
+int build_version;
+EXPORT_SYMBOL(build_version);
+int factory_mode;
+EXPORT_SYMBOL(factory_mode);
+static int __init check_build_version(char *p)
+{
+	if (p) {
+		if (!strncmp(p, "3", 1))
+			build_version = 3;
+		else if (!strncmp(p, "2", 1))
+			build_version = 2;
+		else {
+			build_version = 1;
+			factory_mode = 2;
+		}
+		printk(KERN_INFO "%s:build_version %d\n", __func__, build_version);
+		printk(KERN_INFO "%s:factory_mode %d\n", __func__, factory_mode);
+	}
+	return 0;
+}
+early_param("build_version", check_build_version);
+/*Chipang add for detect build_vsersion and factory_mode --*/
+static int project_id;
+module_param(project_id, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(PROJ_VERSION, "PROJ_ID judgement");
+
+int Read_PROJ_ID(void)
+{
+	printk(KERN_INFO "PROJECT_ID = 0x%x \n", PROJECT_ID);
+	project_id = PROJECT_ID;
+	return PROJECT_ID;
+}
+EXPORT_SYMBOL(Read_PROJ_ID);
+
+static int hardware_id;
+module_param(hardware_id, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(HW_VERSION, "HW_ID judgement");
+
+int Read_HW_ID(void)
+{
+	printk(KERN_INFO "HARDWARE_ID = 0x%x \n", HARDWARE_ID);
+	hardware_id = HARDWARE_ID;
+	return HARDWARE_ID;
+}
+EXPORT_SYMBOL(Read_HW_ID);
+
+static int rc_version;
+module_param(rc_version, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(RC, "RC_VERSION judgement");
+
+int Read_RC_VERSION(void)
+{
+	printk(KERN_INFO "RC_VERSION = 0x%x \n", RC_VERSION);
+	rc_version = RC_VERSION;
+	return RC_VERSION;
+}
+EXPORT_SYMBOL(Read_RC_VERSION);
+
+static int pcb_id;
+module_param(pcb_id, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(PCB_VERSION, "PCB_ID judgement");
+
+int Read_PCB_ID(void)
+{
+	printk(KERN_INFO "PCB_ID = 0x%x \n", PCB_ID);
+	pcb_id = PCB_ID;
+	return PCB_ID;
+}
+EXPORT_SYMBOL(Read_PCB_ID);
+
+int Read_TP_ID(void)
+{
+	printk(KERN_INFO "TP_ID = 0x%x \n", TP_ID);
+	return TP_ID;
+}
+EXPORT_SYMBOL(Read_TP_ID);
+#endif /* CONFIG_ME372CL || CONFIG_PF450CL */
+
 /*
  * Parsing OEM0 table.
  */
@@ -717,17 +919,21 @@ void *get_oem0_table(void)
 	return oem0_table;
 }
 
+//#ifdef CONFIG_A500CG
 static int project_id;
 module_param(project_id, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(PROJ_VERSION,
-                 "PROJ_ID judgement");
+		"PROJ_ID judgement");
+
+static const struct i2c_board_info rt5647_board_info = {
+	I2C_BOARD_INFO("rt5647", 0x1b),
+};
 
 int Read_PROJ_ID(void)
 {
- 
- pr_debug("PROJECT_ID = 0x%x \n",PROJECT_ID);
-        project_id = PROJECT_ID;
-        return PROJECT_ID;
+	pr_debug("PROJECT_ID = 0x%x\n", PROJECT_ID);
+	project_id = PROJECT_ID;
+	return PROJECT_ID;
 
 }
 EXPORT_SYMBOL(Read_PROJ_ID);
@@ -735,52 +941,49 @@ EXPORT_SYMBOL(Read_PROJ_ID);
 static int hardware_id;
 module_param(hardware_id, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(HW_VERSION,
-                 "HW_ID judgement");
+		"HW_ID judgement");
 
 int Read_HW_ID(void)
 {
-        pr_debug("HARDWARE_ID = 0x%x \n",HARDWARE_ID);
-        hardware_id = HARDWARE_ID;
-        return HARDWARE_ID;
+	pr_debug("HARDWARE_ID = 0x%x \n", HARDWARE_ID);
+	hardware_id = HARDWARE_ID;
+	return HARDWARE_ID;
 }
 EXPORT_SYMBOL(Read_HW_ID);
 
 static int pcb_id;
 module_param(pcb_id, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(PCB_VERSION,
-                 "PCB_ID judgement");
+		"PCB_ID judgement");
 
 int Read_PCB_ID(void)
 {
-        pr_debug("PCB_ID = 0x%x \n",PCB_ID);
-        pcb_id = PCB_ID;
-        return PCB_ID;
+	pr_debug("PCB_ID = 0x%x \n", PCB_ID);
+	pcb_id = PCB_ID;
+	return PCB_ID;
 }
 EXPORT_SYMBOL(Read_PCB_ID);
 
 static int tp_id;
 module_param(tp_id, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(PCB_VERSION,
-                 "TP_ID judgement");
+		"TP_ID judgement");
 
 int Read_TP_ID(void)
 {
-        pr_debug("TP_ID = 0x%x \n",TP_ID);
-        tp_id = TP_ID;
-        return TP_ID;
+	pr_debug("TP_ID = 0x%x \n", TP_ID);
+	tp_id = TP_ID;
+	return TP_ID;
 }
 EXPORT_SYMBOL(Read_TP_ID);
 
 int Read_LCD_ID(void)
 {
-        pr_debug("LCD_ID = 0x%x \n",LCD_ID);
-        return LCD_ID;
+	pr_debug("LCD_ID = 0x%x \n", LCD_ID);
+	return LCD_ID;
 }
 EXPORT_SYMBOL(Read_LCD_ID);
-
-static const struct i2c_board_info rt5647_board_info = {
-	I2C_BOARD_INFO("rt5647", 0x1b),
-};
+//#endif
 
 static int __init intel_mid_platform_init(void)
 {
@@ -789,14 +992,22 @@ static int __init intel_mid_platform_init(void)
 	sfi_table_parse(SFI_SIG_GPIO, NULL, NULL, sfi_parse_gpio);
 	sfi_table_parse(SFI_SIG_OEM0, NULL, NULL, sfi_parse_oem0);
 	sfi_table_parse(SFI_SIG_DEVS, NULL, NULL, sfi_parse_devs);
-        sfi_table_parse(SFI_SIG_OEMR, NULL, NULL, sfi_parse_oemr);
-        Read_HW_ID();
-        Read_PROJ_ID();
-        Read_PCB_ID();
-
+#if defined(CONFIG_ME372CL) || defined(CONFIG_PF450CL)
+	sfi_table_parse(SFI_SIG_OEMR, NULL, NULL, sfi_parse_oemr);
+	Read_HW_ID();
+	Read_PROJ_ID();
+	Read_PCB_ID();
+	Read_RC_VERSION();
+#endif /* CONFIG_ME372CL || CONFIG_PF450CL */
+//#ifdef CONFIG_A500CG
 	pr_info("%s Set Realtek I2C slave address to 0x1B!\n", __func__);
-        printk("%s Set Realtek I2C slave address to 0x1B!\n", __func__);
 	i2c_register_board_info(1, &rt5647_board_info, 1);
+
+	sfi_table_parse(SFI_SIG_OEMR, NULL, NULL, sfi_parse_oemr);
+	Read_HW_ID();
+	Read_PROJ_ID();
+	Read_PCB_ID();
+//#endif
 
 	return 0;
 }

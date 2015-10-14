@@ -40,12 +40,6 @@
 /*Added for HDMI Audio */
 #include "hdmi_audio_if.h"
 
-int i915_rotation __read_mostly;
-module_param_named(i915_rotation, i915_rotation, int, 0600);
-MODULE_PARM_DESC(i915_rotation,
-		"Enable 180 degree hardware rotation support, "
-		"1=180 degree, 0=0 degree ");
-
 static int i915_modeset __read_mostly = -1;
 module_param_named(modeset, i915_modeset, int, 0400);
 MODULE_PARM_DESC(modeset,
@@ -244,10 +238,18 @@ MODULE_PARM_DESC(i915_enable_kernel_batch_copy,
 		"i915 submits a kernel managed copy of the user passed batch buffer. "
 		"(default: -1)");
 
-int i915_enable_cmd_parser __read_mostly = -1;
+int i915_enable_cmd_parser __read_mostly = 1;
 module_param_named(i915_enable_cmd_parser, i915_enable_cmd_parser, int, 0600);
 MODULE_PARM_DESC(i915_enable_cmd_parser,
-		"Enable command parsing (default: false)");
+		"Enable command parsing (default: true)");
+
+int i915_drrs_interval __read_mostly = 180;
+module_param_named(drrs_interval, i915_drrs_interval, int, 0600);
+MODULE_PARM_DESC(drrs_interval,
+	"DRRS idleness detection interval (default: 180 ms)."
+	"If this field is set to 0, then seamless DRRS feature "
+	"based on idleness detection is disabled."
+	"The interval is to be set in milliseconds.");
 
 static struct drm_driver driver;
 extern int intel_agp_enabled;
@@ -415,6 +417,7 @@ static const struct intel_device_info intel_valleyview_m_info = {
 	.is_mobile = 1,
 	.num_pipes = 2,
 	.is_valleyview = 1,
+	.is_valleyview_c0 = 0,
 	.has_dpst = 1,
 	.display_mmio_offset = VLV_DISPLAY_BASE,
 	.has_llc = 0, /* legal, last one wins */
@@ -424,6 +427,7 @@ static const struct intel_device_info intel_valleyview_d_info = {
 	GEN7_FEATURES,
 	.num_pipes = 2,
 	.is_valleyview = 1,
+	.is_valleyview_c0 = 0,
 	.display_mmio_offset = VLV_DISPLAY_BASE,
 	.has_llc = 0, /* legal, last one wins */
 };
@@ -445,16 +449,6 @@ static const struct intel_device_info intel_haswell_m_info = {
 	.has_fbc = 1,
 	.has_vebox_ring = 1,
 };
-
-static const struct intel_device_info intel_cherryview_info = {
-	.gen = 8, .num_pipes = 2,
-	.need_gfx_hws = 1, .has_hotplug = 1,
-	.has_bsd_ring = 1,
-	.has_blt_ring = 1,
-	.is_valleyview = 1,
-	.display_mmio_offset = VLV_DISPLAY_BASE,
-};
-
 
 static const struct pci_device_id pciidlist[] = {		/* aka */
 	INTEL_VGA_DEVICE(0x3577, &intel_i830_info),		/* I830_M */
@@ -568,10 +562,6 @@ static const struct pci_device_id pciidlist[] = {		/* aka */
 	INTEL_VGA_DEVICE(0x0f33, &intel_valleyview_m_info),
 	INTEL_VGA_DEVICE(0x0157, &intel_valleyview_m_info),
 	INTEL_VGA_DEVICE(0x0155, &intel_valleyview_d_info),
-	INTEL_VGA_DEVICE(0x22b0, &intel_cherryview_info),
-	INTEL_VGA_DEVICE(0x22b1, &intel_cherryview_info),
-	INTEL_VGA_DEVICE(0x22b2, &intel_cherryview_info),
-	INTEL_VGA_DEVICE(0x22b3, &intel_cherryview_info),
 	{0, 0, 0}
 };
 
@@ -899,6 +889,10 @@ int i915_reset(struct drm_device *dev)
 		 * after the reset and the re-install of drm irq. */
 		if (INTEL_INFO(dev)->gen > 5) {
 			mutex_lock(&dev->struct_mutex);
+			/* Cancel delayed work for media promotion timer */
+			if (IS_VALLEYVIEW(dev) && dev_priv->rc6.enabled)
+				cancel_delayed_work_sync(
+					&dev_priv->rps.vlv_media_timeout_work);
 			intel_enable_gt_powersave(dev);
 			mutex_unlock(&dev->struct_mutex);
 		}
@@ -1059,9 +1053,15 @@ static int i915_suspend_common(struct device *dev)
 static int i915_pm_suspend(struct device *dev)
 {
 	int ret;
+	char *envp[] = { "GSTATE=3", NULL };
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct drm_device *drm_dev = pci_get_drvdata(pdev);
 
 	DRM_DEBUG_PM("PM Suspend called\n");
 	ret = i915_suspend_common(dev);
+	if (!ret)
+		kobject_uevent_env(&drm_dev->primary->kdev.kobj,
+			KOBJ_CHANGE, envp);
 	DRM_DEBUG_PM("PM Suspend finished\n");
 
 	return ret;
@@ -1071,9 +1071,15 @@ static int i915_pm_suspend(struct device *dev)
 static int i915_rpm_suspend(struct device *dev)
 {
 	int ret;
+	char *envp[] = { "GSTATE=3", NULL };
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct drm_device *drm_dev = pci_get_drvdata(pdev);
 
 	DRM_DEBUG_PM("Runtime PM Suspend called\n");
 	ret = i915_suspend_common(dev);
+	if (!ret)
+		kobject_uevent_env(&drm_dev->primary->kdev.kobj,
+			KOBJ_CHANGE, envp);
 	DRM_DEBUG_PM("Runtime PM Suspend finished\n");
 
 	return ret;
@@ -1084,10 +1090,14 @@ static int i915_pm_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct drm_device *drm_dev = pci_get_drvdata(pdev);
+	char *envp[] = { "GSTATE=0", NULL };
 	u32 ret;
 
 	DRM_DEBUG_PM("PM Resume called\n");
 	ret = i915_resume_common(drm_dev, false);
+	if (!ret)
+		kobject_uevent_env(&drm_dev->primary->kdev.kobj,
+			KOBJ_CHANGE, envp);
 	DRM_DEBUG_PM("PM Resume finished\n");
 
 	return ret;
@@ -1098,10 +1108,14 @@ static int i915_rpm_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct drm_device *drm_dev = pci_get_drvdata(pdev);
+	char *envp[] = { "GSTATE=0", NULL };
 	int ret;
 
 	DRM_DEBUG_PM("Runtime PM Resume called\n");
 	ret = i915_resume_common(drm_dev, false);
+	if (!ret)
+		kobject_uevent_env(&drm_dev->primary->kdev.kobj,
+			KOBJ_CHANGE, envp);
 	DRM_DEBUG_PM("Runtime PM Resume finished\n");
 
 	return ret;
@@ -1144,7 +1158,22 @@ static void i915_pm_shutdown(struct pci_dev *pdev)
 	struct drm_i915_private *dev_priv = drm_dev->dev_private;
 	struct drm_crtc *crtc;
 
+	/* make sure drm stops processing new ioctls */
+	drm_halt(drm_dev);
+
+	/* wait for drm to go idle */
+	if (drm_wait_idle(drm_dev, 5000))
+		DRM_ERROR("Failed to halt DRM. going for shutdown anyway...\n");
+
+	/* Not doing drm_continue as we are going for shutdown anyway */
+
+	/* even after drm_halt exceptions can still occur, which will
+	 * call i915_gem_fault. using this flag to avoid this
+	 */
+	mutex_lock(&drm_dev->struct_mutex);
+	/* take struct_mutex to avoid sync issue with i915_gem_fault */
 	dev_priv->pm.shutdown_in_progress = true;
+	mutex_unlock(&drm_dev->struct_mutex);
 
 	if (i915_is_device_suspended(drm_dev)) {
 		/* Device already in suspend state */

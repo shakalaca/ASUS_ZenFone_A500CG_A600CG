@@ -46,10 +46,9 @@
 #define HAD_MIN_CHANNEL		2
 #define HAD_MAX_CHANNEL		8
 #define HAD_NUM_OF_RING_BUFS	4
-#define HAD_MIN_RATE		32000
-#define HAD_MAX_RATE		192000
-/* Assume 48KHz, 8channel, 25msec period */
-#define HAD_MAX_BUFFER		(150*1024)
+
+/* Assume 192KHz, 8channel, 25msec period */
+#define HAD_MAX_BUFFER		(600*1024)
 #define HAD_MIN_BUFFER		(32*1024)
 #define HAD_MAX_PERIODS		4
 #define HAD_MIN_PERIODS		4
@@ -60,13 +59,16 @@
 /* TODO: Add own tlv when channel map is ported for user space */
 #define USE_ALSA_DEFAULT_TLV
 
-#define AUD_SAMPLE_RATE_32	HAD_MIN_RATE
+#define AUD_SAMPLE_RATE_32	32000
 #define AUD_SAMPLE_RATE_44_1	44100
 #define AUD_SAMPLE_RATE_48	48000
 #define AUD_SAMPLE_RATE_88_2	88200
 #define AUD_SAMPLE_RATE_96	96000
 #define AUD_SAMPLE_RATE_176_4	176400
-#define AUD_SAMPLE_RATE_192	HAD_MAX_RATE
+#define AUD_SAMPLE_RATE_192	192000
+
+#define HAD_MIN_RATE		AUD_SAMPLE_RATE_32
+#define HAD_MAX_RATE		AUD_SAMPLE_RATE_192
 
 #define DRIVER_NAME		"intelmid_hdmi_audio"
 #define DIS_SAMPLE_RATE_25_2	25200
@@ -516,6 +518,13 @@ struct had_callback_ops {
 	had_event_call_back intel_had_event_call_back;
 };
 
+struct had_debugfs {
+	struct dentry     *root;
+	u32               reg_offset;
+	void              *reg_offset_table;
+	u32               reg_offset_table_size;
+};
+
 /**
  * struct snd_intelhad - intelhad driver structure
  *
@@ -563,6 +572,7 @@ struct snd_intelhad {
 	unsigned int	audio_reg_base;
 	bool		hw_silence;
 	struct had_ops	*ops;
+	struct had_debugfs debugfs;
 };
 
 struct had_ops {
@@ -588,6 +598,7 @@ int hdmi_audio_suspend(void *drv_data, hdmi_audio_event_t event);
 int hdmi_audio_resume(void *drv_data);
 int hdmi_audio_mode_change(struct snd_pcm_substream *substream);
 extern struct snd_pcm_ops snd_intelhad_playback_ops;
+extern struct mutex had_mutex;
 
 int snd_intelhad_init_audio_ctrl(struct snd_pcm_substream *substream,
 					struct snd_intelhad *intelhaddata,
@@ -605,4 +616,17 @@ inline int had_set_caps(enum had_caps_list set_element , void *capabilties);
 inline int had_read_register(uint32_t reg_addr, uint32_t *data);
 inline int had_write_register(uint32_t reg_addr, uint32_t data);
 inline int had_read_modify(uint32_t reg_addr, uint32_t data, uint32_t mask);
+
+#ifdef CONFIG_DEBUG_FS
+void had_debugfs_init(struct snd_intelhad *intelhaddata, char *version);
+void had_debugfs_exit(struct snd_intelhad *intelhaddata);
+#else
+inline void had_debugfs_init(struct snd_intelhad *intelhaddata, char *version)
+{
+}
+inline void had_debugfs_exit(struct snd_intelhad *intelhaddata)
+{
+}
+#endif
+
 #endif

@@ -71,7 +71,7 @@ struct mmc_ios {
 
 	unsigned char	signal_voltage;		/* signalling voltage (1.8V or 3.3V) */
 
-#define MMC_SIGNAL_VOLTAGE_330	0
+#define MMC_SIGNAL_VOLTAGE_330	3
 #define MMC_SIGNAL_VOLTAGE_180	1
 #define MMC_SIGNAL_VOLTAGE_120	2
 
@@ -158,9 +158,6 @@ struct mmc_host_ops {
 	void	(*set_dev_power)(struct mmc_host *, bool);
 	/* Prevent host controller from Auto Clock Gating by busy reading */
 	void	(*busy_wait)(struct mmc_host *mmc, u32 delay);
-    /* Invoke in mmc_init_card, host can change the default configuration in implementation */
-    void (*change_configuration)(struct mmc_host *host, struct mmc_card *card);	
-    int (*mmc_poll_busy)(struct mmc_host *host);
 };
 
 struct mmc_card;
@@ -254,12 +251,10 @@ struct mmc_host {
 	u32			ocr_avail_sd;	/* SD-specific OCR */
 	u32			ocr_avail_mmc;	/* MMC-specific OCR */
 	struct notifier_block	pm_notify;
-        int                     retry_timeout;  /* Rescan timeout for polling mode to scan SD card */
-    unsigned int half_max_clk_count;
+	unsigned int half_max_clk_count;
 	u32			max_current_330;
 	u32			max_current_300;
 	u32			max_current_180;
-    asus_mmc_pm_flag_t asus_mmc_pm_flag;
 
 #define MMC_VDD_165_195		0x00000080	/* VDD voltage 1.65 - 1.95 */
 #define MMC_VDD_20_21		0x00000100	/* VDD voltage 2.0 ~ 2.1 */
@@ -342,8 +337,9 @@ struct mmc_host {
 #define MMC_CAP2_BROKEN_MAX_CLK (1 << 24)
 #define MMC_CAP2_HS400		(MMC_CAP2_HS400_1_8V_DDR | \
 				MMC_CAP2_HS400_1_2V_DDR)
-#define MMC_CAP2_DEFERRED_RESUME (1 << 30)  /* indicate whether the card resume process is deferable */
 
+	int			tpru;		/* Supply power up time (ms) */
+	int			tramp;		/* Supply ramp up time (ms) */
 	mmc_pm_flag_t		pm_caps;	/* supported pm features */
 
 #ifdef CONFIG_MMC_CLKGATE
@@ -442,12 +438,7 @@ struct mmc_host {
 	unsigned long		private[0] ____cacheline_aligned;
 };
 
-/* h must be a pointer to "struct mmc_host" */
-#define mmc_set_force_pm_resume(h) ((h)->asus_mmc_pm_flag |= ASUS_MMC_PM_FORCE_RESUME)
-#define mmc_clr_force_pm_resume(h) ((h)->asus_mmc_pm_flag &= ~ASUS_MMC_PM_FORCE_RESUME)
-#define mmc_is_force_pm_resume(h) (!!((h)->asus_mmc_pm_flag & ASUS_MMC_PM_FORCE_RESUME))
-
-#define SECTOR_SIZE	512
+#define SECTOR_SIZE    512
 int mmc_emergency_init(void);
 int mmc_emergency_write(char *, unsigned int);
 void mmc_alloc_panic_host(struct mmc_host *, const struct mmc_host_panic_ops *);

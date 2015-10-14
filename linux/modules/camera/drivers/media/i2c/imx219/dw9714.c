@@ -226,6 +226,7 @@ int dw9714_vcm_init(struct v4l2_subdev *sd)
 	dw9714_dev.vcm_settings.update = true;
 	dw9714_dev.vcm_settings.t_src = 0x11;
 	dw9714_dev.vcm_settings.step_setting = 0x02;
+	
 
 	dw9714_dev.platform_data = camera_get_af_platform_data();
 	return (NULL == dw9714_dev.platform_data) ? -ENODEV : 0;

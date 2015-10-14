@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -471,6 +471,14 @@ typedef struct
 
 } prb_trace_record_t;
 
+// thread name trace record
+typedef struct
+{
+    prb_trace_record_t probe;
+    unsigned char version;
+    unsigned short length;
+
+} thname_trace_record_t;
 
 typedef struct
 {

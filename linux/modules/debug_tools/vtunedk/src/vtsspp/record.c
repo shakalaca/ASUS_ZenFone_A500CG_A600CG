@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -33,6 +33,7 @@
 
 #include <linux/sched.h>
 #include <linux/math64.h>
+#include <linux/delay.h> // for msleep_interruptible()
 
 #define VTSS_PROCESS_NAME_LEN   0x10
 
@@ -482,6 +483,20 @@ int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long 
 #ifdef CONFIG_X86_64
     if (m32) {
         dlm_trace_record_32_t* modrec = (dlm_trace_record_32_t*)vtss_transport_record_reserve(trnd, &entry, sizeof(dlm_trace_record_32_t) + namelen);
+        if (unlikely(!modrec)){
+            //If transport is not ready we are in "cmd_start => target_new".
+            //During attach the transport will not attach till client get response from driver,
+            //so, it's no sense to wait for the case
+            if (vtss_transport_is_ready(trnd) && (!irqs_disabled())){
+                //try again
+                int cnt = 20;
+                while ((!modrec) && cnt > 0){
+                    msleep_interruptible(100);
+                    cnt--;
+                    modrec = (dlm_trace_record_32_t*)vtss_transport_record_reserve(trnd, &entry, sizeof(dlm_trace_record_32_t) + namelen);
+                }
+            }
+        }
         if (likely(modrec)) {
             modrec->flagword = UEC_LEAF1 | UECL1_USRLVLID | UECL1_CPUTSC | UECL1_REALTSC | UECL1_SYSTRACE;
             modrec->pid      = 0;
@@ -504,6 +519,18 @@ int vtss_record_module(struct vtss_transport_data* trnd, int m32, unsigned long 
         }
     } else {
         dlm_trace_record_t* modrec = (dlm_trace_record_t*)vtss_transport_record_reserve(trnd, &entry, sizeof(dlm_trace_record_t) + namelen);
+        if (unlikely(!modrec)){
+            if (vtss_transport_is_ready(trnd) && (!irqs_disabled())){
+                //try again
+                int cnt = 20;
+                while ((!modrec) && cnt > 0){
+                    TRACE("record awaiting transport ready");
+                    msleep_interruptible(100);
+                    cnt--;
+                    modrec = (dlm_trace_record_t*)vtss_transport_record_reserve(trnd, &entry, sizeof(dlm_trace_record_t) + namelen);
+                }
+            }
+        }
         if (likely(modrec)) {
             modrec->flagword = UEC_LEAF1 | UECL1_USRLVLID | UECL1_CPUTSC | UECL1_REALTSC | UECL1_SYSTRACE;
             modrec->pid      = 0;
@@ -705,7 +732,7 @@ int vtss_record_probe(struct vtss_transport_data* trnd, int cpu, int fid, int is
     proberec.cpuidx    = cpu;
     /* NOTE: it's real TSC to be consistent with TPSS */
     proberec.cputsc    = vtss_time_real();
-    proberec.size      = (unsigned short int)(sizeof(prb_trace_record_t) - (int)((char*)&proberec.size - (char*)&proberec.flagword));
+    proberec.size      = sizeof(prb_trace_record_t) - offsetof(prb_trace_record_t, size);
     /* arch isn't important here but make it as native arch */
 #ifdef CONFIG_X86_64
     proberec.type      = URT_APIWRAP64_V1;
@@ -729,7 +756,7 @@ int vtss_record_probe_all(int cpu, int fid, int is_safe)
     proberec.cpuidx    = cpu;
     /* NOTE: it's real TSC to be consistent with TPSS */
     proberec.cputsc    = vtss_time_real();
-    proberec.size      = (unsigned short int)(sizeof(prb_trace_record_t) - (int)((char*)&proberec.size - (char*)&proberec.flagword));
+    proberec.size      = sizeof(prb_trace_record_t) - offsetof(prb_trace_record_t, size);
     /* arch isn't important here but make it as native arch */
 #ifdef CONFIG_X86_64
     proberec.type      = URT_APIWRAP64_V1;
@@ -740,4 +767,59 @@ int vtss_record_probe_all(int cpu, int fid, int is_safe)
     proberec.entry_cpu = proberec.cpuidx;
     proberec.fid       = fid;
     return vtss_transport_record_write_all(&proberec, sizeof(proberec), NULL, 0, is_safe);
+}
+
+int vtss_record_thread_name(struct vtss_transport_data* trnd, pid_t tid, const char *taskname, int is_safe)
+{
+    size_t namelen = taskname ? strlen(taskname) + 1 : 0;
+#ifdef VTSS_USE_UEC
+    thname_trace_record_t namerec;
+    namerec.probe.flagword  = UEC_LEAF1 | UECL1_ACTIVITY | UECL1_VRESIDX | UECL1_CPUIDX | UECL1_CPUTSC | UECL1_USERTRACE;
+    namerec.probe.activity  = UECACT_PROBED;
+    namerec.probe.residx    = tid;
+    namerec.probe.cpuidx    = 0;
+    namerec.probe.cputsc    = vtss_time_real();
+
+    namerec.probe.size      = sizeof(thname_trace_record_t) - offsetof(prb_trace_record_t, size) + namelen;
+#ifdef CONFIG_X86_64
+    namerec.probe.type      = URT_APIWRAP64_V1;
+#else
+    proberec.probe.type     = URT_APIWRAP32_V1;
+#endif
+    namerec.probe.entry_tsc = namerec.probe.cputsc;
+    namerec.probe.entry_cpu = namerec.probe.cpuidx;
+    namerec.probe.fid       = FID_THREAD_NAME;
+
+    namerec.version  = 1;
+    namerec.length   = namelen;
+
+    return vtss_transport_record_write(trnd, &namerec, sizeof(namerec), (void*)taskname, namelen, is_safe);
+#else
+    int rc = -EFAULT;
+    void* entry;
+    thname_trace_record_t* namerec = (thname_trace_record_t*)vtss_transport_record_reserve(trnd, &entry, sizeof(thname_trace_record_t) + namelen);
+    if (likely(namerec)) {
+        namerec->probe.flagword  = UEC_LEAF1 | UECL1_ACTIVITY | UECL1_VRESIDX | UECL1_CPUIDX | UECL1_CPUTSC | UECL1_USERTRACE;
+        namerec->probe.activity  = UECACT_PROBED;
+        namerec->probe.residx    = tid;
+        namerec->probe.cpuidx    = 0;
+        namerec->probe.cputsc    = vtss_time_real();
+
+        namerec->probe.size      = sizeof(thname_trace_record_t) - offsetof(prb_trace_record_t, size) + namelen;
+#ifdef CONFIG_X86_64
+        namerec->probe.type      = URT_APIWRAP64_V1;
+#else
+        namerec->probe.type      = URT_APIWRAP32_V1;
+#endif
+        namerec->probe.entry_tsc = namerec->probe.cputsc;
+        namerec->probe.entry_cpu = namerec->probe.cpuidx;
+        namerec->probe.fid       = FID_THREAD_NAME;
+        
+        namerec->version  = 1;
+        namerec->length   = namelen;
+        memcpy(++namerec, taskname, namelen);
+        rc = vtss_transport_record_commit(trnd, entry, is_safe);
+    }
+    return rc;
+#endif
 }

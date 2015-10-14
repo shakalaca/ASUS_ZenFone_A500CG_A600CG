@@ -30,7 +30,6 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
-#include <asm/intel-mid.h>
 
 #include "dmaengine.h"
 
@@ -48,8 +47,6 @@
 #define INTEL_BYT_LPIO2_DMAC_ID		0x0F40
 #define INTEL_BYT_DMAC0_ID		0x0F28
 #define INTEL_CHT_DMAC0_ID             0x22A8
-#define INTEL_CHT_LPIO1_DMAC_ID		0x2286
-#define INTEL_CHT_LPIO2_DMAC_ID		0x22C0
 
 #define LNW_PERIPHRAL_MASK_SIZE		0x20
 #define ENABLE_PARTITION_UPDATE		(BIT(26))
@@ -92,9 +89,7 @@ static int get_ch_index(int status, unsigned int base)
 static inline bool is_byt_lpio_dmac(struct middma_device *mid)
 {
 	return (mid->pci_id == INTEL_BYT_LPIO1_DMAC_ID ||
-		mid->pci_id == INTEL_BYT_LPIO2_DMAC_ID ||
-		mid->pci_id == INTEL_CHT_LPIO1_DMAC_ID ||
-		mid->pci_id == INTEL_CHT_LPIO2_DMAC_ID);
+		mid->pci_id == INTEL_BYT_LPIO2_DMAC_ID);
 }
 
 static void dump_dma_reg(struct dma_chan *chan)
@@ -580,7 +575,7 @@ static int midc_lli_fill_sg(struct intel_mid_dma_chan *midc,
 		ctl_hi = get_block_ts(sg->length, desc->width,
 					midc->dma->block_size, midc->dma->dword_trf);
 		/*Populate SAR and DAR values*/
-		sg_phy_addr = sg_phys(sg);
+		sg_phy_addr = sg_dma_address(sg);
 		if (desc->dirn ==  DMA_MEM_TO_DEV) {
 			lli_bloc_desc->sar  = sg_phy_addr;
 			lli_bloc_desc->dar  = mids->dma_slave.dst_addr;
@@ -682,7 +677,7 @@ static inline void dma_wait_for_suspend(struct dma_chan *chan, unsigned int mask
 	struct middma_device	*mid = to_middma_device(chan->device);
 	struct intel_mid_dma_chan	*midc = to_intel_mid_dma_chan(chan);
 	int i;
-	const int max_loops = 100;
+	const int max_loops = 200;
 
 	/* Suspend channel */
 	cfg_lo.cfg_lo = ioread32(midc->ch_regs + CFG_LOW);
@@ -704,7 +699,8 @@ static inline void dma_wait_for_suspend(struct dma_chan *chan, unsigned int mask
 	}
 
 	if (i == max_loops)
-		pr_info("Waited 5 ms for chan[%d] FIFO to get empty\n",
+		pr_err("Waited x ms(%d loops) for chan[%d] FIFO to get empty\n",
+			max_loops,
 			chan->chan_id);
 	else
 		pr_debug("waited for %d loops for chan[%d] FIFO to get empty",
@@ -814,7 +810,7 @@ static int intel_mid_dma_device_control(struct dma_chan *chan,
 	 */
 	if (cmd == DMA_PAUSE) {
 		midc->in_use = 0;
-		pm_runtime_put(mid->dev);
+		pm_runtime_put_sync(mid->dev);
 		return 0;
 	}
 
@@ -1090,7 +1086,8 @@ static struct dma_async_tx_descriptor *intel_mid_dma_prep_memcpy_v2(
 			else
 				return NULL;
 
-		} else if (midc->dma->pci_id == INTEL_MRFLD_GP_DMAC2_ID) {
+		} else if ((midc->dma->pci_id == INTEL_MRFLD_GP_DMAC2_ID) ||
+				(midc->dma->pci_id == PCI_DEVICE_ID_INTEL_GP_DMAC2_MOOR)) {
 			if (mids->dma_slave.direction == DMA_MEM_TO_DEV) {
 				cfg_hi.cfgx_v2.src_per = 0;
 
@@ -1270,6 +1267,22 @@ static struct dma_async_tx_descriptor *intel_mid_dma_chan_prep_desc(
 		dma_pool_destroy(desc->lli_pool);
 		return NULL;
 	}
+
+	/*
+	 * dma_map_sg() helps to convert DMA address to comply to what the
+	 * device's dma mask asks for. On systems with 4+ GB DDR memory,
+	 * kmalloc() simply returns an address larger than 0x1 0000 0000.
+	 * For audio DMA(32-bit OCP master), obviously it can't handle
+	 * that address. So dma_map_sg() does the magic to re-assign a new
+	 * 32-bit DMA address(a memcpy actually on x86 no-IOMMU platforms)
+	 */
+	if (!dma_map_sg(mid->dev, src_sg, src_sg_len, DMA_MEM_TO_MEM)) {
+		pr_err("MID_DMA: dma_map_sg() failed\n");
+		dma_pool_free(desc->lli_pool, desc->lli, desc->lli_phys);
+		dma_pool_destroy(desc->lli_pool);
+		return NULL;
+	}
+
 	midc_lli_fill_sg(midc, desc, src_sg, dst_sg, src_sg_len, flags);
 	if (flags & DMA_PREP_INTERRUPT) {
 		/* Enable Block intr, disable TFR intr.
@@ -1414,7 +1427,7 @@ static void intel_mid_dma_free_chan_resources(struct dma_chan *chan)
 
 	/* Disable the channel */
 	iowrite32(DISABLE_CHANNEL(midc->ch_id), mid->dma_base + DMA_CHAN_EN);
-	pm_runtime_put(mid->dev);
+	pm_runtime_put_sync(mid->dev);
 }
 
 /**
@@ -1444,7 +1457,7 @@ static int intel_mid_dma_alloc_chan_resources(struct dma_chan *chan)
 	/* ASSERT:  channel is idle */
 	if (midc->in_use == true) {
 		pr_err("ERR_MDMA: ch not idle\n");
-		pm_runtime_put(mid->dev);
+		pm_runtime_put_sync(mid->dev);
 		return -EIO;
 	}
 	dma_cookie_init(chan);
@@ -1455,7 +1468,7 @@ static int intel_mid_dma_alloc_chan_resources(struct dma_chan *chan)
 		desc = dma_pool_alloc(mid->dma_pool, GFP_KERNEL, &phys);
 		if (!desc) {
 			pr_err("ERR_MDMA: desc failed\n");
-			pm_runtime_put(mid->dev);
+			pm_runtime_put_sync(mid->dev);
 			return -ENOMEM;
 			/*check*/
 		}
@@ -1500,7 +1513,7 @@ static void dma_tasklet(unsigned long data)
 {
 	struct middma_device *mid = NULL;
 	struct intel_mid_dma_chan *midc = NULL;
-	u32 status, raw_tfr, raw_block;
+	u32 status, raw_tfr, raw_block, raw_err;
 	int i;
 	mid = (struct middma_device *)data;
 	if (mid == NULL) {
@@ -1578,7 +1591,8 @@ static void dma_tasklet(unsigned long data)
 		spin_unlock_bh(&midc->lock);
 	}
 
-	status = ioread32(mid->dma_base + RAW_ERR);
+	raw_err = ioread32(mid->dma_base + RAW_ERR);
+	status = raw_err & mid->intr_mask;
 	pr_debug("MDMA:raw error status:%#x\n", status);
 	while (status) {
 		/*err interrupt*/
@@ -1928,14 +1942,7 @@ static int intel_mid_dma_probe(struct pci_dev *pdev,
 	pr_debug("MDMA: CH %d, base %d, block len %d, Periphral mask %x\n",
 				info->max_chan, info->ch_base,
 				info->block_size, info->pimr_mask);
-	/* REVERT ME: forcing failure of Audio DMA on CRC HVP  */
-	/* Temporary workaround waiting for root causing issue */
-	if ((info->pci_id == INTEL_MRFLD_DMAC0_ID)
-		&& (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON)
-		&& (intel_mid_identify_sim() == INTEL_MID_CPU_SIMULATION_HVP)) {
-		pr_err("Temporary WA : forcing failure of DMAC0 for CRC HVP\n");
-		goto err_enable_device;
-	}
+
 	err = pci_enable_device(pdev);
 	if (err)
 		goto err_enable_device;
@@ -2117,13 +2124,6 @@ static struct pci_device_id intel_mid_dma_ids[] = {
 		INFO(6, 0, 2047, 0, 0, 1, 0, INTEL_BYT_LPIO1_DMAC_ID, &v1_dma_ops)},
 	{ PCI_VDEVICE(INTEL, INTEL_BYT_LPIO2_DMAC_ID),
 		INFO(6, 0, 2047, 0, 0, 1, 0, INTEL_BYT_LPIO2_DMAC_ID, &v1_dma_ops)},
-	/* Cherryview Low Speed Peripheral DMA */
-	{ PCI_VDEVICE(INTEL, INTEL_CHT_LPIO1_DMAC_ID),
-		INFO(6, 0, 2047, 0, 0, 1, 0, INTEL_CHT_LPIO1_DMAC_ID,
-			&v1_dma_ops)},
-	{ PCI_VDEVICE(INTEL, INTEL_CHT_LPIO2_DMAC_ID),
-		INFO(6, 0, 2047, 0, 0, 1, 0, INTEL_CHT_LPIO2_DMAC_ID,
-			&v1_dma_ops)},
 
 	{ 0, }
 };
@@ -2166,30 +2166,6 @@ struct intel_mid_dma_probe_info dma_cht_info = {
 	.pdma_ops = &v2_dma_ops,
 };
 
-struct intel_mid_dma_probe_info dma_cht1_info = {
-	.max_chan = 6,
-	.ch_base = 0,
-	.block_size = 2047,
-	.pimr_mask = 0,
-	.pimr_base = 0,
-	.dword_trf = 1,
-	.pimr_offset = 0,
-	.pci_id = INTEL_CHT_LPIO1_DMAC_ID,
-	.pdma_ops = &v1_dma_ops,
-};
-
-struct intel_mid_dma_probe_info dma_cht2_info = {
-	.max_chan = 6,
-	.ch_base = 0,
-	.block_size = 2047,
-	.pimr_mask = 0,
-	.pimr_base = 0,
-	.dword_trf = 1,
-	.pimr_offset = 0,
-	.pci_id = INTEL_CHT_LPIO2_DMAC_ID,
-	.pdma_ops = &v1_dma_ops,
-};
-
 static const struct dev_pm_ops intel_mid_dma_pm = {
 	.suspend_late = dma_suspend,
 	.resume_early = dma_resume,
@@ -2226,8 +2202,6 @@ static const struct acpi_device_id dma_acpi_ids[] = {
 	{ "DMA0F28", (kernel_ulong_t)&dma_byt_info },
 	{ "ADMA0F28", (kernel_ulong_t)&dma_byt_info },
 	{ "INTL9C60", (kernel_ulong_t)&dma_byt1_info },
-	{ "80862286", (kernel_ulong_t)&dma_cht1_info },
-	{ "808622C0", (kernel_ulong_t)&dma_cht2_info },
 	{ "ADMA22A8", (kernel_ulong_t)&dma_cht_info },
 	{ },
 };

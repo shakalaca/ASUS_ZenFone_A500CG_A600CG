@@ -25,15 +25,17 @@
 #include "memory_access.h"
 #include "ia_css_types.h"
 #include "sh_css_internal.h"
-#include "assert_support.h"
 #include "sh_css_frac.h"
 
 #include "ia_css_raa.host.h"
 
 void
-ia_css_raa_encode(struct sh_css_isp_aa_params *to,
-		 const struct ia_css_aa_config *from)
+ia_css_raa_encode(
+	struct sh_css_isp_aa_params *to,
+	const struct ia_css_aa_config *from,
+	unsigned size)
 {
+	(void)size;
 	(void)to;
 	(void)from;
 }

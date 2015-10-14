@@ -112,6 +112,7 @@ static const struct mrst_limit_t mrfld_limits[] = {
 	{			/* MRFLD_LIMT_DSIPLL_83 */
 	 .dot = {.min = MRFLD_DOT_MIN,.max = MRFLD_DOT_MAX},
 	 .m = {.min = MRFLD_DSIPLL_M_MIN_83,.max = MRFLD_DSIPLL_M_MAX_83},
+
 	 .p1 = {.min = MRFLD_DSIPLL_P1_MIN_83,.max = MRFLD_DSIPLL_P1_MAX_83},
 	 },
 	{			/* MRFLD_LIMT_DSIPLL_100 */
@@ -142,7 +143,6 @@ static const u32 mrfld_m_converts[] = {
 	103, 51, 25, 12, 262, 387, 193, 96, 48, 280,	/* 161 - 170 */
 	396, 198, 99, 305, 152, 76, 294, 403, 457, 228,	/* 171 - 180 */
 };
-
 static const struct mrst_limit_t *mrfld_limit(struct drm_device *dev, int pipe)
 {
 	const struct mrst_limit_t *limit = NULL;
@@ -333,29 +333,47 @@ void mrfld_setup_pll(struct drm_device *dev, int pipe, int clk)
 	 * calculate them according to the DSI PLL HAS spec.
 	 */
 	if (pipe != 1) {
-		if (is_panel_vid_or_cmd(dev) == MDFLD_DSI_ENCODER_DBI) {
-			if (get_panel_type(dev, pipe) == JDI_7x12_CMD) {
-				clock.p1 = 4;
-				clk_n = 1;
-				clock.m = 142;
-			} else if (get_panel_type(dev, pipe) == SHARP_10x19_CMD) {
+		switch(get_panel_type(dev, pipe)) {
+		case SDC_16x25_CMD:
 				clock.p1 = 3;
-				clk_n = 1;
+				clock.m = 126;
+				break;
+		case SHARP_10x19_VID:
+		case SHARP_10x19_CMD:
+				clock.p1 = 3;
+				clock.m = 137;
+				break;
+		case SHARP_10x19_DUAL_CMD:
+				clock.p1 = 3;
 				clock.m = 125;
-			} else {
+				break;
+		case CMI_7x12_CMD:
 				clock.p1 = 4;
-				clk_n = 1;
 				clock.m = 120;
-			}
-		} else if (is_dual_dsi(dev)) {
-			clock.p1 = 2;
-			clk_n = 1;
-			clock.m = 104;
-		} else {
-			clock.p1 = 5;
-			clk_n = 1;
-			clock.m = 130;
+				break;
+		case SDC_25x16_CMD:
+		case JDI_25x16_CMD:
+		case SHARP_25x16_CMD:
+				clock.p1 = 3;
+				clock.m = 138;
+				break;
+		case SHARP_25x16_VID:
+		case JDI_25x16_VID:
+				clock.p1 = 3;
+				clock.m = 140;
+				break;
+		case JDI_7x12_VID:
+				clock.p1 = 5;
+				clk_n = 1;
+				clock.m = 144;
+				break;
+		default:
+			/* for JDI_7x12_CMD */
+				clock.p1 = 4;
+				clock.m = 142;
+				break;
 		}
+		clk_n = 1;
 	}
 
 	if (!ok) {
@@ -380,7 +398,7 @@ void mrfld_setup_pll(struct drm_device *dev, int pipe, int clk)
 		pll &= ~_DSI_MUX_SEL_CCK_DSI0;
 	}
 
-	if (is_mipi2) {
+	if (is_mipi2 || is_dual_dsi(dev)) {
 		/* Enable DSI PLL clocks for DSI1 rather than CCK. */
 		pll |= _CLK_EN_PLL_DSI1;
 		pll &= ~_CLK_EN_CCK_DSI1;
@@ -397,7 +415,6 @@ void mrfld_setup_pll(struct drm_device *dev, int pipe, int clk)
 	if (pipe != 1) {
 		ctx->dpll = pll;
 		ctx->fp = fp;
-
 		mutex_unlock(&dsi_config->context_lock);
 	}
 }
@@ -483,8 +500,121 @@ void enable_HFPLL(struct drm_device *dev)
 			intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG,
 					pll_select | _DSI_CCK_PLL_SELECT);
 			ctrl_reg5 |= (1 << 7) | 0xF;
+
+			if (get_panel_type(dev, 0) == SHARP_10x19_CMD)
+				ctrl_reg5 = 0x1f87;
 			intel_mid_msgbus_write32(CCK_PORT,
 					FUSE_OVERRIDE_FREQ_CNTRL_REG5,
 					ctrl_reg5);
 	}
+}
+
+bool enable_DSIPLL(struct drm_device *dev)
+{
+	DRM_DRIVER_PRIVATE_T *dev_priv = dev->dev_private;
+	struct mdfld_dsi_config *dsi_config = NULL;
+	struct mdfld_dsi_hw_context *ctx = NULL;
+	u32 guit_val = 0x0;
+	u32 retry;
+
+	if (!dev_priv)
+		goto err_out;
+	dsi_config = dev_priv->dsi_configs[0];
+	if (!dsi_config)
+		goto err_out;
+	ctx = &dsi_config->dsi_hw_context;
+
+	if (IS_ANN(dev)) {
+		int dspfreq;
+
+		if ((get_panel_type(dev, 0) == JDI_7x12_CMD) ||
+			(get_panel_type(dev, 0) == JDI_7x12_VID))
+			dspfreq = DISPLAY_FREQ_FOR_200;
+		else
+			dspfreq = DISPLAY_FREQ_FOR_333;
+
+		intel_mid_msgbus_write32(CCK_PORT,
+			FUSE_OVERRIDE_FREQ_CNTRL_REG5,
+			CKESC_GATE_EN | CKDP1X_GATE_EN | DISPLAY_FRE_EN
+			| dspfreq);
+	}
+
+	/* Prepare DSI  PLL register before enabling */
+	intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_DIV_REG, 0);
+	guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
+	guit_val &= ~(DPLL_VCO_ENABLE | _DSI_LDO_EN
+			|_CLK_EN_MASK | _DSI_MUX_SEL_CCK_DSI0 | _DSI_MUX_SEL_CCK_DSI1);
+	intel_mid_msgbus_write32(CCK_PORT,
+					DSI_PLL_CTRL_REG, guit_val);
+	udelay(1);
+	/* Program PLL */
+
+	/*first set up the dpll and fp variables
+	 * dpll - will contain the following information
+	 *      - the clock source - DSI vs HFH vs LFH PLL
+	 * 	- what clocks should be running DSI0, DSI1
+	 *      - and the divisor.
+	 *
+	 */
+
+	intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_DIV_REG, ctx->fp);
+	guit_val &= ~_P1_POST_DIV_MASK;	/*clear the divisor bit*/
+	/* the ctx->dpll contains the divisor that we need to use as well as which clocks
+	 * need to start up */
+	guit_val |= ctx->dpll;
+	guit_val &= ~_DSI_LDO_EN;	/* We want to clear the LDO enable when programming*/
+	guit_val |=  DPLL_VCO_ENABLE;	/* Enable the DSI PLL */
+
+	/* For the CD clock (clock used by Display controller), we need to set
+	 * the DSI_CCK_PLL_SELECT bit (bit 11). This should already be set. But
+	 * setting it just in case
+	 */
+	if (dev_priv->bUseHFPLL)
+		guit_val |= _DSI_CCK_PLL_SELECT;
+
+	intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG, guit_val);
+
+	/* Wait for DSI PLL lock */
+	retry = 10000;
+	guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
+	while (((guit_val & _DSI_PLL_LOCK) != _DSI_PLL_LOCK) && (--retry)) {
+		udelay(3);
+		guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
+		if (!retry%1000)
+			DRM_ERROR("DSI PLL taking too long to lock"
+				"- retry count=%d\n", 10000-retry);
+	}
+	if (retry == 0) {
+		DRM_ERROR("DSI PLL fails to lock\n");
+		return false;
+	}
+
+	return true;
+err_out:
+	return false;
+
+}
+
+bool disable_DSIPLL(struct drm_device * dev)
+{
+	u32 val, guit_val;
+
+	/* Disable PLL*/
+	intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_DIV_REG, 0);
+
+	val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
+	val &= ~_CLK_EN_MASK;
+	intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG, val);
+	udelay(1);
+	val &= ~DPLL_VCO_ENABLE;
+	val |= _DSI_LDO_EN;
+	intel_mid_msgbus_write32(CCK_PORT, DSI_PLL_CTRL_REG, val);
+	udelay(1);
+
+	guit_val = intel_mid_msgbus_read32(CCK_PORT, DSI_PLL_CTRL_REG);
+	if ((guit_val & _DSI_PLL_LOCK) == _DSI_PLL_LOCK ) {
+		DRM_ERROR("DSI PLL fails to Unlock\n");
+		return false;
+	}
+	return true;
 }

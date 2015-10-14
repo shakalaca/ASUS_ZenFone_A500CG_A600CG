@@ -5,7 +5,7 @@
  *  agreement or nondisclosure agreement with Intel Corporation and may not
  *  be copied or disclosed except in accordance with the terms of that
  *  agreement.
- *        Copyright (c) 2010-2012 Intel Corporation.  All Rights Reserved.
+ *        Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
  * -------------------------------------------------------------------------
 **COPYRIGHT*/
 /*
@@ -15,26 +15,26 @@
 #ifndef _LWPMUDRV_VERSION_H_
 #define _LWPMUDRV_VERSION_H_
 
-// SEP VERSIONING - Make sure to update basic001 DQ to match if version numbers here are changed, otherwise the test will fail.
-
 #define _STRINGIFY(x)     #x
 #define STRINGIFY(x)      _STRINGIFY(x)
 #define _STRINGIFY_W(x)   L#x
 #define STRINGIFY_W(x)    _STRINGIFY_W(x)
 
-#define SEP_MAJOR_VERSION 3
-#define SEP_MINOR_VERSION 10
-#define SEP_API_VERSION   3
+#define SEP_MAJOR_VERSION   3
+#define SEP_MINOR_VERSION   15
+#define SEP_API_VERSION     5
+#define SEP_UPDATE_VERSION  0
+#if SEP_UPDATE_VERSION > 0
+#define SEP_UPDATE_STRING   " Update "STRINGIFY(SEP_UPDATE_VERSION)
+#else
+#define SEP_UPDATE_STRING   ""
+#endif
 
 #define EMON_MAJOR_VERSION          9
-#define EMON_MINOR_VERSION          0
+#define EMON_MINOR_VERSION          1
 #define EMON_PRODUCT_RELEASE_STRING 0
 
-#ifdef EMON_INTERNAL
-#define EMON_PRODUCT_TYPE "Private"
-#else
 #define EMON_PRODUCT_TYPE "Public"
-#endif
 
 #ifndef PRODUCT_BUILDER
 #define PRODUCT_BUILDER "(unknown)"
@@ -51,7 +51,7 @@
 
 #define PRODUCT_VERSION_DATE    __DATE__ " at " __TIME__
 
-#define PRODUCT_COPYRIGHT   "Copyright (C) 1993-2013 Intel Corporation. All rights reserved."
+#define PRODUCT_COPYRIGHT   "Copyright (C) 1993-2014 Intel Corporation. All rights reserved."
 #define PRODUCT_DISCLAIMER  "Warning: This computer program is protected under U.S. and international\ncopyright laws, and may only be used or copied in accordance with the terms\nof the license agreement.  Except as permitted by such license, no part\nof this computer program may be reproduced, stored in a retrieval system,\nor transmitted in any form or by any means without the express written consent\nof Intel Corporation."
 
 #define SEP_MSG_PREFIX    SEP_NAME""STRINGIFY(SEP_MAJOR_VERSION)"_"STRINGIFY(SEP_MINOR_VERSION)":"
@@ -81,9 +81,7 @@
 
 #endif
 
-#if defined(EMON_INTERNAL)
-#define SEP_DRIVER_MODE " (EMON INTERNAL)"
-#elif defined(EMON)
+#if   defined(EMON)
 #define SEP_DRIVER_MODE " (EMON)"
 #else
 #define SEP_DRIVER_MODE ""

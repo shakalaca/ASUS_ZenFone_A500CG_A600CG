@@ -3,7 +3,6 @@
 
 #include <linux/compiler.h>
 #include <linux/types.h>
-#include <linux/version.h>
 
 /* These macros are used to mark some functions or 
  * initialized data (doesn't apply to uninitialized data)
@@ -330,19 +329,6 @@ void __init parse_early_options(char *cmdline);
 #define __INITDATA_OR_MODULE __INITDATA
 #define __INITRODATA_OR_MODULE __INITRODATA
 #endif /*CONFIG_MODULES*/
-
-/* Functions marked as __devexit may be discarded at kernel link time, depending
-   on config options.  Newer versions of binutils detect references from
-   retained sections to discarded sections and flag an error.  Pointers to
-   __devexit functions must use __devexit_p(function_name), the wrapper will
-   insert either the function_name or NULL, depending on the config options.
-   Chih-Hsuan modify for Android4.4 porting at 2014/03/14
- */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0)
-#define __devinit
-#define __devexit
-#define __devexit_p(x) x
-#endif
 
 #ifdef MODULE
 #define __exit_p(x) x

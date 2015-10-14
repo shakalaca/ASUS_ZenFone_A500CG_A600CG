@@ -22,6 +22,7 @@
 #ifndef _IA_CSS_ISP_PARAM_H_
 #define _IA_CSS_ISP_PARAM_H_
 
+#include <ia_css_err.h>
 #include "ia_css_isp_param_types.h"
 
 /* Set functions for parameter memory descriptors */

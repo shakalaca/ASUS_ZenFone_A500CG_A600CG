@@ -32,13 +32,21 @@ extern const struct ia_css_aa_config default_aa_config;
 extern const struct ia_css_aa_config default_baa_config;
 
 void
-ia_css_aa_encode(struct sh_css_isp_aa_params *to,
-		 const struct ia_css_aa_config *from);
+ia_css_aa_encode(
+	struct sh_css_isp_aa_params *to,
+	const struct ia_css_aa_config *from,
+	unsigned size);
+
+#ifndef IA_CSS_NO_DEBUG
+void
+ia_css_aa_dump(
+	const struct sh_css_isp_aa_params *aa,
+	unsigned level);
 
 void
-ia_css_aa_dump(const struct sh_css_isp_aa_params *aa, unsigned level);
-
-void
-ia_css_aa_debug_dtrace(const struct ia_css_aa_config *config, unsigned level);
+ia_css_aa_debug_dtrace(
+	const struct ia_css_aa_config *config,
+	unsigned level);
+#endif /* IA_CSS_NO_DEBUG */
 
 #endif /* __IA_CSS_AA_HOST_H */

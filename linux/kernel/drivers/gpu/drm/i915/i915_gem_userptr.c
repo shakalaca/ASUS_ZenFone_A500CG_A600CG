@@ -279,6 +279,9 @@ i915_gem_userptr_ioctl(struct drm_device *dev,
 						I915_USERPTR_UNSYNCHRONIZED))
 		return -EINVAL;
 
+	if (!args->user_ptr)
+		return -EINVAL;
+
 	first_data_page = args->user_ptr / PAGE_SIZE;
 	last_data_page = (args->user_ptr + args->user_size - 1) / PAGE_SIZE;
 	num_pages = last_data_page - first_data_page + 1;
@@ -318,7 +321,7 @@ i915_gem_userptr_ioctl(struct drm_device *dev,
 		drm_gem_object_release(&obj->gem.base);
 		dev_priv->mm.object_count--;
 		dev_priv->mm.object_memory -= obj->gem.base.size;
-		kfree(obj);
+		i915_gem_object_free(&obj->gem);
 		return ret;
 	}
 
@@ -328,7 +331,7 @@ i915_gem_userptr_ioctl(struct drm_device *dev,
 		drm_gem_object_release(&obj->gem.base);
 		dev_priv->mm.object_count--;
 		dev_priv->mm.object_memory -= obj->gem.base.size;
-		kfree(obj);
+		i915_gem_object_free(&obj->gem);
 		return ret;
 	}
 

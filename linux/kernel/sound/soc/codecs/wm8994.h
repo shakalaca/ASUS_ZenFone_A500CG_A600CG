@@ -147,6 +147,7 @@ struct wm8994_priv {
 	u16 mic_status;
 	bool mic_detecting;
 	bool jack_mic;
+	bool headphone_detected;
 	int btn_mask;
 	bool jackdet;
 	int jackdet_mode;

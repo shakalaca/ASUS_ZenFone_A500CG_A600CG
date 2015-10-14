@@ -280,20 +280,6 @@ bool ps_hdmi_power_islands_on()
 	return true;
 }
 
-bool ps_hdmi_hdcp_power_islands_on()
-{
-	/*
-	 * If pmu_nc_set_power_state fails then accessing HW
-	 * reg would result in a crash - IERR/Fabric error.
-	 */
-	if (pmu_nc_set_power_state(OSPM_DISPLAY_B_ISLAND,
-				OSPM_ISLAND_UP, OSPM_REG_TYPE))
-		BUG();
-
-	return true;
-}
-
-
 void ps_hdmi_power_islands_off()
 {
 }

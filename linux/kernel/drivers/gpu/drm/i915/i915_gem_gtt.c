@@ -346,7 +346,7 @@ static int gen6_ppgtt_init(struct i915_hw_ppgtt *ppgtt)
 	ppgtt->base.insert_entries = gen6_ppgtt_insert_entries;
 	ppgtt->base.cleanup = gen6_ppgtt_cleanup;
 	ppgtt->base.scratch = dev_priv->gtt.base.scratch;
-	ppgtt->pt_pages = kzalloc(sizeof(struct page *)*ppgtt->num_pd_entries,
+	ppgtt->pt_pages = kcalloc(ppgtt->num_pd_entries, sizeof(struct page *),
 				  GFP_KERNEL);
 	if (!ppgtt->pt_pages)
 		return -ENOMEM;
@@ -357,7 +357,7 @@ static int gen6_ppgtt_init(struct i915_hw_ppgtt *ppgtt)
 			goto err_pt_alloc;
 	}
 
-	ppgtt->pt_dma_addr = kzalloc(sizeof(dma_addr_t) *ppgtt->num_pd_entries,
+	ppgtt->pt_dma_addr = kcalloc(ppgtt->num_pd_entries, sizeof(dma_addr_t),
 				     GFP_KERNEL);
 	if (!ppgtt->pt_dma_addr)
 		goto err_pt_alloc;
@@ -629,6 +629,15 @@ void i915_gem_gtt_bind_object(struct drm_i915_gem_object *obj,
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	const unsigned long entry = i915_gem_obj_ggtt_offset(obj) >> PAGE_SHIFT;
 
+	/* Map the scratch page into the GTT entries of the object */
+	if ((unsigned long)(obj->pages) == (unsigned long)obj) {
+		dev_priv->gtt.base.clear_range(&dev_priv->gtt.base,
+				       entry,
+				       obj->base.size >> PAGE_SHIFT);
+		obj->has_global_gtt_mapping = 1;
+		return;
+	}
+
 	dev_priv->gtt.base.insert_entries(&dev_priv->gtt.base, obj->pages,
 					  entry,
 					  cache_level,
@@ -682,6 +691,134 @@ static void i915_gtt_color_adjust(struct drm_mm_node *node,
 			*end -= 4096;
 	}
 }
+
+/* Release the node (which holds FW logo) with DRM for both GTT and stolen range. */
+void clear_reserved_fwlogo_mem(struct drm_i915_private *dev_priv)
+{
+	if (dev_priv->fwlogo_gtt_node) {
+		drm_mm_put_block(dev_priv->fwlogo_gtt_node);
+
+		dev_priv->gtt.base.clear_range(&dev_priv->gtt.base,
+					       dev_priv->fwlogo_offset >> PAGE_SHIFT,
+					       dev_priv->fwlogo_size >> PAGE_SHIFT);
+	}
+
+	if (dev_priv->fwlogo_stolen_node)
+		drm_mm_put_block(dev_priv->fwlogo_stolen_node);
+
+	dev_priv->fwlogo_gtt_node = NULL;
+	dev_priv->fwlogo_stolen_node = NULL;
+	DRM_DEBUG_DRIVER("Cleanup reserved node upon first flip after boot\n");
+}
+
+static unsigned int
+i915_get_physical_address(struct drm_device *dev, unsigned long ggtt_offset)
+{
+	drm_i915_private_t *dev_priv = dev->dev_private;
+	gen6_gtt_pte_t __iomem *gtt_entries;
+	unsigned int addr, first_entry;
+
+	first_entry = ggtt_offset >> PAGE_SHIFT;
+	gtt_entries = (gen6_gtt_pte_t __iomem *) dev_priv->gtt.gsm + first_entry;
+	addr = (readl(&gtt_entries[0]) & PHYSICAL_ADDR_MASK);
+
+	DRM_DEBUG_DRIVER("GTT entry is 0x%x & Dma/physaddr is 0x%x\n",
+					ioread32(&gtt_entries[0]), (u32)addr);
+
+
+	return addr;
+}
+
+static bool
+reserve_fwlogo_in_gtt(struct drm_device *dev)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct i915_address_space *ggtt_vm = &dev_priv->gtt.base;
+	int retval;
+
+	dev_priv->fwlogo_gtt_node =
+			kzalloc(sizeof(*dev_priv->fwlogo_gtt_node), GFP_KERNEL);
+	if (!dev_priv->fwlogo_gtt_node)
+		return false;
+
+	dev_priv->fwlogo_gtt_node->start = dev_priv->fwlogo_offset;
+	dev_priv->fwlogo_gtt_node->size = dev_priv->fwlogo_size;
+
+	retval = drm_mm_reserve_node(&ggtt_vm->mm, dev_priv->fwlogo_gtt_node);
+	if (retval)
+		return false;
+
+	return true;
+}
+
+static bool
+reserve_fwlogo_in_stolen(struct drm_device *dev, int stolen_offset)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	int retval;
+	dev_priv->fwlogo_stolen_node =
+			kzalloc(sizeof(*dev_priv->fwlogo_stolen_node),
+					GFP_KERNEL);
+	if (!dev_priv->fwlogo_stolen_node)
+		return false;
+
+	dev_priv->fwlogo_stolen_node->start = stolen_offset;
+	dev_priv->fwlogo_stolen_node->size = dev_priv->fwlogo_size;
+
+	retval = drm_mm_reserve_node(&dev_priv->mm.stolen,
+			dev_priv->fwlogo_stolen_node);
+	if (retval)
+		return false;
+
+	return true;
+}
+
+
+/* Release the node (which holds FW logo) with DRM for both GTT and stolen range. */
+static void reserve_fwlogo_mem(struct drm_device *dev)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	bool is_stolen_offset;
+	unsigned int phy_addr, stolen_offset;
+	unsigned int stolen_size = (unsigned int) dev_priv->gtt.stolen_size;
+
+	/* Reserve FW Logo in GTT */
+	if (!reserve_fwlogo_in_gtt(dev))
+		goto err_gtt;
+
+	phy_addr = i915_get_physical_address(dev, dev_priv->fwlogo_offset);
+	is_stolen_offset = (phy_addr >= dev_priv->mm.stolen_base &&
+				phy_addr <= (dev_priv->mm.stolen_base + stolen_size));
+
+	DRM_DEBUG_DRIVER("Does the offset falls within Stolen %d\n",
+							is_stolen_offset);
+
+	if (is_stolen_offset && drm_mm_initialized(&dev_priv->mm.stolen)) {
+		/* Reserve FW Logo in Stolen */
+		stolen_offset = phy_addr - dev_priv->mm.stolen_base;
+		DRM_DEBUG_DRIVER("Stolen offset= 0x%x\n", stolen_offset);
+		if (!reserve_fwlogo_in_stolen(dev, stolen_offset))
+			goto err_out;
+	}
+
+	return;
+err_out:
+	drm_mm_put_block(dev_priv->fwlogo_gtt_node);
+	dev_priv->gtt.base.clear_range(&dev_priv->gtt.base,
+			       dev_priv->fwlogo_offset >> PAGE_SHIFT,
+			       dev_priv->fwlogo_size >> PAGE_SHIFT);
+
+	kfree(dev_priv->fwlogo_stolen_node);
+err_gtt:
+	kfree(dev_priv->fwlogo_gtt_node);
+
+	dev_priv->fwlogo_gtt_node = NULL;
+	dev_priv->fwlogo_stolen_node = NULL;
+	DRM_ERROR("Couldnt reserve GGTT or Stolen DRM node for FW Logo\n");
+}
+
+
+
 void i915_gem_setup_global_gtt(struct drm_device *dev,
 			       unsigned long start,
 			       unsigned long mappable_end,
@@ -708,6 +845,9 @@ void i915_gem_setup_global_gtt(struct drm_device *dev,
 	drm_mm_init(&ggtt_vm->mm, start, end - start - PAGE_SIZE);
 	if (!HAS_LLC(dev))
 		dev_priv->gtt.base.mm.color_adjust = i915_gtt_color_adjust;
+
+	if (dev_priv->fwlogo_size)
+		reserve_fwlogo_mem(dev);
 
 	/* Mark any preallocated objects as occupied */
 	list_for_each_entry(obj, &dev_priv->mm.bound_list, global_list) {
@@ -845,7 +985,7 @@ static int gen6_gmch_probe(struct drm_device *dev,
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	phys_addr_t gtt_bus_addr;
 	unsigned int gtt_size;
-	u16 snb_gmch_ctl;
+	u16 snb_gmch_ctl = 0;
 	int ret;
 
 	*mappable_base = pci_resource_start(dev->pdev, 2);

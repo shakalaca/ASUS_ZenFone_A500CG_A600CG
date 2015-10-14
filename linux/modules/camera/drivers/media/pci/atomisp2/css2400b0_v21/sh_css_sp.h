@@ -23,15 +23,14 @@
 #define _SH_CSS_SP_H_
 
 #include <system_global.h>
+#include <type_support.h>
 #if !defined(HAS_NO_INPUT_FORMATTER)
 #include "input_formatter.h"
 #endif
 
 #include "ia_css_binary.h"
-#include "sh_css_internal.h"
 #include "ia_css_types.h"
 #include "ia_css_pipeline.h"
-#include "ia_css_queue.h"
 
 /* Function to initialize the data and bss section descr of the binary */
 void
@@ -42,10 +41,6 @@ store_sp_stage_data(enum ia_css_pipe_id id, unsigned int pipe_num, unsigned stag
 
 void
 sh_css_stage_write_binary_info(struct ia_css_binary_info *info);
-
-void
-sh_css_sp_init_group(bool two_ppc, enum ia_css_stream_format input_format,
-		     bool no_isp_sync, uint8_t if_config_index);
 
 void
 store_sp_group_data(void);
@@ -73,8 +68,9 @@ sh_css_sp_init_pipeline(struct ia_css_pipeline *me,
 			unsigned int required_bds_factor,
 			enum sh_css_pipe_config_override copy_ovrd,
 			enum ia_css_input_mode input_mode,
-			const struct ia_css_metadata_config *md_config
-#if !defined(IS_ISP_2500_SYSTEM)
+			const struct ia_css_metadata_config *md_config,
+			const struct ia_css_metadata_info *md_info
+#if !defined(HAS_NO_INPUT_SYSTEM)
 			, const mipi_port_ID_t port_id
 #endif
 			);
@@ -84,6 +80,11 @@ sh_css_sp_uninit_pipeline(unsigned int pipe_num);
 
 void
 sh_css_write_host2sp_command(enum host2sp_commands host2sp_command);
+
+#if defined(HAS_SEC_SP)
+void
+sh_css_write_host2sp1_command(enum host2sp_commands host2sp_command);
+#endif /* HAS_SEC_SP */
 
 enum host2sp_commands
 sh_css_read_host2sp_command(void);
@@ -100,18 +101,10 @@ sh_css_init_host2sp_frame_data(void);
 void
 sh_css_update_host2sp_offline_frame(
 				unsigned frame_num,
-				struct ia_css_frame *frame);
+				struct ia_css_frame *frame,
+				struct ia_css_metadata *metadata);
 
-/**
- * @brief Get the right queue to operate on
- *
- * @param[in] type
- * @param[in] id
- * @param[in] thread
- */
-ia_css_queue_t*
-sh_css_get_queue(enum sh_css_queue_type type, enum sh_css_buffer_queue_id id,
-		 int thread);
+#if defined(USE_INPUT_SYSTEM_VERSION_2) || defined(USE_INPUT_SYSTEM_VERSION_2401)
 /**
  * @brief Update the mipi frame information in host_sp_communication.
  *
@@ -124,12 +117,15 @@ sh_css_update_host2sp_mipi_frame(
 				struct ia_css_frame *frame);
 
 /**
- * @brief Update the nr of offline frames to use in host_sp_communication.
+ * @brief Update the mipi metadata information in host_sp_communication.
  *
- * @param[in] num_frames The number of raw frames to use.
+ * @param[in] frame_num The mipi frame number.
+ * @param[in] metadata The pointer to the mipi metadata.
  */
 void
-sh_css_update_host2sp_cont_num_raw_frames(unsigned num_frames, bool set_avail);
+sh_css_update_host2sp_mipi_metadata(
+				unsigned frame_num,
+				struct ia_css_metadata *metadata);
 
 /**
  * @brief Update the nr of mipi frames to use in host_sp_communication.
@@ -137,21 +133,39 @@ sh_css_update_host2sp_cont_num_raw_frames(unsigned num_frames, bool set_avail);
  * @param[in] num_frames The number of mipi frames to use.
  */
 void
-sh_css_update_host2sp_cont_num_mipi_frames(unsigned num_frames);
+sh_css_update_host2sp_num_mipi_frames(unsigned num_frames);
+#endif
+
+/**
+ * @brief Update the nr of offline frames to use in host_sp_communication.
+ *
+ * @param[in] num_frames The number of raw frames to use.
+ */
+void
+sh_css_update_host2sp_cont_num_raw_frames(unsigned num_frames, bool set_avail);
 
 void
 sh_css_event_init_irq_mask(void);
 
 void
 sh_css_sp_start_isp(void);
+#if defined(HAS_SEC_SP)
+void
+sh_css_sp1_start(void);
+#endif /* HAS_SEC_SP */
 
 void
 sh_css_sp_set_sp_running(bool flag);
 
+#if defined(HAS_SEC_SP)
+void
+sh_css_sp1_set_sp1_running(bool flag);
+#endif /* HAS_SEC_SP */
+
 bool
 sh_css_sp_is_running(void);
 
-#if SP_DEBUG !=SP_DEBUG_NONE
+#if SP_DEBUG != SP_DEBUG_NONE
 
 void
 sh_css_sp_get_debug_state(struct sh_css_sp_debug_state *state);
@@ -159,7 +173,8 @@ sh_css_sp_get_debug_state(struct sh_css_sp_debug_state *state);
 #endif
 
 #if !defined(HAS_NO_INPUT_FORMATTER)
-extern void sh_css_sp_set_if_configs(
+void
+sh_css_sp_set_if_configs(
 	const input_formatter_cfg_t	*config_a,
 	const input_formatter_cfg_t	*config_b,
 	const uint8_t		if_config_index);
@@ -187,11 +202,13 @@ void
 sh_css_sp_configure_prbs(int seed);
 
 void
-sh_css_sp_reset_global_vars(void);
+sh_css_sp_configure_enable_raw_pool_locking(bool lock_all);
 
-enum ia_css_err
-sh_css_sp_write_frame_pointers(const struct sh_css_binary_args *args,
-				unsigned pipe_num, unsigned stage_num);
+void
+sh_css_sp_enable_isys_event_queue(bool enable);
+
+void
+sh_css_sp_reset_global_vars(void);
 
 /**
  * @brief Initialize the DMA software-mask in the debug mode.
@@ -205,7 +222,8 @@ sh_css_sp_write_frame_pointers(const struct sh_css_binary_args *args,
  *	- true, if it is successful.
  *	- false, otherwise.
  */
-extern bool sh_css_sp_init_dma_sw_reg(int dma_id);
+bool
+sh_css_sp_init_dma_sw_reg(int dma_id);
 
 /**
  * @brief Set the DMA software-mask in the debug mode.
@@ -229,7 +247,8 @@ extern bool sh_css_sp_init_dma_sw_reg(int dma_id);
  *	- true, if it is successful.
  *	- false, otherwise.
  */
-extern bool sh_css_sp_set_dma_sw_reg(int dma_id,
+bool
+sh_css_sp_set_dma_sw_reg(int dma_id,
 		int channel_id,
 		int request_type,
 		bool enable);
@@ -240,4 +259,3 @@ extern struct sh_css_sp_stage sh_css_sp_stage;
 extern struct sh_css_isp_stage sh_css_isp_stage;
 
 #endif /* _SH_CSS_SP_H_ */
-

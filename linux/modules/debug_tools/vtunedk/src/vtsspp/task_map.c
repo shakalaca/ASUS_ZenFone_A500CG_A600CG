@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -65,6 +65,7 @@ vtss_task_map_item_t* vtss_task_map_get_item(pid_t key)
 #endif
     struct hlist_node *temp = NULL;
     vtss_task_map_item_t *item;
+//    printk("get start");
     if (atomic_read(&vtss_map_initialized)==0)return NULL;
 
     read_lock_irqsave(&vtss_task_map_lock, flags);
@@ -78,10 +79,12 @@ vtss_task_map_item_t* vtss_task_map_get_item(pid_t key)
         if (key == item->key) {
             atomic_inc(&item->usage);
             read_unlock_irqrestore(&vtss_task_map_lock, flags);
+//            printk("get end 1");
             return item;
         }
     }
     read_unlock_irqrestore(&vtss_task_map_lock, flags);
+//    printk("get end");
     return NULL;
 }
 
@@ -93,12 +96,13 @@ int vtss_task_map_put_item(vtss_task_map_item_t* item)
 {
     unsigned long flags;
 
+//    printk("put start");
     if ((item != NULL) && atomic_dec_and_test(&item->usage)) {
         if (item->in_list) {
             write_lock_irqsave(&vtss_task_map_lock, flags);
             if (item->in_list) {
-                hlist_del_init(&item->hlist);
                 item->in_list = 0;
+                hlist_del_init(&item->hlist);
             }
             write_unlock_irqrestore(&vtss_task_map_lock, flags);
         }
@@ -107,9 +111,11 @@ int vtss_task_map_put_item(vtss_task_map_item_t* item)
                 item->dtor(item, NULL);
             item->dtor = NULL;
             kfree(item);
+//            printk("put end 1");
             return 1;
         }
     }
+//    printk("put end");
     return 0;
 }
 
@@ -122,15 +128,18 @@ int vtss_task_map_put_item(vtss_task_map_item_t* item)
 int vtss_task_map_add_item(vtss_task_map_item_t* item2)
 {
     unsigned long flags;
+    int ret = 0;
     struct hlist_head *head;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
     struct hlist_node *node = NULL;
 #endif
     vtss_task_map_item_t *item = NULL;
     struct hlist_node *temp = NULL;
-
+//    printk("add item\n");
     if ((item2 != NULL) && !item2->in_list) {
         write_lock_irqsave(&vtss_task_map_lock, flags);
+        if (!item2->in_list)
+        {
         head = &vtss_task_map_hash_table[vtss_task_map_hash(item2->key)];
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,9,0)
         hlist_for_each_entry_safe(item, node, temp, head, hlist)
@@ -140,25 +149,32 @@ int vtss_task_map_add_item(vtss_task_map_item_t* item2)
         {
             if (item2->key == item->key) {
                 /* Already there, remove it */
-                item->in_list = 0;
                 hlist_del_init(&item->hlist);
+//                printk("add item delete from list\n");
+                if (atomic_read(&item->usage) == 0){
+                    //item = NULL; // it will be deleted in "put"
+                    item->in_list = 0;
+                }
+                else if ( atomic_dec_and_test(&item->usage)) {
+//                    printk("add item delete item really\n");
+                    if (item->dtor)
+                        item->dtor(item, NULL);
+                    item->dtor = NULL;
+                    kfree(item);
+                    ret = 1;
+                    //item = NULL;
+                } else item->in_list = 0;
                 break;
             }
-            item = NULL;
+            //item = NULL;
         }
         atomic_inc(&item2->usage);
         hlist_add_head(&item2->hlist, head);
         item2->in_list = 1;
         write_unlock_irqrestore(&vtss_task_map_lock, flags);
-        if ((item != NULL) && atomic_dec_and_test(&item->usage)) {
-            if (item->dtor)
-                item->dtor(item, NULL);
-            item->dtor = NULL;
-            kfree(item);
-            return 1;
         }
     }
-    return 0;
+    return ret;
 }
 
 /**
@@ -170,16 +186,18 @@ int vtss_task_map_del_item(vtss_task_map_item_t* item)
 {
     unsigned long flags;
 
+//    printk("delete item\n");
     if (item != NULL) {
         if (item->in_list) {
             write_lock_irqsave(&vtss_task_map_lock, flags);
             if (item->in_list) {
-                hlist_del_init(&item->hlist);
                 item->in_list = 0;
+                hlist_del_init(&item->hlist);
             }
             write_unlock_irqrestore(&vtss_task_map_lock, flags);
         }
         if (atomic_dec_and_test(&item->usage)) {
+//    printk("delete item really\n");
             if (item->dtor)
                 item->dtor(item, NULL);
             item->dtor = NULL;
@@ -279,13 +297,17 @@ void vtss_task_map_fini(void)
 #endif
         {
             hlist_del_init(&item->hlist);
-            item->in_list = 0;
-            if (atomic_dec_and_test(&item->usage)) {
+            if (atomic_read(&item->usage) == 0){
+                //item = NULL; // it will be deleted in "put"
+                item->in_list = 0;
+            }
+            else if (atomic_dec_and_test(&item->usage)) {
                 if (item->dtor)
                     item->dtor(item, NULL);
                 item->dtor = NULL;
                 kfree(item);
             } else {
+                item->in_list = 0;
                 ERROR("item=0x%p is busy now, key=%d, usage=%d", item, item->key, atomic_read(&item->usage));
             }
         }

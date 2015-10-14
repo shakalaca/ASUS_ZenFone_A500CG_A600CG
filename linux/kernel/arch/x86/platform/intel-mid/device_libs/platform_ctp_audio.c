@@ -35,14 +35,23 @@ void *ctp_audio_platform_data(void *info)
 	int ret;
 	struct sfi_device_table_entry *pentry = info;
 	char name[SFI_NAME_LEN+1];
-	printk("ctp_audio_platform_data \n");
+
 	ctp_audio_pdata.codec_gpio_hsdet = get_gpio_by_name("gpio_plugdet");
+/*#if defined(CONFIG_ME372CL) || defined(CONFIG_PF450CL)
+	ctp_audio_pdata.codec_gpio_button = get_gpio_by_name("HOOK_DET");
+	ctp_audio_pdata.codec_gpio_dmic = GPIO_DMIC_1_EN;
+#elif defined(CONFIG_A500CG)*/
 	ctp_audio_pdata.codec_gpio_button = get_gpio_by_name("CODEC_INT_N");
 	/* ctp_audio_pdata.codec_gpio_dmic = GPIO_DMIC_1_EN; */
 
 	/*FIXME: hard-code GPIO info before IFWI ready */
 	ctp_audio_pdata.codec_gpio_hsdet = 34;
 	ctp_audio_pdata.codec_gpio_button = 32;
+/*#else
+	ctp_audio_pdata.codec_gpio_button = get_gpio_by_name("gpio_codec_int");
+	ctp_audio_pdata.codec_gpio_dmic = GPIO_DMIC_1_EN;
+#endif*/ /* CONFIG_ME372CL */
+
 	ret = add_sst_platform_device();
 	if (ret < 0)
 		return NULL;

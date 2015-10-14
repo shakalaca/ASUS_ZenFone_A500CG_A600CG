@@ -22,7 +22,9 @@
 #ifndef __IMX_H__
 #define __IMX_H__
 #include <linux/atomisp_platform.h>
+
 #include <linux/atomisp.h>
+
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/kernel.h>
@@ -35,6 +37,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
 #include "imx219.h"
+
 
 
 #define IMX_MCLK		192

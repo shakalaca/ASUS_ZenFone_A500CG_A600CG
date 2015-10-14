@@ -620,23 +620,44 @@ static inline int bcu_get_battery_voltage(int *volt)
 	return ret;
 }
 
+/**
+ * Initiate Graceful Shutdown by setting the SOC to 0% via battery driver and
+ * post the power supply changed event to indicate the change in battery level.
+ */
+static inline int bcu_action_voltage_drop(void)
+{
+	struct power_supply *psy;
+	union power_supply_propval val;
+	int ret;
+
+	psy = get_psy_battery();
+	if (!psy)
+		return -EINVAL;
+
+	/* setting battery capacity to 0 */
+	val.intval = 0;
+	ret = psy->set_property(psy, POWER_SUPPLY_PROP_CAPACITY, &val);
+	if (ret < 0)
+		return ret;
+
+	power_supply_changed(psy);
+	return 0;
+}
+
 static void handle_VW1_event(void *dev_data)
 {
-	uint8_t irq_status, beh_data;
+	uint8_t irq_status;
 	struct ocd_info *cinfo = (struct ocd_info *)dev_data;
 	int ret;
-	char *bcu_envp[2];
 
 	dev_info(cinfo->dev, "EM_BCU: VWARN1 Event has occured\n");
 
-	/**
-	 * Notify using uevent along with env info. Here sending vwarn2 info
-	 * upon receiving vwarn1 interrupt since the vwarn1 & vwarn2 threshold
-	 * values is swapped.
-	 */
-	bcu_envp[0] = get_envp(VWARN2);
-	bcu_envp[1] = NULL;
-	kobject_uevent_env(&cinfo->dev->kobj, KOBJ_CHANGE, bcu_envp);
+	/* Trigger graceful shutdown via battery driver by setting SOC to 0% */
+	dev_info(cinfo->dev, "EM_BCU: Trigger Graceful Shutdown\n");
+	ret = bcu_action_voltage_drop();
+	if (ret)
+		dev_err(cinfo->dev,
+			"EM_BCU: Error in Triggering Graceful Shutdown\n");
 
 	/**
 	 * Masking the BCU MVWARN1 Interrupt, since software does graceful
@@ -673,18 +694,8 @@ static void handle_VW2_event(void *dev_data)
 	uint8_t irq_status, beh_data;
 	struct ocd_info *cinfo = (struct ocd_info *)dev_data;
 	int ret;
-	char *bcu_envp[2];
 
 	dev_info(cinfo->dev, "EM_BCU: VWARN2 Event has occured\n");
-
-	/**
-	 * Notify using uevent along with env info. Here sending vwarn1 info
-	 * upon receiving vwarn2 interrupt since the vwarn1 & vwarn2 threshold
-	 * values is swapped.
-	 */
-	bcu_envp[0] = get_envp(VWARN1);
-	bcu_envp[1] = NULL;
-	kobject_uevent_env(&cinfo->dev->kobj, KOBJ_CHANGE, bcu_envp);
 
 	ret = intel_scu_ipc_ioread8(S_BCUINT, &irq_status);
 	if (ret)
@@ -761,15 +772,9 @@ ipc_fail:
 static void handle_VC_event(void *dev_data)
 {
 	struct ocd_info *cinfo = (struct ocd_info *)dev_data;
-	char *bcu_envp[2];
 	int ret = 0;
 
 	dev_info(cinfo->dev, "EM_BCU: VCRIT Event has occured\n");
-
-	/* Notify using uevent along with env info */
-	bcu_envp[0] = get_envp(VCRIT);
-	bcu_envp[1] = NULL;
-	kobject_uevent_env(&cinfo->dev->kobj, KOBJ_CHANGE, bcu_envp);
 
 	/**
 	 * Masking BCU VCRIT Interrupt, since hardware does critical hardware

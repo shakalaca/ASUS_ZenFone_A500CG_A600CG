@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -48,5 +48,6 @@
 /// VTSS procfs errors
 /// Change this value leads the fixes in client collector function "getStatus"
 #define VTSS_ERR_INIT_FAILED -1001
+#define VTSS_ERR_START_IN_RUN -1002
 
 #endif

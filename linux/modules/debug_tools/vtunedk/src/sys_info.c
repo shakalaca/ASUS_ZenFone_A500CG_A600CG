@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -30,9 +30,6 @@
 #include <linux/version.h>
 #include <linux/mm.h>
 #include <asm/uaccess.h>
-#if defined(DRV_IA64)
-#include <asm/pal.h>
-#endif
 
 #include "lwpmudrv_types.h"
 #include "rise_errors.h"
@@ -41,16 +38,10 @@
 #include "lwpmudrv.h"
 #include "control.h"
 #include "utility.h"
-#if defined(DRV_IA32) || defined(DRV_EM64T)
 #include "apic.h"
-#endif
 #include "sys_info.h"
 
-#if defined(DRV_IA32) || defined(DRV_EM64T)
 #define VTSA_CPUID VTSA_CPUID_X86
-#elif defined(DRV_IA64)
-#define VTSA_CPUID VTSA_CPUID_IPF
-#endif
 
 extern U64              total_ram;
 static IOCTL_SYS_INFO  *ioctl_sys_info      = NULL;
@@ -72,9 +63,7 @@ static U32             *cpuid_total_count   = NULL;
                                       SYS_INFO_LINE_PARTITIONS((rbx)) *    \
                                       SYS_INFO_NUM_WAYS((rbx)))
 
-#define MSR_FB_PCARD_ID_FUSE  0x17    // platform id fuses MSR
-
-#if defined(DRV_IA32) || defined(DRV_EM64T)
+#define MSR_FB_PCARD_ID_FUSE   0x17     // platform id fuses MSR
 #define LOW_PART(x)     (x & 0xFFFFFFFF)
 
 /* Find most signicant bit set to 1? */
@@ -184,7 +173,6 @@ sys_info_Get_Num_Cpuid_Funcs (
 
     return ((U32) (num_basic_funcs + num_basic_4_funcs + num_extended_funcs));
 }
-#endif /* defined(DRV_IA32) || defined(DRV_EM64T) */
 
 /* ------------------------------------------------------------------------- */
 /*!
@@ -213,12 +201,7 @@ sys_info_Get_Cpuid_Entry_Count (
     ASSERT(((U8 *) current_cpu_buffer + sizeof(U32)) <=
            ((U8 *) current_cpu_buffer + GLOBAL_STATE_active_cpus(driver_state) * sizeof(U32)));
 #endif
-
-#if defined(DRV_IA64)
-    *current_cpu_buffer = ((U32)((0xff & SYS_Read_CPUID(3)) + 1));
-#else
     *current_cpu_buffer = sys_info_Get_Num_Cpuid_Funcs(NULL, NULL, NULL);
-#endif
 
     return;
 }
@@ -255,110 +238,6 @@ sys_info_Get_Cpuid_Buffer_Size (
     return buffer_size;
 }
 
-#if defined(DRV_IA64)
-static VOID
-sys_info_Fill_CPUID (
-    U32                  num_cpuids,
-    U32                  cpu,
-    VTSA_CPUID          *current_cpuid,
-    VTSA_GEN_PER_CPU    *gen_per_cpu,
-    VTSA_GEN_PER_CPU    *local_gpc
-)
-{
-    U32                    i;
-    VTSA_CPUID            *cpuid_el;
-    struct ia64_pal_retval iprv;
-    LOGICAL_OVERVIEW       logical_overview;
-    PROC_N_LOG_INFO1       proc_n_log_info1;
-    PROC_N_LOG_INFO2       proc_n_log_info2;
-    U64                    logical_address;
-    U64                    cache_levels;
-    CONFIG_INFO_2          config_info_2;
-
-    for (i = 0; i < num_cpuids; i++) {
-        cpuid_el = &current_cpuid[i];
-        VTSA_CPUID_IPF_cpuid_select(cpuid_el) = i;
-        SEP_PRINT_DEBUG("cpuid_select=%d\n", i);
-        VTSA_CPUID_IPF_cpuid_val(cpuid_el)    = SYS_Read_CPUID(i);
-    }
-
-    VTSA_GEN_PER_CPU_platform_id(local_gpc) = VTSA_NA64;
-
-    PAL_CALL(iprv, PAL_CACHE_SUMMARY, 0, 0, 0);
-    // iprv.v0 = cache levels and iprv.v1 = unique caches.
-    // These cache sizes are either for unified or data caches.
-    cache_levels = iprv.v0;
-    if (iprv.status == 0) {
-        // get L2 info if it exists
-        if (cache_levels >= 2) {
-            PAL_CALL(iprv, PAL_CACHE_INFO, 1, DATA_UNIFIED_CACHE, 0);
-            if (iprv.status == 0) {
-                config_info_2.data = iprv.v1;
-                VTSA_GEN_PER_CPU_cpu_cache_L2(local_gpc) = config_info_2.cache_size;
-                SEP_PRINT_DEBUG("L2 cache size from PAL = "FSU64"\n", gen_per_cpu[cpu].cpu_cache_L2 );
-            }
-        }
-        // get L3 info if it exists
-        if (cache_levels >= 3) {
-            PAL_CALL(iprv, PAL_CACHE_INFO, 2, DATA_UNIFIED_CACHE, 0);
-            if (iprv.status == 0) {
-                config_info_2.data = iprv.v1;
-                VTSA_GEN_PER_CPU_cpu_cache_L3(local_gpc) = config_info_2.cache_size;
-                SEP_PRINT_DEBUG("L3 cache size from PAL = "FSU64"\n", gen_per_cpu[cpu].cpu_cache_L3 );
-            }
-        }
-    }
-
-    PAL_CALL(iprv, PAL_LOGICAL_TO_PHYSICAL, 0, 0, 0);
-    logical_overview.value = iprv.v0;
-    proc_n_log_info1.value = iprv.v1;
-    proc_n_log_info2.value = iprv.v2;
-
-    if (iprv.status != 0) {
-        // Pal call failed.  Hardcode the values.
-        SEP_PRINT_DEBUG("PAL_LOGICAL_TO_PHYSICAL failed ***\n");
-        VTSA_GEN_PER_CPU_cpu_package_num(local_gpc)      = (U16)cpu;
-        VTSA_GEN_PER_CPU_cpu_core_num(local_gpc)         = 0;
-        VTSA_GEN_PER_CPU_cpu_hw_thread_num(local_gpc)    = 0;
-        VTSA_GEN_PER_CPU_cpu_threads_per_core(local_gpc) = 1;
-    }
-    else {
-        // Pal call succeeded.
-        SEP_PRINT_DEBUG("PAL_LOGICAL_TO_PHYSICAL succeeded ***\n");
-
-        VTSA_GEN_PER_CPU_cpu_package_num(local_gpc)      = logical_overview.ppid;
-        VTSA_GEN_PER_CPU_cpu_threads_per_core(local_gpc) = logical_overview.tpc;
-
-        PAL_CALL(iprv, PAL_FIXED_ADDR, 0, 0, 0);
-        logical_address = iprv.v0;
-        if (logical_address == proc_n_log_info2.la) {
-            VTSA_GEN_PER_CPU_cpu_core_num(local_gpc)      = proc_n_log_info1.cid;
-            VTSA_GEN_PER_CPU_cpu_hw_thread_num(local_gpc) = proc_n_log_info1.tid;
-        }
-        else {
-            SEP_PRINT_DEBUG("build_sys_info_per_cpu_1:%u: logical_overview.num_log = %x\n",
-                            cpu, logical_overview.num_log);
-
-            for (i = 1; i < logical_overview.num_log; i++) {
-                PAL_CALL(iprv, PAL_LOGICAL_TO_PHYSICAL, i, 0, 0);
-                proc_n_log_info1.value = iprv.v1;
-                proc_n_log_info2.value = iprv.v2;
-                SEP_PRINT_DEBUG("build_sys_info_per_cpu:%u: proc_n_log_info1.value = 0x%p proc_n_log_info2.value = 0x%p\n", cpu, (U64 *)proc_n_log_info1.value, (U64 *)proc_n_log_info2.value);
-
-                if (logical_address == proc_n_log_info2.la) {
-                    VTSA_GEN_PER_CPU_cpu_core_num(local_gpc)      = proc_n_log_info1.cid;
-                    VTSA_GEN_PER_CPU_cpu_hw_thread_num(local_gpc) = proc_n_log_info1.tid;
-                    break;
-                }
-            }
-        }
-    }
-
-    return;
-}
-#endif
-
-#if defined(DRV_IA32) || defined(DRV_EM64T)
 /* ------------------------------------------------------------------------- */
 /*!
  * @fn extern void sys_info_Fill_CPUID(...)
@@ -404,7 +283,6 @@ sys_info_Fill_CPUID (
     U32                  module_id                = 0;
     U32                  cores_sharing_cache      = 0;
     U32                  cache_mask_width         = 0;
-    U32                  cache_apic_mask          = 0;
 
     if (drv_x2apic_enabled) {
         apic_id    = SYS_Read_MSR(DRV_APIC_LCL_ID_MSR);
@@ -461,8 +339,6 @@ sys_info_Fill_CPUID (
             if (cores_sharing_cache != 0) {
                 cache_mask_width = (U32)sys_info_nbits(cores_sharing_cache);
                 SEP_PRINT_DEBUG("CACHE MASK WIDTH=%x\n", cache_mask_width);
-                cache_apic_mask = ~((-1) << cache_mask_width);
-                SEP_PRINT_DEBUG("CACHE APIC ID MASK=%x\n", cache_apic_mask);
             }
         }
         else if (cpuid_function == 0xb) {
@@ -564,12 +440,15 @@ sys_info_Fill_CPUID (
     VTSA_GEN_PER_CPU_cpu_num_modules(local_gpc)            = (U16)(GLOBAL_STATE_num_cpus(driver_state)/2);
     GLOBAL_STATE_num_modules(driver_state)                 = VTSA_GEN_PER_CPU_cpu_num_modules(local_gpc);
     SEP_PRINT_DEBUG("MODULE COUNT=%d\n", GLOBAL_STATE_num_modules(driver_state));
-    
+
     core_to_package_map[cpu] = package_id;
+
+    if (num_packages < package_id + 1) {
+        num_packages = package_id + 1;
+    }
 
     return;
 }
-#endif
 
 /* ------------------------------------------------------------------------- */
 /*!
@@ -586,9 +465,7 @@ sys_info_Build_Percpu (
     VOID    *buffer
 )
 {
-#if defined(DRV_IA32) || defined(DRV_EM64T)
     U32                  basic_funcs, basic_4_funcs, extended_funcs;
-#endif
     U32                  num_cpuids;
     U32                  cpu;
     VTSA_CPUID          *current_cpuid;
@@ -601,15 +478,9 @@ sys_info_Build_Percpu (
 #endif
 
     cpu        = CONTROL_THIS_CPU();
-
-#if defined(DRV_IA64)
-    num_cpuids =  ((U32)((0xff & SYS_Read_CPUID(3)) + 1));
-#else
-
     num_cpuids = (U32) sys_info_Get_Num_Cpuid_Funcs(&basic_funcs,
                                                     &basic_4_funcs,
                                                     &extended_funcs);
-#endif
 
     // get the GEN_PER_CPU entry for the current processor.
     gen_per_cpu = (VTSA_GEN_PER_CPU*) buffer;
@@ -641,11 +512,7 @@ sys_info_Build_Percpu (
     //
     local_gpc                                   = &(gen_per_cpu[cpu]);
     VTSA_GEN_PER_CPU_cpu_number(local_gpc)      = cpu;
-#if defined(DRV_IA64)
-    VTSA_GEN_PER_CPU_cpu_speed_mhz(local_gpc)   = local_cpu_data->proc_freq / 1000000;
-#else
     VTSA_GEN_PER_CPU_cpu_speed_mhz(local_gpc)   = VTSA_NA32;
-#endif
     VTSA_GEN_PER_CPU_cpu_fsb_mhz(local_gpc)     = VTSA_NA32;
 
     fsp                                        = &VTSA_GEN_PER_CPU_cpu_cpuid_array(local_gpc);
@@ -675,14 +542,11 @@ sys_info_Build_Percpu (
     VTSA_GEN_ARRAY_HDR_array_subtype(cpuid_gen_array_hdr)     = GST_X86;
 #elif defined(DRV_EM64T)
     VTSA_GEN_ARRAY_HDR_array_subtype(cpuid_gen_array_hdr)     = GST_EM64T;
-#elif defined(DRV_IA64)
-    VTSA_GEN_ARRAY_HDR_array_subtype(cpuid_gen_array_hdr)     = GST_ITANIUM;
 #endif
 
     //
     // fill out cpu id information
     //
-#if defined(DRV_IA32) || defined(DRV_EM64T)
     sys_info_Fill_CPUID (num_cpuids,
                          basic_funcs,
                          extended_funcs,
@@ -690,11 +554,6 @@ sys_info_Build_Percpu (
                          current_cpuid,
                          gen_per_cpu,
                          local_gpc);
-#endif
-
-#if defined(DRV_IA64)
-    sys_info_Fill_CPUID (num_cpuids, cpu, current_cpuid, gen_per_cpu, local_gpc);
-#endif
 
     return;
 }
@@ -724,10 +583,8 @@ SYS_INFO_Build (
     U32                  total_cpuid_entries;
     S32                  i;
     struct sysinfo       k_sysinfo;
-#if defined(DRV_IA32) || defined(DRV_EM64T)
     int                  me;
     PVOID                linear;
-#endif
 
     SEP_PRINT_DEBUG("SYS_INFO_Build(): Entered\n");
 
@@ -845,26 +702,20 @@ SYS_INFO_Build (
     VTSA_GEN_ARRAY_HDR_array_subtype(gen_array_hdr)     = GST_X86;
 #elif defined(DRV_EM64T)
     VTSA_GEN_ARRAY_HDR_array_subtype(gen_array_hdr)     = GST_EM64T;
-#elif defined(DRV_IA64)
-    VTSA_GEN_ARRAY_HDR_array_subtype(gen_array_hdr)     = GST_ITANIUM;
 #endif
 
     gen_per_cpu = (U8 *) gen_array_hdr + sizeof(VTSA_GEN_ARRAY_HDR);
 
-#if defined(DRV_IA32) || defined(DRV_EM64T)
     me     = 0;
     linear = NULL;
     APIC_Init(&linear);
     CONTROL_Invoke_Parallel(APIC_Init, &linear);
-#endif
     CONTROL_Invoke_Parallel(sys_info_Build_Percpu, (VOID *)gen_per_cpu);
-#if defined(DRV_IA32) || defined(DRV_EM64T)
     APIC_Unmap(CPU_STATE_apic_linear_addr(&pcb[me]));
     // de-initialize APIC
     for(i = 0; i < GLOBAL_STATE_num_cpus(driver_state); i++) {
         APIC_Deinit_Phase1(i);
     }
-#endif
 
     /*
      * Cleanup - deallocate memory that is no longer needed

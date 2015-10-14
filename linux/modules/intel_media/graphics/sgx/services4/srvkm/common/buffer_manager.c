@@ -2345,7 +2345,7 @@ DevMemoryFree (BM_MAPPING *pMapping)
 
 /* If this array grows larger, it might be preferable to use a hashtable rather than an array. */
 #ifndef XPROC_WORKAROUND_NUM_SHAREABLES
-#define XPROC_WORKAROUND_NUM_SHAREABLES 1024
+#define XPROC_WORKAROUND_NUM_SHAREABLES 200
 #endif
 
 #define XPROC_WORKAROUND_BAD_SHAREINDEX 0773407734

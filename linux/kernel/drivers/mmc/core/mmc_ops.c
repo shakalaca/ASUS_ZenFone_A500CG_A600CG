@@ -63,8 +63,7 @@ int mmc_card_sleepawake(struct mmc_host *host, int sleep)
 {
 	struct mmc_command cmd = {0};
 	struct mmc_card *card = host->card;
-	int err = 0;
-	unsigned long timeout;
+	int err;
 
 	if (sleep)
 		mmc_deselect_cards(host);
@@ -85,20 +84,9 @@ int mmc_card_sleepawake(struct mmc_host *host, int sleep)
 	 * SEND_STATUS command to poll the status because that command (and most
 	 * others) is invalid while the card sleeps.
 	 */
-	if (!(host->caps & MMC_CAP_WAIT_WHILE_BUSY)) {
-        /* longest waiting time in ms */
-        timeout = DIV_ROUND_UP(card->ext_csd.sa_timeout, 10000);
-        if (host->ops->mmc_poll_busy) {
-            timeout = jiffies + msecs_to_jiffies(timeout);
-            do {
-                mmc_delay(1);
-                if (!(host->ops->mmc_poll_busy)(host))
-                    break;
-            } while(time_before(jiffies, timeout));
-        }
-        else
-            mmc_delay(timeout);
-    }
+	if (!(host->caps & MMC_CAP_WAIT_WHILE_BUSY))
+		mmc_delay(DIV_ROUND_UP(card->ext_csd.sa_timeout, 10000));
+
 	if (!sleep)
 		err = mmc_select_card(card);
 
@@ -109,8 +97,6 @@ int mmc_go_idle(struct mmc_host *host)
 {
 	int err;
 	struct mmc_command cmd = {0};
-
-        pr_debug("enter %s %d\n", __func__, __LINE__);
 
 	/*
 	 * Non-SPI hosts need to prevent chipselect going active during

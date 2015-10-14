@@ -29,6 +29,7 @@
 #include <linux/mfd/intel_mid_pmic.h>
 #include "i915_drv.h"
 #include "intel_drv.h"
+#include "intel_dsi.h"
 #include "../../../platform/x86/intel_ips.h"
 #include <linux/module.h>
 #include <drm/i915_powerwell.h>
@@ -620,6 +621,455 @@ out_disable:
 	}
 	i915_gem_stolen_cleanup_compression(dev);
 }
+
+void intel_set_drrs_state(struct drm_device *dev)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct intel_connector *intel_connector = dev_priv->drrs.connector;
+	struct intel_encoder *intel_encoder = NULL;
+	struct intel_crtc *intel_crtc = NULL;
+	struct drm_display_mode *target_mode;
+	struct drrs_info *drrs_state = &dev_priv->drrs_state;
+	int refresh_rate;
+	bool resume_idleness_detection = false;
+
+	if (intel_connector == NULL) {
+		DRM_DEBUG_KMS("DRRS is not supported on this encoder\n");
+		return;
+	}
+
+	target_mode = intel_connector->panel.target_mode;
+	if (target_mode == NULL) {
+		DRM_DEBUG_KMS("target_mode cannot be NULL\n");
+		return;
+	}
+	refresh_rate = target_mode->vrefresh;
+
+	if (refresh_rate <= 0) {
+		DRM_INFO("Refresh rate should be positive non-zero.<%d>\n",
+								refresh_rate);
+		return;
+	}
+
+	if (drrs_state->target_rr_type > DRRS_MEDIA_RR) {
+		DRM_ERROR("Unknown refresh_rate_type\n");
+		return;
+	}
+
+	intel_encoder = intel_attached_encoder(&intel_connector->base);
+	intel_crtc = intel_encoder->new_crtc;
+
+	if (!intel_crtc) {
+		DRM_DEBUG_KMS("DRRS: intel_crtc not initialized\n");
+		return;
+	}
+
+	if (drrs_state->type < SEAMLESS_DRRS_SUPPORT) {
+		DRM_INFO("Seamless DRRS not supported.\n");
+		return;
+	}
+
+	if (drrs_state->target_rr_type == drrs_state->refresh_rate_type &&
+			drrs_state->refresh_rate_type != DRRS_MEDIA_RR) {
+		DRM_INFO("DRRS requested for previously set RR...ignoring\n");
+		return;
+	}
+
+	if (!intel_crtc->active) {
+		DRM_INFO("Encoder has been disabled. CRTC not Active\n");
+		return;
+	}
+
+	if (INTEL_INFO(dev)->gen > 6 && INTEL_INFO(dev)->gen < 8) {
+		intel_encoder->set_drrs_state(intel_encoder);
+	} else {
+		DRM_ERROR("DRRS not enabled for gen %d\n",
+							INTEL_INFO(dev)->gen);
+		return;
+	}
+
+	if (drrs_state->type != SEAMLESS_DRRS_SUPPORT_SW) {
+		if (drrs_state->refresh_rate_type == DRRS_MEDIA_RR &&
+				drrs_state->target_rr_type == DRRS_HIGH_RR)
+			resume_idleness_detection = true;
+
+		drrs_state->refresh_rate_type = drrs_state->target_rr_type;
+
+		DRM_INFO("Refresh Rate set to : %dHz\n", refresh_rate);
+
+		intel_crtc->base.mode.vrefresh = target_mode->vrefresh;
+		intel_crtc->base.mode.clock = target_mode->clock;
+
+		if (resume_idleness_detection)
+			intel_update_drrs(dev);
+	}
+}
+
+/* Returns TRUE if the media playback DRRS is in progress */
+bool is_media_playback_drrs_in_progress(struct drrs_info *drrs_state)
+{
+	return (drrs_state->refresh_rate_type == DRRS_MEDIA_RR ||
+			drrs_state->target_rr_type == DRRS_MEDIA_RR);
+}
+
+static void intel_drrs_work_fn(struct work_struct *__work)
+{
+	struct intel_drrs_work *work =
+		container_of(to_delayed_work(__work),
+				struct intel_drrs_work, work);
+	struct drm_device *dev = work->crtc->dev;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct intel_panel *panel = &dev_priv->drrs.connector->panel;
+
+	/* Double check if the dual-display mode is active. */
+	if (dev_priv->drrs.is_clone)
+		return;
+
+	if (is_media_playback_drrs_in_progress(&dev_priv->drrs_state))
+		return;
+
+	if (panel->target_mode != NULL)
+		DRM_ERROR("FIXME: Something wrong in DRRS State machine\n");
+
+	mutex_lock(&dev_priv->drrs_state.mutex);
+	panel->target_mode = panel->downclock_mode;
+	dev_priv->drrs_state.target_rr_type = DRRS_LOW_RR;
+
+	intel_set_drrs_state(work->crtc->dev);
+
+	panel->target_mode = NULL;
+	mutex_unlock(&dev_priv->drrs_state.mutex);
+
+	/* Update Watermark Values */
+	if (!dev_priv->atomic_update)
+		intel_update_watermarks(dev);
+}
+
+static void intel_cancel_drrs_work(struct drm_i915_private *dev_priv)
+{
+	if (dev_priv->drrs.drrs_work == NULL)
+		return;
+
+	cancel_delayed_work_sync(&dev_priv->drrs.drrs_work->work);
+	dev_priv->drrs.connector->panel.target_mode = NULL;
+}
+
+static void intel_enable_drrs(struct drm_crtc *crtc)
+{
+	struct drm_i915_private *dev_priv = crtc->dev->dev_private;
+	struct intel_mipi_drrs_work *work = dev_priv->drrs.mipi_drrs_work;
+	bool force_enable_drrs = false;
+
+	if (is_media_playback_drrs_in_progress(&dev_priv->drrs_state))
+		return;
+
+	mutex_lock(&dev_priv->drrs_state.mutex);
+	intel_cancel_drrs_work(dev_priv);
+
+	/* Capturing the deferred request for disable_drrs */
+	if (dev_priv->drrs_state.type == SEAMLESS_DRRS_SUPPORT_SW)
+		if (work_busy(&work->work.work) &&
+				work->target_rr_type == DRRS_HIGH_RR)
+			force_enable_drrs = true;
+
+	if (dev_priv->drrs_state.refresh_rate_type != DRRS_LOW_RR ||
+							force_enable_drrs) {
+		dev_priv->drrs.drrs_work->crtc = crtc;
+
+		/* Delay the actual enabling to let pageflipping cease and the
+		 * display to settle before starting DRRS
+		 */
+		schedule_delayed_work(&dev_priv->drrs.drrs_work->work,
+			msecs_to_jiffies(dev_priv->drrs.drrs_work->interval));
+	}
+	mutex_unlock(&dev_priv->drrs_state.mutex);
+}
+
+void intel_disable_drrs(struct drm_device *dev)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct intel_panel *panel;
+
+	if (dev_priv->drrs.connector == NULL)
+		return;
+
+	if (is_media_playback_drrs_in_progress(&dev_priv->drrs_state))
+		return;
+
+	/* as part of disable DRRS, reset refresh rate to HIGH_RR */
+	if (dev_priv->drrs_state.refresh_rate_type == DRRS_LOW_RR) {
+		mutex_lock(&dev_priv->drrs_state.mutex);
+		intel_cancel_drrs_work(dev_priv);
+		panel = &dev_priv->drrs.connector->panel;
+		if (panel->target_mode != NULL)
+			DRM_ERROR("FIXME: Something wrong in DRRS State\n");
+
+		panel->target_mode = panel->fixed_mode;
+		dev_priv->drrs_state.target_rr_type = DRRS_HIGH_RR;
+		intel_set_drrs_state(dev);
+		panel->target_mode = NULL;
+		mutex_unlock(&dev_priv->drrs_state.mutex);
+
+		/* Update Watermark Values */
+		if (!dev_priv->atomic_update)
+			intel_update_watermarks(dev);
+	}
+
+}
+
+/*
+ * intel_update_drrs - enable/disable DRRS as needed
+ * @dev: the drm_device
+ * @update: if set to true, cancel current work and schedule new work.
+ *	    if set to false, cancel current work and disable DRRS.
+ */
+void intel_update_drrs(struct drm_device *dev)
+{
+	struct drm_crtc *crtc = NULL, *tmp_crtc;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+
+	/* if drrs.connector is NULL, then drrs_init did not get called.
+	 * which means DRRS is not supported.
+	 */
+	if (dev_priv->drrs.connector == NULL)
+		return;
+
+	if (is_media_playback_drrs_in_progress(&dev_priv->drrs_state))
+		return;
+
+	if (dev_priv->drrs.connector->panel.downclock_mode == NULL)
+		return;
+
+	list_for_each_entry(tmp_crtc, &dev->mode_config.crtc_list, head) {
+		if (intel_crtc_active(tmp_crtc)) {
+			if (crtc) {
+				DRM_DEBUG_KMS(
+				"more than one pipe active, disabling DRRS\n");
+				dev_priv->drrs.is_clone = true;
+				intel_disable_drrs(dev);
+				return;
+			}
+			crtc = tmp_crtc;
+		}
+	}
+
+	if (crtc == NULL) {
+		DRM_INFO("DRRS: crtc not initialized\n");
+		return;
+	}
+
+	dev_priv->drrs.is_clone = false;
+	intel_disable_drrs(dev);
+
+	/* re-enable idleness detection */
+	intel_enable_drrs(crtc);
+}
+
+/* Function to handle the Media Playback DRRS requests
+	DRRS_HIGH_RR/DRRS_LOW_RR -> DRRS_MEDIA_RR
+	DRRS_MEDIA_RR -> DRRS_HIGH_RR
+*/
+int intel_media_playback_drrs_configure(struct drm_device *dev,
+					struct drm_display_mode *mode)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drrs_info *drrs_state = &dev_priv->drrs_state;
+	struct drm_crtc *crtc = NULL;
+	struct intel_panel *panel;
+	int refresh_rate = mode->vrefresh;
+	u32 active_crtc_cnt = 0;
+
+	if (dev_priv->drrs_state.type < SEAMLESS_DRRS_SUPPORT) {
+		DRM_ERROR("SEAMLESS_DRRS is not supported\n");
+		return -EPERM;
+	}
+	panel = &dev_priv->drrs.connector->panel;
+
+	if (refresh_rate < panel->downclock_mode->vrefresh &&
+			refresh_rate > panel->fixed_mode->vrefresh) {
+		DRM_ERROR("Invalid refresh_rate\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&dev_priv->drrs_state.mutex);
+
+	if (refresh_rate == panel->fixed_mode->vrefresh) {
+		if (drrs_state->refresh_rate_type == DRRS_MEDIA_RR) {
+			/* DRRS_MEDIA_RR -> DRRS_HIGH_RR */
+			if (panel->target_mode)
+				drm_mode_destroy(dev, panel->target_mode);
+			panel->target_mode = panel->fixed_mode;
+			drrs_state->target_rr_type = DRRS_HIGH_RR;
+		} else {
+			/* Invalid Media Playback DRRS request.
+			 * Resume the Idleness Detection */
+			DRM_DEBUG_KMS("Requested for Fixed mode\n");
+			mutex_unlock(&dev_priv->drrs_state.mutex);
+			intel_update_drrs(dev);
+			return 0;
+		}
+	} else {
+		list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
+			if (intel_crtc_active(crtc)) {
+				if (active_crtc_cnt) {
+					DRM_DEBUG_KMS(
+					"more than one pipe active\n");
+					dev_priv->drrs.is_clone = true;
+					break;
+				} else {
+					dev_priv->drrs.is_clone = false;
+				}
+				active_crtc_cnt++;
+			}
+		}
+
+		if (dev_priv->drrs.is_clone) {
+			if (panel->target_mode &&
+				drrs_state->refresh_rate_type == DRRS_MEDIA_RR)
+				drm_mode_destroy(dev, panel->target_mode);
+			/* Cancel Idleness detection if exist */
+			intel_cancel_drrs_work(dev_priv);
+			panel->target_mode = panel->fixed_mode;
+			drrs_state->target_rr_type = DRRS_HIGH_RR;
+			goto set_state;
+		}
+
+		drrs_state->target_rr_type = DRRS_MEDIA_RR;
+
+		if (drrs_state->refresh_rate_type == DRRS_MEDIA_RR) {
+			/* Refresh rate change in Media playback DRRS */
+			if (refresh_rate == panel->target_mode->vrefresh) {
+				DRM_DEBUG_KMS("Request for current RR.<%d>\n",
+						panel->target_mode->vrefresh);
+				mutex_unlock(&dev_priv->drrs_state.mutex);
+				return 0;
+			}
+			panel->target_mode->vrefresh = refresh_rate;
+		} else {
+			/* Entering MEDIA Playback DRRS state*/
+			intel_cancel_drrs_work(dev_priv);
+			panel->target_mode = drm_mode_duplicate(dev, mode);
+		}
+		if (panel->target_mode) {
+			panel->target_mode->clock = mode->vrefresh * mode->vtotal *
+							mode->htotal / 1000;
+			DRM_DEBUG_KMS("target_rr: %d\n", panel->target_mode->vrefresh);
+		}
+	}
+		DRM_DEBUG_KMS("cur_rr_type: %d, target_rr_type: %d\n",
+				drrs_state->refresh_rate_type,
+				drrs_state->target_rr_type);
+set_state:
+	intel_set_drrs_state(dev);
+	mutex_unlock(&dev_priv->drrs_state.mutex);
+	return 0;
+}
+
+/* Function to filter the Media playback DRRS request from the normal
+ * mode set */
+bool is_media_playback_drrs_request(struct drm_mode_set *set)
+{
+	struct drm_device *dev = set->crtc->dev;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	struct drrs_info *drrs_state = &dev_priv->drrs_state;
+	struct intel_mipi_drrs_work *work = dev_priv->drrs.mipi_drrs_work;
+	bool ret = false;
+
+	if (dev_priv->drrs_state.type < SEAMLESS_DRRS_SUPPORT)
+		return ret;
+
+	if (set->mode == NULL)
+		return ret;
+
+	DRM_DEBUG_KMS("mode_vr: %d, crtc_vr: %d, cur_rr_type: %d\n",
+				set->mode->vrefresh, set->crtc->mode.vrefresh,
+						drrs_state->refresh_rate_type);
+
+	if (drm_mode_equal_no_clocks(set->mode, &set->crtc->mode)) {
+		if (set->mode->vrefresh != set->crtc->mode.vrefresh)
+			ret = true;
+
+		if (dev_priv->drrs_state.type == SEAMLESS_DRRS_SUPPORT_SW) {
+			if (work_busy(&work->work.work)) {
+				if (work->target_mode->vrefresh !=
+						set->mode->vrefresh)
+					/* Deferred work is in place to change
+					 * the DRRS state. Hence this call is
+					 * valid Media playback DRRS request */
+					ret = true;
+				else if (drrs_state->refresh_rate_type !=
+								DRRS_MEDIA_RR)
+					ret = true;
+			}
+		}
+	}
+
+	return ret;
+}
+
+int intel_init_drrs_idleness_detection(struct drm_device *dev,
+					struct intel_connector *connector)
+{
+	struct intel_drrs_work *work;
+	struct drm_i915_private *dev_priv = dev->dev_private;
+
+	if (i915_drrs_interval == 0) {
+		DRM_INFO("DRRS disable by flag\n");
+		return -EPERM;
+	}
+
+	work = kzalloc(sizeof(struct intel_drrs_work), GFP_KERNEL);
+	if (!work) {
+		DRM_ERROR("Failed to allocate DRRS work structure\n");
+		return -ENOMEM;
+	}
+
+	dev_priv->drrs.connector = connector;
+	dev_priv->drrs.is_clone = false;
+
+	work->interval = i915_drrs_interval;
+	INIT_DELAYED_WORK(&work->work, intel_drrs_work_fn);
+
+	dev_priv->drrs.drrs_work = work;
+	return 0;
+}
+
+int
+intel_drrs_init(struct drm_device *dev,
+			struct intel_connector *intel_connector,
+			struct drm_display_mode *downclock_mode) {
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	int ret = 0;
+
+	/* DRRS will be extended to all gen 7+ platforms */
+	if (INTEL_INFO(dev)->gen <= 6 && INTEL_INFO(dev)->gen >= 8) {
+		DRM_ERROR("DRRS is not enabled on Gen %d\n",
+						INTEL_INFO(dev)->gen);
+		return -EPERM;
+	}
+
+	/* First check if DRRS is enabled from VBT struct */
+	if (dev_priv->vbt.drrs_type != SEAMLESS_DRRS_SUPPORT) {
+		DRM_INFO("VBT doesn't support SEAMLESS DRRS\n");
+		return -EPERM;
+	}
+
+	intel_connector->panel.downclock_avail = true;
+	intel_connector->panel.downclock = downclock_mode->clock;
+	intel_connector->panel.target_mode = NULL;
+
+	ret = intel_init_drrs_idleness_detection(dev, intel_connector);
+	if (ret)
+		return ret;
+	mutex_init(&dev_priv->drrs_state.mutex);
+
+	dev_priv->drrs_state.type = dev_priv->vbt.drrs_type;
+	dev_priv->drrs_state.refresh_rate_type = DRRS_HIGH_RR;
+	DRM_INFO("SEAMLESS DRRS supported on this panel.\n");
+
+	return ret;
+}
+
 
 static void i915_pineview_get_mem_freq(struct drm_device *dev)
 {
@@ -1296,8 +1746,30 @@ static bool g4x_compute_srwm(struct drm_device *dev,
 			      display, cursor);
 }
 
+bool vlv_calculate_ddl(struct drm_crtc *crtc, int pixel_size, int *prec_multi, int *ddl)
+{
+	int clock;
+	int entries;
+	bool latencyprogrammed = false;
+
+	clock = to_intel_crtc(crtc)->config.adjusted_mode.clock;	/* VESA DOT Clock */
+	/* WAR (FIXME):
+	 * Needs to be fixed in resume path adjusted_mode clock cannot be 0
+	 */
+	if (clock == 0)
+		clock = crtc->mode.clock;
+
+	entries = DIV_ROUND_UP(clock, 1000) * pixel_size;
+	*prec_multi = (entries > 256) ?
+		DRAIN_LATENCY_PRECISION_64 : DRAIN_LATENCY_PRECISION_32;
+	*ddl = (64 * (*prec_multi) * 4) / entries;
+	latencyprogrammed = true;
+
+	return latencyprogrammed;
+}
+
 static bool vlv_compute_drain_latency(struct drm_device *dev,
-				int plane,
+				int pipe,
 				int *plane_prec_mult,
 				int *plane_dl,
 				int *cursor_prec_mult,
@@ -1311,35 +1783,39 @@ static bool vlv_compute_drain_latency(struct drm_device *dev,
 	int entries;
 	bool latencyprogrammed = false;
 
-	crtc = intel_get_crtc_for_plane(dev, plane);
+	crtc = intel_get_crtc_for_pipe(dev, pipe);
 	if (!intel_crtc_active(crtc))
 		return false;
 
-	clock = crtc->mode.clock;	/* VESA DOT Clock */
+	clock = to_intel_crtc(crtc)->config.adjusted_mode.clock;	/* VESA DOT Clock */
+	/* WAR (FIXME):
+	 * Needs to be fixed in resume path adjusted_mode clock cannot be 0
+	 */
+	if (clock == 0)
+		clock = crtc->mode.clock;
+
 	if (enable.plane_enabled) {
 		pixel_size = crtc->fb->bits_per_pixel / 8;	/* BPP */
-		entries = (clock / 1000) * pixel_size;
+		entries = DIV_ROUND_UP(clock, 1000) * pixel_size;
 		*plane_prec_mult = (entries > 256) ?
 			DRAIN_LATENCY_PRECISION_64 : DRAIN_LATENCY_PRECISION_32;
-		*plane_dl = (64 * (*plane_prec_mult) * 4) / ((clock / 1000) *
-						     pixel_size);
+		*plane_dl = (64 * (*plane_prec_mult) * 4) / entries;
 		latencyprogrammed = true;
 	}
 
 	if (enable.cursor_enabled) {
-		entries = (clock / 1000) * 4;	/* BPP is always 4 for cursor */
+		entries = DIV_ROUND_UP(clock, 1000) * 4;	/* BPP is always 4 for cursor */
 		*cursor_prec_mult = (entries > 256) ?
 			DRAIN_LATENCY_PRECISION_64 : DRAIN_LATENCY_PRECISION_32;
-		*cursor_dl = (64 * (*cursor_prec_mult) * 4) / ((clock / 1000) *
-							4);
+		*cursor_dl = (64 * (*cursor_prec_mult) * 4) / entries;
 		latencyprogrammed = true;
 	}
+
 	if (enable.sprite_enabled) {
-		entries = (clock / 1000) * sprite_pixel_size;
+		entries = DIV_ROUND_UP(clock, 1000) * sprite_pixel_size;
 		*sprite_prec_mult = (entries > 256) ?
 			DRAIN_LATENCY_PRECISION_64 : DRAIN_LATENCY_PRECISION_32;
-		*sprite_dl = (64 * (*sprite_prec_mult) * 4) / ((clock / 1000) *
-						sprite_pixel_size);
+		*sprite_dl = (64 * (*sprite_prec_mult) * 4) / entries;
 		latencyprogrammed = true;
 	}
 
@@ -1376,8 +1852,8 @@ static void vlv_update_drain_latency(struct drm_device *dev)
 				DRAIN_LATENCY_PRECISION_32) ?
 				DDL_PLANEA_PRECISION_32 :
 				DDL_PLANEA_PRECISION_64;
-
-		I915_WRITE_BITS(VLV_DDL1, planea_prec | planea_dl, 0x000000ff);
+		I915_WRITE_BITS(VLV_DDL1, planea_prec | planea_dl,
+				0x000000ff);
 	} else
 		I915_WRITE_BITS(VLV_DDL1, 0x0000, 0x000000ff);
 
@@ -1439,7 +1915,12 @@ static void valleyview_update_wm(struct drm_device *dev)
 	static const int sr_latency_ns = 12000;
 	int ignore_plane_sr, ignore_cursor_sr;
 #endif
-	vlv_update_drain_latency(dev);
+	/*
+	 * TODO: DDL values are calculated and updated in the respective flips
+	 * hence this is not required. This part of the code is to be removed.
+	 */
+	if (!IS_VALLEYVIEW(dev))
+		vlv_update_drain_latency(dev);
 
 	if (g4x_compute_wm0(dev, PIPE_A,
 			    &valleyview_wm_info, latency_ns,
@@ -1476,13 +1957,6 @@ static void valleyview_update_wm(struct drm_device *dev)
 		      planeb_wm, cursorb_wm,
 		      plane_sr, cursor_sr);
 #endif
-	if (is_maxfifo_needed(dev_priv)) {
-		I915_WRITE(FW_BLC_SELF_VLV, FW_CSPWRDWNEN);
-	} else if (I915_READ(FW_BLC_SELF_VLV) & FW_CSPWRDWNEN &&
-	    !is_maxfifo_needed(dev_priv)) {
-		I915_WRITE(FW_BLC_SELF_VLV,
-			   I915_READ(FW_BLC_SELF_VLV) & ~FW_CSPWRDWNEN);
-	}
 
 	I915_WRITE(DSPFW1,
 		   (DSPFW_SR_VAL << DSPFW_SR_SHIFT) |
@@ -1501,6 +1975,22 @@ static void valleyview_update_wm(struct drm_device *dev)
 			(DSPFW5_CURSORB_VAL << DSPFW5_CURSORB_SHIFT) |
 			DSPFW5_CURSORSR_VAL);
 	I915_WRITE(DSPFW6, DSPFW6_DISPLAYSR_VAL);
+	I915_WRITE(DSPARB, DSPARB_VLV_DEFAULT);
+	/* Maxfifo in vallvyview is supported only in set_display atomic path */
+	if (IS_VALLEYVIEW(dev))
+		return;
+	/*
+	 * TODO: when in linear memory dont enable maxfifo. Need to check with
+	 * the hardware team on this. This solves the FADiag app flicker
+	 */
+	if (is_maxfifo_needed(dev_priv) & !dev_priv->maxfifo_enabled &
+			dev_priv->is_tiled) {
+		I915_WRITE(FW_BLC_SELF_VLV, FW_CSPWRDWNEN);
+		dev_priv->maxfifo_enabled = true;
+	} else if (dev_priv->maxfifo_enabled && !is_maxfifo_needed(dev_priv)) {
+		I915_WRITE(FW_BLC_SELF_VLV, ~FW_CSPWRDWNEN);
+		dev_priv->maxfifo_enabled = false;
+	}
 }
 
 static void g4x_update_wm(struct drm_device *dev)
@@ -3140,42 +3630,6 @@ static void valleyview_update_sprite_wm(struct drm_plane *plane,
 	enable.cursor_enabled = false;
 	enable.sprite_enabled = enabled;
 
-	if (is_maxfifo_needed(dev_priv)) {
-		I915_WRITE(FW_BLC_SELF_VLV, FW_CSPWRDWNEN);
-	} else if (I915_READ(FW_BLC_SELF_VLV) & FW_CSPWRDWNEN &&
-	    !is_maxfifo_needed(dev_priv)) {
-		I915_WRITE(FW_BLC_SELF_VLV,
-			   I915_READ(FW_BLC_SELF_VLV) & ~FW_CSPWRDWNEN);
-	}
-
-	if (intel_plane->plane == 0) {
-		mask = 0x0000ff00;
-		shift = DDL_SPRITEA_SHIFT;
-	} else {
-		mask = 0x00ff0000;
-		shift = DDL_SPRITEB_SHIFT;
-	}
-
-	if (enabled && vlv_compute_drain_latency(dev, 0, NULL, NULL, NULL, NULL,
-			&sprite_prec_mult, &sprite_dl, pixel_size, enable)) {
-
-		if (intel_plane->plane == 0) {
-			sprite_prec = (sprite_prec_mult ==
-					DRAIN_LATENCY_PRECISION_32) ?
-					DDL_SPRITEA_PRECISION_32 :
-					DDL_SPRITEA_PRECISION_64;
-		} else {
-			sprite_prec = (sprite_prec_mult ==
-					DRAIN_LATENCY_PRECISION_32) ?
-					DDL_SPRITEB_PRECISION_32 :
-					DDL_SPRITEB_PRECISION_64;
-		}
-
-		I915_WRITE_BITS(VLV_DDL(intel_plane->pipe),
-				sprite_prec | (sprite_dl << shift), mask);
-	} else
-		I915_WRITE_BITS(VLV_DDL(intel_plane->pipe), 0x00, mask);
-
 	I915_WRITE(DSPFW4, (DSPFW4_SPRITEB_VAL << DSPFW4_SPRITEB_SHIFT) |
 			(DSPFW4_CURSORA_VAL << DSPFW4_CURSORA_SHIFT) |
 			DSPFW4_SPRITEA_VAL);
@@ -3184,6 +3638,55 @@ static void valleyview_update_sprite_wm(struct drm_plane *plane,
 			(DSPFW7_SPRITEC1_VAL << DSPFW7_SPRITEC1_SHIFT) |
 			DSPFW7_SPRITEC_VAL);
 	POSTING_READ(DSPFW4);
+	/* Maxfifo in vallvyview is supported only in set_display atomic path */
+	if (IS_VALLEYVIEW(dev))
+		return;
+	if (is_maxfifo_needed(dev_priv) & !dev_priv->maxfifo_enabled &
+			dev_priv->is_tiled) {
+		I915_WRITE(FW_BLC_SELF_VLV, FW_CSPWRDWNEN);
+		dev_priv->maxfifo_enabled = true;
+	} else if (dev_priv->maxfifo_enabled && !is_maxfifo_needed(dev_priv)) {
+		I915_WRITE(FW_BLC_SELF_VLV, ~FW_CSPWRDWNEN);
+		dev_priv->maxfifo_enabled = false;
+	}
+
+	/*
+	 * TODO: DDL values are calculated and updated in the respective flips
+	 * hence this is not required. This part of the code is to be removed.
+	 */
+	if (intel_plane->plane == 0) {
+		mask = 0x0000ff00;
+		shift = DDL_SPRITEA_SHIFT;
+	} else {
+		mask = 0x00ff0000;
+		shift = DDL_SPRITEB_SHIFT;
+	}
+
+	if (enabled && vlv_compute_drain_latency(dev, intel_plane->pipe, NULL, NULL, NULL, NULL,
+			&sprite_prec_mult, &sprite_dl, pixel_size, enable)) {
+		/*
+		 * DL programming for Sprite plane is separated out as DL programming sequence
+		 * will be different during pixel format chnage when both the sprite may change
+		 * pixel format simultaneously, one from 4->2 and other 2->4.
+		 */
+		if (intel_plane->plane == 0) {
+			sprite_prec = (sprite_prec_mult ==
+					DRAIN_LATENCY_PRECISION_32) ?
+					DDL_SPRITEA_PRECISION_32 :
+					DDL_SPRITEA_PRECISION_64;
+			I915_WRITE_BITS(VLV_DDL(intel_plane->pipe),
+					sprite_prec | (sprite_dl << shift), mask);
+		} else {
+			sprite_prec = (sprite_prec_mult ==
+					DRAIN_LATENCY_PRECISION_32) ?
+					DDL_SPRITEB_PRECISION_32 :
+					DDL_SPRITEB_PRECISION_64;
+			I915_WRITE_BITS(VLV_DDL(intel_plane->pipe),
+					sprite_prec | (sprite_dl << shift), mask);
+		}
+	} else
+		I915_WRITE_BITS(VLV_DDL(intel_plane->pipe), 0x00, mask);
+
 }
 
 /**
@@ -4080,6 +4583,9 @@ bool vlv_turbo_initialize(struct drm_device *dev)
 	u32 val, hw_max, hw_min;
 	unsigned long flags;
 	int cck_fuse;
+
+	if (dev_priv->rps.enabled)
+		return 1;
 
 	WARN_ON(!mutex_is_locked(&dev_priv->rps.hw_lock));
 
@@ -5597,44 +6103,13 @@ static void valleyview_init_clock_gating(struct drm_device *dev)
 	I915_WRITE(VLV_GUNIT_CLOCK_GATE, 0xffffffff);
 
 	/* Conservative clock gating settings for now */
-	I915_WRITE(0x9400, 0xffffffff);
-	I915_WRITE(0x9404, 0xffffffff);
-	I915_WRITE(0x9408, 0xffffffff);
-	I915_WRITE(0x940c, 0xffffffff);
-	I915_WRITE(0x9410, 0xffffffff);
-	I915_WRITE(0x9414, 0xffffffff);
-	I915_WRITE(0x9418, 0xffffffff);
-}
-
-static void cherryview_init_clock_gating(struct drm_device *dev)
-{
-	struct drm_i915_private *dev_priv = dev->dev_private;
-	int pipe;
-
-	I915_WRITE(DSPCLK_GATE_D, VRHUNIT_CLOCK_GATE_DISABLE);
-
-	for_each_pipe(pipe) {
-		I915_WRITE(DSPCNTR(pipe),
-			   I915_READ(DSPCNTR(pipe)) |
-			   DISPPLANE_TRICKLE_FEED_DISABLE);
-		intel_flush_display_plane(dev_priv, pipe);
-	}
-
-	/*
-	 * On ValleyView, the GUnit needs to signal the GT
-	 * when flip and other events complete.  So enable
-	 * all the GUnit->GT interrupts here
-	 */
-	I915_WRITE(VLV_DPFLIPSTAT,
-		   PIPEB_LINE_COMPARE_INT_EN | PIPEB_HLINE_INT_EN |
-		   PIPEB_VBLANK_INT_EN | SPRITED_FLIPDONE_INT_EN |
-		   SPRITEC_FLIPDONE_INT_EN | PLANEB_FLIPDONE_INT_EN |
-		   PIPEA_LINE_COMPARE_INT_EN | PIPEA_HLINE_INT_EN |
-		   PIPEA_VBLANK_INT_EN | SPRITEB_FLIPDONE_INT_EN |
-		   SPRITEA_FLIPDONE_INT_EN | PLANEA_FLIPDONE_INT_EN |
-		   PIPEC_LINE_COMPARE_INT_EN | PIPEC_HLINE_INT_EN |
-		   PIPEC_VBLANK_INT_EN | SPRITEF_FLIPDONE_INT_EN |
-		   SPRITEE_FLIPDONE_INT_EN | PLANEC_FLIPDONE_INT_EN);
+	I915_WRITE(GEN6_UCGCTL1, GEN7_ENABLE_UCGCTL_MASK);
+	I915_WRITE(GEN6_UCGCTL2, GEN7_ENABLE_UCGCTL_MASK);
+	I915_WRITE(GEN7_UCGCTL3, GEN7_ENABLE_UCGCTL_MASK);
+	I915_WRITE(GEN7_UCGCTL4, GEN7_L3BANK2X_CLOCK_GATE_DISABLE_MASK);
+	I915_WRITE(GEN7_UCGCTL5, GEN7_GAMunit_CLOCK_GATE_DISABLE_MASK);
+	I915_WRITE(GEN7_UCGCTL6, GEN7_ENABLE_UCGCTL_MASK);
+	I915_WRITE(GEN7_UCGCTL7, GEN7_ENABLE_UCGCTL_MASK);
 }
 
 static void g4x_init_clock_gating(struct drm_device *dev)
@@ -5910,8 +6385,8 @@ static void display_early_suspend_handler(void)
 	int ret;
 	DRM_DEBUG_PM("Early suspend called\n");
 	ret = display_runtime_suspend(drm_dev);
-	if (ret)
-		DRM_ERROR("Display suspend failure\n");
+	if (ret < 0)
+		DRM_DEBUG_PM("Display not suspended\n");
 	else {
 		ret = set_vhdmi_state(VHDMI_OFF);
 		if (ret) {
@@ -6115,10 +6590,6 @@ void intel_init_pm(struct drm_device *dev)
 			dev_priv->display.init_clock_gating = haswell_init_clock_gating;
 		} else
 			dev_priv->display.update_wm = NULL;
-	} else if (IS_CHERRYVIEW(dev)) {
-		dev_priv->display.update_wm = valleyview_update_wm;
-		dev_priv->display.init_clock_gating =
-			cherryview_init_clock_gating;
 	} else if (IS_VALLEYVIEW(dev)) {
 		dev_priv->display.update_wm = valleyview_update_wm;
 		dev_priv->display.update_sprite_wm = valleyview_update_sprite_wm;
@@ -6325,6 +6796,25 @@ int vlv_freq_opcode(struct drm_i915_private *dev_priv, int val)
 		opcode = min_opcode;
 
 	return opcode;
+}
+
+void program_pfi_credits(struct drm_i915_private *dev_priv, bool flag)
+{
+	int cd_clk, cz_clk;
+
+	if (!flag) {
+		I915_WRITE(GCI_CONTROL, 0x00004000);
+		return;
+	}
+
+	intel_get_cd_cz_clk(dev_priv, &cd_clk, &cz_clk);
+
+	if (cd_clk >= cz_clk) {
+		/* Disable before enabling WA */
+		I915_WRITE(GCI_CONTROL, 0x00004000);
+		I915_WRITE(GCI_CONTROL, 0x78004000);
+	} else
+		DRM_ERROR("cd clk < cz clk");
 }
 
 void intel_pm_init(struct drm_device *dev)

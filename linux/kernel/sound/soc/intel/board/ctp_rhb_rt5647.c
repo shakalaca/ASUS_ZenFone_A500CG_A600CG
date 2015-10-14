@@ -1,4 +1,4 @@
-﻿/*
+/*
  *  ctp_rhb_rt5647.c - ASoc Machine driver for Intel Cloverview MID platform
  *
  *  Copyright (C) 2011-13 Intel Corp
@@ -41,8 +41,7 @@
 #include "../../codecs/rt5647.h"
 #include "ctp_rhb_rt5647.h"
 #include "../ssp/mid_ssp.h"
-#include "ctp_common.h"
-
+#include "ctp_common_rt5647.h"
 
 /* As per the codec spec the mic2_sdet debounce delay is 20ms.
  * But having 20ms delay doesn't work */
@@ -70,7 +69,6 @@ static const struct snd_soc_dapm_route ctp_audio_map[] = {
 	{"micbias2", NULL, "Headset Mic"},
 	{"IN1P", NULL, "Headset Mic"},
 	{"IN1N", NULL, "Headset Mic"},
-//	{"DMIC1", NULL, "Int Mic"},
 	{"DMIC L2", NULL, "Int Mic"},
 	{"DMIC R2", NULL, "Int Mic"},
 	{"Headphone", NULL, "HPOL"},
@@ -81,9 +79,9 @@ static const struct snd_soc_dapm_route ctp_audio_map[] = {
 	{"Receiver", NULL, "MonoN"},
 };
 
-#define SNDRV_BT_SCO_ENABLE	_IOW('S', 0x01, int)
-#define AUDIO_SPK_STREAM	_IOW('T', 0x05, int)
-#define AUDIO_A2DP_TO_SPK_DELAY _IOW('U', 0x06, int)
+#define SNDRV_BT_SCO_ENABLE                _IOW('S', 0x01, int)
+#define AUDIO_DRC_CTRL                     _IOW('T', 0x05, bool)
+#define AUDIO_GET_SPK_UNMUTE_DELAY_TIME    _IOW('U', 0x06, int)
 
 static int ctp_startup(struct snd_pcm_substream *substream)
 {
@@ -388,7 +386,7 @@ static int ctp_comms_dai_link_hw_params(struct snd_pcm_substream *substream,
 		tx_mask = SSP_IFX_SLOT_TX_MASK;
 		rx_mask = SSP_IFX_SLOT_RX_MASK;
 
-		tristate_offset = BIT(TRISTATE_BIT) |\
+		tristate_offset = BIT(TRISTATE_BIT) |
 				BIT(FRAME_SYNC_RELATIVE_TIMING_BIT);
 
 		break;
@@ -449,11 +447,11 @@ static int ctp_comms_dai_link_prepare(struct snd_pcm_substream *substream)
 	/* BT SCO: CPU DAI is master */
 	/* FM: CPU DAI is master */
 	/* BT_VOIP: CPU DAI is master */
-	if (((device == CTP_COMMS_BT_SCO_DEV &&\
+	if (((device == CTP_COMMS_BT_SCO_DEV &&
 		ctl->ssp_bt_sco_master_mode) ||
-		((device == CTP_COMMS_MSIC_VOIP_DEV) &&\
+		((device == CTP_COMMS_MSIC_VOIP_DEV) &&
 		ctl->ssp_voip_master_mode)) ||
-		(device == CTP_COMMS_IFX_MODEM_DEV &&\
+		(device == CTP_COMMS_IFX_MODEM_DEV &&
 		ctl->ssp_modem_master_mode)) {
 
 		snd_soc_dai_set_sysclk(cpu_dai, SSP_CLK_ONCHIP,
@@ -513,26 +511,26 @@ long switch_ctrl_ioctl(struct file *file_ptr,
 			rt5647_i2s2_func_switch(rt5647_codec, !bt_enable);
 		break;
 	}
-	case _IOC_NR(AUDIO_SPK_STREAM): {
-		int stream_usecase;
-		if (copy_from_user(&stream_usecase, (void __user *)arg,
-				   sizeof(stream_usecase)))
+	case _IOC_NR(AUDIO_DRC_CTRL): {
+		bool drc_enable;
+		if (copy_from_user(&drc_enable, (void __user *)arg,
+				   sizeof(drc_enable)))
 			return -EFAULT;
-		pr_info("%s: stream_usecase status %d\n", __func__, stream_usecase);
+		pr_info("%s: drc_enable status %s\n", __func__, drc_enable ? "true" : "false");
 
 		if (rt5647_codec)
-			rt5647_get_stream_usecase(rt5647_codec, !stream_usecase);
+			audio_drc_ctrl(drc_enable);
 		break;
 	}
-	case _IOC_NR(AUDIO_A2DP_TO_SPK_DELAY): {
-		int audio_enable;
-		if (copy_from_user(&audio_enable, (void __user *)arg,
-				   sizeof(audio_enable)))
+	case _IOC_NR(AUDIO_GET_SPK_UNMUTE_DELAY_TIME): {
+		int spk_unmute_delay_time;
+		if (copy_from_user(&spk_unmute_delay_time, (void __user *)arg,
+				   sizeof(spk_unmute_delay_time)))
 			return -EFAULT;
-		pr_info("%s: audio_enable status %d\n", __func__, audio_enable);
+		pr_info("%s: get spk_unmute_delay_time = %d\n", __func__, spk_unmute_delay_time);
 
 		if (rt5647_codec)
-			rt5647_set_a2dp_to_spk_delay(rt5647_codec, !audio_enable);
+			set_spk_unmute_delay_time(spk_unmute_delay_time);
 		break;
 	}
 	default:
@@ -791,12 +789,13 @@ int ctp_hp_detection(struct snd_soc_codec *codec,
 
 	if (SND_JACK_HEADSET == status) {
 		msleep(200);
+
 		rt5647_enable_push_button_irq(codec);
 	}
 
 	return status;
 }
-#if 0 /*origional*/
+#if 0 /* Hook detect by IA GPIO */
 int ctp_bp_detection(struct snd_soc_codec *codec,
 			struct snd_soc_jack *jack, int enable)
 {
@@ -821,7 +820,7 @@ int ctp_bp_detection(struct snd_soc_codec *codec,
 
 	status = rt5647_check_irq_event(codec);
 
-	pr_debug("%s:status = 0x%x\n",__func__, status);
+	pr_debug("%s:status = 0x%x\n", __func__, status);
 
 	return status;
 }

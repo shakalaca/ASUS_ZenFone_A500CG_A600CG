@@ -92,7 +92,6 @@ static void __crystalcove_irq_mask(int gpio, int mask)
 
 static void __crystalcove_irq_type(int gpio, int type)
 {
-	int offset = gpio < 8 ? gpio : gpio - 8;
 	u8 ctli = gpio < 8 ? GPIO0P0CTLI + gpio : GPIO1P0CTLI + (gpio - 8);
 
 	type &= IRQ_TYPE_EDGE_BOTH;
@@ -265,18 +264,16 @@ static int crystalcove_gpio_probe(struct platform_device *pdev)
 	struct crystalcove_gpio *cg = &gpio_info;
 	int retval;
 	int i;
-	int gpio_base, irq_base;
-	struct device *dev = *(struct device **)pdev->dev.platform_data;
+	struct device *dev = intel_mid_pmic_dev();
 
 	mutex_init(&cg->buslock);
-	cg->irq_base = VV_PMIC_GPIO_IRQBASE;
 	cg->chip.label = "intel_crystalcove";
 	cg->chip.direction_input = crystalcove_gpio_direction_input;
 	cg->chip.direction_output = crystalcove_gpio_direction_output;
 	cg->chip.get = crystalcove_gpio_get;
 	cg->chip.set = crystalcove_gpio_set;
 	cg->chip.to_irq = crystalcove_gpio_to_irq;
-	cg->chip.base = VV_PMIC_GPIO_BASE;
+	cg->chip.base = -1;
 	cg->chip.ngpio = NUM_GPIO;
 	cg->chip.can_sleep = 1;
 	cg->chip.dev = dev;
@@ -287,12 +284,11 @@ static int crystalcove_gpio_probe(struct platform_device *pdev)
 		return retval;
 	}
 
-	irq_base = irq_alloc_descs(cg->irq_base, 0, NUM_GPIO, 0);
-	if (cg->irq_base != irq_base)
-		panic("gpio base irq fail, needs %d, return %d\n",
-				cg->irq_base, irq_base);
+	cg->irq_base = irq_alloc_descs(-1, VV_PMIC_IRQBASE, NUM_GPIO, 0);
+
 	for (i = 0; i < NUM_GPIO; i++) {
-		pr_err("gpio %x: set handler: %d\n", cg, i + cg->irq_base);
+		pr_err("gpio %d: set handler: %d\n", i + cg->chip.base,
+							i + cg->irq_base);
 		irq_set_chip_data(i + cg->irq_base, cg);
 		irq_set_chip_and_handler_name(i + cg->irq_base,
 					      &crystalcove_irqchip,

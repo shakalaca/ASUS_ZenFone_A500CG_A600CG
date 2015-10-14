@@ -22,12 +22,11 @@
 #ifndef _IA_CSS_REFCOUNT_H_
 #define _IA_CSS_REFCOUNT_H_
 
-#include "ia_css.h"
-#include "ia_css_binary.h"
-#include "sh_css_internal.h"
+#include <type_support.h>
+#include <system_types.h>
+#include <ia_css_err.h>
 
 typedef void (*clear_func)(hrt_vaddress ptr);
-
 
 /*! \brief Function for initializing refcount list
  *
@@ -79,5 +78,4 @@ extern bool ia_css_refcount_is_single(hrt_vaddress ptr);
 extern void ia_css_refcount_clear(int32_t id,
 				  clear_func clear_func_ptr);
 
-#endif				/* _IA_CSS_REFCOUNT_H_ */
-
+#endif /* _IA_CSS_REFCOUNT_H_ */

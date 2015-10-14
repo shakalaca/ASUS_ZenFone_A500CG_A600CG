@@ -235,7 +235,9 @@ static int i2c_device_probe(struct device *dev)
 	struct i2c_client	*client = i2c_verify_client(dev);
 	struct i2c_driver	*driver;
 	int status;
-
+	
+	printk("@%s\t begin leong_p \n",__func__ );
+	
 	if (!client)
 		return 0;
 
@@ -647,7 +649,9 @@ i2c_new_device(struct i2c_adapter *adap, struct i2c_board_info const *info)
 	client->irq = info->irq;
 
 	strlcpy(client->name, info->type, sizeof(client->name));
-
+	
+	printk("@%s\t  client->name:%s leong_p \n",__func__ , client->name);
+	
 	/* Check for address validity */
 	status = i2c_check_client_addr_validity(client);
 	if (status) {

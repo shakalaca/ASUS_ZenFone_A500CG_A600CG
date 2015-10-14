@@ -944,6 +944,7 @@ static DEVICE_ATTR(dsp_reg, 0600, rt5640_dsp_show, dsp_reg_store);
  */
 int rt5640_dsp_probe(struct snd_soc_codec *codec)
 {
+	struct rt5640_dsp_param param;
 	int ret;
 
 	if (codec == NULL)
@@ -966,6 +967,12 @@ int rt5640_dsp_probe(struct snd_soc_codec *codec)
 	}
 
 	rt5640_dsp_conf(codec);
+	param.cmd_fmt = 0x00e0;
+	param.cmd = RT5640_DSP_CMD_MW;
+	param.addr = 0x22fb;
+	param.data = 0x0000;
+	rt5640_dsp_write(codec, &param);
+
 	snd_soc_write(codec, RT5640_DSP_CTRL3, 0x0400);
 	snd_soc_update_bits(codec, RT5640_PWR_DIG2, RT5640_PWR_I2S_DSP, 0);
 

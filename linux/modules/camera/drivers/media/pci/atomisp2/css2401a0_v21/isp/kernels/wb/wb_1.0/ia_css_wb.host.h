@@ -28,13 +28,19 @@
 extern const struct ia_css_wb_config default_wb_config;
 
 void
-ia_css_wb_encode(struct sh_css_isp_wb_params *to,
-		 const struct ia_css_wb_config *from);
+ia_css_wb_encode(
+	struct sh_css_isp_wb_params *to,
+	const struct ia_css_wb_config *from,
+	unsigned size);
 
 void
-ia_css_wb_dump(const struct sh_css_isp_wb_params *wb, unsigned level);
+ia_css_wb_dump(
+	const struct sh_css_isp_wb_params *wb,
+	unsigned level);
 
 void
-ia_css_wb_debug_dtrace(const struct ia_css_wb_config *wb, unsigned level);
+ia_css_wb_debug_dtrace(
+	const struct ia_css_wb_config *wb,
+	unsigned level);
 
 #endif /* __IA_CSS_WB_HOST_H */

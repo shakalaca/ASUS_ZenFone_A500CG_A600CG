@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -44,6 +44,39 @@
 #include <asm/cacheflush.h>
 #include <asm/uaccess.h>
 
+
+/*Virtual memory map with 4 level page tables:
+
+0000000000000000 - 00007fffffffffff (=47 bits) user space, different per mm
+hole caused by [48:63] sign extension
+ffff800000000000 - ffff80ffffffffff (=40 bits) guard hole
+ffff880000000000 - ffffc7ffffffffff (=64 TB) direct mapping of all phys. memory
+ffffc80000000000 - ffffc8ffffffffff (=40 bits) hole
+ffffc90000000000 - ffffe8ffffffffff (=45 bits) vmalloc/ioremap space
+ffffe90000000000 - ffffe9ffffffffff (=40 bits) hole
+ffffea0000000000 - ffffeaffffffffff (=40 bits) virtual memory map (1TB)
+... unused hole ...
+ffffffff80000000 - ffffffffa0000000 (=512 MB)  kernel text mapping, from phys 0
+ffffffffa0000000 - fffffffffff00000 (=1536 MB) module mapping space
+
+The direct mapping covers all memory in the system up to the highest
+memory address (this means in some cases it can also include PCI memory
+holes).
+
+vmalloc space is lazily synchronized into the different PML4 pages of
+the processes using the page fault handler, with init_level4_pgt as
+reference.
+
+Current X86-64 implementations only support 40 bits of address space,
+but we support up to 46 bits. This expands into MBZ space in the page tables.
+
+-Andi Kleen, Jul 2004
+
+
+#ifdef VTSS_VMA_SEARCH_BOOST
+#define VTSS_USER_SPACE_HIGH 0x7fffffffffff
+#endif
+*/
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31)
 
 typedef int (gup_huge_pmd_t) (pmd_t pmd, unsigned long addr, unsigned long end, int write, struct page **pages, int *nr);
@@ -184,6 +217,8 @@ static struct kprobe _kp_dummy = {
 #define vtss_get_user_pages_fast __get_user_pages_fast
 #endif
 
+extern atomic_t vtss_mmap_reg_callcnt;
+
 #ifndef VTSS_AUTOCONF_KMAP_ATOMIC_ONE_ARG
 #ifndef KM_NMI
 #define KM_NMI KM_IRQ0
@@ -270,8 +305,76 @@ static int vtss_user_vm_page_pin(struct user_vm_accessor* this, unsigned long ad
     return rc;
 }
 
+
+#ifdef VTSS_VMA_SEARCH_BOOST
+static void vtss_vma_cache_init(struct user_vm_accessor* this)
+{
+    struct vm_area_struct* vma;
+    int callcnt = atomic_read(&vtss_mmap_reg_callcnt);
+    int i = 0;
+    int is_vdso_found = 0;
+
+    if (!this) return;
+    if (this->mmap_reg_callcnt >= callcnt) return;
+    this->mmap_reg_callcnt = callcnt;
+
+    this->mmap_vdso_start = 0;
+    this->mmap_vdso_end = 0;
+    this->mmap_mms_start = 0;
+    this->mmap_mms_end = 0;
+    this->mmap_stack_start = 0;
+    this->mmap_stack_end = 0;
+
+    if (unlikely(!this->m_mm)){
+         return;
+    }
+/*
+    this->mmap_code_start_addr = this->m_mm->start_code;
+    this->mmap_code_end_addr = this->m_mm->end_code;
+    this->mmap_heap_start_addr = this->m_mm->start_brk;
+    this->mmap_heap_end_addr = this->m_mm->brk;
+
+    //////////////////////////////
+    this->mmap_mms_addr = this->m_mm->brk;
+    this->mmap_vdso_addr = (unsigned long)this->m_mm->context.vdso; //VTSS_USER_SPACE_HIGH;
+    this->mmap_end_addr = (unsigned long)this->m_mm->context.vdso+PAGE_SIZE; //VTSS_USER_SPACE_HIGH;
+
+    vma = find_vma(this->m_mm, (unsigned long)this->m_mm->context.vdso);
+    if (vma){
+        this->mmap_end_addr = vma->vm_end;
+    }
+
+    return;
+*/
+    for (vma = this->m_mm->mmap; vma != NULL; vma = vma->vm_next) {
+            if (vma->vm_mm && vma->vm_start == (long)vma->vm_mm->context.vdso) {
+                is_vdso_found = 1;
+                this->mmap_vdso_start = vma->vm_start;
+                this->mmap_vdso_end = vma->vm_end;
+            } else if ((vma->vm_flags & VM_EXEC)) {
+                    if (vma->vm_start <= this->m_mm->start_stack && this->m_mm->start_stack < vma->vm_end){
+                        this->mmap_stack_start = vma->vm_start;
+                        this->mmap_stack_end = vma->vm_end;
+                    } else if (vma->vm_start !=this->m_mm->start_code){
+                        if (this->mmap_mms_start > vma->vm_start || this->mmap_mms_start == 0) this->mmap_mms_start = vma->vm_start;
+                        if (this->mmap_mms_end < vma->vm_end) this->mmap_mms_end = vma->vm_end;
+                    }
+            }
+//            printk("start_stack=0x%lx, vma=0x%lx:0x%lx\n", this->m_mm->start_stack, vma->vm_start,vma->vm_end);
+    }
+    if (!is_vdso_found && this->m_mm->context.vdso) {
+        this->mmap_vdso_start = (unsigned long)this->m_mm->context.vdso;
+        this->mmap_vdso_end = (unsigned long)this->m_mm->context.vdso + PAGE_SIZE;
+    }
+//    printk(" cache end: callcnt=%d,mmap_vdso=0x%lx:0x%lx; mmap_mms=0x%lx:0x%lx;mmap_stack=0x%lx:0x%lx\n",callcnt,this->mmap_vdso_start,this->mmap_vdso_end,this->mmap_mms_start,this->mmap_mms_end,this->mmap_stack_start, this->mmap_stack_end);
+
+}
+#endif
+
 static int vtss_user_vm_unlock(struct user_vm_accessor* this)
 {
+    this->m_vma_cache = NULL;
+//    this->m_mm->mmap_cache = this->m_vma_cache; //restore cache
     vtss_user_vm_page_unpin(this);
     if (this->m_mm != NULL) {
         if (!this->m_irq) {
@@ -297,6 +400,7 @@ static int vtss_user_vm_trylock(struct user_vm_accessor* this, struct task_struc
 
     if (!this->m_irq) {
         struct mm_struct* mm = get_task_mm(task);
+        if (!mm) return 2;
         if (!down_read_trylock(&mm->mmap_sem)) {
             mmput(mm);
             return 2;
@@ -309,6 +413,12 @@ static int vtss_user_vm_trylock(struct user_vm_accessor* this, struct task_struc
 #ifdef VTSS_VMA_TIME_LIMIT
     this->m_time = get_cycles();
 #endif
+    //remove cashed vma addresses.
+#ifdef VTSS_VMA_SEARCH_BOOST
+    vtss_vma_cache_init(this);
+#endif
+    this->m_vma_cache = NULL;
+//    this->m_vma_cache = this->m_mm->mmap_cache; //save cache
     return 0;
 }
 
@@ -404,6 +514,89 @@ static size_t vtss_user_vm_read(struct user_vm_accessor* this, void* from, void*
     return bytes;
 }
 
+
+/* Look up the first VMA which satisfies  addr < vm_end,  NULL if none. */
+/*struct vm_area_struct *vtss_find_vma(struct mm_struct *mm, unsigned long addr, struct user_vm_accessor* this)
+{
+    struct vm_area_struct* vma = (this)? this->m_vma_cache : NULL;
+    if (!(vma && vma->vm_end > addr && vma->vm_start <= addr)) {
+        struct rb_node *rb_node;
+        rb_node = mm->mm_rb.rb_node;
+        vma = NULL;
+        while (rb_node) {
+            struct vm_area_struct *vma_tmp;
+            vma_tmp = rb_entry(rb_node, struct vm_area_struct, vm_rb);
+            if (vma_tmp->vm_end > addr) {
+                vma = vma_tmp;
+                if (vma_tmp->vm_start <= addr) break;
+                rb_node = rb_node->rb_left;
+            } else
+            rb_node = rb_node->rb_right;
+        }
+        if (vma) this->m_vma_cache = vma;
+     }
+     return vma;
+}
+*/
+
+#ifdef VTSS_VMA_SEARCH_BOOST
+static int vtss_user_vm_validate(struct user_vm_accessor* this, unsigned long ip)
+{
+#ifdef CONFIG_X86_64
+    unsigned long kaddr = (unsigned long)__START_KERNEL_map;
+#else
+    unsigned long kaddr = (unsigned long)PAGE_OFFSET;
+#endif
+    kaddr += (CONFIG_PHYSICAL_START + (CONFIG_PHYSICAL_ALIGN - 1)) & ~(CONFIG_PHYSICAL_ALIGN - 1);
+
+#ifdef CONFIG_X86_64
+    if ((ip >= VSYSCALL_START) && (ip < VSYSCALL_END))
+        return 1; /* [vsyscall] */
+    else
+#endif
+
+    if (ip < kaddr) {
+        unsigned int i;
+        int st = 0;
+        struct vm_area_struct* vma = NULL;
+
+        if (!this || !this->m_mm) return 0;
+
+//        if (this->mmap_stack_start <= ip && ip < this->m_mm->start_stack) return 0; //not used stack area
+//        if (this->m_mm->start_stack <= ip && ip < this->mmap_stack_end) return 1;
+
+        if ((this->m_mm->start_code <= ip  && ip < this->m_mm->end_code) ||
+            (this->mmap_vdso_start <= ip && ip < this->mmap_vdso_end) ||
+//            (this->m_mm->start_stack <= ip && ip < this->mmap_stack_end)  ||
+            (this->mmap_stack_start <= ip && ip < this->mmap_stack_end)  ||
+            (this->mmap_mms_start <= ip && ip < this->mmap_mms_end)){
+            st = 1;
+        } else if (this->m_mm->start_brk <= ip && ip < this->m_mm->brk)/*for java it can be code*/{
+            //java functions can be called without call.
+            st = 2;
+        } else {
+            return 0;
+        }
+
+        vma = find_vma(this->m_mm, ip);
+        if (vma == NULL){
+            return 0;
+        }
+        if (!(vma->vm_flags & VM_EXEC)){
+            return 0;
+        }
+        if ((ip >= vma->vm_start) && (ip < vma->vm_end)) {
+            if (st == 1)
+            {
+                ; //TODO: check the code
+            }
+            return 1;
+        }
+        return 0;
+    } else
+        return (ip < PAGE_OFFSET) ? 1 : 0; /* in kernel? */
+}
+#else
 static int vtss_user_vm_validate(struct user_vm_accessor* this, unsigned long ip)
 {
 #ifdef CONFIG_X86_64
@@ -424,6 +617,7 @@ static int vtss_user_vm_validate(struct user_vm_accessor* this, unsigned long ip
     } else
         return (ip < PAGE_OFFSET) ? 1 : 0; /* in kernel? */
 }
+#endif
 
 user_vm_accessor_t* vtss_user_vm_accessor_init(int in_irq, cycles_t limit)
 {
@@ -445,6 +639,15 @@ user_vm_accessor_t* vtss_user_vm_accessor_init(int in_irq, cycles_t limit)
 #else
         acc->m_limit   = limit;
 #endif
+        acc->mmap_reg_callcnt = 0;
+
+        acc->mmap_vdso_start = 0;
+        acc->mmap_vdso_end = 0;
+        acc->mmap_mms_start = 0;
+        acc->mmap_mms_end = 0;
+        acc->mmap_stack_start = 0;
+        acc->mmap_stack_end = 0;
+
         acc->trylock   = vtss_user_vm_trylock;
         acc->unlock    = vtss_user_vm_unlock;
         acc->read      = vtss_user_vm_read;
@@ -458,7 +661,7 @@ user_vm_accessor_t* vtss_user_vm_accessor_init(int in_irq, cycles_t limit)
 void vtss_user_vm_accessor_fini(user_vm_accessor_t* acc)
 {
     if (acc != NULL) {
-        acc->unlock(acc);
+//        acc->unlock(acc);
         kfree(acc);
     }
 }

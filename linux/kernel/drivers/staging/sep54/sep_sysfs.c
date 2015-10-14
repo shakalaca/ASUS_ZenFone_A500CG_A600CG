@@ -302,7 +302,7 @@ static ssize_t sys_queue_stats_sep_lat_show(struct kobject *kobj,
 static struct kobj_attribute sys_top_level_attrs[] = {
 	__ATTR(fw_ver, 0444, sys_fw_ver_show, NULL),
 #ifdef SEP_HWK_UNIT_TEST
-	__ATTR(hwk_self_test, 0666, sys_hwk_st_show, sys_hwk_st_start)
+	__ATTR(hwk_self_test, 0664, sys_hwk_st_show, sys_hwk_st_start)
 #endif
 };
 

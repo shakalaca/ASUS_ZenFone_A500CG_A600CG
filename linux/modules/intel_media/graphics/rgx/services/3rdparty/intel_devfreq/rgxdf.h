@@ -41,6 +41,8 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */ /**************************************************************************/
 
+#ifndef _RGXDF_H_
+#define _RGXDF_H_
 /*!
 ******************************************************************************
 
@@ -52,7 +54,72 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
  @None
 
- @Return   IMG_BOOL  : Whether device is powered
+ @Return   int  : 1 if device is powered on, 0 if not
 
 ******************************************************************************/
-int RGXAcquireIsDevicePowered(void);
+int rgx_is_device_powered(void);
+
+/*!
+******************************************************************************
+
+ @Function	RGXGetDRMDeviceID
+
+ @Description
+
+	Returns device ID of DMR device.
+
+ @None
+
+ @Return   unsigned int  : device ID
+
+******************************************************************************/
+unsigned int RGXGetDRMDeviceID(void);
+
+/*!
+******************************************************************************
+
+ @Function	RGXUpdateClockSpeed
+
+ @Description
+
+	Pre Clock Speed routine.
+
+ @None
+
+ @Return   None
+
+******************************************************************************/
+unsigned int RGXUpdateClockSpeed(unsigned int ui32ClockSpeed);
+
+/*!
+******************************************************************************
+
+ @Function	RGXPreClockSpeed
+
+ @Description
+
+	Pre Clock Speed routine.
+
+ @None
+
+ @Return   None
+
+******************************************************************************/
+unsigned int RGXPreClockSpeed(void);
+
+/*!
+******************************************************************************
+
+ @Function	RGXPostClockSpeed
+
+ @Description
+
+	Post Clock Speed routine.
+
+ @None
+
+ @Return   None
+
+******************************************************************************/
+unsigned int RGXPostClockSpeed(void);
+#endif /*#ifndef _RGXDF_H_*/

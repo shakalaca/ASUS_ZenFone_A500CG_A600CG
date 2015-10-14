@@ -41,6 +41,7 @@
 #include "i915_debugfs.h"
 #include <linux/moduleparam.h>
 #include "linux/mfd/intel_mid_pmic.h"
+#include <linux/pwm.h>
 
 #define DRM_I915_RING_DEBUG 1
 
@@ -109,7 +110,15 @@ ssize_t i915_gamma_adjust_write(struct file *filp,
 		  loff_t *ppos)
 {
 	int ret = 0;
+	int	pipe;
+	int crtc_id = -1;
+	int bytes_count;
+	int bytes_read;
 	char *buf = NULL;
+	char *temp_buf = NULL;
+	struct drm_device *dev = filp->private_data;
+	struct drm_crtc *crtc = NULL;
+	struct drm_mode_object *obj;
 
 	/* Validate input */
 	if (!count) {
@@ -127,19 +136,59 @@ ssize_t i915_gamma_adjust_write(struct file *filp,
 	if (copy_from_user(buf, ubuf, count)) {
 		DRM_ERROR("Gamma adjust: copy failed\n");
 		ret = -EINVAL;
-		goto EXIT;
+		goto exit;
+	}
+	bytes_read = 0;
+	bytes_count = count;
+	if (bytes_count > 0) {
+		temp_buf = buf + bytes_read;
+		/* Parse data and read the crtc_id */
+		ret = parse_clrmgr_input(&crtc_id, temp_buf,
+			CRTC_ID_TOKEN_COUNT, &bytes_count);
+		if (ret < CRTC_ID_TOKEN_COUNT) {
+			DRM_ERROR("CRTC_ID loading failed\n");
+			goto exit;
+		} else
+			DRM_DEBUG("CRTC_ID loading done\n");
 	}
 
-	/* Parse data and load the gamma  table */
-	ret = parse_clrmgr_input(gamma_softlut, buf,
-		GAMMA_CORRECT_MAX_COUNT, count);
-	if (ret < 0)
-		DRM_ERROR("Gamma table loading failed\n");
-	else
-		DRM_DEBUG("Gamma table loading done\n");
-EXIT:
+	obj = drm_mode_object_find(dev, crtc_id, DRM_MODE_OBJECT_CRTC);
+	if (!obj) {
+		DRM_DEBUG_KMS("Unknown CRTC ID %d\n", crtc_id);
+		return -EINVAL;
+	}
+	crtc = obj_to_crtc(obj);
+	DRM_DEBUG_KMS("[CRTC:%d]\n", crtc->base.id);
+
+	pipe = to_intel_crtc(crtc)->pipe;
+	bytes_read += bytes_count;
+	bytes_count = count - bytes_read;
+	if (bytes_count > 0) {
+		temp_buf = buf + bytes_read;
+		/* Parse data and load the gamma  table */
+		ret = parse_clrmgr_input(gamma_softlut[pipe], temp_buf,
+			GAMMA_CORRECT_MAX_COUNT, &bytes_count);
+		if (ret < GAMMA_CORRECT_MAX_COUNT) {
+			DRM_ERROR("Gamma table loading failed\n");
+			goto exit;
+		} else
+			DRM_DEBUG("Gamma table loading done\n");
+	}
+	bytes_read += bytes_count;
+	bytes_count = count - bytes_read;
+	if (bytes_count > 0) {
+		temp_buf = buf + bytes_read;
+
+		/* Parse data and load the gcmax table */
+		ret = parse_clrmgr_input(gcmax_softlut[pipe], temp_buf,
+				GC_MAX_COUNT, &bytes_count);
+		if (ret < GC_MAX_COUNT)
+			DRM_ERROR("GCMAX table loading failed\n");
+		else
+			DRM_DEBUG("GCMAX table loading done\n");
+	}
+exit:
 	kfree(buf);
-	/* If error, return error*/
 	if (ret < 0)
 		return ret;
 
@@ -152,27 +201,31 @@ ssize_t i915_gamma_enable_read(struct file *filp,
 		 loff_t *ppos)
 {
 	int len = 0;
-	char buf[10] = {0,};
+	char buf[40] = {0,};
 	struct drm_device *dev = filp->private_data;
 	drm_i915_private_t *dev_priv = dev->dev_private;
 
-	len = scnprintf(buf, sizeof(buf), "%s\n",
-		dev_priv->gamma_enabled ? "Enabled" : "Disabled");
+	len = scnprintf(buf, sizeof(buf), "%s\n%s\n",
+		dev_priv->gamma_enabled[0] ? "Pipe 0: Enabled" : "Pipe 0: Disabled",
+		dev_priv->gamma_enabled[1] ? "Pipe 1: Enabled" : "Pipe 1: Disabled");
+
 	return simple_read_from_buffer(ubuf, max, ppos,
 		(const void *) buf, len);
 }
-
 ssize_t i915_gamma_enable_write(struct file *filp,
 		  const char __user *ubuf,
 		  size_t count,
 		  loff_t *ppos)
 {
 	int ret = 0;
-	unsigned long status = 0;
+	int	bytes_read;
+	int bytes_count;
+	int crtc_id = -1;
+	int req_state = 0;
 	struct drm_crtc *crtc = NULL;
 	struct drm_device *dev = filp->private_data;
-	drm_i915_private_t *dev_priv = dev->dev_private;
-	char *buf = NULL;
+	char *buf = NULL, *temp_buf = NULL;
+	struct drm_mode_object *obj;
 
 	/* Validate input */
 	if (!count) {
@@ -190,47 +243,59 @@ ssize_t i915_gamma_enable_write(struct file *filp,
 	if (copy_from_user(buf, ubuf, count)) {
 		DRM_ERROR("Gamma adjust: copy failed\n");
 		ret = -EINVAL;
-		goto EXIT;
+		goto exit;
+	}
+	bytes_read = 0;
+	bytes_count = count;
+	if (bytes_count > 0) {
+		temp_buf = buf + bytes_read;
+		/* Parse data and load the crtc_id */
+		ret = parse_clrmgr_input(&crtc_id, temp_buf,
+			CRTC_ID_TOKEN_COUNT, &bytes_count);
+		if (ret < CRTC_ID_TOKEN_COUNT) {
+			DRM_ERROR("CRTC_ID loading failed\n");
+			goto exit;
+		} else
+			DRM_DEBUG("CRTC_ID loading done\n");
 	}
 
-	/* Finally, get the status */
-	if (kstrtoul((const char *)buf, 10,
-		&status)) {
-		DRM_ERROR("Gamma enable: Invalid limit\n");
-		ret = -EINVAL;
-		goto EXIT;
+	obj = drm_mode_object_find(dev, crtc_id, DRM_MODE_OBJECT_CRTC);
+	if (!obj) {
+		DRM_DEBUG_KMS("Unknown CRTC ID %d\n", crtc_id);
+		return -EINVAL;
 	}
-	dev_priv->gamma_enabled = status;
+	crtc = obj_to_crtc(obj);
+	DRM_DEBUG_KMS("[CRTC:%d]\n", crtc->base.id);
 
-	/* Search for a CRTC,
-	Assumption: Either MIPI or EDP is fix panel */
-	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
-		if (intel_pipe_has_type(crtc, dev_priv->is_mipi ?
-			INTEL_OUTPUT_DSI : INTEL_OUTPUT_EDP))
-			break;
-	}
-
-	/* No CRTC */
-	if (!crtc) {
-		DRM_ERROR("Gamma adjust: No local panel found\n");
-		ret = -EINVAL;
-		goto EXIT;
+	bytes_read += bytes_count;
+	bytes_count = count - bytes_read;
+	if (bytes_count > 0) {
+		temp_buf = buf + bytes_read;
+		/* Parse data and load the gamma  table */
+		ret = parse_clrmgr_input(&req_state, temp_buf,
+			ENABLE_TOKEN_MAX_COUNT, &bytes_count);
+		if (ret < ENABLE_TOKEN_MAX_COUNT) {
+			DRM_ERROR("Enable-token loading failed\n");
+			goto exit;
+		} else
+			DRM_DEBUG("Enable-token loading done\n");
 	}
 
 	/* if gamma enabled, apply gamma correction on PIPE */
-	if (dev_priv->gamma_enabled) {
-		if (intel_crtc_enable_gamma(crtc, PIPEA)) {
+	if (req_state) {
+		if (intel_crtc_enable_gamma(crtc,
+				to_intel_crtc(crtc)->pipe ? PIPEB : PIPEA)) {
 			DRM_ERROR("Apply gamma correction failed\n");
 			ret = -EINVAL;
 		} else
 			ret = count;
 	} else {
 		/* Disable gamma on this plane */
-		intel_crtc_disable_gamma(crtc, PIPEA);
+		intel_crtc_disable_gamma(crtc,
+			to_intel_crtc(crtc)->pipe ? PIPEB : PIPEA);
 		ret = count;
 	}
-
-EXIT:
+exit:
 	kfree(buf);
 	return ret;
 }
@@ -267,6 +332,7 @@ ssize_t i915_cb_adjust_write(struct file *filp,
 		  loff_t *ppos)
 {
 	int ret = count;
+	int bytes_count = count;
 	struct drm_device *dev = filp->private_data;
 	struct cont_brightlut *cb_ptr = NULL;
 	drm_i915_private_t *dev_priv = dev->dev_private;
@@ -295,20 +361,22 @@ ssize_t i915_cb_adjust_write(struct file *filp,
 	if (copy_from_user(buf, ubuf, count)) {
 		DRM_ERROR("Contrast Brightness: copy failed\n");
 		ret = -EINVAL;
-		goto EXIT;
+		goto exit;
 	}
 
 	/* Parse input data */
-	ret = parse_clrmgr_input((uint *)cb_ptr, buf, 2, count);
-	if (ret < 0)
+	ret = parse_clrmgr_input((uint *)cb_ptr, buf, CB_MAX_COEFF_COUNT, &bytes_count);
+	if (ret < CB_MAX_COEFF_COUNT) {
 		DRM_ERROR("Contrast Brightness loading failed\n");
+		goto exit;
+	}
 	else
 		DRM_DEBUG("Contrast Brightness loading done\n");
 
 	if (cb_ptr->sprite_no < SPRITEA || cb_ptr->sprite_no > SPRITED ||
 			cb_ptr->sprite_no == PLANEB) {
 		DRM_ERROR("Sprite value out of range. Enter 2,3, 5 or 6\n");
-		goto EXIT;
+		goto exit;
 	}
 
 	DRM_DEBUG("sprite = %d Val=0x%x,\n", cb_ptr->sprite_no, cb_ptr->val);
@@ -316,11 +384,10 @@ ssize_t i915_cb_adjust_write(struct file *filp,
 	if (intel_sprite_cb_adjust(dev_priv, cb_ptr))
 		DRM_ERROR("Contrast Brightness update failed\n");
 
-EXIT:
+exit:
 	kfree(cb_ptr);
 	kfree(buf);
-	/* If cant read the full buffer, read from last left */
-	if (ret < count-1)
+	if (ret < 0)
 		return ret;
 
 	return count;
@@ -341,6 +408,7 @@ ssize_t i915_hs_adjust_write(struct file *filp,
 		  loff_t *ppos)
 {
 	int ret = count;
+	int bytes_count = count;
 	struct drm_device *dev = filp->private_data;
 	struct hue_saturationlut *hs_ptr = NULL;
 	drm_i915_private_t *dev_priv = dev->dev_private;
@@ -369,13 +437,15 @@ ssize_t i915_hs_adjust_write(struct file *filp,
 	if (copy_from_user(buf, ubuf, count)) {
 		DRM_ERROR("Hue Saturation: copy failed\n");
 		ret = -EINVAL;
-		goto EXIT;
+		goto exit;
 	}
 
 	/* Parse input data */
-	ret = parse_clrmgr_input((uint *)hs_ptr, buf, 2, count);
-	if (ret < 0)
+	ret = parse_clrmgr_input((uint *)hs_ptr, buf, HS_MAX_COEFF_COUNT, &bytes_count);
+	if (ret < HS_MAX_COEFF_COUNT) {
 		DRM_ERROR("Hue Saturation loading failed\n");
+		goto exit;
+	}
 	else
 		DRM_DEBUG("Hue Saturation loading done\n");
 
@@ -383,7 +453,7 @@ ssize_t i915_hs_adjust_write(struct file *filp,
 			hs_ptr->sprite_no == PLANEB) {
 		DRM_ERROR("sprite = %d Val=0x%x,\n", hs_ptr->sprite_no,
 					hs_ptr->val);
-		goto EXIT;
+		goto exit;
 	}
 
 	DRM_DEBUG("sprite = %d Val=0x%x,\n", hs_ptr->sprite_no, hs_ptr->val);
@@ -391,11 +461,11 @@ ssize_t i915_hs_adjust_write(struct file *filp,
 	if (intel_sprite_hs_adjust(dev_priv, hs_ptr))
 		DRM_ERROR("Hue Saturation update failed\n");
 
-EXIT:
+exit:
 	kfree(hs_ptr);
 	kfree(buf);
-	/* If cant read the full buffer, read from last left */
-	if (ret < count-1)
+
+	if (ret < 0)
 		return ret;
 
 	return count;
@@ -416,8 +486,16 @@ ssize_t i915_csc_adjust_write(struct file *filp,
 		  size_t count,
 		  loff_t *ppos)
 {
+	int bytes_count;
+	int	bytes_read;
 	int ret = 0;
-	char *buf  = NULL;
+	int pipe;
+	int crtc_id = -1;
+	char *buf = NULL;
+	char *temp_buf = NULL;
+	struct drm_device *dev = filp->private_data;
+	struct drm_crtc *crtc = NULL;
+	struct drm_mode_object *obj;
 
 	/* Validate input */
 	if (!count) {
@@ -435,25 +513,50 @@ ssize_t i915_csc_adjust_write(struct file *filp,
 	if (copy_from_user(buf, ubuf, count)) {
 		DRM_ERROR("CSC adjust: copy failed\n");
 		ret = -EINVAL;
-		goto EXIT;
+		goto exit;
+	}
+	bytes_read = 0;
+	bytes_count = count;
+	if (bytes_count > 0) {
+		temp_buf = buf + bytes_read;
+		/* Parse data and load the crtc_id */
+		ret = parse_clrmgr_input(&crtc_id, temp_buf,
+			CRTC_ID_TOKEN_COUNT, &bytes_count);
+		if (ret < CRTC_ID_TOKEN_COUNT) {
+			DRM_ERROR("CONNECTOR_TYPE_TOKEN loading failed\n");
+			goto exit;
+		} else
+			DRM_DEBUG("CONNECTOR_TYPE_TOKEN loading done\n");
 	}
 
-	/* Parse data and load the csc  table */
-	ret = parse_clrmgr_input(csc_softlut, buf,
-		CSC_MAX_COEFF_COUNT, count);
-	if (ret < 0)
-		DRM_ERROR("CSC table loading failed\n");
-	else
-		DRM_DEBUG("CSC table loading done\n");
-EXIT:
+	obj = drm_mode_object_find(dev, crtc_id, DRM_MODE_OBJECT_CRTC);
+	if (!obj) {
+		DRM_DEBUG_KMS("Unknown CRTC ID %d\n", crtc_id);
+		return -EINVAL;
+	}
+	crtc = obj_to_crtc(obj);
+	DRM_DEBUG_KMS("[CRTC:%d]\n", crtc->base.id);
+
+	pipe = to_intel_crtc(crtc)->pipe;
+	bytes_read += bytes_count;
+	bytes_count = count - bytes_read;
+	if (bytes_count > 0) {
+		temp_buf = buf + bytes_read;
+		/* Parse data and load the csc  table */
+		ret = parse_clrmgr_input(csc_softlut[pipe], temp_buf,
+			CSC_MAX_COEFF_COUNT, &bytes_count);
+		if (ret < CSC_MAX_COEFF_COUNT)
+			DRM_ERROR("CSC table loading failed\n");
+		else
+			DRM_DEBUG("CSC table loading done\n");
+	}
+exit:
 	kfree(buf);
-	/* If cant read the full buffer, read from last left */
 	if (ret < 0)
 		return ret;
 
 	return count;
 }
-
 
 ssize_t i915_csc_enable_read(struct file *filp,
 		 char __user *ubuf,
@@ -461,12 +564,13 @@ ssize_t i915_csc_enable_read(struct file *filp,
 		 loff_t *ppos)
 {
 	int len = 0;
-	char buf[10] = {0,};
+	char buf[40] = {0,};
 	struct drm_device *dev = filp->private_data;
 	drm_i915_private_t *dev_priv = dev->dev_private;
 
-	len = scnprintf(buf, sizeof(buf), "%s\n",
-		dev_priv->csc_enabled ? "Enabled" : "Disabled");
+	len = scnprintf(buf, sizeof(buf), "%s\n%s\n",
+		dev_priv->csc_enabled[0] ? "Pipe 0: Enabled" : "Pipe 0: Disabled",
+		dev_priv->csc_enabled[1] ? "Pipe 1: Enabled" : "Pipe 1: Disabled");
 	return simple_read_from_buffer(ubuf, max, ppos,
 		(const void *) buf, len);
 }
@@ -477,11 +581,16 @@ ssize_t i915_csc_enable_write(struct file *filp,
 		  loff_t *ppos)
 {
 	int ret = 0;
-	unsigned int status = 0;
+	int pipe;
+	int req_state = 0;
+	int bytes_read;
+	int bytes_count;
+	int crtc_id = -1;
 	char *buf = NULL;
+	char *temp_buf = NULL;
 	struct drm_crtc *crtc = NULL;
 	struct drm_device *dev = filp->private_data;
-	drm_i915_private_t *dev_priv = dev->dev_private;
+	struct drm_mode_object *obj;
 
 	/* Validate input */
 	if (!count) {
@@ -499,38 +608,50 @@ ssize_t i915_csc_enable_write(struct file *filp,
 	if (copy_from_user(buf, ubuf, count)) {
 		DRM_ERROR("CSC enable: copy failed\n");
 		ret = -EINVAL;
-		goto EXIT;
+		goto exit;
+	}
+	bytes_read = 0;
+	bytes_count = count;
+	if (bytes_count > 0) {
+		temp_buf = buf + bytes_read;
+		/* Parse data and load the crtc_id */
+		ret = parse_clrmgr_input(&crtc_id, temp_buf,
+			CRTC_ID_TOKEN_COUNT, &bytes_count);
+		if (ret < CRTC_ID_TOKEN_COUNT) {
+			DRM_ERROR("CRTC_ID_TOKEN loading failed\n");
+			goto exit;
+		} else
+			DRM_DEBUG("CRTC_ID_TOKEN loading done\n");
 	}
 
-	/* Finally, get the status */
-	if (kstrtouint((const char *)buf, 10,
-		&status)) {
-		DRM_ERROR("CSC enable: Invalid limit\n");
-		ret = -EINVAL;
-		goto EXIT;
+	obj = drm_mode_object_find(dev, crtc_id, DRM_MODE_OBJECT_CRTC);
+	if (!obj) {
+		DRM_DEBUG_KMS("Unknown CRTC ID %d\n", crtc_id);
+		return -EINVAL;
 	}
+	crtc = obj_to_crtc(obj);
+	DRM_DEBUG_KMS("[CRTC:%d]\n", crtc->base.id);
 
-	dev_priv->csc_enabled = status;
-
-	/* Search for a CRTC,
-	Assumption: Either MIPI or EDP is fix panel */
-	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
-		if (intel_pipe_has_type(crtc, dev_priv->is_mipi ?
-			INTEL_OUTPUT_DSI : INTEL_OUTPUT_EDP))
-			break;
+	pipe = to_intel_crtc(crtc)->pipe;
+	bytes_read += bytes_count;
+	bytes_count = count - bytes_read;
+	if (bytes_count > 0) {
+		temp_buf = buf + bytes_read;
+		/* Parse data and load the gamma  table */
+		ret = parse_clrmgr_input(&req_state, temp_buf,
+			ENABLE_TOKEN_MAX_COUNT, &bytes_count);
+		if (ret < ENABLE_TOKEN_MAX_COUNT) {
+			DRM_ERROR("Enable-token loading failed\n");
+			goto exit;
+		} else
+			DRM_DEBUG("Enable-token loading done\n");
 	}
-
-	/* No CRTC */
-	if (!crtc) {
-		DRM_ERROR("CSC enable: No local panel found\n");
-		ret = -EINVAL;
-		goto EXIT;
-	}
+	DRM_DEBUG_KMS("req_state:%d\n", req_state);
 
 	/* if CSC enabled, apply CSC correction */
-	if (dev_priv->csc_enabled) {
+	if (req_state) {
 		if (do_intel_enable_csc(dev,
-			(void *) csc_softlut, crtc)) {
+					(void *) csc_softlut[pipe], crtc)) {
 			DRM_ERROR("CSC correction failed\n");
 			ret = -EINVAL;
 		} else
@@ -541,7 +662,7 @@ ssize_t i915_csc_enable_write(struct file *filp,
 		ret = count;
 	}
 
-EXIT:
+exit:
 	kfree(buf);
 	return ret;
 }
@@ -2599,9 +2720,12 @@ i915_dpst_enable_disable(struct drm_device *dev, unsigned int val)
 
 	/* 1=> Enable DPST, else disable. */
 	if (val == 1)
-		i915_dpst_enable_hist_interrupt(dev);
+		i915_dpst_enable_hist_interrupt(dev, true);
 	else
-		i915_dpst_disable_hist_interrupt(dev);
+		i915_dpst_disable_hist_interrupt(dev, true);
+
+	/* Send a fake signal to start the process */
+	i915_dpst_irq_handler(dev);
 
 	return 0;
 }
@@ -2784,9 +2908,17 @@ i915_read_dpst_api(struct file *filp,
 		if (dev_priv->is_mipi) {
 
 #ifdef CONFIG_CRYSTAL_COVE
-			len += scnprintf(&buf[len], (sizeof(buf) - len),
+			u32 max = intel_panel_get_max_backlight(dev);
+			u32 val = 0;
+			if (BYT_CR_CONFIG) {
+				val = lpio_bl_read(0, LPIO_PWM_CTRL);
+				val = (0xff - (val & 0xff)) * max/0xff;
+				len += scnprintf(&buf[len], (sizeof(buf) - len),
+					"DPST Applied Backlight Level: 0x%x\n", val);
+			} else
+				len += scnprintf(&buf[len], (sizeof(buf) - len),
 					"DPST Applied Backlight Level: 0x%x\n",
-					intel_mid_pmic_readb(0x4E));
+					(intel_mid_pmic_readb(0x4E)));
 #else
 			len += scnprintf(&buf[len], (sizeof(buf) - len),
 					"DPST Applied Backlight not supported\n");
@@ -3718,6 +3850,11 @@ i915_iosf_read_api(struct file *filp,
 						(unsigned int) iosf_val);
 		} else if (strcmp(port, IOSF_FUSE_TOKEN) == 0) {
 			iosf_val = vlv_nc_read(dev_priv, iosf_reg);
+			len = scnprintf(buf, sizeof(buf),
+				"0x%x: 0x%x\n", (unsigned int) iosf_reg,
+						(unsigned int) iosf_val);
+		} else if (strcmp(port, IOSF_CCU_TOKEN) == 0) {
+			iosf_val = vlv_ccu_read(dev_priv, iosf_reg);
 			len = scnprintf(buf, sizeof(buf),
 				"0x%x: 0x%x\n", (unsigned int) iosf_reg,
 						(unsigned int) iosf_val);

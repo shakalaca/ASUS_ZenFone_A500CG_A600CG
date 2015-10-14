@@ -287,7 +287,7 @@ static void hid_irq_in(struct urb *urb)
 	struct hid_device	*hid = urb->context;
 	struct usbhid_device 	*usbhid = hid->driver_data;
 	int			status;
-  
+
 	switch (urb->status) {
 	case 0:			/* success */
 		usbhid_mark_busy(usbhid);
@@ -601,18 +601,17 @@ static void __usbhid_submit_report(struct hid_device *hid, struct hid_report *re
 		}
 		hid_output_report(report, usbhid->ctrl[usbhid->ctrlhead].raw_report);
 	}
-
-    usbhid->ctrl[usbhid->ctrlhead].report = report;
+	usbhid->ctrl[usbhid->ctrlhead].report = report;
 	usbhid->ctrl[usbhid->ctrlhead].dir = dir;
 	usbhid->ctrlhead = head;
 
 	/* If the queue isn't running, restart it */
 	if (!test_bit(HID_CTRL_RUNNING, &usbhid->iofl)) {
 		usbhid_restart_ctrl_queue(usbhid);
- 
+
 	/* Otherwise see if an earlier request has timed out */
 	} else if (time_after(jiffies, usbhid->last_ctrl + HZ * 5)) {
-        
+
 		/* Prevent autosuspend following the unlink */
 		usb_autopm_get_interface_no_resume(usbhid->intf);
 

@@ -226,6 +226,7 @@ static const struct drm_prop_enum_list drm_encoder_enum_list[] =
 
 struct drm_mode_object *gobj;
 uint64_t gvalue;
+DEFINE_MUTEX(gvalue_lock);
 
 static void drm_dpms_execute(struct work_struct *work)
 {
@@ -233,7 +234,9 @@ static void drm_dpms_execute(struct work_struct *work)
 	struct drm_device *dev = container_of(delayed_work,
 		struct drm_device, mode_config.dpms_work);
 	struct drm_connector *connector = obj_to_connector(gobj);
+	mutex_lock(&gvalue_lock);
 	(*connector->funcs->dpms)(connector, (int)gvalue);
+	mutex_unlock(&gvalue_lock);
 	drm_object_property_set_value(&connector->base,
 		connector->dev->mode_config.dpms_property, gvalue);
 }
@@ -2023,6 +2026,39 @@ out:
 }
 
 /**
+ * drm_mode_setdisplay - set up or tear down display planes
+ * @dev: DRM device
+ * @data: ioctl data*
+ * @file_priv: DRM file info
+ *
+ * Set plane info, including placement, fb, scaling, page flip and other
+ * factors.
+ */
+DEFINE_MUTEX(setdisp_lock);
+int drm_mode_setdisplay(struct drm_device *dev, void *data,
+			struct drm_file *file_priv)
+{
+	struct drm_mode_set_display *disp_req = data;
+	struct drm_mode_object *obj;
+	struct drm_crtc *crtc;
+	int ret = -EINVAL;
+
+	obj = drm_mode_object_find(dev, disp_req->crtc_id, DRM_MODE_OBJECT_CRTC);
+	if (!obj) {
+		DRM_ERROR("failed to get object");
+		return -EINVAL;
+	}
+	crtc = obj_to_crtc(obj);
+	mutex_lock(&setdisp_lock);
+	if (crtc->funcs->set_display == NULL)
+		goto out;
+	ret = crtc->funcs->set_display(crtc, disp_req, file_priv);
+out:
+	mutex_unlock(&setdisp_lock);
+	return ret;
+}
+
+/**
  * drm_mode_set_config_internal - helper to call ->set_config
  * @set: modeset config to set
  *
@@ -3263,10 +3299,12 @@ static int drm_mode_connector_set_obj_prop(struct drm_mode_object *obj,
 	struct drm_connector *connector = obj_to_connector(obj);
 	struct drm_device *dev = connector->dev;
 	gobj = obj;
+	mutex_lock(&gvalue_lock);
 	if (value == DRM_MODE_DPMS_ASYNC_ON)
 		gvalue = DRM_MODE_DPMS_ON;
 	else if (value == DRM_MODE_DPMS_ASYNC_OFF)
 		gvalue = DRM_MODE_DPMS_OFF;
+	mutex_unlock(&gvalue_lock);
 
 	/* Do DPMS ourselves */
 	if (property == connector->dev->mode_config.dpms_property) {
@@ -3633,36 +3671,10 @@ int drm_mode_page_flip_ioctl(struct drm_device *dev,
 	if (crtc->invert_dimensions)
 		swap(hdisplay, vdisplay);
 
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		if (connector->encoder->crtc == crtc) {
-			int i;
-			for (i = 0; i < connector->properties.count; i++) {
-				struct drm_mode_object *obj;
-				struct drm_property *property;
-				obj = drm_mode_object_find(dev,
-						connector->properties.ids[i],
-						DRM_MODE_OBJECT_PROPERTY);
-				if (!obj) {
-					ret = -EINVAL;
-					goto out;
-				}
-				property = obj_to_property(obj);
-				if (!strcmp(property->name, "pfit")) {
-					drm_object_property_get_value(
-							&connector->base,
-							property,
-							&panel_fitter_en);
-					break;
-				}
-			}
-			break;
-		}
-	}
-
 	if ((hdisplay > fb->width ||
 	    vdisplay > fb->height ||
 	    crtc->x > fb->width - hdisplay ||
-	    crtc->y > fb->height - vdisplay) && !panel_fitter_en) {
+	    crtc->y > fb->height - vdisplay) && !crtc->panning_en) {
 		DRM_DEBUG_KMS("Invalid fb size %ux%u for CRTC viewport %ux%u+%d+%d%s.\n",
 			      fb->width, fb->height, hdisplay, vdisplay, crtc->x, crtc->y,
 			      crtc->invert_dimensions ? " (inverted)" : "");

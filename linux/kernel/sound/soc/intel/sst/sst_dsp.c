@@ -42,6 +42,7 @@
 #include "../sst_platform.h"
 #include "../platform_ipc_v2.h"
 #include "sst.h"
+#include "sst_trace.h"
 
 #ifndef CONFIG_X86_64
 #define MEMCPY_TOIO memcpy_toio
@@ -82,18 +83,18 @@ void memcpy32_toio(void *dst, const void *src, int count)
  * intel_sst_reset_dsp_medfield - Resetting SST DSP
  *
  * This resets DSP in case of Medfield platfroms
+ * All CSR operations should be in the context of
+ * sst_lock
  */
 int intel_sst_reset_dsp_mfld(void)
 {
 	union config_status_reg csr;
 
 	pr_debug("Resetting the DSP in medfield\n");
-	mutex_lock(&sst_drv_ctx->csr_lock);
 	csr.full = sst_shim_read(sst_drv_ctx->shim, SST_CSR);
 	csr.full |= 0x382;
 	csr.part.run_stall = 0x1;
 	sst_shim_write(sst_drv_ctx->shim, SST_CSR, csr.full);
-	mutex_unlock(&sst_drv_ctx->csr_lock);
 
 	return 0;
 }
@@ -107,7 +108,6 @@ int sst_start_mfld(void)
 {
 	union config_status_reg csr;
 
-	mutex_lock(&sst_drv_ctx->csr_lock);
 	csr.full = sst_shim_read(sst_drv_ctx->shim, SST_CSR);
 	csr.part.bypass = 0;
 	sst_shim_write(sst_drv_ctx->shim, SST_CSR, csr.full);
@@ -120,7 +120,6 @@ int sst_start_mfld(void)
 	pr_debug("Starting the DSP_medfld %x\n", csr.full);
 	sst_shim_write(sst_drv_ctx->shim, SST_CSR, csr.full);
 	pr_debug("Starting the DSP_medfld\n");
-	mutex_unlock(&sst_drv_ctx->csr_lock);
 
 	return 0;
 }
@@ -134,7 +133,6 @@ int intel_sst_reset_dsp_mrfld(void)
 	union config_status_reg_mrfld csr;
 
 	pr_debug("sst: Resetting the DSP in mrfld\n");
-	mutex_lock(&sst_drv_ctx->csr_lock);
 	csr.full = sst_shim_read64(sst_drv_ctx->shim, SST_CSR);
 
 	pr_debug("value:0x%llx\n", csr.full);
@@ -150,7 +148,6 @@ int intel_sst_reset_dsp_mrfld(void)
 
 	csr.full = sst_shim_read64(sst_drv_ctx->shim, SST_CSR);
 	pr_debug("value:0x%llx\n", csr.full);
-	mutex_unlock(&sst_drv_ctx->csr_lock);
 	return 0;
 }
 
@@ -164,7 +161,6 @@ int sst_start_mrfld(void)
 	union config_status_reg_mrfld csr;
 
 	pr_debug("sst: Starting the DSP in mrfld LALALALA\n");
-	mutex_lock(&sst_drv_ctx->csr_lock);
 	csr.full = sst_shim_read64(sst_drv_ctx->shim, SST_CSR);
 	pr_debug("value:0x%llx\n", csr.full);
 
@@ -180,7 +176,6 @@ int sst_start_mrfld(void)
 
 	csr.full = sst_shim_read64(sst_drv_ctx->shim, SST_CSR);
 	pr_debug("sst: Starting the DSP_merrifield:%llx\n", csr.full);
-	mutex_unlock(&sst_drv_ctx->csr_lock);
 	return 0;
 }
 
@@ -188,12 +183,12 @@ int sst_start_mrfld(void)
  * intel_sst_set_bypass - Sets/clears the bypass bits
  *
  * This sets/clears the bypass bits
+ * CSR register updates should be in context of sst_lock
  */
 void intel_sst_set_bypass_mfld(bool set)
 {
 	union config_status_reg csr;
 
-	mutex_lock(&sst_drv_ctx->csr_lock);
 	csr.full = sst_shim_read(sst_drv_ctx->shim, SST_CSR);
 	if (set == true)
 		csr.full |= 0x380;
@@ -201,7 +196,6 @@ void intel_sst_set_bypass_mfld(bool set)
 		csr.part.bypass = 0;
 	pr_debug("SetupByPass set %d Val 0x%x\n", set, csr.full);
 	sst_shim_write(sst_drv_ctx->shim, SST_CSR, csr.full);
-	mutex_unlock(&sst_drv_ctx->csr_lock);
 
 }
 #define SST_CALC_DMA_DSTN(lpe_viewpt_rqd, ia_viewpt_addr, elf_paddr, \
@@ -509,8 +503,10 @@ static int sst_alloc_dma_chan(struct sst_dma *dma)
 		hid = sst_drv_ctx->hid;
 		if (!strncmp(hid, "LPE0F281", 8))
 			dma->dev = intel_mid_get_acpi_dma("DMA0F28");
-		if (!strncmp(hid, "80860F28", 8))
+		else if (!strncmp(hid, "80860F28", 8))
 			dma->dev = intel_mid_get_acpi_dma("ADMA0F28");
+		else if (!strncmp(hid, "808622A8", 8))
+			dma->dev = intel_mid_get_acpi_dma("ADMA22A8");
 		else if (!strncmp(hid, "LPE0F28", 7))
 			dma->dev = intel_mid_get_acpi_dma("DMA0F28");
 	}
@@ -801,10 +797,11 @@ static int sst_parse_module_dma(struct intel_sst_drv *sst_ctx,
 	block = (void *)module + sizeof(*module);
 
 	for (count = 0; count < module->blocks; count++) {
-		sg_len += (block->size) / sst_drv_ctx->info.dma_max_len;
-
-		if (block->size % sst_drv_ctx->info.dma_max_len)
-			sg_len = sg_len + 1;
+		if (block->type != SST_CUSTOM_INFO) {
+			sg_len += (block->size) / sst_drv_ctx->info.dma_max_len;
+			if (block->size % sst_drv_ctx->info.dma_max_len)
+				sg_len = sg_len + 1;
+		}
 		block = (void *)block + sizeof(*block) + block->size;
 	}
 
@@ -832,6 +829,12 @@ static int sst_parse_module_dma(struct intel_sst_drv *sst_ctx,
 		case SST_DRAM:
 			ram = sst_ctx->dram_base;
 			break;
+		case SST_DDR:
+			ram = sst_drv_ctx->ddr_base;
+			break;
+		case SST_CUSTOM_INFO:
+			block = (void *)block + sizeof(*block) + block->size;
+			continue;
 		default:
 			pr_err("wrong ram type0x%x in block0x%x\n",
 					block->type, count);
@@ -1056,6 +1059,12 @@ static int sst_parse_module_memcpy(struct fw_module_header *module,
 		case SST_DRAM:
 			ram_iomem = sst_drv_ctx->dram;
 			break;
+		case SST_DDR:
+			ram_iomem = sst_drv_ctx->ddr;
+			break;
+		case SST_CUSTOM_INFO:
+			block = (void *)block + sizeof(*block) + block->size;
+			continue;
 		default:
 			pr_err("wrong ram type0x%x in block0x%x\n",
 					block->type, count);
@@ -1158,6 +1167,80 @@ void sst_memcpy_free_resources(void)
 	sst_memcpy_free_lib_resources();
 }
 
+void sst_firmware_load_cb(const struct firmware *fw, void *context)
+{
+	struct intel_sst_drv *ctx = context;
+	int ret = 0;
+
+	pr_debug("In %s\n", __func__);
+
+	if (fw == NULL) {
+		pr_err("request fw failed\n");
+		return;
+	}
+
+	mutex_lock(&sst_drv_ctx->sst_lock);
+
+	if (sst_drv_ctx->sst_state != SST_RESET ||
+			ctx->fw_in_mem != NULL)
+		goto out;
+
+	pr_debug("Request Fw completed\n");
+	trace_sst_fw_download("End of FW request", ctx->sst_state);
+
+	if (ctx->info.use_elf == true)
+		ret = sst_validate_elf(fw, false);
+
+	if (ret != 0) {
+		pr_err("FW image invalid...\n");
+		goto out;
+	}
+
+	ctx->fw_in_mem = kzalloc(fw->size, GFP_KERNEL);
+	if (!ctx->fw_in_mem) {
+		pr_err("%s unable to allocate memory\n", __func__);
+		goto out;
+	}
+
+	pr_debug("copied fw to %p", ctx->fw_in_mem);
+	pr_debug("phys: %lx", (unsigned long)virt_to_phys(ctx->fw_in_mem));
+	memcpy(ctx->fw_in_mem, fw->data, fw->size);
+
+	trace_sst_fw_download("Start FW parsing", ctx->sst_state);
+	if (ctx->use_dma) {
+		if (ctx->info.use_elf == true)
+			ret = sst_parse_elf_fw_dma(ctx, ctx->fw_in_mem,
+							&ctx->fw_sg_list);
+		else
+			ret = sst_parse_fw_dma(ctx->fw_in_mem, fw->size,
+							&ctx->fw_sg_list);
+	} else {
+		if (ctx->info.use_elf == true)
+			ret = sst_parse_elf_fw_memcpy(ctx, ctx->fw_in_mem,
+							&ctx->memcpy_list);
+		else
+			ret = sst_parse_fw_memcpy(ctx->fw_in_mem, fw->size,
+							&ctx->memcpy_list);
+	}
+	trace_sst_fw_download("End FW parsing", ctx->sst_state);
+	if (ret) {
+		kfree(ctx->fw_in_mem);
+		ctx->fw_in_mem = NULL;
+		goto out;
+	}
+	/* If static module download(download at boot time) is supported,
+	 * set the flag to indicate lib download is to be done
+	 */
+	if (ctx->pdata->lib_info)
+		if (ctx->pdata->lib_info->mod_ddr_dnld)
+			ctx->lib_dwnld_reqd = true;
+
+out:
+	mutex_unlock(&sst_drv_ctx->sst_lock);
+	if (fw != NULL)
+		release_firmware(fw);
+}
+
 /*
  * sst_request_fw - requests audio fw from kernel and saves a copy
  *
@@ -1183,6 +1266,7 @@ static int sst_request_fw(struct intel_sst_drv *sst)
 		pr_err("request fw failed %d\n", retval);
 		return retval;
 	}
+	trace_sst_fw_download("End of FW request", sst->sst_state);
 	if (sst->info.use_elf == true)
 		retval = sst_validate_elf(fw, false);
 	if (retval != 0) {
@@ -1198,7 +1282,7 @@ static int sst_request_fw(struct intel_sst_drv *sst)
 	pr_debug("copied fw to %p", sst->fw_in_mem);
 	pr_debug("phys: %lx", (unsigned long)virt_to_phys(sst->fw_in_mem));
 	memcpy(sst->fw_in_mem, fw->data, fw->size);
-
+	trace_sst_fw_download("Start FW parsing", sst->sst_state);
 	if (sst->use_dma) {
 		if (sst->info.use_elf == true)
 			retval = sst_parse_elf_fw_dma(sst, sst->fw_in_mem,
@@ -1214,11 +1298,18 @@ static int sst_request_fw(struct intel_sst_drv *sst)
 			retval = sst_parse_fw_memcpy(sst->fw_in_mem, fw->size,
 							&sst->memcpy_list);
 	}
+	trace_sst_fw_download("End FW parsing", sst->sst_state);
 	if (retval) {
 		kfree(sst->fw_in_mem);
 		sst->fw_in_mem = NULL;
 	}
 
+	/* If static module download(download at boot time) is supported,
+	 * set the flag to indicate lib download is to be done
+	 */
+	if (sst->pdata->lib_info)
+		if (sst->pdata->lib_info->mod_ddr_dnld)
+			sst->lib_dwnld_reqd = true;
 end_release:
 	release_firmware(fw);
 	return retval;
@@ -1303,8 +1394,8 @@ static int sst_download_library(const struct firmware *fw_lib,
 
 	/* downloading on success */
 	mutex_lock(&sst_drv_ctx->sst_lock);
-	sst_drv_ctx->sst_state = SST_FW_LOADED;
-	mutex_lock(&sst_drv_ctx->csr_lock);
+
+	sst_drv_ctx->sst_state = SST_FW_LOADING;
 	csr.full = readl(sst_drv_ctx->shim + SST_CSR);
 	csr.part.run_stall = 1;
 	sst_shim_write(sst_drv_ctx->shim, SST_CSR, csr.full);
@@ -1312,7 +1403,6 @@ static int sst_download_library(const struct firmware *fw_lib,
 	csr.full = sst_shim_read(sst_drv_ctx->shim, SST_CSR);
 	csr.part.bypass = 0x7;
 	sst_shim_write(sst_drv_ctx->shim, SST_CSR, csr.full);
-	mutex_unlock(&sst_drv_ctx->csr_lock);
 
 	if (sst_drv_ctx->use_dma) {
 		ret_val = sst_do_dma(&sst_drv_ctx->library_list);
@@ -1323,7 +1413,6 @@ static int sst_download_library(const struct firmware *fw_lib,
 	} else
 		sst_do_memcpy(&sst_drv_ctx->libmemcpy_list);
 	/* set the FW to running again */
-	mutex_lock(&sst_drv_ctx->csr_lock);
 	csr.full = sst_shim_read(sst_drv_ctx->shim, SST_CSR);
 	csr.part.bypass = 0x0;
 	sst_shim_write(sst_drv_ctx->shim, SST_CSR, csr.full);
@@ -1331,7 +1420,6 @@ static int sst_download_library(const struct firmware *fw_lib,
 	csr.full = sst_shim_read(sst_drv_ctx->shim, SST_CSR);
 	csr.part.run_stall = 0;
 	sst_shim_write(sst_drv_ctx->shim, SST_CSR, csr.full);
-	mutex_unlock(&sst_drv_ctx->csr_lock);
 send_ipc:
 	/* send download complete and wait */
 	if (sst_create_ipc_msg(&msg, true)) {
@@ -1429,20 +1517,6 @@ void sst_post_download_byt(struct intel_sst_drv *ctx)
 	}
 }
 
-static void sst_init_lib_mem_mgr(struct intel_sst_drv *ctx)
-{
-	struct sst_mem_mgr *mgr = &ctx->lib_mem_mgr;
-	const struct sst_lib_dnld_info *lib_info = ctx->pdata->lib_info;
-
-	memset(mgr, 0, sizeof(*mgr));
-	mgr->current_base = lib_info->mod_base + lib_info->mod_table_offset
-						+ lib_info->mod_table_size;
-	mgr->avail = lib_info->mod_end - mgr->current_base + 1;
-
-	pr_debug("current base = 0x%lx , avail = 0x%x\n",
-		(unsigned long)mgr->current_base, mgr->avail);
-}
-
 /**
  * sst_load_fw - function to load FW into DSP
  *
@@ -1456,19 +1530,17 @@ int sst_load_fw(void)
 
 	pr_debug("sst_load_fw\n");
 
-	if (sst_drv_ctx->sst_state != SST_START_INIT ||
+	if (sst_drv_ctx->sst_state !=  SST_RESET ||
 			sst_drv_ctx->sst_state == SST_SHUTDOWN)
 		return -EAGAIN;
 
 	if (!sst_drv_ctx->fw_in_mem) {
+		trace_sst_fw_download("Req FW sent in check device",
+					sst_drv_ctx->sst_state);
+		pr_debug("sst: FW not in memory retry to download\n");
 		ret_val = sst_request_fw(sst_drv_ctx);
 		if (ret_val)
 			return ret_val;
-		/* If static module download(download at boot time) is supported,
-		   set the flag to indicate lib download is to be done */
-		if (sst_drv_ctx->pdata->lib_info)
-			if (sst_drv_ctx->pdata->lib_info->mod_ddr_dnld)
-				sst_drv_ctx->lib_dwnld_reqd = true;
 	}
 
 	BUG_ON(!sst_drv_ctx->fw_in_mem);
@@ -1479,10 +1551,13 @@ int sst_load_fw(void)
 	/* Prevent C-states beyond C6 */
 	pm_qos_update_request(sst_drv_ctx->qos, CSTATE_EXIT_LATENCY_S0i1 - 1);
 
+	sst_drv_ctx->sst_state = SST_FW_LOADING;
+
 	ret_val = sst_drv_ctx->ops->reset();
 	if (ret_val)
 		goto restore;
 
+	trace_sst_fw_download("Start FW copy", sst_drv_ctx->sst_state);
 	if (sst_drv_ctx->use_dma) {
 		ret_val = sst_do_dma(&sst_drv_ctx->fw_sg_list);
 		if (ret_val) {
@@ -1493,16 +1568,20 @@ int sst_load_fw(void)
 		sst_do_memcpy(&sst_drv_ctx->memcpy_list);
 	}
 
+	trace_sst_fw_download("Post download for Lib start",
+			sst_drv_ctx->sst_state);
 	/* Write the DRAM/DCCM config before enabling FW */
 	if (sst_drv_ctx->ops->post_download)
 		sst_drv_ctx->ops->post_download(sst_drv_ctx);
-
-	sst_drv_ctx->sst_state = SST_FW_LOADED;
+	trace_sst_fw_download("Post download for Lib end",
+			sst_drv_ctx->sst_state);
 
 	/* bring sst out of reset */
 	ret_val = sst_drv_ctx->ops->start();
 	if (ret_val)
 		goto restore;
+	trace_sst_fw_download("DSP reset done",
+			sst_drv_ctx->sst_state);
 
 	ret_val = sst_wait_timeout(sst_drv_ctx, block);
 	if (ret_val) {
@@ -1768,7 +1847,7 @@ free_dma_res:
 		sst_do_memcpy(&sst->libmemcpy_list);
 		sst_memcpy_free_lib_resources();
 	}
-	pr_info("download lib complete");
+	pr_debug("download lib complete");
 	return retval;
 }
 
@@ -1800,7 +1879,7 @@ static int sst_request_lib_elf(struct sst_module_info *mod_entry,
 
 	snprintf(name, sizeof(name), "%s%s%04x%s", mod_entry->name,
 			"_", pci_id, ".bin");
-	pr_info("Requesting %s\n", name);
+	pr_debug("Requesting %s\n", name);
 
 	retval = request_firmware(fw_lib, name, dev);
 	if (retval) {
@@ -1851,17 +1930,16 @@ int sst_load_all_modules_elf(struct intel_sst_drv *ctx, struct sst_module_info *
 
 	pr_debug("In %s", __func__);
 
-	sst_init_lib_mem_mgr(ctx);
-
 	for (i = 0; i < num_modules; i++) {
 		mod = &mod_table[i];
-
+		trace_sst_lib_download("Start of Request Lib", mod->name);
 		retval = sst_request_lib_elf(mod, &fw_lib,
 						ctx->pci_id, ctx->dev);
 		if (retval < 0)
 			continue;
 		lib_size = fw_lib->size;
 
+		trace_sst_lib_download("End of Request Lib", mod->name);
 		retval = sst_validate_elf(fw_lib, true);
 		if (retval < 0) {
 			pr_err("library is not valid elf %d\n", retval);
@@ -1888,8 +1966,10 @@ int sst_load_all_modules_elf(struct intel_sst_drv *ctx, struct sst_module_info *
 		}
 		pr_debug("relocation done\n");
 		release_firmware(fw_lib);
+		trace_sst_lib_download("Start of download Lib", mod->name);
 		/* write to ddr imr region,use memcpy method */
 		retval = sst_download_lib_elf(ctx, out_elf, lib_size);
+		trace_sst_lib_download("End of download Lib", mod->name);
 		mod->status = SST_LIB_DOWNLOADED;
 		kfree(out_elf);
 	}

@@ -268,6 +268,8 @@ typedef struct {
 	bool is_connected_overridden; /* indicate overridden cable state, set by external mean*/
 	bool override_cable_state; /*if true, cable state is indicated by is_connected_overriden;
 							if false, cable state is indicated by is_connected*/
+	bool islands_powered_on; /* HDMI power island status */
+
 } hdmi_context_t;
 
 /* mapping structures between pil and ipil */

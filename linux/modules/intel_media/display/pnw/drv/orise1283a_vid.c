@@ -820,7 +820,8 @@ static int orise1283a_vid_drv_ic_init(struct mdfld_dsi_config *dsi_config){
 	sender->status = MDFLD_DSI_PKG_SENDER_FREE;
 	/* panel initial settings */
 	mdfld_dsi_read_mcs_lp(sender, 0xB9, data2, 3);
-	if (board_proj_id == PROJ_ID_A500CG || board_proj_id == PROJ_ID_A501CG || board_proj_id == PROJ_ID_A502CG) {
+	if (board_proj_id == PROJ_ID_A500CG || board_proj_id == PROJ_ID_A501CG || board_proj_id == PROJ_ID_A500CG_ID
+                        ||board_proj_id == PROJ_ID_A501CG_ID || board_proj_id == PROJ_ID_A502CG) {
 		printk("[DISP] %s : A500CG series init : ", __func__);
 #if !ENABLE_SHORT_PACKAGE_CMD
 		printk(" Long package\n");
@@ -1747,22 +1748,22 @@ static int orise1283a_vid_drv_ic_init(struct mdfld_dsi_config *dsi_config){
 		mdfld_dsi_send_mcs_short_lp(sender, 0x29, 0, 0, MDFLD_DSI_SEND_PACKAGE);
 	} else {
 		if(board_lcd_id==LCD_ID_CTC){
-                        gpio_direction_output(pdata->gpio_lcd_rst, 1);
-                        usleep_range(10000, 11000);
-                        gpio_direction_output(pdata->gpio_lcd_rst, 0);
-                        usleep_range(10000, 11000);
-                        gpio_direction_output(pdata->gpio_lcd_rst, 1);
-                        usleep_range(10000, 11000);
-			printk("[DISP] %s : A600CG series init : LCD_ID_CTC", __func__);
+			gpio_direction_output(pdata->gpio_lcd_rst, 1);
+			usleep_range(10000, 11000);
+			gpio_direction_output(pdata->gpio_lcd_rst, 0);
+			usleep_range(10000, 11000);
+			gpio_direction_output(pdata->gpio_lcd_rst, 1);
+			usleep_range(10000, 11000);
+			printk("[DISP] %s : A600CG series init : LCD_ID_CTC \n", __func__);
 			mdfld_dsi_send_mcs_short_lp(sender, 0x11, 0, 0, MDFLD_DSI_SEND_PACKAGE);
 			mdelay(150);
 			mdfld_dsi_send_mcs_short_lp(sender, 0x29, 0, 0, MDFLD_DSI_SEND_PACKAGE);
 			mdelay(10);
 		} else {
-			printk("%s : A600CG series init : LCD_ID_HSD \n", __func__);
+			printk("[DISP] %s : A600CG series init LCD_ID_HSD: \n", __func__);
 #if !ENABLE_SHORT_PACKAGE_CMD
-			printk(" Long package\n");
-			for(i = 0; i < ARRAY_SIZE(a600cg_power_on_table); i++)
+		printk(" Long package\n");
+		for(i = 0; i < ARRAY_SIZE(a600cg_power_on_table); i++)
 			send_mipi_cmd_gen(sender, &a600cg_power_on_table[i]);
 #else
 			printk(" Short package\n");
@@ -2690,7 +2691,6 @@ static int orise1283a_vid_drv_ic_init(struct mdfld_dsi_config *dsi_config){
 		printk("[DISP] %s MDFLD_DSI_CONTROL_ABNORMAL !!\n", __func__);
 		return -EIO;
 	}
-
 	return 0;
 }
 
@@ -2762,7 +2762,7 @@ orise1283a_vid_dsi_controller_init(struct mdfld_dsi_config *dsi_config)
 	hw_ctx->hs_tx_timeout = 0xdcf50;
 	hw_ctx->lp_rx_timeout = 0xffff;
 	hw_ctx->turn_around_timeout = 0x3f;
-	hw_ctx->device_reset_timer = 0xffff;
+	hw_ctx->device_reset_timer = 0xffff;	
 	hw_ctx->init_count = 0x7d0;
 	hw_ctx->eot_disable = 0x3;
 
@@ -2827,9 +2827,8 @@ static int orise1283a_vid_detect(struct mdfld_dsi_config *dsi_config)
 
 		dpll_val = REG_READ(regs->dpll_reg);
 		device_ready_val = REG_READ(regs->device_ready_reg);
-
 		if ((device_ready_val & DSI_DEVICE_READY) &&
-		    (dpll_val & DPLL_VCO_ENABLE)/*&&(board_lcd_id)*/) {
+		    (dpll_val & DPLL_VCO_ENABLE)) {
 			dsi_config->dsi_hw_context.panel_on = true;
 			psb_enable_vblank(dev, pipe);
 		} else {
@@ -2912,7 +2911,6 @@ static int orise1283a_vid_power_off(struct mdfld_dsi_config *dsi_config)
 
 	/* Send power off command*/
 	sender->status = MDFLD_DSI_PKG_SENDER_FREE;
-
 	if (board_lcd_id == LCD_ID_CTC){
 		mdfld_dsi_send_mcs_short_lp(sender, 0x10, 0x00, 0, 0);
 		mdelay(150);
@@ -2950,14 +2948,16 @@ static int orise1283a_vid_reset(struct mdfld_dsi_config *dsi_config)
 	// start power on sequence
 //	intel_scu_ipc_iowrite8(PMIC_GPIO_VEMMC2CNT, 0x06);
 //	usleep_range(5000, 5500);
+
 	if(board_lcd_id != LCD_ID_CTC){
-                gpio_direction_output(pdata->gpio_lcd_rst, 1);
-                usleep_range(10000, 11000);
-                gpio_direction_output(pdata->gpio_lcd_rst, 0);
-                usleep_range(10000, 11000);
-                gpio_direction_output(pdata->gpio_lcd_rst, 1);
-                usleep_range(10000, 11000);
+		gpio_direction_output(pdata->gpio_lcd_rst, 1);
+		usleep_range(10000, 11000);
+		gpio_direction_output(pdata->gpio_lcd_rst, 0);
+		usleep_range(10000, 11000);
+		gpio_direction_output(pdata->gpio_lcd_rst, 1);
+		usleep_range(10000, 11000);
 	}
+
 	return 0;
 }
 
@@ -2987,7 +2987,7 @@ static int orise1283a_vid_set_brightness(struct mdfld_dsi_config *dsi_config,
 		return -EINVAL;
 	}
 #if PWM_SOC_ENABLE
-	if (board_proj_id == PROJ_ID_A600CG || PROJ_ID_A601CG)
+	if (board_proj_id == PROJ_ID_A600CG || board_proj_id == PROJ_ID_A601CG)
 		pwm_min = 5;
 	else
 		pwm_min = 13;
@@ -3024,11 +3024,10 @@ struct drm_display_mode *orise1283a_vid_get_config_mode(void)
 		return NULL;
 
 	printk("[DISP] %s\n", __func__);
-
 	if(board_lcd_id == LCD_ID_CTC){
 		/* CTC PORCH SETTING
 		HSA=2, HBP=42, HFP=44
-		VSA=2,   VBP=22, VFP=24	 */
+		VSA=2,	 VBP=22, VFP=24  */
 		mode->hdisplay = 720;
 		mode->vdisplay = 1280;
 		mode->hsync_start = 764;
@@ -3040,7 +3039,7 @@ struct drm_display_mode *orise1283a_vid_get_config_mode(void)
 	} else {
 		/* RECOMMENDED PORCH SETTING
 		HSA=18, HBP=48, HFP=64
-		VSA=3,   VBP=14, VFP=9	 */
+		VSA=3,	 VBP=14, VFP=9	 */
 		mode->hdisplay = 720;
 		mode->vdisplay = 1280;
 		mode->hsync_start = 784;
@@ -3049,7 +3048,7 @@ struct drm_display_mode *orise1283a_vid_get_config_mode(void)
 		mode->vsync_start = 1289;
 		mode->vsync_end = 1292;
 		mode->vtotal = 1306;
-	}
+		}
 
 	mode->vrefresh = 60;
 	mode->clock = mode->vrefresh * mode->vtotal * mode->htotal / 1000;
@@ -3062,7 +3061,7 @@ struct drm_display_mode *orise1283a_vid_get_config_mode(void)
 
 static void orise1283a_vid_get_panel_info(int pipe, struct panel_info *pi)
 {
-	if (board_proj_id == PROJ_ID_A600CG) {
+	if (board_proj_id == PROJ_ID_A600CG||Read_PROJ_ID()==PROJ_ID_A601CG) {
 		pi->width_mm = 74;
 		pi->height_mm = 131;
 	} else {
@@ -3221,13 +3220,11 @@ void orise1283a_vid_init(struct drm_device *dev, struct panel_funcs *p_funcs)
 
 }
 
-extern int flag_shutdown;
 static int orise1283a_vid_shutdown(struct platform_device *pdev)
 {
 	struct orise1283a_vid_data *pdata = &gpio_settings_data;
 	printk("[DISP] %s\n", __func__);
 
-	flag_shutdown = 1;
 	mdfld_dsi_dpi_set_power(encoder_lcd, 0);
 //	intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0);
 //	orise1283a_vid_set_brightness(orise1283a_dsi_config, 0);

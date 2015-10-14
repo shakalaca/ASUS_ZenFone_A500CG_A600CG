@@ -37,7 +37,7 @@ struct snd_ppp_params {
 	__u8			algo_id;/* Post/Pre processing algorithm ID  */
 	__u8			str_id;	/*Only 5 bits used 0 - 31 are valid*/
 	__u8			enable;	/* 0= disable, 1= enable*/
-	__u8			reserved;
+	__u8			operation; /* 0 = set_algo, 1 = get_algo */
 	__u32			size;	/*Size of parameters for all blocks*/
 	void			*params;
 } __packed;
@@ -56,8 +56,8 @@ struct snd_sst_tuning_params {
 
 /*IOCTL defined here */
 /*SST common ioctls */
-#define SNDRV_SST_DRIVER_INFO	_IOR('L', 0x10, struct snd_sst_driver_info *)
-#define SNDRV_SST_SET_ALGO	_IOW('L', 0x30,  struct snd_ppp_params *)
-#define SNDRV_SST_GET_ALGO	_IOWR('L', 0x31,  struct snd_ppp_params *)
-#define SNDRV_SST_TUNING_PARAMS	_IOW('L', 0x32,  struct snd_sst_tuning_params *)
+#define SNDRV_SST_DRIVER_INFO	_IOR('L', 0x10, struct snd_sst_driver_info)
+#define SNDRV_SST_SET_ALGO	_IOW('L', 0x30,  struct snd_ppp_params)
+#define SNDRV_SST_GET_ALGO	_IOWR('L', 0x31,  struct snd_ppp_params)
+#define SNDRV_SST_TUNING_PARAMS	_IOW('L', 0x32,  struct snd_sst_tuning_params)
 #endif /* __INTEL_SST_IOCTL_H__ */

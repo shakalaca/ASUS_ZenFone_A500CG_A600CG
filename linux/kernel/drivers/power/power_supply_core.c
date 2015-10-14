@@ -534,7 +534,7 @@ static int ps_set_cur_charge_cntl_limit(struct thermal_cooling_device *tcd,
 	ret = psy->set_property(psy,
 		POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT, &val);
 
-	psy_charger_throttle_charger(psy, state);
+	ret = psy_charger_throttle_charger(psy, state);
 
 	return ret;
 }
@@ -641,11 +641,12 @@ int power_supply_register(struct device *parent, struct power_supply *psy)
 	if (rc)
 		goto create_triggers_failed;
 
+#ifndef CONFIG_A500CG
 	if (IS_CHARGER(psy))
 		rc = power_supply_register_charger(psy);
 	if (rc)
 		goto charger_register_failed;
-
+#endif
 	power_supply_changed(psy);
 
 	goto success;

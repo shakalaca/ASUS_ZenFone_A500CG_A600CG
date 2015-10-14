@@ -159,6 +159,13 @@ void psb_dpst_device_pool_destroy(struct dpst_state *state)
 	int i;
 	struct umevent_list *list;
 	struct umevent_obj *umevent_test;
+
+	if(state == NULL)
+	{
+		DRM_INFO("DPST state already NULL in psb_dpst_device_pool_destroy\n");
+		return;
+	}
+
 	list = state->list;
 	flush_workqueue(state->dpst_wq);
 	destroy_workqueue(state->dpst_wq);
@@ -220,11 +227,15 @@ void psb_dpst_dev_change_wq(struct work_struct *work)
 				curr_event_index = wq_data->dpst_events
 				    [wq_data->dev_name_read];
 				// SH DPST psb_umevent_notify_change_gfxsock
-				dpst_process_event
-				    (list_entry((wq_data->dev_umevent_arry
-						 [curr_event_index]),
-						struct umevent_obj, head),
-				     DRM_DPST_SOCKET_GROUP_ID);
+				if (curr_event_index < DRM_DPST_MAX_NUM_EVENTS) {
+					dpst_process_event
+						(list_entry((wq_data->dev_umevent_arry
+							[curr_event_index]),
+							struct umevent_obj, head),
+							DRM_DPST_SOCKET_GROUP_ID);
+				} else {
+					DRM_ERROR("Work queue event index out of bounds.\n");
+				}
 			}
 			wq_data->dev_name_read++;
 		}
@@ -239,11 +250,16 @@ void psb_dpst_dev_change_wq(struct work_struct *work)
 				curr_event_index = wq_data->dpst_events
 				    [wq_data->dev_name_read];
 				// SH DPST psb_umevent_notify_change_gfxsock
-				dpst_process_event
-				    (list_entry((wq_data->dev_umevent_arry
-						 [curr_event_index]),
-						struct umevent_obj, head),
-				     DRM_DPST_SOCKET_GROUP_ID);
+				if (curr_event_index < DRM_DPST_MAX_NUM_EVENTS) {
+					dpst_process_event
+						(list_entry((wq_data->dev_umevent_arry
+							[curr_event_index]),
+							struct umevent_obj, head),
+							DRM_DPST_SOCKET_GROUP_ID);
+				} else {
+					DRM_ERROR("Work queue event index out of bounds.\n");
+				}
+
 			}
 			wq_data->dev_name_read++;
 		}

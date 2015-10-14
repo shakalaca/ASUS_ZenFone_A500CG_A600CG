@@ -316,6 +316,8 @@ again:
 	return ret;
 }
 
+DEFINE_PER_CPU(u64, predicted_time);
+
 /**
  * menu_select - selects the next idle state to enter
  * @drv: cpuidle driver containing state data
@@ -367,6 +369,8 @@ static int menu_select(struct cpuidle_driver *drv, struct cpuidle_device *dev)
 	/* Make sure to round up for half microseconds */
 	data->predicted_us = div_round64(data->expected_us * data->correction_factor[data->bucket],
 					 RESOLUTION * DECAY);
+
+	per_cpu(predicted_time, cpu) = data->predicted_us;
 
 #ifdef CONFIG_PM_DEBUG
 	/* Collect the idleness histogram data if it is activated */
@@ -587,17 +591,21 @@ static struct cpuidle_governor menu_governor = {
 static int idle_hist_show(struct seq_file *s, void *unused)
 {
 	int cpu, i, max_no_of_buckets = 0;
-	struct idle_hist *idle_hist = NULL;
+	struct idle_hist *idle_hist;
+
 	for_each_online_cpu(cpu) {
 		idle_hist = per_cpu(idle_hists, cpu);
 		if (idle_hist && idle_hist->no_of_buckets > max_no_of_buckets)
 			max_no_of_buckets = idle_hist->no_of_buckets;
 		seq_printf(s, "\tCPU%d", cpu);
 	}
+
+	if (unlikely(idle_hist == NULL))
+		return 0;
+
 	seq_puts(s, "\n");
 	for (i = 0; i <= max_no_of_buckets; i++) {
-		if (idle_hist)
-			seq_printf(s, "%d", i * idle_hist->bucket_width);
+		seq_printf(s, "%d", i * idle_hist->bucket_width);
 		for_each_online_cpu(cpu) {
 			u32 freq = -1; /* -1 indicates invalid frquency */
 			idle_hist = per_cpu(idle_hists, cpu);

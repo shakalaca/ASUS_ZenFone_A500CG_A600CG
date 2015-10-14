@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -277,6 +277,7 @@
 #define URT_DEBUG            60          /// a record with debugging info in a human-readable format
 
 // Pre-defined system function IDs
+#define FID_THREAD_NAME      0x11e       /// thread name
 #define FID_GENERIC_SYSCALL  0x100000    /// system calls tracked by the driver
 
 #endif /* _VTSSTRACE_H_ */

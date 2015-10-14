@@ -101,6 +101,7 @@
 #define MBCUIRQ                 0x10
 
 #define MRFL_SMIP_SRAM_ADDR	0xFFFCE000
+#define MOFD_SMIP_SRAM_ADDR	0xFFFC5C00
 
 /* SMIP offset address from where the BCU related info should be read */
 #define BCU_SMIP_OFFSET		0x3BA

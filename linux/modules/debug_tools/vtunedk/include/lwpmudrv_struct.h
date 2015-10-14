@@ -5,7 +5,7 @@
  *  agreement or nondisclosure agreement with Intel Corporation and may not
  *  be copied or disclosed except in accordance with the terms of that
  *  agreement.
- *        Copyright (c) 2007-2013 Intel Corporation.  All Rights Reserved.
+ *        Copyright (C) 2007-2014 Intel Corporation.  All Rights Reserved.
  * -------------------------------------------------------------------------
 **COPYRIGHT*/
 
@@ -42,8 +42,20 @@ extern "C" {
 #define EFLAGS_IOPL1    0x00001000
 #define EFLAGS_IOPL2    0x00002000
 #define EFLAGS_IOPL3    0x00003000
+#define MAX_DEVICES     30
+#define MAX_EMON_GROUPS 1000
+#define MAX_PCI_BUSNO   256
+#define MAX_PCI_DEVNO   32
+#define MAX_PCI_FUNCNO  8
 
 extern float freq_multiplier;
+
+// Enumeration for invoking dispatch on multiple cpus or not
+typedef enum {
+    DRV_MULTIPLE_INSTANCE = 0,
+    DRV_SINGLE_INSTANCE
+} DRV_PROG_TYPE;
+
 
 typedef struct DRV_CONFIG_NODE_S  DRV_CONFIG_NODE;
 typedef        DRV_CONFIG_NODE   *DRV_CONFIG;
@@ -64,6 +76,7 @@ struct DRV_CONFIG_NODE_S {
     U32          pebs_mode;
     U32          pebs_capture;
     DRV_BOOL     collect_lbrs;
+    DRV_BOOL     collect_callstacks;
     DRV_BOOL     debug_inject;
     DRV_BOOL     virt_phys_translation;
     DRV_BOOL     latency_capture;
@@ -73,20 +86,22 @@ struct DRV_CONFIG_NODE_S {
     U32          results_offset;   // this is to store the offset for this device's results
     DRV_BOOL     eventing_ip_capture;
     DRV_BOOL     hle_capture;
-    U32          emon_unc_offset;
+    U32          emon_unc_offset[MAX_EMON_GROUPS];
+    DRV_BOOL     enable_p_state;   // adding MPERF and APERF values at the end of the samples
+    DRV_BOOL     enable_cp_mode;   // enabling continuous profiling mode
 #else
     DRV_BOOL     collect_ro;
 #endif
     S32          seed_name_len;
 #if defined(DRV_IA32) || defined(DRV_EM64T)
     U32          padding1;
-#endif
+#endif  
     U64          target_pid;
     DRV_BOOL     use_pcl;
     DRV_BOOL     enable_ebc;
     DRV_BOOL     enable_tbc;
 #if defined(DRV_IA32) || defined(DRV_EM64T)
-    U32          padding2;
+    U32          ebc_group_id_offset;
 #endif
     union {
         S8      *seed_name;
@@ -96,11 +111,16 @@ struct DRV_CONFIG_NODE_S {
         S8      *cpu_mask;
         U64      dummy2;
     } u2;
+    U32          device_type;
     DRV_BOOL     ds_area_available;
 #if defined(DRV_IA32) || defined(DRV_EM64T)
-    U32          padding3;
+    DRV_BOOL     precise_ip_lbrs;
+    DRV_BOOL     store_lbrs;
 #endif
-
+    DRV_BOOL     tsc_capture;
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+    U32          padding2;
+#endif
 };
 
 #define DRV_CONFIG_size(cfg)                      (cfg)->size
@@ -118,6 +138,7 @@ struct DRV_CONFIG_NODE_S {
 #define DRV_CONFIG_pebs_mode(cfg)                 (cfg)->pebs_mode
 #define DRV_CONFIG_pebs_capture(cfg)              (cfg)->pebs_capture
 #define DRV_CONFIG_collect_lbrs(cfg)              (cfg)->collect_lbrs
+#define DRV_CONFIG_collect_callstacks(cfg)        (cfg)->collect_callstacks
 #define DRV_CONFIG_debug_inject(cfg)              (cfg)->debug_inject
 #define DRV_CONFIG_virt_phys_translation(cfg)     (cfg)->virt_phys_translation
 #define DRV_CONFIG_latency_capture(cfg)           (cfg)->latency_capture
@@ -127,8 +148,9 @@ struct DRV_CONFIG_NODE_S {
 #define DRV_CONFIG_results_offset(cfg)            (cfg)->results_offset
 #define DRV_CONFIG_eventing_ip_capture(cfg)       (cfg)->eventing_ip_capture
 #define DRV_CONFIG_hle_capture(cfg)               (cfg)->hle_capture
-
-#define DRV_CONFIG_emon_unc_offset(cfg)           (cfg)->emon_unc_offset
+#define DRV_CONFIG_emon_unc_offset(cfg,grp_num)   (cfg)->emon_unc_offset[grp_num]
+#define DRV_CONFIG_enable_p_state(cfg)            (cfg)->enable_p_state
+#define DRV_CONFIG_enable_cp_mode(cfg)            (cfg)->enable_cp_mode
 #else
 #define DRV_CONFIG_collect_ro(cfg)                (cfg)->collect_ro
 #endif
@@ -138,8 +160,15 @@ struct DRV_CONFIG_NODE_S {
 #define DRV_CONFIG_target_pid(cfg)                (cfg)->target_pid
 #define DRV_CONFIG_use_pcl(cfg)                   (cfg)->use_pcl
 #define DRV_CONFIG_event_based_counts(cfg)        (cfg)->enable_ebc
+#define DRV_CONFIG_ebc_group_id_offset(cfg)       (cfg)->ebc_group_id_offset
 #define DRV_CONFIG_timer_based_counts(cfg)        (cfg)->enable_tbc
+#define DRV_CONFIG_device_type(cfg)               (cfg)->device_type
 #define DRV_CONFIG_ds_area_available(cfg)         (cfg)->ds_area_available
+#if defined(DRV_IA32) || defined(DRV_EM64T)
+#define DRV_CONFIG_precise_ip_lbrs(cfg)           (cfg)->precise_ip_lbrs
+#define DRV_CONFIG_store_lbrs(cfg)                (cfg)->store_lbrs
+#endif
+#define DRV_CONFIG_tsc_capture(cfg)               (cfg)->tsc_capture
 
 /*
  *    X86 processor code descriptor
@@ -512,11 +541,11 @@ typedef struct __generic_per_cpu {
     // Maybe we can just have the place holder now and figure out
     // how to fill them later.
     //
-    U16 cpu_package_num;            // package number for this cpu (if known)
-    U16 cpu_core_num;               // core number (if known)
-    U16 cpu_hw_thread_num;          // hw thread number inside the core (if known)
+    U16 cpu_package_num;             // package number for this cpu (if known)
+    U16 cpu_core_num;                // core number (if known)
+    U16 cpu_hw_thread_num;           // hw thread number inside the core (if known)
 
-    U16 cpu_threads_per_core;       // total number of h/w threads per core (if known)
+    U16 cpu_threads_per_core;        // total number of h/w threads per core (if known)
     U16 cpu_module_id;               // Processor module number
     U16 cpu_num_modules;             // Number of processor modules
     U32 reserved;
@@ -579,9 +608,9 @@ typedef struct __sys_info {
     U64 max_app_address;         // USER: upper allowed user space address (if known)
     U32 page_size;               // Current page size
     U32 allocation_granularity;  // USER: Granularity of allocation requests (if known)
-
-    U32 reserved[2];              // leave some space
-
+    U32 reserved1;               // added for future fields
+    U32 reserved2;               // alignment purpose
+    U64 reserved3[3];            // added for future fields
 } VTSA_SYS_INFO;
 
 #define VTSA_SYS_INFO_node_array(sys_info)                (sys_info)->node_array
@@ -617,17 +646,50 @@ struct DRV_TOPOLOGY_INFO_NODE_S {
 #define DRV_TOPOLOGY_INFO_cpu_module_master(dti)   (dti)->cpu_module_master
 #define DRV_TOPOLOGY_INFO_cpu_num_modules(dti)     (dti)->cpu_num_modules
 
+// dimm information
+typedef struct DRV_DIMM_INFO_NODE_S DRV_DIMM_INFO_NODE;
+typedef        DRV_DIMM_INFO_NODE  *DRV_DIMM_INFO;
+
+struct DRV_DIMM_INFO_NODE_S {
+  U32 platform_id;
+  U32 channel_num;
+  U32 rank_num;
+  U32 value;
+};
+
+#define DRV_DIMM_INFO_platform_id(di) (di)->platform_id
+#define DRV_DIMM_INFO_channel_num(di) (di)->channel_num
+#define DRV_DIMM_INFO_rank_num(di)    (di)->rank_num
+#define DRV_DIMM_INFO_value(di)       (di)->value
+
 //platform information. need to get from driver
+#define MAX_PACKAGES  4
+#define MAX_CHANNELS  8
+#define MAX_RANKS     3
+
 typedef struct DRV_PLATFORM_INFO_NODE_S DRV_PLATFORM_INFO_NODE;
 typedef        DRV_PLATFORM_INFO_NODE  *DRV_PLATFORM_INFO;
- 
+
 struct DRV_PLATFORM_INFO_NODE_S {
     U64 info;                     // platform info
     U64 ddr_freq_index;           // freq table index
+    U8  misc_valid;               // misc enabled valid bit
+    U8  reserved1;                // added for alignment purpose
+    U16 reserved2;                // added for alignment purpose
+    U32 reserved3;                // added for alignment purpose
+    U64 misc_info;                // misc enabled info
+    U64 ufs_freq;                 // ufs frequency (HSX only)
+    DRV_DIMM_INFO_NODE dimm_info[MAX_PACKAGES * MAX_CHANNELS * MAX_RANKS];
+    U64 energy_multiplier;        // Value of energy multiplier
 };
-#define DRV_PLATFORM_INFO_info(data)           (data)->info
-#define DRV_PLATFORM_INFO_ddr_freq_index(data) (data)->ddr_freq_index
- 
+#define DRV_PLATFORM_INFO_info(data)              (data)->info
+#define DRV_PLATFORM_INFO_ddr_freq_index(data)    (data)->ddr_freq_index
+#define DRV_PLATFORM_INFO_misc_valid(data)        (data)->misc_valid
+#define DRV_PLATFORM_INFO_misc_info(data)         (data)->misc_info
+#define DRV_PLATFORM_INFO_ufs_freq(data)          (data)->ufs_freq
+#define DRV_PLATFORM_INFO_dimm_info(data)         (data)->dimm_info
+#define DRV_PLATFORM_INFO_energy_multiplier(data) (data)->energy_multiplier
+
 //platform information. need to get from Platform picker
 typedef struct PLATFORM_FREQ_INFO_NODE_S PLATFORM_FREQ_INFO_NODE;
 typedef        PLATFORM_FREQ_INFO_NODE  *PLATFORM_FREQ_INFO;
@@ -640,7 +702,8 @@ struct PLATFORM_FREQ_INFO_NODE_S {
 #define PLATFORM_FREQ_INFO_multiplier(data)       (data)->multiplier
 #define PLATFORM_FREQ_INFO_table(data)            (data)->table
 #define PLATFORM_FREQ_INFO_table_size(data)       (data)->table_size
-              
+
+
 // Definitions for user markers data
 // The instances of these structures will be written to the user markers temp file.
 #define MARKER_DEFAULT_TYPE   "Default_Marker"
@@ -660,72 +723,6 @@ typedef enum {
         SMRK_TYPE_ID
 }  SMRK_TYPE;
 */
-
-typedef struct _MarkerType {
-        U32      type;               // The type is the SMRK_TYPE - one of SMRK_TYPE_ID or SMRK_WALLCLOCK
-                                     // helps in identifying the marker data structure in the temp file
-} MarkerType;
-
-#define MARKER_TYPE_type(pdata)             (pdata)->type
-
-typedef struct _MarkerIdentifierData {
-   U32      marker_id;                      // Marker Unique Identifier
-   U32      marker_name_length;             // Marker Name length
-   char     marker_name[136];               // Marker Name
-} MarkerIdentifierData, *PMarkerIdentifierData;
-
-#define MARKER_ID_id(pdata)               (pdata)->marker_id
-#define MARKER_ID_name_len(pdata)         (pdata)->marker_name_length
-#define MARKER_ID_name(pdata)             (pdata)->marker_name
-
-
-#define MAX_THREAD_NAME       120
-
-////////////////////////////////
-// THREAD_NAME info structure
-// this structure contains information needed to support thread naming
-////////////////////////////////
-/*!\struct THREAD_NAME_INFO_NODE
- * \var thread_name_length        Thread Name Length
- * \var pid                       Process id of the process the thread belongs to
- * \var tid                       Thread id of the thread
- * \var tsc                       Time stamp when this information was added
- * \var thread_name               Thread Name
- *
- * \brief Instances of these structures will be written to the output temp file
- */
-
-typedef struct THREAD_NAME_INFO_NODE_S THREAD_NAME_INFO_NODE;
-typedef        THREAD_NAME_INFO_NODE  *THREAD_NAME_INFO;
-
-struct THREAD_NAME_INFO_NODE_S {
-        U32     thread_name_length;
-        U64     pid;
-        U64     tid;
-        U64     tsc;
-        char    thread_name[MAX_THREAD_NAME];
-};
-
-#define THREAD_NAME_pid(tinfo)                        (tinfo)->pid
-#define THREAD_NAME_tid(tinfo)                        (tinfo)->tid
-#define THREAD_NAME_tsc(tinfo)                        (tinfo)->tsc
-#define THREAD_NAME_thread_name(tinfo)                (tinfo)->thread_name
-#define THREAD_NAME_thread_name_length(tinfo)         (tinfo)->thread_name_length
-
-// This structure contains the user marker wallclock information
-// The instances of these structures will be written to the user markers temp file.
-typedef struct _MarkerWallClockData {
-    U8      end_marker;                     // End Marker Flag in case of continuous or range marker
-    U32     marker_id;                      // Marker Unique Identifier, maps to the marker_id member in MarkerIdentifierData structure
-    U64     tsc;                            // tsc at the marker was added
-    U64     wallclock;                      // wallclock information
-} MarkerWallClockData, *PMarkerWallClockData;
-
-#define MARKER_DATA_marker_id(pdata)       (pdata)->marker_id
-#define MARKER_DATA_end_marker(pdata)      (pdata)->end_marker
-#define MARKER_DATA_tsc(pdata)             (pdata)->tsc
-#define MARKER_DATA_wallclock(pdata)       (pdata)->wallclock
-
 
 #define OSSNAMELEN      64
 #define OSNAMELEN       128
@@ -828,9 +825,10 @@ struct SEP_VERSION_NODE_S {
     union {
         U32      sep_version;
         struct {
-            S32  major:8;
-            S32  minor:8;
-            S32  api:16;
+            S32  major :8;
+            S32  minor :8;
+            S32  api   :8;
+            S32  update:8;
         }s1;
     }u1;
 };
@@ -839,6 +837,7 @@ struct SEP_VERSION_NODE_S {
 #define SEP_VERSION_NODE_major(version)       (version)->u1.s1.major
 #define SEP_VERSION_NODE_minor(version)       (version)->u1.s1.minor
 #define SEP_VERSION_NODE_api(version)         (version)->u1.s1.api
+#define SEP_VERSION_NODE_update(version)      (version)->u1.s1.update
 
 typedef struct DEVICE_INFO_NODE_S  DEVICE_INFO_NODE;
 typedef        DEVICE_INFO_NODE   *DEVICE_INFO;
@@ -938,7 +937,8 @@ struct DRV_EVENT_MASK_NODE_S {
             U8 ipear_capture  : 1;  // Indicates which events need to have additional registers read
                                     // because they are IPEAR events.
             U8 uncore_capture : 1;
-            U8 reserved0      : 2;
+            U8 branch         : 1;  // Indicates whether the event is related to branch opertion or
+                                    // not
         } s1;
     } u1;
 };
@@ -952,6 +952,7 @@ struct DRV_EVENT_MASK_NODE_S {
 #define DRV_EVENT_MASK_btb_capture(d)           (d)->u1.s1.btb_capture
 #define DRV_EVENT_MASK_ipear_capture(d)         (d)->u1.s1.ipear_capture
 #define DRV_EVENT_MASK_uncore_capture(d)        (d)->u1.s1.uncore_capture
+#define DRV_EVENT_MASK_branch(d)                (d)->u1.s1.branch
 
 #define MAX_OVERFLOW_EVENTS 11    // This defines the maximum number of overflow events per interrupt.
                                   // In order to reduce memory footprint, the value should be at least
@@ -984,20 +985,101 @@ typedef        EMON_SCHED_INFO_NODE     *EMON_SCHED_INFO;
 struct EMON_SCHED_INFO_NODE_S {
      U32   max_counters_for_all_pmus;
      U32   num_cpus;
-     U32   group_index;
-     U32   offset_for_next_device;
+     U32   group_index[MAX_EMON_GROUPS];
+     U32   offset_for_next_device[MAX_EMON_GROUPS];
      U32   device_id;
      U32   num_packages;
      U32   num_units;
+     U32   user_scheduled;
 };
 
 #define EMON_SCHED_INFO_max_counters_for_all_pmus(x)           (x)->max_counters_for_all_pmus
 #define EMON_SCHED_INFO_num_cpus(x)                            (x)->num_cpus
-#define EMON_SCHED_INFO_group_index(x)                (x)->group_index
-#define EMON_SCHED_INFO_offset_for_next_device(x)     (x)->offset_for_next_device
+#define EMON_SCHED_INFO_group_index(x,grp_num)                 (x)->group_index[grp_num]
+#define EMON_SCHED_INFO_offset_for_next_device(x, grp_num)     (x)->offset_for_next_device[grp_num]
 #define EMON_SCHED_INFO_device_id(x)                           (x)->device_id
 #define EMON_SCHED_INFO_num_packages(x)                        (x)->num_packages
 #define EMON_SCHED_INFO_num_units(x)                           (x)->num_units
+#define EMON_SCHED_INFO_user_scheduled(x)                      (x)->user_scheduled
+
+#define INITIALIZE_Emon_Sched_Info(x,j)                                                            \
+    for((j) =0; (j) < MAX_EMON_GROUPS; (j)++) {                                                    \
+        EMON_SCHED_INFO_group_index((x),(j))             = 0;                                      \
+        EMON_SCHED_INFO_offset_for_next_device((x), (j)) = 0;                                      \
+    }
+
+typedef struct PCIFUNC_INFO_NODE_S   PCIFUNC_INFO_NODE;
+typedef        PCIFUNC_INFO_NODE     *PCIFUNC_INFO;
+
+struct PCIFUNC_INFO_NODE_S {
+     U32   valid;
+     U64   deviceId;
+     U32   is_found_in_platform;
+};
+
+#define PCIFUNC_INFO_NODE_funcno(x)             (x)->funcno
+#define PCIFUNC_INFO_NODE_valid(x)              (x)->valid
+#define PCIFUNC_INFO_NODE_deviceId(x)           (x)->deviceId
+
+typedef struct PCIDEV_INFO_NODE_S   PCIDEV_INFO_NODE;
+typedef        PCIDEV_INFO_NODE     *PCIDEV_INFO;
+
+struct PCIDEV_INFO_NODE_S {
+     PCIFUNC_INFO_NODE   func_info[MAX_PCI_FUNCNO];
+     U32                 valid;
+     U32                 dispatch_id;
+};
+
+#define PCIDEV_INFO_NODE_func_info(x,i)        (x).func_info[i]
+#define PCIDEV_INFO_NODE_valid(x)              (x).valid
+
+typedef struct UNCORE_PCIDEV_NODE_S   UNCORE_PCIDEV_NODE;
+
+struct UNCORE_PCIDEV_NODE_S {
+     PCIDEV_INFO_NODE   pcidev[MAX_PCI_DEVNO];
+     U32                dispatch_id;
+     U32                scan;
+};
+
+typedef struct UNCORE_TOPOLOGY_INFO_NODE_S   UNCORE_TOPOLOGY_INFO_NODE;
+typedef        UNCORE_TOPOLOGY_INFO_NODE     *UNCORE_TOPOLOGY_INFO;
+
+struct UNCORE_TOPOLOGY_INFO_NODE_S {
+     UNCORE_PCIDEV_NODE   device[MAX_DEVICES];
+};
+
+#define UNCORE_TOPOLOGY_INFO_device(x, dev_index)                                             (x)->device[dev_index]
+#define UNCORE_TOPOLOGY_INFO_device_dispatch_id(x, dev_index)                                 (x)->device[dev_index].dispatch_id
+#define UNCORE_TOPOLOGY_INFO_device_scan(x, dev_index)                                        (x)->device[dev_index].scan
+#define UNCORE_TOPOLOGY_INFO_pcidev_valid(x, dev_index, devno)                                (x)->device[dev_index].pcidev[devno].valid
+#define UNCORE_TOPOLOGY_INFO_pcidev_dispatch_id(x, dev_index, devno)                          (x)->device[dev_index].pcidev[devno].dispatch_id
+#define UNCORE_TOPOLOGY_INFO_pcidev(x, dev_index, devno)                                      (x)->device[dev_index].pcidev[devno]
+#define UNCORE_TOPOLOGY_INFO_pcidev_set_funcno_valid(x, dev_index, devno, funcno)             (x)->device[dev_index].pcidev[devno].func_info[funcno].valid = 1
+#define UNCORE_TOPOLOGY_INFO_pcidev_is_found_in_platform(x, dev_index, devno, funcno)         (x)->device[dev_index].pcidev[devno].func_info[funcno].is_found_in_platform
+#define UNCORE_TOPOLOGY_INFO_pcidev_is_devno_funcno_valid(x, dev_index, devno, funcno)        ((x)->device[dev_index].pcidev[devno].func_info[funcno].valid ? TRUE : FALSE)
+#define UNCORE_TOPOLOGY_INFO_pcidev_is_device_found(x, dev_index, devno, funcno)              ((x)->device[dev_index].pcidev[devno].func_info[funcno].is_found_in_platform ? TRUE : FALSE)
+
+
+#define GET_NUM_UNITS(x, dev_index, d, f, num_units)                                                       \
+    for((d) =0; (d) < MAX_PCI_DEVNO; (d)++) {                                                              \
+        if (!(UNCORE_TOPOLOGY_INFO_pcidev_valid((x), (dev_index), (d)))) continue;                         \
+        for ( (f)=0; (f) < MAX_PCI_FUNCNO; (f)++) {                                                        \
+            if (!(UNCORE_TOPOLOGY_INFO_pcidev_is_devno_funcno_valid((x), (dev_index), (d),(f)))) continue; \
+            if (!(UNCORE_TOPOLOGY_INFO_pcidev_is_device_found((x), (dev_index), (d),(f)))) continue;       \
+            (num_units)++;                                                                                 \
+        }                                                                                                  \
+    }                                                                                 
+          
+
+typedef enum
+{
+    UNCORE_TOPOLOGY_INFO_NODE_IMC        =   0,
+    UNCORE_TOPOLOGY_INFO_NODE_QPILL      =   1,
+    UNCORE_TOPOLOGY_INFO_NODE_HA         =   2,
+    UNCORE_TOPOLOGY_INFO_NODE_R3         =   3,
+    UNCORE_TOPOLOGY_INFO_NODE_R2         =   4,
+    UNCORE_TOPOLOGY_INFO_NODE_IRP        =   5
+}   UNCORE_TOPOLOGY_INFO_NODE_INDEX_TYPE;
 
 #endif
 

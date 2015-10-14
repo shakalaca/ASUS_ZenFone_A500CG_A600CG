@@ -148,6 +148,12 @@ static pci_power_t acpi_pci_choose_state(struct pci_dev *pdev)
 {
 	int acpi_state, d_max;
 
+#ifdef CONFIG_INTEL_SOC_PMC
+	pci_power_t target_state = acpi_pci_quirk_choose_state(pdev);
+
+	if (target_state != PCI_POWER_ERROR)
+		return target_state;
+#endif
 	if (pdev->no_d3cold)
 		d_max = ACPI_STATE_D3_HOT;
 	else
@@ -175,6 +181,10 @@ static bool acpi_pci_power_manageable(struct pci_dev *dev)
 {
 	acpi_handle handle = DEVICE_ACPI_HANDLE(&dev->dev);
 
+#ifdef CONFIG_INTEL_SOC_PMC
+	if (acpi_pci_quirk_power_manageable(dev))
+		return true;
+#endif
 	return handle ? acpi_bus_power_manageable(handle) : false;
 }
 
@@ -190,6 +200,12 @@ static int acpi_pci_set_power_state(struct pci_dev *dev, pci_power_t state)
 		[PCI_D3cold] = ACPI_STATE_D3
 	};
 	int error = -EINVAL;
+
+#ifdef CONFIG_INTEL_SOC_PMC
+	error = acpi_pci_quirk_set_state(dev, state);
+	if (!error)
+		return 0;
+#endif
 
 	/* If the ACPI device has _EJ0, ignore the device */
 	if (!handle || ACPI_SUCCESS(acpi_get_handle(handle, "_EJ0", &tmp)))

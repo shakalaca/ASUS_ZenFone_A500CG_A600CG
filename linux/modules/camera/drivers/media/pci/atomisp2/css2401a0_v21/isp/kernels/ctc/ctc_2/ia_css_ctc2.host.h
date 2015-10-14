@@ -27,10 +27,14 @@
 #include "ia_css_ctc2_param.h"
 
 void
-ia_css_ctc_encode(struct sh_css_isp_ctc_params *to,
-		  const struct ia_css_ctc_config *from);
+ia_css_ctc_encode(
+	struct sh_css_isp_ctc_params *to,
+	const struct ia_css_ctc_config *from,
+	unsigned size);
 
 void
-ia_css_ctc_dump(const struct sh_css_isp_ctc_params *ctc, unsigned level);
+ia_css_ctc_dump(
+	const struct sh_css_isp_ctc_params *ctc,
+	unsigned level);
 
 #endif /* __IA_CSS_CTC2_HOST_H */

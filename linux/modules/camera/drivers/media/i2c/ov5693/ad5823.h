@@ -36,6 +36,8 @@
 #define AD5823_REG_VCM_THRESHOLD_MSB	0x06
 #define AD5823_REG_VCM_THRESHOLD_LSB	0x07
 
+#define AD5823_REG_LENGTH		0x1
+
 #define AD5823_RING_CTRL_ENABLE		0x04
 #define AD5823_RING_CTRL_DISABLE	0x00
 
@@ -46,8 +48,8 @@
 #define VCM_CODE_MSB_MASK		0xfc
 
 enum ad5823_tok_type {
-	AD5823_8BIT  = 0x0001,
-	AD5823_16BIT = 0x0002,
+	AD5823_8BIT  = 0x1,
+	AD5823_16BIT = 0x2,
 };
 
 enum ad5823_vcm_mode {

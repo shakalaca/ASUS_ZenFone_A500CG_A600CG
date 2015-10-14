@@ -322,7 +322,7 @@ static int asus_led_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devexit asus_led_remove(struct platform_device *pdev)
+static int asus_led_remove(struct platform_device *pdev)
 {
 	struct led_info_priv *priv = dev_get_drvdata(&pdev->dev);
 	int i;
@@ -347,7 +347,7 @@ static int __devexit asus_led_remove(struct platform_device *pdev)
 
 static struct platform_driver led_info_driver = {
 	.probe		= asus_led_probe,
-	.remove		= __devexit_p(asus_led_remove),
+	.remove		= asus_led_remove,
 	.driver		= {
 		.name	= "leds-asus",
 		.owner	= THIS_MODULE,

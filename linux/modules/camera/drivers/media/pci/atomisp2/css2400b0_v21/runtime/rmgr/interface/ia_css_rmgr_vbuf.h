@@ -23,15 +23,8 @@
 #define _IA_CSS_RMGR_VBUF_H
 
 #include "ia_css_rmgr.h"
-
-#ifdef __KERNEL__
-#include <linux/kernel.h>
-#include <linux/types.h>
-#else
-#include <stdint.h>
-#endif
-
-#include "sh_css_internal.h"
+#include <type_support.h>
+#include <system_types.h>
 
 /**
  * @brief Data structure for the resource handle (host, vbuf)

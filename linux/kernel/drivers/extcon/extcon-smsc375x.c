@@ -85,7 +85,8 @@
 
 #define SMSC_CHARGE_CUR_DCP		2000
 #define SMSC_CHARGE_CUR_CDP		1500
-#define SMSC_CHARGE_CUR_SDP		100
+#define SMSC_CHARGE_CUR_SDP_100		100
+#define SMSC_CHARGE_CUR_SDP_500		500
 
 #define SMSC375X_EXTCON_USB		"USB"
 #define SMSC375X_EXTCON_SDP		"CHARGER_USB_SDP"
@@ -103,6 +104,7 @@ struct smsc375x_chip {
 	struct i2c_client	*client;
 	struct smsc375x_pdata	*pdata;
 	struct usb_phy		*otg;
+	struct work_struct	otg_work;
 	struct notifier_block	id_nb;
 	bool			id_short;
 	struct extcon_specific_cable_nb cable_obj;
@@ -147,7 +149,7 @@ static int smsc375x_detect_dev(struct smsc375x_chip *chip)
 	static bool notify_otg, notify_charger;
 	static char *cable;
 	static struct power_supply_cable_props cable_props;
-	int stat, cfg, ret, vbus_mask = 0, i;
+	int stat, cfg, ret, vbus_mask = 0;
 	u8 chrg_type;
 	bool vbus_attach = false;
 
@@ -174,20 +176,26 @@ static int smsc375x_detect_dev(struct smsc375x_chip *chip)
 		goto notify_otg_em;
 	}
 
-	/* check charger detection completion status */
-	for (i = 0; i < 10; i++) {
+	/* dont proceed with charger detection in host mode */
+	if (chip->id_short) {
+		/*
+		 * only after reading the status register
+		 * MUX path is being closed. And by default
+		 * MUX is to connected Host mode path.
+		 */
 		ret = smsc375x_read_reg(client, SMSC375X_REG_STAT);
-		if (ret < 0)
-			goto dev_det_i2c_failed;
-		else
-			stat = ret;
+		return ret;
+	}
+	/* check charger detection completion status */
+	ret = smsc375x_read_reg(client, SMSC375X_REG_STAT);
+	if (ret < 0)
+		goto dev_det_i2c_failed;
+	else
+		stat = ret;
 
-		if (stat & STAT_CHRG_DET_DONE) {
-			dev_info(&chip->client->dev, "index i:%d\n", i);
-			break;
-		} else {
-			msleep(250);
-		}
+	if (!(stat & STAT_CHRG_DET_DONE)) {
+		dev_info(&chip->client->dev, "DET failed");
+		return -EOPNOTSUPP;
 	}
 
 	ret = smsc375x_read_reg(client, SMSC375X_REG_CFG);
@@ -201,6 +209,12 @@ static int smsc375x_detect_dev(struct smsc375x_chip *chip)
 	chrg_type = stat & STAT_CHRG_TYPE_MASK;
 	chip->is_sdp = false;
 
+	/* Enabling the OVP switch on VBUS to draw maximum current */
+	ret = smsc375x_write_reg(client, SMSC375X_REG_CFG,
+			(cfg | (CFG_OVERRIDE_VBUS | CFG_EN_OVP_SWITCH)));
+	if (ret < 0)
+		goto dev_det_i2c_failed;
+
 	if (chrg_type == STAT_CHRG_TYPE_SDP) {
 		dev_info(&chip->client->dev,
 				"SDP cable connecetd\n");
@@ -211,7 +225,10 @@ static int smsc375x_detect_dev(struct smsc375x_chip *chip)
 		cable = SMSC375X_EXTCON_SDP;
 		cable_props.chrg_evt = POWER_SUPPLY_CHARGER_EVENT_CONNECT;
 		cable_props.chrg_type = POWER_SUPPLY_CHARGER_TYPE_USB_SDP;
-		cable_props.ma = SMSC_CHARGE_CUR_SDP;
+		if (chip->pdata->charging_compliance_override)
+			cable_props.ma = SMSC_CHARGE_CUR_SDP_500;
+		else
+			cable_props.ma = SMSC_CHARGE_CUR_SDP_100;
 	} else if (chrg_type == STAT_CHRG_TYPE_CDP) {
 		dev_info(&chip->client->dev,
 				"CDP cable connecetd\n");
@@ -227,6 +244,13 @@ static int smsc375x_detect_dev(struct smsc375x_chip *chip)
 			(chrg_type == STAT_CHRG_TYPE_SE1H)) {
 		dev_info(&chip->client->dev,
 				"DCP/SE1 cable connecetd\n");
+		/* Driving Vdat_src pin as the PET expects the voltage on DP
+		 * to remain >0.5V for the duration of the time VBUS is valid
+		 */
+		ret = smsc375x_write_reg(client, SMSC375X_REG_CHRG_CFG,
+				(CHRG_CFG_I2C_CNTL | CHRG_CFG_EN_VDAT_SRC));
+		if (ret < 0)
+			goto dev_det_i2c_failed;
 		notify_charger = true;
 		cable = SMSC375X_EXTCON_DCP;
 		cable_props.chrg_evt = POWER_SUPPLY_CHARGER_EVENT_CONNECT;
@@ -300,17 +324,38 @@ static irqreturn_t smsc375x_irq_handler(int irq, void *data)
 	pm_runtime_get_sync(&chip->client->dev);
 
 	dev_info(&chip->client->dev, "SMSC USB INT!\n");
-	/*
-	 * commenting the following lines
-	 * as INT functionality of SMSC3750
-	 * mux is not stable.
-	 *
-	 * msleep(500);
-	 * smsc375x_detect_dev(chip);
-	 */
+
+	smsc375x_detect_dev(chip);
 
 	pm_runtime_put_sync(&chip->client->dev);
 	return IRQ_HANDLED;
+}
+
+static void smsc375x_otg_event_worker(struct work_struct *work)
+{
+	struct smsc375x_chip *chip =
+	    container_of(work, struct smsc375x_chip, otg_work);
+	int ret;
+
+	pm_runtime_get_sync(&chip->client->dev);
+
+	if (chip->id_short)
+		ret = chip->pdata->enable_vbus();
+	else
+		ret = chip->pdata->disable_vbus();
+	if (ret < 0)
+		dev_warn(&chip->client->dev, "id vbus control failed\n");
+
+	/*
+	 * As we are not getting SMSC INT in case
+	 * 5V boost enablement.
+	 * Follwoing WA is added to enable Host mode
+	 * on CR V2.1 by invoking the VBUS worker.
+	 */
+	msleep(5000);
+	schedule_work(&chip->vbus_work);
+
+	pm_runtime_put_sync(&chip->client->dev);
 }
 
 static int smsc375x_handle_otg_notification(struct notifier_block *nb,
@@ -335,15 +380,11 @@ static int smsc375x_handle_otg_notification(struct notifier_block *nb,
 		 * in case of ID short(*id = 0)
 		 * enable vbus else disable vbus.
 		 */
-		if (*val) {
+		if (*val)
 			chip->id_short = false;
-			ret = chip->pdata->disable_vbus();
-		} else {
+		else
 			chip->id_short = true;
-			ret = chip->pdata->enable_vbus();
-		}
-		if (ret < 0)
-			dev_warn(&chip->client->dev, "id vbus control failed\n");
+		schedule_work(&chip->otg_work);
 		break;
 	case USB_EVENT_ENUMERATED:
 		/*
@@ -351,14 +392,18 @@ static int smsc375x_handle_otg_notification(struct notifier_block *nb,
 		 * had already send those event notifications.
 		 * Also only handle notifications for SDP case.
 		 */
-		if (!*val || !chip->is_sdp ||
-			(*val == SMSC_CHARGE_CUR_SDP))
+		/* No need to change SDP inlimit based on enumeration status
+		 * if platform can voilate charging_compliance.
+		 */
+		if (chip->pdata->charging_compliance_override ||
+			 !chip->is_sdp ||
+			(*val == SMSC_CHARGE_CUR_SDP_100))
 			break;
 		/*
 		 * if current limit is < 100mA
 		 * treat it as suspend event.
 		 */
-		if (*val < SMSC_CHARGE_CUR_SDP)
+		if (*val < SMSC_CHARGE_CUR_SDP_100)
 			cable_props.chrg_evt =
 					POWER_SUPPLY_CHARGER_EVENT_SUSPEND;
 		else
@@ -384,21 +429,24 @@ static void smsc375x_pwrsrc_event_worker(struct work_struct *work)
 
 	pm_runtime_get_sync(&chip->client->dev);
 
-	if (chip->id_short && chip->pdata->is_vbus_online()) {
-		/*
-		 * only after reading the status register
-		 * MUX path is being closed. And by default
-		 * MUX is to connected Host mode path.
-		 */
-		ret = smsc375x_read_reg(chip->client, SMSC375X_REG_STAT);
-		if (ret < 0)
-			dev_warn(&chip->client->dev,
-				"status read failed%d\n", ret);
-		else
-			dev_info(&chip->client->dev, "Stat:%x\n", ret);
+	/*
+	 * Sometimes SMSC INT triggering is only
+	 * happening after reading the status bits.
+	 * So we are reading the status register as WA
+	 * to invoke teh MUX INT in case of connect events.
+	 */
+	if (!chip->pdata->is_vbus_online()) {
+		ret = smsc375x_detect_dev(chip);
 	} else {
-		smsc375x_detect_dev(chip);
+		/**
+		 * To guarantee SDP detection in SMSC, need 75mSec delay before
+		 * sending an I2C command. So added 50mSec delay here.
+		 */
+		mdelay(50);
+		ret = smsc375x_read_reg(chip->client, SMSC375X_REG_STAT);
 	}
+	if (ret < 0)
+		dev_warn(&chip->client->dev, "pwrsrc evt error\n");
 
 	pm_runtime_put_sync(&chip->client->dev);
 }
@@ -412,6 +460,7 @@ static int smsc375x_handle_pwrsrc_notification(struct notifier_block *nb,
 	dev_info(&chip->client->dev, "[PWRSRC notification]: %lu\n", event);
 
 	schedule_work(&chip->vbus_work);
+
 	return NOTIFY_OK;
 }
 
@@ -452,7 +501,7 @@ static int smsc375x_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
 	struct smsc375x_chip *chip;
-	int ret = 0;
+	int ret = 0, id_val = -1;
 
 	chip = kzalloc(sizeof(struct smsc375x_chip), GFP_KERNEL);
 	if (!chip) {
@@ -498,6 +547,7 @@ static int smsc375x_probe(struct i2c_client *client,
 		goto otg_reg_failed;
 	}
 
+	INIT_WORK(&chip->otg_work, smsc375x_otg_event_worker);
 	chip->id_nb.notifier_call = smsc375x_handle_otg_notification;
 	ret = usb_register_notifier(chip->otg, &chip->id_nb);
 	if (ret) {
@@ -510,9 +560,22 @@ static int smsc375x_probe(struct i2c_client *client,
 	if (ret)
 		goto intr_reg_failed;
 
-	smsc375x_detect_dev(chip);
-
 	chip_ptr = chip;
+
+	if (chip->otg->get_id_status) {
+		ret = chip->otg->get_id_status(chip->otg, &id_val);
+		if (ret < 0) {
+			dev_warn(&client->dev,
+				"otg get ID status failed:%d\n", ret);
+			ret = 0;
+		}
+	}
+
+	if (!id_val && !chip->id_short)
+		atomic_notifier_call_chain(&chip->otg->notifier,
+						USB_EVENT_ID, &id_val);
+	else
+		smsc375x_detect_dev(chip);
 
 	/* Init Runtime PM State */
 	pm_runtime_put_noidle(&chip->client->dev);

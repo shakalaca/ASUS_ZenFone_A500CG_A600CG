@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -94,13 +94,16 @@ typedef U64 *PHYSICAL_ADDRESS;
 //              include/asm/irq_vectors.h
 //
 // FIRST_DEVICE_VECTOR should be valid for kernels 2.6.33 and earlier
+#if defined(DRV_USE_NMI)
+#define CPU_PERF_VECTOR     DRV_LVT_NMI
+#else
 #if defined(FIRST_DEVICE_VECTOR)
 #define CPU_PERF_VECTOR     (FIRST_DEVICE_VECTOR - 1)
 // FIRST_EXTERNAL_VECTOR should be valid for kernels 2.6.34 and later
 #else
 #define CPU_PERF_VECTOR     (FIRST_EXTERNAL_VECTOR + 1)
 #endif
-
+#endif
 // Has the APIC Been enabled
 #define DRV_APIC_BASE_GLOBAL_ENABLED(a)    ((a) & 1 << 11)
 #define DRV_APIC_VIRTUAL_WIRE_ENABLED(a)   ((a) & 0x100)

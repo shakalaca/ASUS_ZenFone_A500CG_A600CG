@@ -718,57 +718,6 @@ static const struct dmi_system_id intel_no_lvds[] = {
 	{ }	/* terminating entry */
 };
 
-/**
- * intel_find_lvds_downclock - find the reduced downclock for LVDS in EDID
- * @dev: drm device
- * @connector: LVDS connector
- *
- * Find the reduced downclock for LVDS in EDID.
- */
-static void intel_find_lvds_downclock(struct drm_device *dev,
-				      struct drm_display_mode *fixed_mode,
-				      struct drm_connector *connector)
-{
-	struct drm_i915_private *dev_priv = dev->dev_private;
-	struct drm_display_mode *scan;
-	int temp_downclock;
-
-	temp_downclock = fixed_mode->clock;
-	list_for_each_entry(scan, &connector->probed_modes, head) {
-		/*
-		 * If one mode has the same resolution with the fixed_panel
-		 * mode while they have the different refresh rate, it means
-		 * that the reduced downclock is found for the LVDS. In such
-		 * case we can set the different FPx0/1 to dynamically select
-		 * between low and high frequency.
-		 */
-		if (scan->hdisplay == fixed_mode->hdisplay &&
-		    scan->hsync_start == fixed_mode->hsync_start &&
-		    scan->hsync_end == fixed_mode->hsync_end &&
-		    scan->htotal == fixed_mode->htotal &&
-		    scan->vdisplay == fixed_mode->vdisplay &&
-		    scan->vsync_start == fixed_mode->vsync_start &&
-		    scan->vsync_end == fixed_mode->vsync_end &&
-		    scan->vtotal == fixed_mode->vtotal) {
-			if (scan->clock < temp_downclock) {
-				/*
-				 * The downclock is already found. But we
-				 * expect to find the lower downclock.
-				 */
-				temp_downclock = scan->clock;
-			}
-		}
-	}
-	if (temp_downclock < fixed_mode->clock && i915_lvds_downclock) {
-		/* We found the downclock for LVDS. */
-		dev_priv->lvds_downclock_avail = 1;
-		dev_priv->lvds_downclock = temp_downclock;
-		DRM_DEBUG_KMS("LVDS downclock is found in EDID. "
-			      "Normal clock %dKhz, downclock %dKhz\n",
-			      fixed_mode->clock, temp_downclock);
-	}
-}
-
 /*
  * Enumerate the child dev array parsed from VBT to check whether
  * the LVDS is present.
@@ -912,11 +861,13 @@ void intel_lvds_init(struct drm_device *dev)
 	struct drm_encoder *encoder;
 	struct drm_display_mode *scan; /* *modes, *bios_mode; */
 	struct drm_display_mode *fixed_mode = NULL;
+	struct drm_display_mode *downclock_mode = NULL;
 	struct edid *edid;
 	struct drm_crtc *crtc;
 	u32 lvds;
 	int pipe;
 	u8 pin;
+	struct i2c_adapter *i2c = NULL;
 
 	if (!intel_lvds_supported(dev))
 		return;
@@ -1013,7 +964,13 @@ void intel_lvds_init(struct drm_device *dev)
 	 * Attempt to get the fixed panel mode from DDC.  Assume that the
 	 * preferred mode is the right one.
 	 */
-	edid = drm_get_edid(connector, intel_gmbus_get_adapter(dev_priv, pin));
+	i2c = intel_gmbus_get_adapter(dev_priv, pin);
+	if (i2c == NULL) {
+		kfree(lvds_encoder);
+		kfree(lvds_connector);
+		return;
+	}
+	edid = drm_get_edid(connector, i2c);
 	if (edid) {
 		if (drm_add_edid_modes(connector, edid)) {
 			drm_mode_connector_update_edid_property(connector,
@@ -1045,8 +1002,17 @@ void intel_lvds_init(struct drm_device *dev)
 
 			fixed_mode = drm_mode_duplicate(dev, scan);
 			if (fixed_mode) {
-				intel_find_lvds_downclock(dev, fixed_mode,
-							  connector);
+				downclock_mode = intel_find_panel_downclock(dev,
+					fixed_mode, connector);
+				if (downclock_mode != NULL && i915_lvds_downclock) {
+					/* We found the downclock for LVDS. */
+					dev_priv->lvds_downclock_avail = true;
+					dev_priv->lvds_downclock =
+						intel_connector->panel.
+						downclock_mode->clock;
+					DRM_DEBUG_KMS("LVDS downclk found (%d)KHz, normal %dKhz\n",
+						fixed_mode->clock, dev_priv->lvds_downclock);
+				}
 				goto out;
 			}
 		}
@@ -1115,7 +1081,7 @@ out:
 	}
 	drm_sysfs_connector_add(connector);
 
-	intel_panel_init(&intel_connector->panel, fixed_mode);
+	intel_panel_init(&intel_connector->panel, fixed_mode, downclock_mode);
 	intel_panel_setup_backlight(connector);
 
 	return;

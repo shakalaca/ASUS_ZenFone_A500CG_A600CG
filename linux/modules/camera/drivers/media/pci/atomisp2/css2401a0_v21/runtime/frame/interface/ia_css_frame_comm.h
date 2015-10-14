@@ -21,11 +21,11 @@
 
 #ifndef __IA_CSS_FRAME_COMM_H__
 #define __IA_CSS_FRAME_COMM_H__
+
 #include "type_support.h"
 #include "platform_support.h"
+#include "runtime/bufq/interface/ia_css_bufq_comm.h"
 #include <system_types.h>	 /* hrt_vaddress */
-
-#define SH_CSS_NUM_FRAME_IDS (14)
 
 /*
  * These structs are derived from structs defined in ia_css_types.h
@@ -68,13 +68,16 @@ struct ia_css_frame_sp_plane6 {
 	struct ia_css_frame_sp_plane b_at_r;
 };
 
+struct ia_css_sp_resolution {
+	uint16_t width;		/* width of valid data in pixels */
+	uint16_t height;	/* Height of valid data in lines */
+};
 
 /*
  * Frame info struct. This describes the contents of an image frame buffer.
  */
 struct ia_css_frame_sp_info {
-	uint16_t width;		/* width of valid data in pixels */
-	uint16_t height;		/* Height of valid data in lines */
+	struct ia_css_sp_resolution res;
 	uint16_t padded_width;		/* stride of line in memory
 					(in pixels) */
 	unsigned char format;		/* format of the frame data */
@@ -82,12 +85,20 @@ struct ia_css_frame_sp_info {
 					only valid for RAW bayer frames */
 	unsigned char raw_bayer_order;	/* bayer order, only valid
 					for RAW bayer frames */
-	unsigned char padding;
+	unsigned char padding[3];	/* Extend to 32 bit multiple */
 };
 
+struct ia_css_buffer_sp {
+	union {
+		hrt_vaddress xmem_addr;
+		enum sh_css_queue_id queue_id;
+	} buf_src;
+	enum ia_css_buffer_type buf_type;
+};
 
 struct ia_css_frame_sp {
 	struct ia_css_frame_sp_info info;
+	struct ia_css_buffer_sp buf_attr;
 	union {
 		struct ia_css_frame_sp_plane raw;
 		struct ia_css_frame_sp_plane rgb;
@@ -100,18 +111,13 @@ struct ia_css_frame_sp {
 	} planes;
 };
 
-struct ia_css_frames_sp {
-	struct ia_css_frame_sp	in;
-	struct ia_css_frame_sp	out;
-	struct ia_css_resolution effective_in_res;
-	struct ia_css_frame_sp	out_vf;
-	struct ia_css_frame_sp	ref_in;
-	/* ref_out_frame is same as ref_in_frame */
-	struct ia_css_frame_sp	tnr_in;
-	/* trn_out_frame is same as tnr_in_frame */
-	struct ia_css_frame_sp_info internal_frame_info;
-	hrt_vaddress static_frame_data[SH_CSS_NUM_FRAME_IDS];
-};
+void ia_css_frame_info_to_frame_sp_info(
+	struct ia_css_frame_sp_info *sp_info,
+	const struct ia_css_frame_info *info);
+
+void ia_css_resolution_to_sp_resolution(
+	struct ia_css_sp_resolution *sp_info,
+	const struct ia_css_resolution *info);
 
 #endif /*__IA_CSS_FRAME_COMM_H__*/
 

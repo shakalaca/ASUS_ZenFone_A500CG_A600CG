@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -45,6 +45,7 @@
 #include <linux/spinlock.h>
 #include <asm/uaccess.h>
 #include <linux/slab.h>
+#include <linux/nmi.h>
 
 #include "vtsstrace.h"
 
@@ -55,7 +56,14 @@
 /* Define this to wake up transport by timeout */
 /* transprot timer interval in jiffies  (default 10ms) */
 #define VTSS_TRANSPORT_TIMER_INTERVAL   (10 * HZ / 1000)
-#define VTSS_TRANSPORT_COMPLETE_TIMEOUT 5000 /*< wait count about 50sec */
+#define VTSS_TRANSPORT_COMPLETE_TIMEOUT 1000 /*< wait count about 100sec */
+
+#define VTSS_MAX_RING_BUF_SIZE (unsigned long)VTSS_RING_BUFFER_PAGE_SIZE*256
+
+#ifndef preempt_enable_no_resched
+#define preempt_enable_no_resched() preempt_enable()
+#endif
+
 
 #ifndef VTSS_USE_UEC
 
@@ -109,6 +117,9 @@ static LIST_HEAD(vtss_transport_list);
 
 static atomic_t vtss_transport_npages = ATOMIC_INIT(0);
 
+#define VTSS_TR_REG    (1<<0)
+#define VTSS_TR_CFG    (1<<1) /* aux */
+
 struct vtss_transport_data
 {
     struct list_head    list;
@@ -132,7 +143,7 @@ struct vtss_transport_data
     atomic_t            seqnum;
     int                 is_abort;
 #endif
-//    int reserved;
+    int type;
 };
 
 void vtss_transport_addref(struct vtss_transport_data* trnd)
@@ -216,6 +227,37 @@ int vtss_transport_record_write(struct vtss_transport_data* trnd, void* part0, s
 
 #else  /* VTSS_USE_UEC */
 
+/*void* vtss_transport_record_reserve_try_hard(struct vtss_transport_data* trnd, void** entry, size_t size)
+{
+      void* record = NULL;
+    void* record = vtss_transport_record_reserve(trnd, entry, size);
+    if (record != NULL){
+        return record;
+    }
+    if (unlikely(trnd == NULL || entry == NULL)) {
+        ERROR("Transport or Entry is NULL");
+        return NULL;
+    }
+    if (unlikely(atomic_read(&trnd->is_complete))) {
+        TRACE("'%s' is COMPLETED", trnd->name);
+        return NULL;
+    }
+    if (unlikely(size == 0 || size > 0xffff)) {
+        TRACE("'%s' incorrect size (%zu bytes)", trnd->name, size);
+        return NULL;
+    }
+
+    while ((!record) && (ring_buffer_size(trnd->buffer) < VTSS_MAX_RING_BUF_SIZE))
+    {
+        unsigned long rb_size = ring_buffer_size(trnd->buffer)>>12;
+        printk("before reallocated,  buffer_size = %lx, rb = %lu\n",  ring_buffer_size(trnd->buffer), rb_size);
+        ring_buffer_resize(trnd->buffer, (rb_size+1)* PAGE_SIZE);
+        printk("reallocated,  buffer_size = %lx\n",  ring_buffer_size(trnd->buffer));
+        record = vtss_transport_record_reserve(trnd, entry, size);
+    }
+    return record;
+}
+*/
 void* vtss_transport_record_reserve(struct vtss_transport_data* trnd, void** entry, size_t size)
 {
     struct ring_buffer_event* event;
@@ -304,6 +346,16 @@ void* vtss_transport_record_reserve(struct vtss_transport_data* trnd, void** ent
     }
 }
 
+int vtss_transport_is_ready(struct vtss_transport_data* trnd)
+{
+    /*if (atomic_read(&trnd->is_complete)) {
+        TRACE("Transport is COMPLETED");
+        return 0;
+    }
+    return (trnd->seqdone > 1 || waitqueue_active(&trnd->waitq));*/
+    return atomic_read(&trnd->is_attached);
+}
+
 int vtss_transport_record_commit(struct vtss_transport_data* trnd, void* entry, int is_safe)
 {
     int rc = 0;
@@ -358,7 +410,7 @@ int vtss_transport_record_write_all(void* part0, size_t size0, void* part1, size
     list_for_each(p, &vtss_transport_list) {
         trnd = list_entry(p, struct vtss_transport_data, list);
         TRACE("put_record(%d) to trnd=0x%p => '%s'", atomic_read(&trnd->is_complete), trnd, trnd->name);
-        if (likely(!atomic_read(&trnd->is_complete))) {
+        if (likely(!atomic_read(&trnd->is_complete) && trnd->type == VTSS_TR_REG)) {
 #ifdef VTSS_USE_UEC
             /* Don't use spill notifications from uec therefore its UECMODE_SAFE always */
             int rc1 = trnd->uec->put_record(trnd->uec, part0, size0, part1, size1, UECMODE_SAFE);
@@ -405,7 +457,7 @@ static void vtss_transport_temp_free_all(struct vtss_transport_data* trnd, struc
             pstore = &(temp->next);
             continue;
         }
-        TRACE("'%s' [%lu, %lu), size=%zu of %zu",
+        TRACE("'%s' [%lu, %lu), size=%zu of %lu",
                 trnd->name, temp->seq_begin, temp->seq_end,
                 temp->size, (PAGE_SIZE << temp->order));
         free_pages((unsigned long)temp, temp->order);
@@ -978,7 +1030,7 @@ static void vtss_transport_remove(struct vtss_transport_data* trnd)
 
 struct vtss_transport_data* vtss_transport_create_trnd(void)
 {
-    int rb_size = (num_present_cpus() > 32) ? 32 : 64;
+    unsigned long rb_size = (num_present_cpus() > 32) ? 32 : 64;
     struct vtss_transport_data* trnd = (struct vtss_transport_data*)kmalloc(sizeof(struct vtss_transport_data), GFP_KERNEL);
     if (trnd == NULL) {
         ERROR("Not enough memory for transport data");
@@ -992,6 +1044,7 @@ struct vtss_transport_data* vtss_transport_create_trnd(void)
     atomic_set(&trnd->is_complete, 0);
     atomic_set(&trnd->is_overflow, 0);
     trnd->file = NULL;
+    trnd->type = VTSS_TR_REG;
 #ifdef VTSS_USE_UEC
     trnd->uec = (uec_t*)kmalloc(sizeof(uec_t), GFP_KERNEL);
     if (trnd->uec != NULL) {
@@ -1019,8 +1072,9 @@ struct vtss_transport_data* vtss_transport_create_trnd(void)
     trnd->head     = NULL;
     atomic_set(&trnd->seqnum, 0);
     trnd->buffer = ring_buffer_alloc(rb_size*PAGE_SIZE, 0);
+//    printk("allocated %lu bytes for transport buffer, PAGE_SIZE=%lx, buffer_size = %lx\n", (unsigned long)rb_size*PAGE_SIZE, (unsigned long)PAGE_SIZE, ring_buffer_size(trnd->buffer));
     if (trnd->buffer == NULL) {
-        ERROR("Unable to allocate %d * %lu bytes for transport buffer", num_present_cpus(), rb_size*PAGE_SIZE);
+        ERROR("Unable to allocate %d * %lu bytes for transport buffer", num_present_cpus(), (unsigned long)rb_size*PAGE_SIZE);
         kfree(trnd);
         return NULL;
     }
@@ -1034,7 +1088,7 @@ static void vtss_transport_destroy_trnd(struct vtss_transport_data* trnd)
         destroy_uec(trnd->uec);
         kfree(trnd->uec);
 #else
-	printk("buffer deallocated %d \n", num_present_cpus());
+        printk("buffer deallocated %d \n", num_present_cpus());
         ring_buffer_free(trnd->buffer);
 #endif
         kfree(trnd);
@@ -1084,7 +1138,15 @@ int vtss_transport_create_pde (struct vtss_transport_data* trnd, uid_t cuid, gid
     pde->uid = cuid ? cuid : uid;
     pde->gid = cgid ? cgid : gid;
 #else
+#if defined CONFIG_UIDGID_STRICT_TYPE_CHECKS || (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
+{
+    kuid_t kuid = KUIDT_INIT(cuid ? cuid : uid);
+    kgid_t kgid = KGIDT_INIT(cgid ? cgid : gid);
+    proc_set_user(pde, kuid, kgid);
+}
+#else
     proc_set_user(pde, cuid ? cuid : uid, cgid ? cgid : gid);
+#endif
 #endif
     spin_lock_irqsave(&vtss_transport_list_lock, flags);
     list_add_tail(&trnd->list, &vtss_transport_list);
@@ -1120,6 +1182,7 @@ struct vtss_transport_data* vtss_transport_create_aux(struct vtss_transport_data
     }
     memcpy((void*)trnd->name, (void*)main_trnd_name, strlen(main_trnd_name));
     memcpy((void*)trnd->name+strlen(main_trnd_name),(void*)".aux", 5);
+    trnd->type = VTSS_TR_CFG;
     /* Doesn't exist, so create it */
     if (vtss_transport_create_pde(trnd, cuid, cgid)){
         ERROR("Could not create '%s/%s'", vtss_procfs_path(), trnd->name);
@@ -1153,6 +1216,10 @@ static void vtss_transport_tick(unsigned long val)
     spin_lock_irqsave(&vtss_transport_list_lock, flags);
     list_for_each(p, &vtss_transport_list) {
         trnd = list_entry(p, struct vtss_transport_data, list);
+        if (trnd == NULL){
+             ERROR("tick: trnd in list is NULL");
+             continue;
+        }
         if (atomic_read(&trnd->is_attached)) {
             if (waitqueue_active(&trnd->waitq)) {
                 TRACE("trnd=0x%p => '%s'", trnd, trnd->name);
@@ -1224,7 +1291,8 @@ void vtss_transport_fini(void)
 {
     int wait_count = VTSS_TRANSPORT_COMPLETE_TIMEOUT;
     unsigned long flags, count;
-    struct list_head *p, *tmp;
+    struct list_head* p = NULL;
+    struct list_head* tmp = NULL;
     struct vtss_transport_data *trnd = NULL;
 
 #ifdef VTSS_TRANSPORT_TIMER_INTERVAL
@@ -1235,6 +1303,11 @@ again:
     spin_lock_irqsave(&vtss_transport_list_lock, flags);
     list_for_each_safe(p, tmp, &vtss_transport_list) {
         trnd = list_entry(p, struct vtss_transport_data, list);
+        touch_nmi_watchdog();
+        if (trnd == NULL){
+             ERROR("fini: trnd in list is NULL");
+             continue;
+        }
         TRACE("trnd=0x%p => '%s'", trnd, trnd->name);
         atomic_inc(&trnd->is_complete);
         if (atomic_read(&trnd->is_attached)) {
@@ -1243,6 +1316,7 @@ again:
             }
             if (--wait_count > 0) {
                 spin_unlock_irqrestore(&vtss_transport_list_lock, flags);
+//                INFO("awaiting transport finish!");
                 msleep_interruptible(100);
                 goto again;
             }

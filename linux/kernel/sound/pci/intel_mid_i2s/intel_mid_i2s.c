@@ -41,16 +41,27 @@
 
 #include "intel_mid_i2s.h"
 
+#define VERSION_SSP "1.3.0"
+
 MODULE_AUTHOR("Louis LE GALL <louis.le.gall intel.com>");
 MODULE_DESCRIPTION("Intel MID I2S/PCM SSP Driver");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("1.1.0");
+MODULE_VERSION(VERSION_SSP);
 
 #define SSPCODEC "SSPC0000"
 #define SSPMODEM "SSPM0000"
 #define SSPBLUET "SSPB0000"
+#define SSPACPI5 "SSPX0000"
 
-#define CLOCK_19200_KHZ			19200000
+/* ACPI arguments */
+#define AARG_NA 	0x00
+#define AARG_FREQ8	0x08
+#define AARG_FREQ16	0x10
+#define AARG_FREQ48	0x30
+
+#define ACPI_UUID_NBPARAMS	4
+
+#define CLOCK_19200_KHZ		19200000
 
 #define UNASSIGNED_GPIO_MAPPING 0xffff
 
@@ -114,6 +125,7 @@ static const struct acpi_device_id i2s_acpi_ids[] = {
 	{SSPCODEC, 0 },
 	{SSPMODEM, 0 },
 	{SSPBLUET, 0 },
+	{SSPACPI5, 0 },
 	{"", 0 },
 };
 MODULE_DEVICE_TABLE(acpi, i2s_acpi_ids);
@@ -128,6 +140,40 @@ static struct platform_driver i2s_acpi_driver = {
 	.probe = i2s_acpi_probe,
 	.remove = i2s_acpi_remove,
 };
+
+/* Configuration of timing in DSDT ACPI tables */
+
+static struct name_to_config_type config_assoc_table[] = {
+	{ "PCM0", SSPCONF_PCM0},
+	{ "PCM1", SSPCONF_PCM1},
+	{ "I2S0", SSPCONF_I2S0},
+	{ "", SSPCONF_NONE},
+};
+
+static struct intel_mid_i2s_ssp_config ssp_config[] = {
+	[SSPCONF_PCM0] = {
+		.ssp_psp_T1 = 0,
+		.ssp_psp_T2 = 0,
+		.ssp_psp_T4 = 0,
+		.ssp_psp_T5 = 0,
+		.ssp_psp_T6 = 1,
+	},
+	[SSPCONF_PCM1] = {
+		.ssp_psp_T1 = 0,
+		.ssp_psp_T2 = 1,
+		.ssp_psp_T4 = 0,
+		.ssp_psp_T5 = 0,
+		.ssp_psp_T6 = 1,
+	},
+	[SSPCONF_I2S0] = {
+		.ssp_psp_T1 = 6,
+		.ssp_psp_T2 = 2,
+		.ssp_psp_T4 = 0,
+		.ssp_psp_T5 = 14,
+		.ssp_psp_T6 = 16,
+	},
+};
+
 #endif
 
 /*
@@ -1003,7 +1049,7 @@ struct intel_mid_i2s_hdl *intel_mid_i2s_open_pci(
 
 open_error:
 	put_device(found_device);
-	pm_runtime_put(drv_data->ssp_dev);
+	pm_runtime_put_sync(drv_data->ssp_dev);
 	mutex_unlock(&drv_data->mutex);
 	return NULL;
 }
@@ -1136,7 +1182,7 @@ void intel_mid_i2s_close(struct intel_mid_i2s_hdl *drv_data)
 	clear_bit(I2S_PORT_OPENED, &drv_data->flags);
 
 	/* pm runtime */
-	pm_runtime_put(drv_data->ssp_dev);
+	pm_runtime_put_sync(drv_data->ssp_dev);
 
 	mutex_unlock(&drv_data->mutex);
 }
@@ -1632,36 +1678,44 @@ int intel_mid_i2s_command(struct intel_mid_i2s_hdl *drv_data,
 		set_ssp_i2s_hw(drv_data, hw_ssp_settings);
 		break;
 
-#ifdef _LLI_ENABLED_
 	case SSP_CMD_ENABLE_SSP:
+		if (test_bit(FEAT_DIV_CTRL, &ssp_ip_features)) {
 
-	if (test_bit(FEAT_DIV_CTRL, &ssp_ip_features)) {
-
-		if (drv_data->device_instance == SSP1_INSTANCE) {
-			/* Set internal frequency to 19.2Mhz vs default 25Mhz */
-			write_LPE_SSP1_DIV_CTRL_L(SSP19200MHZ_DIV_CTRL_L,
-							lpeshim_base_address);
-			write_LPE_SSP1_DIV_CTRL_H(SSP19200MHZ_DIV_CTRL_H,
-							lpeshim_base_address);
-		} else if (drv_data->device_instance == SSP2_INSTANCE) {
-			/* Set internal frequency to 19.2Mhz vs default 25Mhz */
-			write_LPE_SSP2_DIV_CTRL_L(SSP19200MHZ_DIV_CTRL_L,
-							lpeshim_base_address);
-			write_LPE_SSP2_DIV_CTRL_H(SSP19200MHZ_DIV_CTRL_H,
-							lpeshim_base_address);
-		} else {
-			dev_info(drv_data->ssp_dev, "NO DIV_CTRL FOR SSP0!\n");
-			WARN(1, "Trying to use SSP0 with ACPI SSP driver\n");
+			if (drv_data->device_instance == SSP1_INSTANCE) {
+				/* Set internal frequency to
+				 * 19.2Mhz vs default 25Mhz */
+				write_LPE_SSP1_DIV_CTRL_L(
+				SSP19200MHZ_DIV_CTRL_L, lpeshim_base_address);
+				write_LPE_SSP1_DIV_CTRL_H(
+				SSP19200MHZ_DIV_CTRL_H, lpeshim_base_address);
+			} else if (drv_data->device_instance == SSP2_INSTANCE) {
+				/* Set internal frequency to
+				 * 19.2Mhz vs default 25Mhz */
+				write_LPE_SSP2_DIV_CTRL_L(
+				SSP19200MHZ_DIV_CTRL_L, lpeshim_base_address);
+				write_LPE_SSP2_DIV_CTRL_H(
+				SSP19200MHZ_DIV_CTRL_H, lpeshim_base_address);
+			} else {
+				dev_info(drv_data->ssp_dev, "NO DIV_CTRL FOR SSP0!\n");
+				WARN(1, "Trying to use SSP0 with ACPI SSP driver\n");
+			}
 		}
-
-	}
+#ifdef _LLI_ENABLED_
 		i2s_enable(drv_data, true);
+#else
+		i2s_enable(drv_data);
+#endif /* _LLI_ENABLED_ */
 		break;
 
 	case SSP_CMD_DISABLE_SSP:
+#ifdef _LLI_ENABLED_
 		i2s_enable(drv_data, false);
+#else
+		i2s_disable(drv_data);
+#endif /* _LLI_ENABLED_ */
 		break;
 
+#ifdef _LLI_ENABLED_
 	case SSP_CMD_ENABLE_DMA_RX_INTR:
 		i2s_enable_dma_rx_intr(drv_data, true);
 		break;
@@ -1676,14 +1730,6 @@ int intel_mid_i2s_command(struct intel_mid_i2s_hdl *drv_data,
 
 	case SSP_CMD_DISABLE_DMA_TX_INTR:
 		i2s_enable_dma_tx_intr(drv_data, false);
-		break;
-#else
-	case SSP_CMD_ENABLE_SSP:
-		i2s_enable(drv_data);
-		break;
-
-	case SSP_CMD_DISABLE_SSP:
-		i2s_disable(drv_data);
 		break;
 #endif /* _LLI_ENABLED_ */
 
@@ -2638,6 +2684,42 @@ u32 calculate_sscr1_psp(const struct intel_mid_i2s_settings *ps_settings)
 	return sscr1;
 }
 
+void override_timing(struct intel_mid_i2s_hdl *drv_data)
+{
+#ifdef CONFIG_ACPI
+	struct intel_mid_i2s_ssp_config *conf;
+
+	switch (drv_data->current_settings.master_mode_standard_freq) {
+	case SSP_FRM_FREQ_8_000:
+		conf = &(drv_data->config_c08k);
+		break;
+	case SSP_FRM_FREQ_16_000:
+		conf = &(drv_data->config_c16k);
+		break;
+	case SSP_FRM_FREQ_48_000:
+		conf = &(drv_data->config_c48k);
+		break;
+	default:
+		pr_info("SSP I2S driver:no override settings for this freq\n");
+		return;
+	}
+
+	if (conf->valid) {
+		pr_info("SSP I2S driver: OVERRIDE settings\n");
+		pr_info("SSP I2S driver: settings:\n%d\n%d\n%d\n%d\n%d\n\n",
+			conf->ssp_psp_T1, conf->ssp_psp_T2,
+			conf->ssp_psp_T4, conf->ssp_psp_T5, conf->ssp_psp_T6);
+		drv_data->current_settings.ssp_psp_T1 = conf->ssp_psp_T1;
+		drv_data->current_settings.ssp_psp_T2 = conf->ssp_psp_T2;
+		drv_data->current_settings.ssp_psp_T4 = conf->ssp_psp_T4;
+		drv_data->current_settings.ssp_psp_T5 = conf->ssp_psp_T5;
+		drv_data->current_settings.ssp_psp_T6 = conf->ssp_psp_T6;
+	} else {
+		pr_info("SSP I2S driver: OVERRIDE settings not valid\n");
+	}
+#endif
+}
+
 /**
  * set_ssp_i2s_hw - configure the SSP driver according to the ps_settings
  * @drv_data : structure that contains all details about the SSP Driver
@@ -2649,7 +2731,7 @@ u32 calculate_sscr1_psp(const struct intel_mid_i2s_settings *ps_settings)
  *      NA
  */
 static void set_ssp_i2s_hw(struct intel_mid_i2s_hdl *drv_data,
-			const struct intel_mid_i2s_settings *ps_settings)
+			const struct intel_mid_i2s_settings *ps_settings_param)
 {
 	u32 sscr0 = 0;
 	u32 sscr1 = 0;
@@ -2659,6 +2741,7 @@ static void set_ssp_i2s_hw(struct intel_mid_i2s_hdl *drv_data,
 	u32 sssr = 0;
 	u32 ssacd = 0;
 	u32 sscr0_scr;
+	struct intel_mid_i2s_settings *ps_settings;
 #ifdef __MRFL_SPECIFIC__
 	u32 sfifott = 0;
 #endif /* __MRFL_SPECIFIC__ */
@@ -2673,7 +2756,12 @@ static void set_ssp_i2s_hw(struct intel_mid_i2s_hdl *drv_data,
 	/*
 	 * Save the current I2S Configuration
 	 */
-	drv_data->current_settings = *ps_settings;
+	drv_data->current_settings = *ps_settings_param;
+	ps_settings = &(drv_data->current_settings);
+	/*
+	 * override the timing settings if given by acpi
+	 */
+	override_timing(drv_data);
 
 	if ((ps_settings->sspsfrm_direction == SSPSFRM_MASTER_MODE)
 	   && (ps_settings->sspslclk_direction == SSPSCLK_MASTER_MODE)) {
@@ -2769,9 +2857,9 @@ static void set_ssp_i2s_hw(struct intel_mid_i2s_hdl *drv_data,
 			     (SSSR_TINT_MASK << SSSR_TINT_SHIFT) |
 			     (SSSR_PINT_MASK << SSSR_PINT_SHIFT));
 
-	if (drv_data->current_settings.ssp_rx_dma == SSP_RX_DMA_ENABLE)
+	if (ps_settings->ssp_rx_dma == SSP_RX_DMA_ENABLE)
 		drv_data->mask_sr |= (SSSR_ROR_MASK << SSSR_ROR_SHIFT);
-	if (drv_data->current_settings.ssp_tx_dma == SSP_TX_DMA_ENABLE)
+	if (ps_settings->ssp_tx_dma == SSP_TX_DMA_ENABLE)
 		drv_data->mask_sr |= (SSSR_TUR_MASK << SSSR_TUR_SHIFT);
 
 	/* Clear status */
@@ -2997,6 +3085,13 @@ static int intel_mid_i2s_probe(struct pci_dev *pdev,
 	mutex_init(&drv_data->mutex);
 
 	drv_data->ssp_dev = &(pdev->dev);
+
+#ifdef CONFIG_ACPI
+	/* no override of timing for PCI, only from ACPI */
+	drv_data->config_c08k.valid = false;
+	drv_data->config_c16k.valid = false;
+	drv_data->config_c48k.valid = false;
+#endif
 
 	/*
 	 * Get basic io resource and map it for SSP1 [BAR=0]
@@ -3303,6 +3398,152 @@ int i2s_acpi_remove(struct platform_device *platdev)
 	return 0;
 }
 
+#ifdef CONFIG_ACPI
+void
+retrieve_ssp_config(acpi_handle handle, struct intel_mid_i2s_ssp_config *config,
+			char *id)
+{
+	acpi_status status = AE_OK;
+	struct acpi_buffer obj_buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+	union acpi_object *out_obj;
+	int i = 0;
+
+	status = acpi_evaluate_object(handle, id, NULL, &obj_buffer);
+	pr_err("%s:acpi_evaluate_object %s, status:%d\n", __func__, id, status);
+	if (ACPI_FAILURE(status)) {
+		pr_err("%s: ERROR %d evaluating ID:%s\n", __func__, status, id);
+		return;
+	}
+
+	out_obj = obj_buffer.pointer;
+	if (!out_obj || out_obj->type != ACPI_TYPE_STRING) {
+		pr_err("%s: Invalid type: ACPI_TYPE_STRING for Id:%s\n", __func__, id);
+		status = AE_BAD_PARAMETER;
+		return;
+	}
+
+	pr_info("Config %s = %s\n", id, out_obj->string.pointer);
+
+	while (config_assoc_table[i].config_name[0]) {
+		if (strstr(out_obj->string.pointer,
+		    config_assoc_table[i].config_name)) {
+			enum ssp_config_type type = config_assoc_table[i].type;
+			config->ssp_psp_T1 = ssp_config[type].ssp_psp_T1;
+			config->ssp_psp_T2 = ssp_config[type].ssp_psp_T2;
+			config->ssp_psp_T4 = ssp_config[type].ssp_psp_T4;
+			config->ssp_psp_T5 = ssp_config[type].ssp_psp_T5;
+			config->ssp_psp_T6 = ssp_config[type].ssp_psp_T6;
+			config->valid = true;
+			pr_info("Config found :\nT1=%d\nT2=%d\nT4=%d\nT5=%d\nT6=%d\n",
+				config->ssp_psp_T1,
+				config->ssp_psp_T2,
+				config->ssp_psp_T4,
+				config->ssp_psp_T5,
+				config->ssp_psp_T6);
+			return;
+		}
+		i++;
+	}
+	status = AE_BAD_PARAMETER;
+	pr_info("Config not found, will not override %s settings\n", id);
+	return;
+
+}
+#endif
+
+static const u8 intel_ssp_uuid_usage[] = {
+	/* 886a3f26-600c-4401-b7b1-01e9c2e7e77e */
+	0x26, 0x3f, 0x6a, 0x88,			/* inverted */
+	0x0c, 0x60,				/* inverted */
+	0x01, 0x44,				/* inverted */
+	0xb7, 0xb1,				/* in order */
+	0x01, 0xe9, 0xc2, 0xe7, 0xe7, 0x7e	/* in order */
+};
+
+static const u8 intel_ssp_uuid_instance[] = {
+	/* 30d3f83e-2ee1-4bf0-86e9-f69ded2887ee */
+	0x3e, 0xf8, 0xd3, 0x30,
+	0xe1, 0x2e,
+	0xf0, 0x4b,
+	0x86, 0xe9,
+	0xf6, 0x9d, 0xed, 0x28, 0x87, 0xee
+};
+
+static const u8 intel_ssp_uuid_lpebase[] = {
+	/* 208b1400-f7c8-4325-ab32-53cd79b7d0a6 */
+	0x00, 0x14, 0x8b, 0x20,
+	0xc8, 0xf7,
+	0x25, 0x43,
+	0xab, 0x32,
+	0x53, 0xcd, 0x79, 0xb7, 0xd0, 0xa6
+};
+
+static const u8 intel_ssp_uuid_timings[] = {
+	/* e6e37c60-e78b-4fbd-bd26-5bd3667a6c9a */
+	0x60, 0x7c, 0xe3, 0xe6,
+	0x8b, 0xe7,
+	0xbd, 0x4f,
+	0xbd, 0x26,
+	0x5b, 0xd3, 0x66, 0x7a, 0x6c, 0x9a
+};
+
+#ifdef CONFIG_ACPI
+int
+i2s_get_ssp_param(acpi_handle handle, const u8 *intel_ssp_uuid,
+			acpi_object_type acpi_type,
+			int arg1, int arg2, int arg3,
+			struct acpi_buffer *output)
+{
+	struct acpi_object_list input;
+	union acpi_object params[4];
+	union acpi_object *obj;
+	int ret;
+
+	output->length = ACPI_ALLOCATE_BUFFER;
+	output->pointer = NULL;
+
+	pr_debug("********* I2S driver ACPI5 entries *******:\n");
+	input.count = ACPI_UUID_NBPARAMS;
+	input.pointer = params;
+	params[0].type = ACPI_TYPE_BUFFER;
+	params[0].buffer.length = sizeof(intel_ssp_uuid_usage); /* size of uuid */
+	params[0].buffer.pointer = (char *)intel_ssp_uuid;
+	params[1].type = ACPI_TYPE_INTEGER;
+	params[1].integer.value = arg1;
+	params[2].type = ACPI_TYPE_INTEGER;
+	params[2].integer.value = arg2;
+	params[3].type = ACPI_TYPE_INTEGER;
+	params[3].integer.value = arg3;
+
+	ret = acpi_evaluate_object(handle, "_DSM", &input, output);
+	if (ret) {
+		pr_info("I2S driver failed to evaluate _DSM: %d\n", ret);
+		return -ENODEV;
+	} else
+		pr_debug("I2S driver OK to evaluate _DSM: %d\n", ret);
+
+	obj = (union acpi_object *)output->pointer;
+	pr_debug("I2S obj type count=%d et add = %p ou %p\n", output->length, output->pointer, obj);
+	if (!obj) {
+		pr_info("I2S driver failed to get obj output!!!\n");
+		return -ENODEV;
+	}
+
+	if (obj->type == ACPI_TYPE_STRING)
+		pr_debug("I2S obj is >%s<\n", obj->string.pointer);
+	else if (obj->type == ACPI_TYPE_INTEGER)
+		pr_debug("I2S obj is =%d\n", (int)obj->integer.value);
+	else if (obj->type == ACPI_TYPE_BUFFER)
+		pr_debug("I2S obj is [%d]=%02x,%02x,%02x,%02x\n", obj->buffer.length, obj->buffer.pointer[0], obj->buffer.pointer[1], obj->buffer.pointer[2], obj->buffer.pointer[3]);
+	else
+		pr_debug("I2S obj is UNKNOWN TYPE %d\n", obj->type);
+
+	if (obj->type != acpi_type)
+		return -ENODEV;
+	return 0;
+}
+#endif
+
 int i2s_acpi_probe(struct platform_device *platdev)
 {
 
@@ -3321,7 +3562,12 @@ int i2s_acpi_probe(struct platform_device *platdev)
 	struct intel_mid_i2s_hdl *drv_data;
 	struct platform_device *asoc_pdev;
 
-	/* not MID CPU and ACPI means BYT for the moment */
+	union acpi_object arg;
+	struct acpi_object_list arg_list;
+	unsigned long long value;
+	acpi_status a_status = AE_OK;
+
+	/* not MID CPU and ACPI currently means BYT */
 	if (intel_mid_identify_cpu() == INTEL_CPU_CHIP_NOTMID)  {
 		set_bit(FEAT_DIV_CTRL, &ssp_ip_features);
 		set_bit(FEAT_ISRX_IMRX, &ssp_ip_features);
@@ -3350,7 +3596,7 @@ int i2s_acpi_probe(struct platform_device *platdev)
 	}
 
 	hid = acpi_device_hid(device);
-	pr_info("SSP I2S driver : ACPI probe for HID=%s , drv_data=%p\n",
+	pr_info("SSP I2S driver : ACPI probe for **HID=%s** , drv_data=%p\n",
 			hid, drv_data);
 	rsrc = platform_get_resource(platdev, IORESOURCE_MEM, 0);
 	if (!rsrc) {
@@ -3359,8 +3605,6 @@ int i2s_acpi_probe(struct platform_device *platdev)
 	}
 	pr_info("SSP I2S driver : IFWI start IA =0x%x end=0x%x\n",
 			(unsigned int)rsrc->start, (unsigned int)rsrc->end);
-	pr_info("SSP I2S driver : IFWI end=0x%x\n",
-			(unsigned int)rsrc->end);
 
 	mutex_init(&drv_data->mutex);
 	drv_data->ssp_dev = &(platdev->dev);
@@ -3369,89 +3613,275 @@ int i2s_acpi_probe(struct platform_device *platdev)
 						resource_size(rsrc));
 	drv_data->iolen = resource_size(rsrc);
 
-	/* TODO : Temporary instance number detection */
-	if (strcmp(hid, SSPMODEM) == 0)
-		drv_data->device_instance = 2;  /* SSP2 */
-	else if (strcmp(hid, SSPBLUET) == 0)
-		drv_data->device_instance = 1;  /* SSP1 */
-	else
-		drv_data->device_instance = 0;  /* SSP0 */
+	if (strcmp(hid, SSPACPI5) == 0) {	/* ACPI EDK2  */
+		struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
+		union acpi_object *obj;
 
-	pr_info("SSP I2S driver : HID=%s instance=%d\n", hid,
-		drv_data->device_instance);
-	/* code above will need to be fixed and data in IFWI */
+		/* Get USAGE from ACPI table */
+		status = i2s_get_ssp_param(handle, intel_ssp_uuid_usage,
+						ACPI_TYPE_STRING,
+						AARG_NA, AARG_NA, AARG_NA,
+						&output);
+		if (status)
+			goto acpi_probe_err1;
+		obj = (union acpi_object *)output.pointer;
+		pr_debug("I2S USAGE IS %s\n", obj->string.pointer);
 
-	/* calculation of LPESHIM Base address */
-	if (drv_data->device_instance == 0)
-		base_address_p = rsrc->start - SSP0_OFFSET;
-	else if (drv_data->device_instance == 1)
-		base_address_p = rsrc->start - SSP1_OFFSET;
-	else if (drv_data->device_instance == 2)
-		base_address_p = rsrc->start - SSP2_OFFSET;
-	else {
-		dev_err(drv_data->ssp_dev, "Unknown instance %d for SSP\n",
+		if (!strcmp(ACPI_MODEM_USAGE, obj->string.pointer)) {
+			pr_debug("SSP I2S driver : MODEM\n");
+			drv_data->usage = SSP_USAGE_MODEM;
+		} else if (!strcmp(ACPI_BLUET_USAGE, obj->string.pointer)) {
+			pr_debug("SSP I2S driver : BLUETOOTH\n");
+			drv_data->usage = SSP_USAGE_BLUETOOTH_FM;
+		} else if (!strcmp(ACPI_CODEC_USAGE, obj->string.pointer)) {
+			pr_debug("SSP I2S driver : CODEC\n");
+			drv_data->usage = SSP_USAGE_UNASSIGNED;
+		}
+		kfree(obj);
+
+		/* Get LPEBASE from ACPI table */
+		status = i2s_get_ssp_param(handle, intel_ssp_uuid_lpebase,
+						ACPI_TYPE_INTEGER,
+						AARG_NA, AARG_NA, AARG_NA,
+						&output);
+		if (status)
+			goto acpi_probe_err1;
+		obj = (union acpi_object *)output.pointer;
+
+		drv_data->paddr = (dma_addr_t) obj->integer.value;
+		pr_debug("SSP I2S driver : LPE BASE %x (expecting 0xFF2AX000)\n",
+			 (unsigned int)drv_data->paddr);
+
+		kfree(obj);
+
+		/* Get INSTANCE from ACPI table */
+		status = i2s_get_ssp_param(handle, intel_ssp_uuid_instance,
+						ACPI_TYPE_INTEGER,
+						AARG_NA, AARG_NA, AARG_NA,
+						&output);
+		if (status)
+			goto acpi_probe_err1;
+		obj = (union acpi_object *)output.pointer;
+		switch (obj->integer.value) {
+		case ACPI_SSP0_INSTANCE:
+			drv_data->device_instance = SSP0_INSTANCE;
+			break;
+		case ACPI_SSP1_INSTANCE:
+			drv_data->device_instance = SSP1_INSTANCE;
+			break;
+		case ACPI_SSP2_INSTANCE:
+			drv_data->device_instance = SSP2_INSTANCE;
+			break;
+		default:
+			drv_data->device_instance = NONE_INSTANCE;
+		}
+
+		pr_debug("I2S INSTANCE is =%d\n", drv_data->device_instance);
+		kfree(obj);
+
+		/* Get TIMING for 8Khz from ACPI table */
+		status = i2s_get_ssp_param(handle, intel_ssp_uuid_timings,
+						ACPI_TYPE_BUFFER,
+						AARG_FREQ8, AARG_NA, AARG_NA,
+						&output);
+		if (status)
+			goto acpi_probe_err1;
+		obj = (union acpi_object *)output.pointer;
+		if (obj->buffer.length != 5) {
+			pr_info("I2S ERROR Bad acpi 8khz buffer length\n");
+			status = -EINVAL;
+			goto acpi_probe_err1;
+		}
+		drv_data->config_c08k.valid = true;
+		drv_data->config_c08k.ssp_psp_T1 = obj->buffer.pointer[0];
+		drv_data->config_c08k.ssp_psp_T2 = obj->buffer.pointer[1];
+		drv_data->config_c08k.ssp_psp_T4 = obj->buffer.pointer[2];
+		drv_data->config_c08k.ssp_psp_T5 = obj->buffer.pointer[3];
+		drv_data->config_c08k.ssp_psp_T6 = obj->buffer.pointer[4];
+		kfree(obj);
+
+		/* Get TIMING for 16Khz from ACPI table */
+		status = i2s_get_ssp_param(handle, intel_ssp_uuid_timings,
+						ACPI_TYPE_BUFFER,
+						AARG_FREQ16, AARG_NA, AARG_NA,
+						&output);
+		if (status)
+			goto acpi_probe_err1;
+		obj = (union acpi_object *)output.pointer;
+		if (obj->buffer.length != 5) {
+			pr_info("I2S ERROR Bad acpi 16khz buffer length\n");
+			status = -EINVAL;
+			goto acpi_probe_err1;
+		}
+		drv_data->config_c16k.valid = true;
+		drv_data->config_c16k.ssp_psp_T1 = obj->buffer.pointer[0];
+		drv_data->config_c16k.ssp_psp_T2 = obj->buffer.pointer[1];
+		drv_data->config_c16k.ssp_psp_T4 = obj->buffer.pointer[2];
+		drv_data->config_c16k.ssp_psp_T5 = obj->buffer.pointer[3];
+		drv_data->config_c16k.ssp_psp_T6 = obj->buffer.pointer[4];
+		kfree(obj);
+
+		/* Get TIMING for 48Khz from ACPI table */
+		status = i2s_get_ssp_param(handle, intel_ssp_uuid_timings,
+						ACPI_TYPE_BUFFER,
+						AARG_FREQ48, AARG_NA, AARG_NA,
+						&output);
+		if (status)
+			goto acpi_probe_err1;
+		obj = (union acpi_object *)output.pointer;
+		if (obj->buffer.length != 5) {
+			pr_info("I2S ERROR Bad acpi 48khz buffer length\n");
+			status = -EINVAL;
+			goto acpi_probe_err1;
+		}
+		drv_data->config_c48k.valid = true;
+		drv_data->config_c48k.ssp_psp_T1 = obj->buffer.pointer[0];
+		drv_data->config_c48k.ssp_psp_T2 = obj->buffer.pointer[1];
+		drv_data->config_c48k.ssp_psp_T4 = obj->buffer.pointer[2];
+		drv_data->config_c48k.ssp_psp_T5 = obj->buffer.pointer[3];
+		drv_data->config_c48k.ssp_psp_T6 = obj->buffer.pointer[4];
+		kfree(obj);
+
+		/* calculation of LPESHIM Base address */
+		if (drv_data->device_instance == SSP0_INSTANCE)
+			base_address_p = rsrc->start - SSP0_OFFSET;
+		else if (drv_data->device_instance == SSP1_INSTANCE)
+			base_address_p = rsrc->start - SSP1_OFFSET;
+		else if (drv_data->device_instance == SSP2_INSTANCE)
+			base_address_p = rsrc->start - SSP2_OFFSET;
+		else {
+			dev_err(drv_data->ssp_dev, "Unknown instance %d for SSP\n",
+				drv_data->device_instance);
+			status = -ENODEV;
+			goto acpi_probe_err1;
+		}
+
+		lpeshim_base_address_p = base_address_p + LPESHIM_OFFSET;
+
+		pr_debug("SSP I2S driver:lpeshim=%08x (VLV2=0xdf540000) SSP%d\n",
+		(unsigned int)lpeshim_base_address_p, drv_data->device_instance);
+		/* remapping addresses */
+		lpeshim_base_address = devm_ioremap(drv_data->ssp_dev,
+						lpeshim_base_address_p,
+						VLV2_LPE_SHIM_REG_SIZE);
+
+	} else { /* keep FDK compatibility */
+		/* get the instance of ssp device */
+		drv_data->device_instance = NONE_INSTANCE; /*invalid value by default*/
+		value = ACPI_NONE_INSTANCE;
+		arg_list.count = 1;
+		arg_list.pointer = &arg;
+		arg.type = ACPI_TYPE_INTEGER;
+		arg.integer.value = 0;
+		a_status = acpi_evaluate_integer(handle, "INST", &arg_list, &value);
+		if (ACPI_FAILURE(a_status))
+			pr_info("SSP I2S driver : ACPI ERROR %d no instance\n",
+				(int) a_status);
+
+		pr_info("SSP I2S driver : ACPI Instance %lld\n", value);
+		if (value == ACPI_SSP0_INSTANCE)
+			drv_data->device_instance = SSP0_INSTANCE;
+		else if (value == ACPI_SSP1_INSTANCE)
+			drv_data->device_instance = SSP1_INSTANCE;
+		else if (value == ACPI_SSP2_INSTANCE)
+			drv_data->device_instance = SSP2_INSTANCE;
+
+		pr_debug("SSP I2S driver : HID=%s instance=%d\n", hid,
 			drv_data->device_instance);
+		/* code above will need to be fixed and data in IFWI */
+
+		/* calculation of LPESHIM Base address */
+		if (drv_data->device_instance == SSP0_INSTANCE)
+			base_address_p = rsrc->start - SSP0_OFFSET;
+		else if (drv_data->device_instance == SSP1_INSTANCE)
+			base_address_p = rsrc->start - SSP1_OFFSET;
+		else if (drv_data->device_instance == SSP2_INSTANCE)
+			base_address_p = rsrc->start - SSP2_OFFSET;
+		else {
+			dev_err(drv_data->ssp_dev, "Unknown instance %d for SSP\n",
+				drv_data->device_instance);
+			status = -ENODEV;
+			goto acpi_probe_err1;
+		}
+
+		lpeshim_base_address_p = base_address_p + LPESHIM_OFFSET;
+
+		pr_debug("SSP I2S driver:lpeshim=%08x (VLV2=0xdf540000) SSP%d\n",
+		(unsigned int)lpeshim_base_address_p, drv_data->device_instance);
+		/* remapping addresses */
+		lpeshim_base_address = devm_ioremap(drv_data->ssp_dev,
+						lpeshim_base_address_p,
+						VLV2_LPE_SHIM_REG_SIZE);
+
+		/* get the SSP IP base address from LPE point of view */
+		arg_list.count = 1;
+		arg_list.pointer = &arg;
+		arg.type = ACPI_TYPE_INTEGER;
+		arg.integer.value = 0;
+		a_status = acpi_evaluate_integer(handle, "LBAS", &arg_list, &value);
+		if (ACPI_FAILURE(a_status)) {
+			pr_info("SSP I2S driver : ACPI ERROR %d value=%llx\n",
+				 (int) a_status, value);
+			status = -ENODEV;
+			goto acpi_probe_err1;
+		}
+
+		drv_data->paddr = (dma_addr_t) value;
+		pr_debug("SSP I2S driver : LPE BASE %x (expecting 0xFF2AX000)\n",
+			 (unsigned int)drv_data->paddr);
+
+		/* Get the configuration of each frequency */
+		/* 8Khz, 16Khz and 48Khz */
+		drv_data->config_c08k.valid = false;
+		drv_data->config_c16k.valid = false;
+		drv_data->config_c48k.valid = false;
+		retrieve_ssp_config(handle, &(drv_data->config_c08k), CONFIG_C08K);
+		retrieve_ssp_config(handle, &(drv_data->config_c16k), CONFIG_C16K);
+		retrieve_ssp_config(handle, &(drv_data->config_c48k), CONFIG_C48K);
+
+		/* unmasking the SSPx IRQ to IA */
+		if (drv_data->device_instance == 0)
+			clear_LPE_IMRX_reg(lpeshim_base_address, IAPIS_SSP0)
+		else if (drv_data->device_instance == 1)
+			clear_LPE_IMRX_reg(lpeshim_base_address, IAPIS_SSP1)
+		else if (drv_data->device_instance == 2)
+			clear_LPE_IMRX_reg(lpeshim_base_address, IAPIS_SSP2)
+
+		/* TODO BZ154289:currently will get info from dsdt acpi table */
+		if (strcmp(hid, SSPMODEM) == 0)
+			drv_data->usage = SSP_USAGE_MODEM;
+		else if (strcmp(hid, SSPBLUET) == 0)
+			drv_data->usage = SSP_USAGE_BLUETOOTH_FM;
+		else
+			drv_data->usage = SSP_USAGE_UNASSIGNED;
+
+		pr_debug("SSP I2S driver : Probe for HID=%s usage is %d\n",
+				hid, drv_data->usage);
+	}  /* endif EDK / FDK */
+
+	/* Get DMA enumeration UEFI */
+	drv_data->dmacdev = intel_mid_get_acpi_dma(ACPI_DMA_EDK);
+	/* if no DMA of UEFI, use FDK name */
+	if (drv_data->dmacdev == NULL)
+		drv_data->dmacdev = intel_mid_get_acpi_dma(ACPI_DMA_FDK);
+	if (drv_data->dmacdev == NULL) {
+		WARN(drv_data->dmacdev == NULL,
+		"SSP I2S Driver : unable to get DMA of SSP Device\n");
 		status = -ENODEV;
 		goto acpi_probe_err1;
 	}
 
-	lpeshim_base_address_p = base_address_p + LPESHIM_OFFSET;
-
-	pr_info("SSP I2S driver:lpeshim=%08x (VLV2=0xdf540000) SSP%d\n",
-	(unsigned int)lpeshim_base_address_p, drv_data->device_instance);
-	/* remapping addresses */
-	lpeshim_base_address = devm_ioremap(drv_data->ssp_dev,
-					lpeshim_base_address_p,
-					VLV2_LPE_SHIM_REG_SIZE);
-
-	rsrc = platform_get_resource(platdev, IORESOURCE_MEM, 1);
-#if 0
-	if (!rsrc) {
-		pr_err("Invalid base from IFWI");
-		return -EIO;
-	}
-	pr_info("SSP I2S driver : IFWI start LPE =0x%x end=0x%x\n",
-			(unsigned int)rsrc->start, (unsigned int)rsrc->end);
-	/* paddr is same as ioaddr but from LPE view */
-	drv_data->paddr = rsrc->start;
-#endif
-	if (!strncmp(hid, "SSPC0000", 8))
-		drv_data->paddr = 0xFF2a0000;
-	if (!strncmp(hid, "SSPM0000", 8))
-		drv_data->paddr = 0xFF2a1000;
-	if (!strncmp(hid, "SSPB0000", 8))
-		drv_data->paddr = 0xFF2a2000;
-
-	/* unmasking the SSPx IRQ to IA */
-	if (drv_data->device_instance == 0)
-		clear_LPE_IMRX_reg(lpeshim_base_address, IAPIS_SSP0)
-	else if (drv_data->device_instance == 1)
-		clear_LPE_IMRX_reg(lpeshim_base_address, IAPIS_SSP1)
-	else if (drv_data->device_instance == 2)
-		clear_LPE_IMRX_reg(lpeshim_base_address, IAPIS_SSP2)
-
-	/* TODO BZ154289:currently will req. some changes for each platform */
-	if (strcmp(hid, SSPMODEM) == 0)
-		drv_data->usage = SSP_USAGE_MODEM;
-	else if (strcmp(hid, SSPBLUET) == 0)
-		drv_data->usage = SSP_USAGE_BLUETOOTH_FM;
-	else
-		drv_data->usage = SSP_USAGE_UNASSIGNED;
-
-	pr_info("SSP I2S driver : Probe for HID=%s usage is %d\n",
-			hid, drv_data->usage);
-	drv_data->dmacdev = intel_mid_get_acpi_dma("ADMA0F28");
-	pr_info("SSP I2S driver : dmac1 dmadev found = %p\n",
+	pr_debug("SSP I2S driver : dmac1 dmadev found = %p\n",
 			drv_data->dmacdev);
 
 	drv_data->irq = platform_get_irq(platdev, 0);
-	pr_info("I2S irq from platdev is:%d\n", drv_data->irq);
+	pr_debug("I2S irq from platdev is:%d\n", drv_data->irq);
 	ret = devm_request_threaded_irq(drv_data->ssp_dev, drv_data->irq,
 					i2s_irq, i2s_irq_deferred, IRQF_SHARED,
 					"i2s ssp", drv_data);
 	if (ret)
 		return ret;
-	pr_info("I2S Registered IRQ %#x\n", drv_data->irq);
+	pr_debug("I2S Registered IRQ %#x\n", drv_data->irq);
 
 	set_bit(FEAT_ACPI, &ssp_ip_features);
 	WARN(test_bit(FEAT_PCI, &ssp_ip_features),
@@ -3460,7 +3890,7 @@ int i2s_acpi_probe(struct platform_device *platdev)
 	/*
 	 * Create the WL1273 BT/FM ASoC platform devices
 	 */
-	pr_info("ALLOCATE FOR ASOC ACPI VERSION\n");
+	pr_debug("I2S ALLOCATE FOR ASOC ACPI VERSION\n");
 
 	if (drv_data->usage == SSP_USAGE_MODEM)
 		WARN(test_and_set_bit(MODEM_USAGE_FND, &ssps_found),
@@ -3470,8 +3900,9 @@ int i2s_acpi_probe(struct platform_device *platdev)
 		WARN(test_and_set_bit(BT_USAGE_FND, &ssps_found),
 					"SSP for BT/FM usage already probed");
 
-	if (test_bit(MODEM_USAGE_FND, &ssps_found) &
-		test_bit(BT_USAGE_FND, &ssps_found)) {
+	/* mount the asoc card only on BT I2S as Modem is optional */
+	if ((test_bit(BT_USAGE_FND, &ssps_found)) &&
+		(drv_data->usage == SSP_USAGE_BLUETOOTH_FM)) {
 		/*
 		 * MID SSP CPU DAI
 		 */
@@ -3488,7 +3919,7 @@ int i2s_acpi_probe(struct platform_device *platdev)
 					"platform mid-ssp-dai add failed\n");
 			platform_device_put(asoc_pdev);
 		}
-		pr_info("I2S: platform mid-ssp-dai allocated\n");
+		pr_debug("I2S: platform mid-ssp-dai allocated\n");
 	}
 
 	/* runtime */
@@ -3524,7 +3955,7 @@ static int __init intel_mid_i2s_init(void)
 	clear_bit(FEAT_DIV_CTRL, &ssp_ip_features);
 	clear_bit(FEAT_ISRX_IMRX, &ssp_ip_features);
 
-	pr_info("INFO: I2S DRIVER loading... ver: %s cpu=%d\n", "1.2.0",
+	pr_info("INFO: I2S DRIVER loading... ver: %s cpu=%d\n", VERSION_SSP,
 						intel_mid_identify_cpu());
 
 	ret = pci_register_driver(&intel_mid_i2s_driver);

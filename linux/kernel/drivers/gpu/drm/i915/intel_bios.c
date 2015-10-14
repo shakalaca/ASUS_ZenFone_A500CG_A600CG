@@ -97,6 +97,9 @@ fill_detail_timing_data(struct drm_display_mode *panel_fixed_mode,
 	panel_fixed_mode->clock = dvo_timing->clock * 10;
 	panel_fixed_mode->type = DRM_MODE_TYPE_PREFERRED;
 
+	panel_fixed_mode->width_mm = dvo_timing->h_image | ((dvo_timing->max_hv & 15) << 8);
+	panel_fixed_mode->height_mm = dvo_timing->v_image | ((dvo_timing->max_hv >> 4) << 8);
+
 	if (dvo_timing->hsync_positive)
 		panel_fixed_mode->flags |= DRM_MODE_FLAG_PHSYNC;
 	else
@@ -196,6 +199,22 @@ get_lvds_fp_timing(const struct bdb_header *bdb,
 	return (const struct lvds_fp_timing *)((const u8 *)bdb + ofs);
 }
 
+static void parse_backlight_data(struct drm_i915_private *dev_priv,
+						struct bdb_header *bdb)
+{
+	struct bdb_panel_backlight *vbt_panel_bl = NULL;
+	void *bl_start = NULL;
+
+	bl_start = find_section(bdb, BDB_LVDS_BACKLIGHT);
+	if (!bl_start) {
+		DRM_DEBUG_KMS("No backlight BDB found");
+		return;
+	}
+	DRM_DEBUG_KMS("Found backlight BDB");
+	vbt_panel_bl = (struct bdb_panel_backlight *)(bl_start + 1) + panel_type;
+	dev_priv->vbt.pwm_frequency = vbt_panel_bl->pwm_freq;
+}
+
 /* Try to find integrated panel data */
 /* We use the data recovered from this section for MIPI as well
  * It is common for all LFPs. The structure names might confuse
@@ -224,9 +243,33 @@ parse_lfp_panel_data(struct drm_i915_private *dev_priv,
 
 	panel_type = lvds_options->panel_type;
 
+	dev_priv->vbt.drrs_type = (lvds_options->dps_panel_type_bits >>
+						(panel_type * 2)) & MODE_MASK;
+	/*
+	 * VBT has static DRRS = 0 and seamless DRRS = 2.
+	 * The below piece of code is required to adjust vbt.drrs_type
+	 * to match the enum drrs_support_type.
+	 */
+	switch (dev_priv->vbt.drrs_type) {
+	case 0:
+		dev_priv->vbt.drrs_type = STATIC_DRRS_SUPPORT;
+		DRM_DEBUG_KMS("DRRS supported mode is static\n");
+		break;
+
+	case 2:
+		DRM_DEBUG_KMS("DRRS supported mode is seamless\n");
+		break;
+
+	default:
+		break;
+	}
+
 	lvds_lfp_data = find_section(bdb, BDB_LVDS_LFP_DATA);
 	if (!lvds_lfp_data)
 		return;
+
+	dev_priv->vbt.drrs_min_vrefresh = (unsigned int)
+			lvds_lfp_data->seamless_drrs_min_vrefresh[panel_type];
 
 	lvds_lfp_data_ptrs = find_section(bdb, BDB_LVDS_LFP_DATA_PTRS);
 	if (!lvds_lfp_data_ptrs)
@@ -283,6 +326,19 @@ parse_lfp_panel_data(struct drm_i915_private *dev_priv,
 			dev_priv->vbt.bios_lvds_val = fp_timing->lvds_reg_val;
 			DRM_DEBUG_KMS("VBT initial LVDS value %x\n",
 				      dev_priv->vbt.bios_lvds_val);
+		} else if (fp_timing->x_res < panel_fixed_mode->hdisplay &&
+		    fp_timing->y_res < panel_fixed_mode->vdisplay){
+			/* Difference found in specified panel mode and VBT desired resolution.
+			Assuming the VBT programming is right, we have to enable scaling
+			panel fitter for specified resolution. Save the desired resolution for
+			modset */
+			dev_priv->scaling_reqd = true;
+			dev_priv->vbt.target_res.xres = fp_timing->x_res;
+			dev_priv->vbt.target_res.yres = fp_timing->y_res;
+			DRM_DEBUG_KMS("VBT scaling enabled\n");
+		} else {
+			/* Not supporting upscaling of mode as of now */
+			DRM_ERROR("VBT scaling too ambitious !!\n");
 		}
 	}
 }
@@ -357,14 +413,16 @@ parse_general_features(struct drm_i915_private *dev_priv,
 		dev_priv->vbt.lvds_ssc_freq =
 			intel_bios_ssc_frequency(dev, general->ssc_freq);
 		dev_priv->vbt.display_clock_mode = general->display_clock_mode;
+		dev_priv->vbt.is_180_rotation_enabled = general->enable_180_rotation;
 		dev_priv->vbt.fdi_rx_polarity_inverted = general->fdi_rx_polarity_inverted;
-		DRM_DEBUG_KMS("BDB_GENERAL_FEATURES int_tv_support %d int_crt_support %d lvds_use_ssc %d lvds_ssc_freq %d display_clock_mode %d fdi_rx_polarity_inverted %d\n",
-			      dev_priv->vbt.int_tv_support,
-			      dev_priv->vbt.int_crt_support,
-			      dev_priv->vbt.lvds_use_ssc,
-			      dev_priv->vbt.lvds_ssc_freq,
-			      dev_priv->vbt.display_clock_mode,
-			      dev_priv->vbt.fdi_rx_polarity_inverted);
+		DRM_DEBUG_KMS("BDB_GENERAL_FEATURES int_tv_support %d int_crt_support %d lvds_use_ssc %d lvds_ssc_freq %d display_clock_mode %d fdi_rx_polarity_inverted %d enable_180_rotation %d\n",
+				dev_priv->vbt.int_tv_support,
+				dev_priv->vbt.int_crt_support,
+				dev_priv->vbt.lvds_use_ssc,
+				dev_priv->vbt.lvds_ssc_freq,
+				dev_priv->vbt.display_clock_mode,
+				dev_priv->vbt.fdi_rx_polarity_inverted,
+				dev_priv->vbt.is_180_rotation_enabled);
 	}
 }
 
@@ -373,15 +431,25 @@ parse_general_definitions(struct drm_i915_private *dev_priv,
 			  struct bdb_header *bdb)
 {
 	struct bdb_general_definitions *general;
+	struct child_device_config *device_config;
 
 	general = find_section(bdb, BDB_GENERAL_DEFINITIONS);
 	if (general) {
 		u16 block_size = get_blocksize(general);
+		DRM_DEBUG_KMS("block size of block 2 is %d\n", block_size);
 		if (block_size >= sizeof(*general)) {
 			int bus_pin = general->crt_ddc_gmbus_pin;
 			DRM_DEBUG_KMS("crt_ddc_bus_pin: %d\n", bus_pin);
 			if (intel_gmbus_is_port_valid(bus_pin))
 				dev_priv->vbt.crt_ddc_pin = bus_pin;
+			device_config = (struct child_device_config *) &general->devices[0];
+			if (device_config->device_type == MIPI_SUPPORT) {
+				dev_priv->is_mipi_from_vbt = true;
+				DRM_DEBUG_KMS("In VBT, MIPI is selected as LFP\n");
+			} else if (device_config->device_type == EDP_SUPPORT) {
+				dev_priv->is_mipi_from_vbt = false;
+				DRM_DEBUG_KMS("In VBT, EDP is selected as LFP\n");
+			}
 		} else {
 			DRM_DEBUG_KMS("BDB_GD too small (%d). Invalid.\n",
 				      block_size);
@@ -496,6 +564,16 @@ parse_driver_features(struct drm_i915_private *dev_priv,
 
 	if (driver->dual_frequency)
 		dev_priv->render_reclock_avail = true;
+
+	DRM_DEBUG_KMS("DRRS State Enabled:%d\n", driver->drrs_enabled);
+	/*
+	 * If DRRS is not supported, drrs_type has to be set to 0.
+	 * This is because, VBT is configured in such a way that
+	 * static DRRS is 0 and DRRS not supported is represented by
+	 * driver->drrs_enabled=false
+	 */
+	if (!driver->drrs_enabled)
+		dev_priv->vbt.drrs_type = driver->drrs_enabled;
 }
 
 static void
@@ -595,6 +673,12 @@ u8 *goto_next_sequence(u8 *data)
 		case MIPI_SEQ_ELEM_GPIO:
 			data += 2;
 			break;
+		case MIPI_SEQ_ELEM_I2C:
+			/* skip by this element payload size */
+			data += 6;
+			len = *data;
+			data += len + 1;
+			break;
 		default:
 			DRM_ERROR("Unknown element\n");
 			break;
@@ -645,6 +729,7 @@ parse_mipi(struct drm_i915_private *dev_priv, struct bdb_header *bdb)
 	 */
 	config = &start->config[panel_type];
 	pps = (struct mipi_pps_data *) &start->config[MAX_MIPI_CONFIGURATIONS];
+	pps = &pps[panel_type];
 
 	/*
 	 * store as of now full data. Trim when we realise all is not needed
@@ -742,10 +827,22 @@ parse_mipi(struct drm_i915_private *dev_priv, struct bdb_header *bdb)
 									data;
 			DRM_DEBUG_DRIVER("Found MIPI_SEQ_DEASSERT_RESET\n");
 			break;
+		case MIPI_SEQ_BACKLIGHT_ON:
+			dev_priv->vbt.dsi.sequence[MIPI_SEQ_BACKLIGHT_ON] = data;
+			DRM_DEBUG_DRIVER("Found MIPI_SEQ_BACKLIGHT ON\n");
+			break;
+		case MIPI_SEQ_BACKLIGHT_OFF:
+			dev_priv->vbt.dsi.sequence[MIPI_SEQ_BACKLIGHT_OFF] = data;
+			DRM_DEBUG_DRIVER("Found MIPI_SEQ_BACKLIGHT OFF\n");
+			break;
+		case MIPI_SEQ_TEAR_ON:
+			dev_priv->vbt.dsi.sequence[MIPI_SEQ_TEAR_ON] = data;
+			DRM_DEBUG_DRIVER("Found MIPI_SEQ_Tear ON\n");
+			break;
 		case MIPI_SEQ_UNDEFINED:
 		default:
-			DRM_ERROR("undefined sequnce\n");
-			continue;
+			DRM_ERROR("undefined sequence : %d\n", *data);
+			goto out;
 		}
 
 		/* partial parsing to skip elements */
@@ -756,6 +853,10 @@ parse_mipi(struct drm_i915_private *dev_priv, struct bdb_header *bdb)
 	}
 
 	DRM_DEBUG_DRIVER("MIPI related vbt parsing complete\n");
+	return;
+out:
+	memset(dev_priv->vbt.dsi.sequence, 0, sizeof(dev_priv->vbt.dsi.sequence));
+	kfree(dev_priv->vbt.dsi.data);
 }
 
 static void
@@ -936,6 +1037,7 @@ intel_parse_bios(struct drm_device *dev)
 	parse_driver_features(dev_priv, bdb);
 	parse_edp(dev_priv, bdb);
 	parse_mipi(dev_priv, bdb);
+	parse_backlight_data(dev_priv, bdb);
 
 	if (bios)
 		pci_unmap_rom(pdev, bios);

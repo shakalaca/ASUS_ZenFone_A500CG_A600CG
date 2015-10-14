@@ -30,13 +30,20 @@
 extern const struct ia_css_macc_config default_macc_config;
 
 void
-ia_css_macc_encode(struct sh_css_isp_macc_params *to,
-	   const struct ia_css_macc_config *from);
+ia_css_macc_encode(
+	struct sh_css_isp_macc_params *to,
+	const struct ia_css_macc_config *from,
+	unsigned size);
+	
 
 void
-ia_css_macc_dump(const struct sh_css_isp_macc_params *macc, unsigned level);
+ia_css_macc_dump(
+	const struct sh_css_isp_macc_params *macc,
+	unsigned level);
 
 void
-ia_css_macc_debug_dtrace(const struct ia_css_macc_config *config, unsigned level);
+ia_css_macc_debug_dtrace(
+	const struct ia_css_macc_config *config,
+	unsigned level);
 
 #endif /* __IA_CSS_MACC_HOST_H */

@@ -70,20 +70,19 @@ static inline struct byt_pwm_chip *to_byt_pwm_chip(struct pwm_chip *chip)
 static int byt_pwm_wait_update_complete(struct byt_pwm_chip *byt_pwm)
 {
 	uint32_t update;
-	int retry = 0;
+	int retry = 1000000;
 
-	while (retry < 20) {
+	while (retry--) {
 		update = ioread32(PWMCR(byt_pwm));
 		if (!(update & PWMCR_UP))
 			break;
 		if (!(update & PWMCR_EN))
 			break;
-		/* typically, it needs about 6 ns to clear the update bit */
-		ndelay(6);
-		++retry;
+
+		usleep_range(1, 10);
 	}
 
-	if (retry >= 20) {
+	if (retry < 0) {
 		pr_err("PWM update failed, update bit is not cleared!");
 		return -EBUSY;
 	} else {
@@ -191,6 +190,37 @@ static struct byt_pwm_chip *find_pwm_chip(unsigned int pwm_num)
 	return NULL;
 }
 
+/* directly read a value to a PWM register */
+int lpio_bl_read(uint8_t pwm_num, uint32_t reg)
+{
+	struct byt_pwm_chip *byt_pwm;
+	int ret;
+
+	/* only PWM_CTRL register is supported */
+	if (reg != LPIO_PWM_CTRL)
+		return -EINVAL;
+
+	byt_pwm = find_pwm_chip(pwm_num);
+	if (!byt_pwm) {
+		pr_err("%s: can't find pwm device with pwm_num %d\n",
+				__func__, (int) pwm_num);
+		return -EINVAL;
+	}
+
+	pm_runtime_get_sync(byt_pwm->dev);
+	mutex_lock(&byt_pwm->lock);
+
+	ret = ioread32(PWMCR(byt_pwm));
+
+	mutex_unlock(&byt_pwm->lock);
+	pm_runtime_mark_last_busy(byt_pwm->dev);
+	pm_runtime_put_autosuspend(byt_pwm->dev);
+
+	return ret;
+
+}
+EXPORT_SYMBOL(lpio_bl_read);
+
 /* directly write a value to a PWM register */
 int lpio_bl_write(uint8_t pwm_num, uint32_t reg, uint32_t val)
 {
@@ -227,6 +257,7 @@ int lpio_bl_write_bits(uint8_t pwm_num, uint32_t reg, uint32_t val,
 {
 	struct byt_pwm_chip *byt_pwm;
 	uint32_t update;
+	int ret;
 
 	/* only PWM_CTRL register is supported */
 	if (reg != LPIO_PWM_CTRL)
@@ -242,6 +273,7 @@ int lpio_bl_write_bits(uint8_t pwm_num, uint32_t reg, uint32_t val,
 	pm_runtime_get_sync(byt_pwm->dev);
 	mutex_lock(&byt_pwm->lock);
 
+	ret = byt_pwm_wait_update_complete(byt_pwm);
 	update = ioread32(PWMCR(byt_pwm));
 	update = (update & ~mask) | (val & mask);
 	iowrite32(update, PWMCR(byt_pwm));
@@ -250,7 +282,7 @@ int lpio_bl_write_bits(uint8_t pwm_num, uint32_t reg, uint32_t val,
 	pm_runtime_mark_last_busy(byt_pwm->dev);
 	pm_runtime_put_autosuspend(byt_pwm->dev);
 
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL(lpio_bl_write_bits);
 
@@ -260,7 +292,6 @@ int lpio_bl_update(uint8_t pwm_num, uint32_t reg)
 {
 	struct byt_pwm_chip *byt_pwm;
 	uint32_t update;
-	int r;
 
 	/* only PWM_CTRL register is supported */
 	if (reg != LPIO_PWM_CTRL)
@@ -279,13 +310,12 @@ int lpio_bl_update(uint8_t pwm_num, uint32_t reg)
 	update = ioread32(PWMCR(byt_pwm));
 	update |= PWMCR_UP;
 	iowrite32(update, PWMCR(byt_pwm));
-	r = byt_pwm_wait_update_complete(byt_pwm);
 
 	mutex_unlock(&byt_pwm->lock);
 	pm_runtime_mark_last_busy(byt_pwm->dev);
 	pm_runtime_put_autosuspend(byt_pwm->dev);
 
-	return r;
+	return 0;
 }
 EXPORT_SYMBOL(lpio_bl_update);
 

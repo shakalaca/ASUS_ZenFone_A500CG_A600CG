@@ -454,7 +454,7 @@ int intel_opregion_setup(struct drm_device *dev)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct intel_opregion *opregion = &dev_priv->opregion;
 	void __iomem *base;
-	u32 asls, mboxes;
+	u32 asls = 0, mboxes = 0;
 	char buf[sizeof(OPREGION_SIGNATURE)];
 	int err = 0;
 

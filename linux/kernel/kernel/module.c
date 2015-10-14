@@ -2704,9 +2704,7 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 	} else if (!same_magic(modmagic, vermagic, info->index.vers)) {
 		printk(KERN_ERR "%s: version magic '%s' should be '%s'\n",
 		       mod->name, modmagic, vermagic);
-#ifndef CONFIG_MODULE_LOAD_SKIP_VERMAGIC
 		return -ENOEXEC;
-#endif
 	}
 
 	if (!get_modinfo(info, "intree"))

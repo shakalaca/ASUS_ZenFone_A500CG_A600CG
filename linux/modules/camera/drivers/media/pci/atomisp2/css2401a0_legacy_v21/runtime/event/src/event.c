@@ -23,7 +23,7 @@
 
 #include "dma.h"	/* N_DMA_CHANNEL_ID */
 
-#include "ia_css.h"
+#include <type_support.h>
 #include "ia_css_binary.h"
 #include "sh_css_hrt.h"
 #include "sh_css_defs.h"
@@ -85,7 +85,7 @@ void ia_css_event_decode(
 	assert(payload[2] == 0);
 	assert(payload[3] == 0);
 
-	ia_css_debug_dtrace(IA_CSS_DEBUG_TRACE_PRIVATE, "decode_sp_event() enter:\n");
+	ia_css_debug_dtrace(IA_CSS_DEBUG_TRACE_PRIVATE, "ia_css_event_decode() enter:\n");
 
 	/* First decode according to the common case
 	 * In case of a PORT_EOF event we overwrite with
@@ -104,7 +104,10 @@ void ia_css_event_decode(
 		payload[3] = (event >> 24) & 0xff;
 		break;
 
+	case SH_CSS_SP_EVENT_ACC_STAGE_COMPLETE:
 	case SH_CSS_SP_EVENT_FRAME_TAGGED:
+	case SH_CSS_SP_EVENT_FW_WARNING:
+	case SH_CSS_SP_EVENT_FW_ASSERT:
 		payload[3] = (event >> 24) & 0xff;
 		break;
 	default:

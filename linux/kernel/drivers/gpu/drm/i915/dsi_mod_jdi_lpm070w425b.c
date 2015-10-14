@@ -65,7 +65,7 @@ bool lpm070w425b_init(struct intel_dsi_device *dsi)
 	intel_dsi->hs = true;
 	intel_dsi->channel = 0;
 	intel_dsi->lane_count = 4;
-	intel_dsi->eot_disable = 1;
+	intel_dsi->eotp_pkt = 0;
 	intel_dsi->video_mode_type = DSI_VIDEO_NBURST_SEVENT;
 	intel_dsi->pixel_format = VID_MODE_FORMAT_RGB888;
 	intel_dsi->port_bits = 0;
@@ -78,7 +78,8 @@ bool lpm070w425b_init(struct intel_dsi_device *dsi)
 	intel_dsi->clk_hs_to_lp_count = 0x16;
 	intel_dsi->video_frmt_cfg_bits = 0x8;
 	intel_dsi->dphy_reg = 0x2a18681f;
-
+	intel_dsi->port = 0; /* PORT_A by default */
+	intel_dsi->burst_mode_ratio = 100;
 	intel_dsi->backlight_off_delay = 20;
 	intel_dsi->send_shutdown = true;
 	intel_dsi->shutdown_pkt_delay = 20;

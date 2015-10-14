@@ -865,8 +865,6 @@ struct xhci_virt_ep {
 #define EP_GETTING_NO_STREAMS	(1 << 5)
 	/* ----  Related to URB cancellation ---- */
 	struct list_head	cancelled_td_list;
-	/* The TRB that was last reported in a stopped endpoint ring */
-	union xhci_trb		*stopped_trb;
 	struct xhci_td		*stopped_td;
 	unsigned int		stopped_stream;
 	/* Watchdog timer for stop endpoint command to cancel URBs */
@@ -1290,6 +1288,7 @@ struct xhci_td {
 
 /* xHCI command default timeout value */
 #define XHCI_CMD_DEFAULT_TIMEOUT	(5 * HZ)
+#define XHCI_WAIT_CMD_RING_READY_TIMEOUT 10 /* 2s*/
 
 /* command descriptor */
 struct xhci_cd {
@@ -1414,7 +1413,16 @@ struct xhci_bus_state {
 	unsigned long		resume_done[USB_MAXCHILDREN];
 	/* which ports have started to resume */
 	unsigned long		resuming_ports;
+	/* Which ports are waiting on RExit to U0 transition. */
+	unsigned long		rexit_ports;
+	struct completion	rexit_done[USB_MAXCHILDREN];
 };
+
+
+/* It can take up to 20 ms to transition from RExit to U0 on the
+ * Intel Lynx Point LP xHCI host.archdata
+ */
+#define XHCI_MAX_REXIT_TIMEOUT  (20 * 1000)
 
 static inline unsigned int hcd_index(struct usb_hcd *hcd)
 {
@@ -1550,6 +1558,9 @@ struct xhci_hcd {
 #define XHCI_PORT_DISABLE_QUIRK	(1 << 17)
 #define XHCI_LPM_DISABLE_QUIRK	(1 << 18)
 #define XHCI_COMP_PLC_QUIRK		(1 << 19)
+#define XHCI_RESET		(1 << 20)
+#define XHCI_FORCE_WR		(1 << 21)
+#define XHCI_PORT_RESET		(1 << 22)
 	unsigned int		num_active_eps;
 	unsigned int		limit_active_eps;
 	/* There are two roothubs to keep track of bus suspend info for */
@@ -1577,6 +1588,7 @@ struct xhci_hcd {
 	struct work_struct	pm_check;
 	int			pm_check_flag;
 	void __iomem		*pmc_base_addr;
+	struct work_struct	*reset_hcd_work;
 };
 
 /* convert between an HCD pointer and the corresponding EHCI_HCD */
@@ -1901,5 +1913,5 @@ struct xhci_ep_ctx *xhci_get_ep_ctx(struct xhci_hcd *xhci, struct xhci_container
 
 /* xHCI quirks */
 bool xhci_compliance_mode_recovery_timer_quirk_check(void);
-
+extern unsigned is_ssic_probe(void);
 #endif /* __LINUX_XHCI_HCD_H */

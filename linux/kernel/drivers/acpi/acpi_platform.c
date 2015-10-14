@@ -33,6 +33,8 @@ static const struct acpi_device_id acpi_platform_device_ids[] = {
 	{ "BCM2E1A" },
 	{ "BCM2E3A" },
 	{ "BCM4752" },
+	{ "BCM47521" },
+	{ "BCM47531" },
 	{ "RTL8723" },
 	{ "OBDA8723" },
   /* Telepĥony */
@@ -41,6 +43,7 @@ static const struct acpi_device_id acpi_platform_device_ids[] = {
 	{ "SSPM0000", 0 },
 	{ "SSPC0000", 0 },
 	{ "SSPB0000", 0 },
+	{ "SSPX0000", 0 },
 	/* Baytrail Audio devices */
 	{ "HAD0F28", 0 },
 	{ "LPE0F28", 0 },
@@ -52,11 +55,14 @@ static const struct acpi_device_id acpi_platform_device_ids[] = {
 	{ "ADMA0F28", 0 },
 	{ "VIB8601", 0 },
 	{ "BYTEC001", 0 },
+	{ "INT0002", 0 },
 	/* Cherrytrail Audio device*/
 	{ "808622A8", 0 },
 	{ "ADMA22A8", 0 },
 	{ "AMCR22A8", 0 },
+	{ "TIMC22A8", 0 },
 	{ "HAD022A8", 0 },
+	{ "VIBR22A8", 0 },
 	{ }
 };
 

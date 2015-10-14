@@ -22,11 +22,10 @@
 #ifndef _SH_CSS_UDS_H_
 #define _SH_CSS_UDS_H_
 
-#ifdef __KERNEL__
-#include <linux/kernel.h>
-#else
-#include <stdint.h>
-#endif
+#include <type_support.h>
+
+#define SIZE_OF_SH_CSS_UDS_INFO_IN_BITS (4 * 16)
+#define SIZE_OF_SH_CSS_CROP_POS_IN_BITS (2 * 16)
 
 /* Uds types, used in pipeline_global.h and sh_css_internal.h */
 

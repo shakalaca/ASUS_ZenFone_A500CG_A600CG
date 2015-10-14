@@ -25,7 +25,14 @@ config EMMC_IPANIC
 	default n
 	---help---
 	  Driver which handles kernel panics and attempts to write
-	  critical debugging data to EMMC.
+	  critical debugging data to a dedicated partition on EMMC.
+
+config EMMC_IPANIC_PLABEL
+	string "Intel kernel panic driver (EMMC_IPANIC) partition label"
+	depends on EMMC_IPANIC
+	default "panic"
+	---help---
+	  Set the default mmc partition label for EMMC_IPANIC driver.
 
 config SENSORS_APDS990X_FORK
 	 tristate "APDS990X combined als and proximity sensors"
@@ -44,7 +51,14 @@ config KCT_DAEMON
 	---help---
 	 Driver that enables the kct daemon to handle Intel crashtool events.
 
+config FPS_THROTTLE
+	tristate "register a new cooling device for FPS throttling"
+	depends on THERMAL
+	---help---
+	  register a new cooling device for FPS throttling.
+
 source "drivers/external_drivers/drivers/misc/bcm-lpm/Kconfig"
+source "drivers/external_drivers/drivers/misc/intel_ld/Kconfig"
 source "drivers/external_drivers/drivers/misc/ti-st/Kconfig"
 source "drivers/external_drivers/drivers/misc/tp2l/Kconfig"
 source "drivers/external_drivers/drivers/misc/iqvandroid/Kconfig"

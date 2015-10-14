@@ -5,7 +5,7 @@
  *  agreement or nondisclosure agreement with Intel Corporation and may not
  *  be copied or disclosed except in accordance with the terms of that
  *  agreement.
- *        Copyright (c) 2007-2012 Intel Corporation.  All Rights Reserved.
+ *        Copyright (C) 2007-2014 Intel Corporation.  All Rights Reserved.
  * -------------------------------------------------------------------------
 **COPYRIGHT*/
 
@@ -37,15 +37,11 @@ typedef          void*      LPVOID;
 #endif
 
 #if defined(DRV_IA32)
-
 typedef S32                 SIOP;
 typedef U32                 UIOP;
-
-#elif defined(DRV_EM64T) || defined(DRV_IA64)
-
+#elif defined(DRV_EM64T)
 typedef S64                 SIOP;
 typedef U64                 UIOP;
-
 #else
 #error "Unexpected Architecture seen"
 #endif
@@ -53,12 +49,15 @@ typedef U64                 UIOP;
 typedef U32                 DRV_BOOL;
 typedef void*               PVOID;
 
+#if !defined(__DEFINE_STCHAR__)
+#define __DEFINE_STCHAR__
 #if defined(UNICODE)
 typedef wchar_t             STCHAR;
 #define VTSA_T(x)           L ## x
 #else
 typedef char                STCHAR;
 #define VTSA_T(x)           x
+#endif
 #endif
 
 #if defined(DRV_OS_WINDOWS)
@@ -106,7 +105,7 @@ static inline wchar_t* solaris_wcsdup(const wchar_t *wc)
 #endif
 
 #if !defined(_WCHAR_T_DEFINED)
-#if defined(DRV_OS_LINUX) || defined(DRV_OS_ANDROID)
+#if defined(DRV_OS_LINUX) || defined(DRV_OS_ANDROID) || defined(DRV_OS_SOLARIS)
 #if !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
@@ -118,7 +117,7 @@ static inline wchar_t* solaris_wcsdup(const wchar_t *wc)
 typedef wchar_t VTSA_CHAR;
 #endif
 
-#if (defined(DRV_OS_MAC) || defined(DRV_OS_FREEBSD)) && !defined(_KERNEL)
+#if (defined(DRV_OS_MAC) || defined(DRV_OS_FREEBSD) || defined(DRV_OS_SOLARIS)) && !defined(_KERNEL)
 #include <wchar.h>
 typedef wchar_t VTSA_CHAR;
 #endif

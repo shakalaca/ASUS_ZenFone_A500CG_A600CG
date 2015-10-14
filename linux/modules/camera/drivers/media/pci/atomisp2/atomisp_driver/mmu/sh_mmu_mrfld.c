@@ -20,19 +20,12 @@
  * 02110-1301, USA.
  *
  */
-#ifndef CSS20
-#include <sh_css.h>
-#endif /* CSS20 */
-
-#ifndef CSS21
-#include <host/mmu_local.h>
-#else
 #include "type_support.h"
-#endif
-
 #include "mmu/isp_mmu.h"
 #include "memory_access/memory_access.h"
 #include "atomisp_compat.h"
+
+#define MERR_VALID_PTE_MASK	0x80000000
 
 /*
  * include SH header file here
@@ -90,8 +83,8 @@ static void sh_tlb_flush(struct isp_mmu *mmu)
 
 struct isp_mmu_client sh_mmu_mrfld = {
 	.name = "Silicon Hive ISP3000 MMU",
-	.pte_valid_mask = 0x80000000,
-	.null_pte = NULL_PAGE >> ISP_PAGE_OFFSET,
+	.pte_valid_mask = MERR_VALID_PTE_MASK,
+	.null_pte = ~MERR_VALID_PTE_MASK,
 	.set_pd_base = sh_set_pd_base,
 	.get_pd_base = sh_get_pd_base,
 	.tlb_flush_all = sh_tlb_flush,

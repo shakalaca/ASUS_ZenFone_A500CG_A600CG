@@ -249,13 +249,6 @@ PVR_ANDROID_REMAP_HW_ONLY_PIXEL_FORMATS := 1
 endif
 
 ##############################################################################
-# Workaround for texture atlas "double registerBuffer" issue in KK
-#
-ifeq ($(is_at_least_kitkat),1)
-PVR_ANDROID_DONT_ENFORCE_SINGLE_REGISTER := 1
-endif
-
-##############################################################################
 # Support newer HWC features in KK
 #
 ifeq ($(is_at_least_kitkat),1)

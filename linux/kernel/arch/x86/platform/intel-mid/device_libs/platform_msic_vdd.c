@@ -23,7 +23,12 @@
 
 #define BCUIRQ 0x24
 
+/* to correct annotation for byt */
+#ifdef CONFIG_ACPI
+void *msic_vdd_platform_data(void *info)
+#else
 void __init *msic_vdd_platform_data(void *info)
+#endif
 {
 	static struct intel_msic_vdd_pdata msic_vdd_pdata;
 	struct platform_device *pdev = NULL;
@@ -45,10 +50,16 @@ void __init *msic_vdd_platform_data(void *info)
 	/* Disabling VCRIT and VWARNB for clvp */
 	if (INTEL_MID_BOARD(1, PHONE, CLVTP)) {
 		msic_vdd_pdata.disable_unused_comparator =
-			 DISABLE_VCRIT | DISABLE_VWARNB;
+			 DISABLE_VCRIT;
 		msic_vdd_pdata.is_clvp = true;
 	}
 	pdev->dev.platform_data = &msic_vdd_pdata;
+
+	/* Disable BCU actions for BYT_CR_V2 */
+	if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, CRV2) ||
+		INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, CRV2))
+		msic_vdd_pdata.disable_unused_comparator =
+		DISABLE_VCRIT | DISABLE_VWARNB | DISABLE_VWARNA;
 
 	ret = platform_device_add(pdev);
 	if (ret) {

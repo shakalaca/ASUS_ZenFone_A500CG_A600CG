@@ -484,6 +484,15 @@ int ttm_pl_ub_create_ioctl(struct ttm_object_file *tfile,
 	size_t acc_size = ttm_bo_acc_size(bdev, req->size,
 		sizeof(struct ttm_buffer_object));
 #endif
+#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 3, 0))
+	unsigned int page_nr = 0;
+	struct vm_area_struct *vma = NULL;
+	struct sg_table *sg = NULL;
+	unsigned long num_pages = 0;
+	struct page **pages = 0;
+	unsigned long before_flags;
+#endif
+
 	if (req->user_address & ~PAGE_MASK) {
 		printk(KERN_ERR "User pointer buffer need page alignment\n");
 		return -EFAULT;
@@ -531,12 +540,6 @@ int ttm_pl_ub_create_ioctl(struct ttm_object_file *tfile,
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 3, 0))
 		/* Handle frame buffer allocated in user space, Convert
 		  user space virtual address into pages list */
-		unsigned int page_nr = 0;
-		struct vm_area_struct *vma = NULL;
-		struct sg_table *sg = NULL;
-		unsigned long num_pages = 0;
-		struct page **pages = 0;
-
 		num_pages = (req->size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 		pages = kzalloc(num_pages * sizeof(struct page *), GFP_KERNEL);
 		if (unlikely(pages == NULL)) {
@@ -552,7 +555,7 @@ int ttm_pl_ub_create_ioctl(struct ttm_object_file *tfile,
 			printk(KERN_ERR "find_vma failed\n");
 			return -EFAULT;
 		}
-		unsigned long before_flags = vma->vm_flags;
+		before_flags = vma->vm_flags;
 		if (vma->vm_flags & (VM_IO | VM_PFNMAP))
 			vma->vm_flags = vma->vm_flags & ((~VM_IO) & (~VM_PFNMAP));
 		page_nr = get_user_pages(current, current->mm,

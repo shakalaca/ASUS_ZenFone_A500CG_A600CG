@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -39,6 +39,7 @@ int  vtss_transport_delref(struct vtss_transport_data* trnd);
 
 #ifndef VTSS_USE_UEC
 void* vtss_transport_record_reserve(struct vtss_transport_data* trnd, void** entry, size_t size);
+//void* vtss_transport_record_reserve_try_hard(struct vtss_transport_data* trnd, void** entry, size_t size);
 int   vtss_transport_record_commit(struct vtss_transport_data* trnd, void* entry, int is_safe);
 #endif
 int   vtss_transport_record_write(struct vtss_transport_data* trnd, void* part0, size_t size0, void* part1, size_t size1, int is_safe);
@@ -49,7 +50,7 @@ struct vtss_transport_data* vtss_transport_create_aux(struct vtss_transport_data
 
 char* vtss_transport_get_filename(struct vtss_transport_data* trnd);
 int   vtss_transport_is_overflowing(struct vtss_transport_data* trnd);
-int   vtss_transport_is_active(struct vtss_transport_data* trnd);
+int   vtss_transport_is_ready(struct vtss_transport_data* trnd);
 int   vtss_transport_debug_info(struct seq_file *s);
 int   vtss_transport_init(void);
 void  vtss_transport_fini(void);

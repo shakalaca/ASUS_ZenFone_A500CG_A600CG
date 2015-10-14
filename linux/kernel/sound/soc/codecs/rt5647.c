@@ -1,4 +1,4 @@
-﻿/*
+/*
  * rt5647.c  --  RT5647 ALSA SoC audio codec driver
  *
  * Copyright 2012 Realtek Semiconductor Corp.
@@ -8,7 +8,6 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-
 #define DEBUG 1
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -28,7 +27,8 @@
 #include <sound/tlv.h>
 #include <linux/earlysuspend.h>
 #include <linux/gpio.h>
-#include <linux/version.h>
+#include <linux/workqueue.h>
+#include <linux/HWVersion.h>
 
 #define RTK_IOCTL
 #ifdef RTK_IOCTL
@@ -47,94 +47,95 @@
 #define USE_ASRC
 #define SET_PATH
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0)
-#define __devinit
-#define __devexit
-#define __devexit_p(x) x
-#endif
-
 #define VERSION "0.0.7 alsa 1.0.25"
 
 struct early_suspend early_suspend_gpio45;
-static int gpio_3v;//for close gpio45 issue  
-static int stream_usecase;
-static int is_recording;
+/* for close gpio45 issue */
+static int gpio_3v;
+
+/* for DRC work */
+static bool drc_enable, is_recording;
 static struct mutex event_drc_mutex;
 static int DRC_CTRL;
-static int a2dp_to_spk_delay = 600;
-static int spk_unmute_delay;
+
+static int spk_unmute_delay_time;
 extern int headset_state;
+
+extern int Read_PROJ_ID(void);
 
 static void GPIO45_set_low_early_suspend(struct early_suspend *h)
 {
-
-    /**weli revise for gpio45 issue begin*********************************/
-    printk(KERN_INFO "%s called\n", __func__);
-    if (gpio_3v > 0) {
-        if (gpio_get_value(gpio_3v)) {
-            //   dev_err(&pdev->dev, ">>> gpio_3v(%d):  High <<<\n", gpio_3v);
-            gpio_direction_output(gpio_3v,0);
-        } else{
-            //   dev_err(&pdev->dev, ">>> gpio_3v(%d):  LOW <<<\n", gpio_3v);
-        }
-    }
-    /**weli revise for gpio45 issue end*********************************/
-
-
+	pr_debug("%s\n", __func__);
+	if (gpio_3v > 0) {
+		if (gpio_get_value(gpio_3v)) {
+			/* dev_err(&pdev->dev, ">>> gpio_3v(%d):  High <<<\n", gpio_3v); */
+			gpio_direction_output(gpio_3v, 0);
+		} else {
+			/* dev_err(&pdev->dev, ">>> gpio_3v(%d):  LOW <<<\n", gpio_3v); */
+		}
+	}
 }
 
 static void GPIO_set_high_late_resume(struct early_suspend *h)
 {
-    /**weli revise for gpio45 issue begin*********************************/
-    printk(KERN_INFO "%s called\n", __func__);
-    if (gpio_3v > 0) {
-        if (gpio_get_value(gpio_3v)) {
-            //     dev_err(&pdev->dev,">>> gpio_3v(%d):  High <<<\n", gpio_3v);
-        } else {
-            //    dev_err(&pdev->dev,">>> gpio_3v(%d):  LOW <<<\n", gpio_3v);
-            gpio_direction_output(gpio_3v,1);
-        }
-    }
-    /**weli revise for gpio45 issue end*********************************/
-
+	pr_debug("%s\n", __func__);
+	if (gpio_3v > 0) {
+		if (gpio_get_value(gpio_3v)) {
+			/* dev_err(&pdev->dev,">>> gpio_3v(%d):  High <<<\n", gpio_3v); */
+		} else {
+			/* dev_err(&pdev->dev,">>> gpio_3v(%d):  LOW <<<\n", gpio_3v); */
+			gpio_direction_output(gpio_3v, 1);
+		}
+	}
 }
+
+/* Realtek JD work */
+static struct snd_soc_codec *rt5647_codec;
+
+struct delayed_work hp_work, spk_unmute_work;
+
+/* for DRC work*/
+struct delayed_work disable_drc_work, enable_drc_work;
+
+static struct workqueue_struct *rt5647_wq;
+
+
+/* Realtek JD work */
+static struct timer_list jd_check_timer;
+struct work_struct jd_check_work;
+
+static struct snd_soc_codec  *codec_global;
+
 struct rt5647_init_reg {
 	u8 reg;
 	u16 val;
 };
 
-static struct snd_soc_codec *rt5647_codec; //bard 1-27
-struct delayed_work hp_work, spk_work, disable_drc_work, enable_drc_work;//Jericho 0213
-static struct workqueue_struct *rt5647_wq;
-static struct timer_list jd_check_timer; //bard 1-27
-struct work_struct jd_check_work; //bard 1-27
-static struct snd_soc_codec  *codec_global;
-
 static struct rt5647_init_reg init_list[] = {
-        { RT5647_DAC2_DIG_VOL   , 0xaeae }, //MX-1a, Eric
-        //{ RT5647_ADJ_HPF2       , 0x0606 },
-        { RT5647_ADJ_HPF2       , 0x0505 }, //MX-d4, Vincent
-        //{ RT5647_SPO_CLSD_RATIO , 0x0004 },
-        { RT5647_SPO_CLSD_RATIO , 0x0005 }, //MX-4a, Eric,Wenhong
-//	{ RT5647_DIG_MISC	, 0x0121 },
+	{ RT5647_DAC2_DIG_VOL   , 0xaeae }, /* MX-1a */
+	/* { RT5647_ADJ_HPF2       , 0x0606 }, */
+	{ RT5647_ADJ_HPF2       , 0x0505 }, /* MX-d4 */
+	/* { RT5647_SPO_CLSD_RATIO , 0x0004 }, */
+	{ RT5647_SPO_CLSD_RATIO , 0x0005 }, /* MX-4a */
+	/* { RT5647_DIG_MISC	, 0x0121 }, */
 	{ RT5647_ADDA_CLK1	, 0x0000 },
 	{ RT5647_IL_CMD2	, 0x0010 }, /* set Inline Command Window */
 	{ RT5647_PRIV_INDEX	, 0x003d },
 	{ RT5647_PRIV_DATA	, 0x3600 },
-	{ RT5647_CHARGE_PUMP	, 0x0e06 }, //hp depop
+	{ RT5647_CHARGE_PUMP	, 0x0e06 }, /* hp depop */
 #if 0
-	{ RT5647_A_JD_CTRL1	, 0x0202 },/* for combo jack 1.8v */
+	{ RT5647_A_JD_CTRL1	, 0x0202 }, /* for combo jack 1.8v */
 #endif
-	{RT5647_GEN_CTRL2	, 0x0020 }, //bard 12-20
+	{RT5647_GEN_CTRL2	, 0x0020 }, /* Realtek 12-20 */
 	{ RT5647_ASRC_4		, 0x0100 }, /* I2S2 tracking source = LRCK2 */
 	/* playback */
 	{ RT5647_DAC_CTRL	, 0x0011 },
 	{ RT5647_STO_DAC_MIXER	, 0x1616 },/* Dig inf 1 -> Sto DAC mixer -> DACL */
 	{ RT5647_MONO_DAC_MIXER	, 0x4444 },
-//	{ RT5647_OUTMIXL_CTRL3	, 0x01fe },/* DACL1 -> OUTMIXL */
-//	{ RT5647_OUTMIXR_CTRL3	, 0x01fe },/* DACR1 -> OUTMIXR */
-//	{ RT5647_LOUT_MIXER	, 0xc000 },
-//	{ RT5647_LOUT1		, 0x8888 },
+	/* { RT5647_OUTMIXL_CTRL3	, 0x01fe },/* DACL1 -> OUTMIXL */
+	/* { RT5647_OUTMIXR_CTRL3	, 0x01fe },/* DACR1 -> OUTMIXR */
+	/* { RT5647_LOUT_MIXER	, 0xc000 }, */
+	/* { RT5647_LOUT1		, 0x8888 }, */
 #if 0 /* HP direct path */
 	{ RT5647_HPO_MIXER	, 0x2000 },/* DAC1 -> HPOLMIX */
 #else /* HP via mixer path */
@@ -142,19 +143,20 @@ static struct rt5647_init_reg init_list[] = {
 	{ RT5647_HPOMIXR_CTRL	, 0x001c },/* DAC1/2 -> HPOVOL */
 	{ RT5647_HPO_MIXER	, 0x5000 },/* HPOVOL -> HPOLMIX */
 #endif
-	//{ RT5647_HP_VOL		, 0x0d0d },/* OUTMIX -> HPVOL */
-        //{ RT5647_HP_VOL         , 0x0d0d }, //MX-02, Eric
-        { RT5647_HP_VOL         , 0x819d }, //MX-02, Sean(600cg)
+	/* { RT5647_HP_VOL		, 0x0d0d },/* OUTMIX -> HPVOL */
+	/* { RT5647_HP_VOL         , 0x0d0d }, /* MX-02 */
+        { RT5647_HP_VOL         , 0x819d }, /* MX-02 */
 #if 0 /* SPK direct path */
 	{ RT5647_SPO_MIXER	, 0x7803 },/* DAC1 -> SPO */
 #else /* SPK via mixer path */
 	{ RT5647_SPK_L_MIXER	, 0x0038 },/* DAC1/2 -> SPKVOL */
 	{ RT5647_SPK_R_MIXER	, 0x0038 },/* DAC1/2 -> SPKVOL */
-	{ RT5647_SPO_MIXER	, 0xc806 }, //MX-48, Wenhong /* SPKVOL -> SPO */
+	{ RT5647_SPO_MIXER	, 0xc806 }, /* MX-48, SPKVOL -> SPO */
 #endif
+	/* { RT5647_SPK_VOL	, 0x8888 }, */
 	{ RT5647_SPK_VOL	, 0x8888 },
 	/* Mono path */
-	//{ RT5647_MONO_MIXER2	, 0x0218 },
+	/* { RT5647_MONO_MIXER2	, 0x0218 }, */
 	/* record */
 	{ RT5647_IN1_IN2	, 0x0200 },/* IN1 boost 20db and signal ended mode */
 	{ RT5647_REC_L2_MIXER	, 0x007d },/* Mic1 -> RECMIXL */
@@ -174,8 +176,8 @@ static struct rt5647_init_reg init_list[] = {
 	{ RT5647_DMIC_CTRL1	, 0x1806 },
 	{ RT5647_DMIC_CTRL2	, 0x0005 },
 	/* { RT5647_STO1_ADC_DIG_VOL, 0xafaf }, */ /* Mute STO1 ADC for depop, Digital Input Gain */
-	//{ RT5647_STO1_ADC_DIG_VOL, 0xd7d7 }, /* Mute STO1 ADC for depop, Digital Input Gain */
-        { RT5647_STO1_ADC_DIG_VOL, 0xafaf }, //MX-1c
+	/* { RT5647_STO1_ADC_DIG_VOL, 0xd7d7 }, /* Mute STO1 ADC for depop, Digital Input Gain */
+        { RT5647_STO1_ADC_DIG_VOL, 0xafaf }, /* MX-1c */
 	{ RT5647_GPIO_CTRL1	, 0xc004 },
 	{ RT5647_GPIO_CTRL2	, 0x0004 },
 #ifdef JD1_FUNC
@@ -184,31 +186,12 @@ static struct rt5647_init_reg init_list[] = {
 	{ RT5647_MICBIAS	, 0x0008 },
 	{ RT5647_GEN_CTRL3	, 0x1080 },
 #endif
-//	{ RT5647_DIG_INF1_DATA  , 0x1102 },
+	/*{ RT5647_DIG_INF1_DATA  , 0x1102 }, */
 
-        { RT5647_DAC1_DIG_VOL   , 0x9f9f }, //MX-19 Joe(600cg)
 
-	{ RT5647_MONO_MIXER2    , 0x0218 }, //MX-4c, Eric, Sean
+	{ RT5647_DAC1_DIG_VOL   , 0x9f9f }, /* MX-19 for 600cg  */
 
-	//A500CG
-	#ifdef CONFIG_A500CG_AUDIO_SETTING
-		//Eric
-		{ RT5647_CJ_CTRL1       , 0x1c06 }, //MX-0a
-
-		//Vincent
-		{ RT5647_MONO_OUT       , 0x1200 }, //MX-04
-		{ RT5647_CLSD_OUT_CTRL  , 0x03a8 }, //MX-a0
-	#endif
-
-	//A600CG
-	#ifdef CONFIG_A600CG_AUDIO_SETTING
-		//Joe
-		{ RT5647_CJ_CTRL1       , 0x4c06 }, //MX-0a
-
-		//Sean
-		{ RT5647_CLSD_OUT_CTRL  , 0x03a8 }, //MX-a0
-		{ RT5647_MONO_OUT       , 0x0800 }, //MX-04
-	#endif
+	{ RT5647_MONO_MIXER2    , 0x0218 }, /* MX-4c */
 
 	{ RT5647_CJ_CTRL3        , 0xc000 },
 	{ RT5647_MONO_ADC_DIG_VOL, 0xafaf },
@@ -227,6 +210,19 @@ static struct rt5647_init_reg alc_drc_list[] = {
 #define RT5647_ALC_DRC_REG_LEN ARRAY_SIZE(alc_drc_list)
 #endif
 
+static struct rt5647_init_reg init_list_A500CG[] = {
+	{ RT5647_CJ_CTRL1       , 0x1c06 }, /* MX-0a */
+	{ RT5647_MONO_OUT       , 0x1200 }, /* MX-04 */
+	{ RT5647_CLSD_OUT_CTRL  , 0x03a8 }, /* MX-a0 */
+};
+static struct rt5647_init_reg init_list_A600CG[] = {
+	{ RT5647_CJ_CTRL1       , 0x4c06 }, /* MX-0a */
+	{ RT5647_MONO_OUT       , 0x0800 }, /* MX-04 */
+	{ RT5647_CLSD_OUT_CTRL  , 0x03a8 }, /* MX-a0 */
+};
+#define RT5647_INIT_REG_LEN_A500CG ARRAY_SIZE(init_list_A500CG)
+#define RT5647_INIT_REG_LEN_A600CG ARRAY_SIZE(init_list_A600CG)
+
 static int rt5647_reg_init(struct snd_soc_codec *codec)
 {
 	int i;
@@ -237,6 +233,19 @@ static int rt5647_reg_init(struct snd_soc_codec *codec)
 	for (i = 0; i < RT5647_ALC_DRC_REG_LEN; i++)
 		snd_soc_write(codec, alc_drc_list[i].reg, alc_drc_list[i].val);
 #endif
+
+	if (Read_PROJ_ID() == PROJ_ID_A500CG || Read_PROJ_ID() == PROJ_ID_A501CG_BZ || Read_PROJ_ID() == PROJ_ID_A501CG
+			|| Read_PROJ_ID() == PROJ_ID_A500CG_ID || Read_PROJ_ID() == PROJ_ID_A501CG_ID) {
+		for (i = 0; i < RT5647_INIT_REG_LEN_A500CG; i++)
+			snd_soc_write(codec, init_list_A500CG[i].reg, init_list_A500CG[i].val);
+		pr_debug("%s: set A500CG-specific init list reg\n", __func__);
+
+	} else if (Read_PROJ_ID() == PROJ_ID_A600CG || Read_PROJ_ID() == PROJ_ID_A601CG) {
+		for (i = 0; i < RT5647_INIT_REG_LEN_A600CG; i++)
+			snd_soc_write(codec, init_list_A600CG[i].reg, init_list_A600CG[i].val);
+		pr_debug("%s: set A600CG-specific init list reg\n", __func__);
+
+	}
 
 	return 0;
 }
@@ -753,21 +762,21 @@ int rt5647_headset_detect(struct snd_soc_codec *codec, int jack_insert)
 
 	if (jack_insert) {
 
-		/* Oder 140117 start */
+		/* Realtek 140117 ++ */
 		snd_soc_update_bits(codec, RT5647_PWR_ANLG1,
 		RT5647_PWR_MB | RT5647_PWR_VREF2,
 		RT5647_PWR_MB | RT5647_PWR_VREF2);
-		snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x20, 0x0); //bard 0603
-		/* Oder 140117 end */
+		snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x20, 0x0); /* Realtek 06-03 */
+		/* Realtek 140117 -- */
 
 		snd_soc_dapm_force_enable_pin(&codec->dapm, "micbias1");
 		snd_soc_dapm_force_enable_pin(&codec->dapm, "micbias2");
 		snd_soc_dapm_force_enable_pin(&codec->dapm, "LDO2");
 		snd_soc_dapm_force_enable_pin(&codec->dapm, "Mic Det Power");
 		snd_soc_dapm_sync(&codec->dapm);
-		//snd_soc_write(codec, RT5647_CJ_CTRL1, 0x0006);
-                //snd_soc_write(codec, RT5647_CJ_CTRL1, 0x3c06); //MX-0a, Vincent
-                snd_soc_write(codec, RT5647_CJ_CTRL1, 0x1c06); //MX-0a, Eric
+		/* snd_soc_write(codec, RT5647_CJ_CTRL1, 0x0006); */
+		/* snd_soc_write(codec, RT5647_CJ_CTRL1, 0x3c06); //MX-0a */
+		snd_soc_write(codec, RT5647_CJ_CTRL1, 0x1c06); /* MX-0a */
 
 		snd_soc_write(codec, RT5647_JD_CTRL3, 0x00b0);
 		snd_soc_update_bits(codec, RT5647_CJ_CTRL2,
@@ -796,14 +805,14 @@ int rt5647_headset_detect(struct snd_soc_codec *codec, int jack_insert)
 			snd_soc_dapm_disable_pin(&codec->dapm, "Mic Det Power");
 			snd_soc_dapm_sync(&codec->dapm);
 			snd_soc_update_bits(codec, RT5647_INT_IRQ_ST, 0x8, 0x0);
-			snd_soc_update_bits(codec, RT5647_GEN_CTRL2, 0x8, 0x0); //bard 12-20
+			snd_soc_update_bits(codec, RT5647_GEN_CTRL2, 0x8, 0x0); /* Realtek 12-20 */
 			jack_type = SND_JACK_HEADPHONE;
 			break;
 		}
 	} else {
-		snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x20, 0x20); //bard 0603
+		snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x20, 0x20); /* Realtek 06-03 */
 		snd_soc_update_bits(codec, RT5647_INT_IRQ_ST, 0x8, 0x0);
-		snd_soc_update_bits(codec, RT5647_GEN_CTRL2, 0x8, 0x0); //bard 12-20
+		snd_soc_update_bits(codec, RT5647_GEN_CTRL2, 0x8, 0x0); /* Realtek 12-20 */
 		snd_soc_dapm_disable_pin(&codec->dapm, "micbias1");
 		snd_soc_dapm_disable_pin(&codec->dapm, "micbias2");
 		snd_soc_dapm_disable_pin(&codec->dapm, "LDO2");
@@ -813,18 +822,26 @@ int rt5647_headset_detect(struct snd_soc_codec *codec, int jack_insert)
 	}
 
 	rt5647->jack_type = jack_type;
-	pr_debug("jack_type=%d\n", jack_type);
+	pr_debug("%s: jack_type = %d\n", __func__, jack_type);
 	return jack_type;
 }
 EXPORT_SYMBOL(rt5647_headset_detect);
 
+void rt5647_i2s2_func_switch(struct snd_soc_codec *codec, bool enable)
+{
+	pr_debug("%s: enable is %s\n", __func__, enable? "true" : "false");
+	snd_soc_update_bits(codec, RT5647_GPIO_CTRL1,
+		RT5647_I2S2_SEL, (!enable) << RT5647_I2S2_SEL_SFT);
+}
+EXPORT_SYMBOL(rt5647_i2s2_func_switch);
+
 void rt5647_enable_push_button_irq(struct snd_soc_codec *codec)
 {
-	snd_soc_update_bits(codec, RT5647_GEN_CTRL2, 0x8, 0x8); //bard 12-20
+	snd_soc_update_bits(codec, RT5647_GEN_CTRL2, 0x8, 0x8); /* Realtek 12-20 */
 	snd_soc_update_bits(codec, RT5647_INT_IRQ_ST, 0x8, 0x8);
 	snd_soc_update_bits(codec, RT5647_IL_CMD, 0x40, 0x40);
 	snd_soc_read(codec, RT5647_IL_CMD);
-	mod_timer( &jd_check_timer, jiffies ); //bard 1-28
+	mod_timer(&jd_check_timer, jiffies); /* Realtek JD work */
 }
 EXPORT_SYMBOL(rt5647_enable_push_button_irq);
 
@@ -863,13 +880,15 @@ int rt5647_check_irq_event(struct snd_soc_codec *codec)
 	int val, ret = RT5647_UN_EVENT;
 
 	val = snd_soc_read(codec, RT5647_A_JD_CTRL1) & 0x0020;
-	pr_debug(" rt5647_check_irq_event : val = 0x%x rt5647->jack_type=0x%x\n", val, rt5647->jack_type);
+	pr_debug("rt5647_check_irq_event : val = 0x%x rt5647->jack_type=0x%x\n", val, rt5647->jack_type);
 	switch (val) {
 	case 0x20: /* No plug */
-		//rt5647->jack_type = rt5647_headset_detect(codec, 0);
-
+		/* rt5647->jack_type = rt5647_headset_detect(codec, 0); */
 		ret = RT5647_J_OUT_EVENT;
-		del_timer( &jd_check_timer); //bard 1-27
+		del_timer(&jd_check_timer); /* Realtek JD work */
+
+		/* JD work to report HS status after stablized */
+
 		break;
 	case 0x0: /* plug */
 		switch (rt5647->jack_type) {
@@ -895,43 +914,30 @@ int rt5647_check_irq_event(struct snd_soc_codec *codec)
 }
 EXPORT_SYMBOL(rt5647_check_irq_event);
 
-void rt5647_i2s2_func_switch(struct snd_soc_codec *codec, bool enable)
+void audio_drc_ctrl(bool enable)
 {
-	snd_soc_update_bits(codec, RT5647_GPIO_CTRL1,
-		RT5647_I2S2_SEL, (!enable) << RT5647_I2S2_SEL_SFT);
-}
-EXPORT_SYMBOL(rt5647_i2s2_func_switch);
-
-void rt5647_get_stream_usecase(struct snd_soc_codec *codec, bool disableDRC)
-{
-	printk(KERN_INFO "[DRC] into rt5647_get_stream_usecase\n");
 	cancel_delayed_work_sync(&disable_drc_work);
 	cancel_delayed_work_sync(&enable_drc_work);
-	if(disableDRC == true) {
-		stream_usecase = 0;
-		printk(KERN_INFO "[DRC] set stream_usecase = %d in rt5647_get_stream_usecase\n", stream_usecase);
+	if(enable == false) {
+		drc_enable = false;
+		pr_debug("%s: set drc_enable = %s\n", __func__, drc_enable ? "true" : "false");
 		queue_delayed_work(rt5647_wq, &disable_drc_work, msecs_to_jiffies(0));
 	}
 	else {
-		stream_usecase = 1;
-		printk(KERN_INFO "[DRC] set stream_usecase = %d in rt5647_get_stream_usecase\n", stream_usecase);
+		drc_enable = true;
+		pr_debug("%s: set drc_enable = %s\n", __func__, drc_enable ? "true" : "false");
 		queue_delayed_work(rt5647_wq, &enable_drc_work, msecs_to_jiffies(500));
 	}
 }
-EXPORT_SYMBOL(rt5647_get_stream_usecase);
+EXPORT_SYMBOL(audio_drc_ctrl);
 
-void rt5647_set_a2dp_to_spk_delay(struct snd_soc_codec *codec, bool disable)
+void set_spk_unmute_delay_time(int delay_time)
 {
-	printk(KERN_INFO "into rt5647_set_a2dp_to_spk_delay\n");
-
-	if(disable == true)
-		spk_unmute_delay = 0;
-	else
-		spk_unmute_delay = a2dp_to_spk_delay;
-
-	printk(KERN_INFO "set spk_unmute_delay to %d\n", spk_unmute_delay);
+	spk_unmute_delay_time = delay_time;
+	pr_debug("%s: set spk_unmute_delay_time to %d", __func__, delay_time);
 }
-EXPORT_SYMBOL(rt5647_set_a2dp_to_spk_delay);
+EXPORT_SYMBOL(set_spk_unmute_delay_time);
+
 
 static const DECLARE_TLV_DB_SCALE(out_vol_tlv, -4650, 150, 0);
 static const DECLARE_TLV_DB_SCALE(dac_vol_tlv, -65625, 375, 0);
@@ -953,7 +959,7 @@ static unsigned int bst_tlv[] = {
 };
 
 /* IN1/IN2 Input Type */
-static const char *rt5647_input_mode[] = {
+static const char * const rt5647_input_mode[] = {
 	"Single ended", "Differential"
 };
 
@@ -966,7 +972,7 @@ static const SOC_ENUM_SINGLE_DECL(
 	RT5647_IN_SFT2, rt5647_input_mode);
 
 /* Interface data select */
-static const char *rt5647_data_select[] = {
+static const char * const rt5647_data_select[] = {
 	"Normal", "Swap", "left copy to right", "right copy to left"
 };
 
@@ -983,7 +989,7 @@ static const SOC_ENUM_SINGLE_DECL(rt5647_if3_adc_enum, RT5647_DIG_INF1_DATA,
 				RT5647_IF3_ADC_SEL_SFT, rt5647_data_select);
 
 #if 1 /* Only for debug */
-static const char *rt5647_push_btn_mode[] = {
+static const char * const rt5647_push_btn_mode[] = {
 	"Disable", "read"
 };
 
@@ -1002,12 +1008,12 @@ static int rt5647_push_btn_put(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 
-	printk(KERN_INFO "ret=0x%x\n", rt5647_button_detect(codec));
+	pr_debug("ret=0x%x\n", rt5647_button_detect(codec));
 
 	return 0;
 }
 
-static const char *rt5647_jack_type_mode[] = {
+static const char * const rt5647_jack_type_mode[] = {
 	"Disable", "read"
 };
 
@@ -1031,11 +1037,12 @@ static int rt5647_jack_type_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 #endif
+
 static const struct snd_kcontrol_new rt5647_snd_controls[] = {
 
-        /* For Camera main mic record */
-        SOC_DOUBLE("DMIC2 Latch Switch", RT5647_DMIC_CTRL2,
-        3, 2, 1, 0),
+	/* For Camera main mic record */
+	SOC_DOUBLE("DMIC2 Latch Switch", RT5647_DMIC_CTRL2,
+		3, 2, 1, 0),
 
 	/* Speaker Output Volume */
 	SOC_DOUBLE("Speaker Playback Switch", RT5647_SPK_VOL,
@@ -1056,18 +1063,18 @@ static const struct snd_kcontrol_new rt5647_snd_controls[] = {
 		RT5647_L_VOL_SFT, RT5647_R_VOL_SFT, 39, 1, out_vol_tlv),
 	/* MONO Output Control */
 	SOC_SINGLE("Mono Playback Switch", RT5647_MONO_OUT,
-				RT5647_VOL_L_SFT, 1, 1), /*bard*/
+		RT5647_VOL_L_SFT, 1, 1),
 	SOC_SINGLE_TLV("Speaker Boost", RT5647_SPO_CLSD_RATIO,
-		       0, 7, 0, speaker_boost_tlv),
+		0, 7, 0, speaker_boost_tlv),
 	/* DAC Digital Volume */
 	SOC_DOUBLE("DAC2 Playback Switch", RT5647_DAC_CTRL,
 		RT5647_M_DAC_L2_VOL_SFT, RT5647_M_DAC_R2_VOL_SFT, 1, 1),
 	SOC_DOUBLE_TLV("DAC1 Playback Volume", RT5647_DAC1_DIG_VOL,
-			RT5647_L_VOL_SFT, RT5647_R_VOL_SFT,
-			175, 0, dac_vol_tlv),
+		RT5647_L_VOL_SFT, RT5647_R_VOL_SFT,
+		175, 0, dac_vol_tlv),
 	SOC_DOUBLE_TLV("Mono DAC Playback Volume", RT5647_DAC2_DIG_VOL,
-			RT5647_L_VOL_SFT, RT5647_R_VOL_SFT,
-			175, 0, dac_vol_tlv),
+		RT5647_L_VOL_SFT, RT5647_R_VOL_SFT,
+		175, 0, dac_vol_tlv),
 	/* DAC Digital Gain */
 	SOC_DOUBLE_R_TLV("HPMIX DAC1 Gain", RT5647_HPMIXL_CTRL,
 			RT5647_HPMIXR_CTRL, 8, 3, 1, dac_gain_tlv),
@@ -1086,48 +1093,47 @@ static const struct snd_kcontrol_new rt5647_snd_controls[] = {
 	/* IN1/IN2 Control */
 	SOC_ENUM("IN1 Mode Control",  rt5647_in1_mode_enum),
 	SOC_SINGLE_TLV("IN1 Boost", RT5647_CJ_CTRL1,
-		RT5647_CBJ_BST1_SFT, 8, 0, bst_tlv), //MX-0a
+		RT5647_CBJ_BST1_SFT, 8, 0, bst_tlv), /* MX-0a */
 	SOC_ENUM("IN2 Mode Control", rt5647_in2_mode_enum),
 	SOC_SINGLE_TLV("IN2 Boost", RT5647_IN1_IN2,
-		RT5647_BST_SFT2, 8, 0, bst_tlv), //MX-0a
+		RT5647_BST_SFT2, 8, 0, bst_tlv), /* MX-0a */
 	/* INL/INR Volume Control */
 	SOC_DOUBLE_TLV("IN Capture Volume", RT5647_INL1_INR1_VOL,
-			RT5647_INL_VOL_SFT, RT5647_INR_VOL_SFT,
-			31, 1, in_vol_tlv),
+		RT5647_INL_VOL_SFT, RT5647_INR_VOL_SFT,
+		31, 1, in_vol_tlv),
 	/* ADC Digital Volume Control */
 	SOC_DOUBLE("ADC Capture Switch", RT5647_STO1_ADC_DIG_VOL,
 		RT5647_L_MUTE_SFT, RT5647_R_MUTE_SFT, 1, 1),
 	SOC_DOUBLE_TLV("ADC Capture Volume", RT5647_STO1_ADC_DIG_VOL,
-			RT5647_L_VOL_SFT, RT5647_R_VOL_SFT,
-			127, 0, adc_vol_tlv),
+		RT5647_L_VOL_SFT, RT5647_R_VOL_SFT,
+		127, 0, adc_vol_tlv),
 
 	SOC_DOUBLE_TLV("Mono ADC Capture Volume", RT5647_MONO_ADC_DIG_VOL,
-			RT5647_L_VOL_SFT, RT5647_R_VOL_SFT,
-			127, 0, adc_vol_tlv),
+		RT5647_L_VOL_SFT, RT5647_R_VOL_SFT,
+		127, 0, adc_vol_tlv),
 
 	/* ADC Boost Volume Control */
 	SOC_DOUBLE_TLV("STO1 ADC Boost Gain", RT5647_ADC_BST_VOL1,
-			RT5647_STO1_ADC_L_BST_SFT, RT5647_STO1_ADC_R_BST_SFT,
-			3, 0, adc_bst_tlv),
+		RT5647_STO1_ADC_L_BST_SFT, RT5647_STO1_ADC_R_BST_SFT,
+		3, 0, adc_bst_tlv),
 
 	SOC_DOUBLE_TLV("STO2 ADC Boost Gain", RT5647_ADC_BST_VOL1,
-			RT5647_STO2_ADC_L_BST_SFT, RT5647_STO2_ADC_R_BST_SFT,
-			3, 0, adc_bst_tlv),
+		RT5647_STO2_ADC_L_BST_SFT, RT5647_STO2_ADC_R_BST_SFT,
+		3, 0, adc_bst_tlv),
 
-	//MX-a0
+	/* MX-a0 */
 	SOC_SINGLE_TLV("Speaker clsd amp", RT5647_CLSD_OUT_CTRL,
-                       12, 10, 0, speaker_boost_tlv),
+		12, 10, 0, speaker_boost_tlv),
 	SOC_SINGLE("SPKVDD det", RT5647_CLSD_OUT_CTRL, 9, 1, 0),
 	SOC_SINGLE("CLSD RATIO GAIN EN", RT5647_CLSD_OUT_CTRL, 8, 1, 0),
 
 	/* I2S2 function select */
 	SOC_SINGLE("I2S2 Func Switch", RT5647_GPIO_CTRL1,
-				RT5647_I2S2_SEL_SFT, 1, 1),
-        SOC_ENUM("ADC IF2 Data Switch", rt5647_if2_adc_enum),
-        SOC_ENUM("DAC IF2 Data Switch", rt5647_if2_dac_enum),
-        SOC_ENUM("ADC IF3 Data Switch", rt5647_if3_adc_enum),
-        SOC_ENUM("DAC IF3 Data Switch", rt5647_if3_dac_enum),
-
+		RT5647_I2S2_SEL_SFT, 1, 1),
+	SOC_ENUM("ADC IF2 Data Switch", rt5647_if2_adc_enum),
+	SOC_ENUM("DAC IF2 Data Switch", rt5647_if2_dac_enum),
+	SOC_ENUM("ADC IF3 Data Switch", rt5647_if3_adc_enum),
+	SOC_ENUM("DAC IF3 Data Switch", rt5647_if3_dac_enum),
 
 #if 1 /* Only for debug */
 	SOC_ENUM_EXT("push button", rt5647_push_btn_enum,
@@ -1196,167 +1202,167 @@ static int check_sysclk1_source(struct snd_soc_dapm_widget *source,
 /* Digital Mixer */
 static const struct snd_kcontrol_new rt5647_sto1_adc_l_mix[] = {
 	SOC_DAPM_SINGLE("ADC1 Switch", RT5647_STO1_ADC_MIXER,
-			RT5647_M_ADC_L1_SFT, 1, 1),
+		RT5647_M_ADC_L1_SFT, 1, 1),
 	SOC_DAPM_SINGLE("ADC2 Switch", RT5647_STO1_ADC_MIXER,
-			RT5647_M_ADC_L2_SFT, 1, 1),
+		RT5647_M_ADC_L2_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_sto1_adc_r_mix[] = {
 	SOC_DAPM_SINGLE("ADC1 Switch", RT5647_STO1_ADC_MIXER,
-			RT5647_M_ADC_R1_SFT, 1, 1),
+		RT5647_M_ADC_R1_SFT, 1, 1),
 	SOC_DAPM_SINGLE("ADC2 Switch", RT5647_STO1_ADC_MIXER,
-			RT5647_M_ADC_R2_SFT, 1, 1),
+		RT5647_M_ADC_R2_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_mono_adc_l_mix[] = {
 	SOC_DAPM_SINGLE("ADC1 Switch", RT5647_MONO_ADC_MIXER,
-			RT5647_M_MONO_ADC_L1_SFT, 1, 1),
+		RT5647_M_MONO_ADC_L1_SFT, 1, 1),
 	SOC_DAPM_SINGLE("ADC2 Switch", RT5647_MONO_ADC_MIXER,
-			RT5647_M_MONO_ADC_L2_SFT, 1, 1),
+		RT5647_M_MONO_ADC_L2_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_mono_adc_r_mix[] = {
 	SOC_DAPM_SINGLE("ADC1 Switch", RT5647_MONO_ADC_MIXER,
-			RT5647_M_MONO_ADC_R1_SFT, 1, 1),
+		RT5647_M_MONO_ADC_R1_SFT, 1, 1),
 	SOC_DAPM_SINGLE("ADC2 Switch", RT5647_MONO_ADC_MIXER,
-			RT5647_M_MONO_ADC_R2_SFT, 1, 1),
+		RT5647_M_MONO_ADC_R2_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_dac_l_mix[] = {
 	SOC_DAPM_SINGLE("Stereo ADC Switch", RT5647_AD_DA_MIXER,
-			RT5647_M_ADCMIX_L_SFT, 1, 1),
+		RT5647_M_ADCMIX_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC1 Switch", RT5647_AD_DA_MIXER,
-			RT5647_M_DAC1_L_SFT, 1, 1),
+		RT5647_M_DAC1_L_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_dac_r_mix[] = {
 	SOC_DAPM_SINGLE("Stereo ADC Switch", RT5647_AD_DA_MIXER,
-			RT5647_M_ADCMIX_R_SFT, 1, 1),
+		RT5647_M_ADCMIX_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC1 Switch", RT5647_AD_DA_MIXER,
-			RT5647_M_DAC1_R_SFT, 1, 1),
+		RT5647_M_DAC1_R_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_sto_dac_l_mix[] = {
 	SOC_DAPM_SINGLE("DAC L1 Switch", RT5647_STO_DAC_MIXER,
-			RT5647_M_DAC_L1_SFT, 1, 1),
+		RT5647_M_DAC_L1_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC L2 Switch", RT5647_STO_DAC_MIXER,
-			RT5647_M_DAC_L2_SFT, 1, 1),
+		RT5647_M_DAC_L2_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC R1 Switch", RT5647_STO_DAC_MIXER,
-			RT5647_M_DAC_R1_STO_L_SFT, 1, 1),
+		RT5647_M_DAC_R1_STO_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("ANC Switch", RT5647_STO_DAC_MIXER,
-			RT5647_M_ANC_DAC_L_SFT, 1, 1),
+		RT5647_M_ANC_DAC_L_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_sto_dac_r_mix[] = {
 	SOC_DAPM_SINGLE("DAC R1 Switch", RT5647_STO_DAC_MIXER,
-			RT5647_M_DAC_R1_SFT, 1, 1),
+		RT5647_M_DAC_R1_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC R2 Switch", RT5647_STO_DAC_MIXER,
-			RT5647_M_DAC_R2_SFT, 1, 1),
+		RT5647_M_DAC_R2_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC L1 Switch", RT5647_STO_DAC_MIXER,
-			RT5647_M_DAC_L1_STO_R_SFT, 1, 1),
+		RT5647_M_DAC_L1_STO_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("ANC Switch", RT5647_STO_DAC_MIXER,
-			RT5647_M_ANC_DAC_R_SFT, 1, 1),
+		RT5647_M_ANC_DAC_R_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_mono_dac_l_mix[] = {
 	SOC_DAPM_SINGLE("DAC L1 Switch", RT5647_MONO_DAC_MIXER,
-			RT5647_M_DAC_L1_MONO_L_SFT, 1, 1),
+		RT5647_M_DAC_L1_MONO_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC L2 Switch", RT5647_MONO_DAC_MIXER,
-			RT5647_M_DAC_L2_MONO_L_SFT, 1, 1),
+		RT5647_M_DAC_L2_MONO_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC R2 Switch", RT5647_MONO_DAC_MIXER,
-			RT5647_M_DAC_R2_MONO_L_SFT, 1, 1),
+		RT5647_M_DAC_R2_MONO_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("Sidetone Switch", RT5647_SIDETONE_CTRL,
-			RT5647_M_ST_DACL2_SFT, 1, 1),
+		RT5647_M_ST_DACL2_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_mono_dac_r_mix[] = {
 	SOC_DAPM_SINGLE("DAC R1 Switch", RT5647_MONO_DAC_MIXER,
-			RT5647_M_DAC_R1_MONO_R_SFT, 1, 1),
+		RT5647_M_DAC_R1_MONO_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC R2 Switch", RT5647_MONO_DAC_MIXER,
-			RT5647_M_DAC_R2_MONO_R_SFT, 1, 1),
+		RT5647_M_DAC_R2_MONO_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC L2 Switch", RT5647_MONO_DAC_MIXER,
-			RT5647_M_DAC_L2_MONO_R_SFT, 1, 1),
+		RT5647_M_DAC_L2_MONO_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("Sidetone Switch", RT5647_SIDETONE_CTRL,
-			RT5647_M_ST_DACR2_SFT, 1, 1),
+		RT5647_M_ST_DACR2_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_dig_l_mix[] = {
 	SOC_DAPM_SINGLE("Sto DAC Mix L Switch", RT5647_DIG_MIXER,
-			RT5647_M_STO_L_DAC_L_SFT, 1, 1),
+		RT5647_M_STO_L_DAC_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC L2 Switch", RT5647_DIG_MIXER,
-			RT5647_M_DAC_L2_DAC_L_SFT, 1, 1),
+		RT5647_M_DAC_L2_DAC_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC R2 Switch", RT5647_DIG_MIXER,
-			RT5647_M_DAC_R2_DAC_L_SFT, 1, 1),
+		RT5647_M_DAC_R2_DAC_L_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_dig_r_mix[] = {
 	SOC_DAPM_SINGLE("Sto DAC Mix R Switch", RT5647_DIG_MIXER,
-			RT5647_M_STO_R_DAC_R_SFT, 1, 1),
+		RT5647_M_STO_R_DAC_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC R2 Switch", RT5647_DIG_MIXER,
-			RT5647_M_DAC_R2_DAC_R_SFT, 1, 1),
+		RT5647_M_DAC_R2_DAC_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC L2 Switch", RT5647_DIG_MIXER,
-			RT5647_M_DAC_L2_DAC_R_SFT, 1, 1),
+		RT5647_M_DAC_L2_DAC_R_SFT, 1, 1),
 };
 
 /* Analog Input Mixer */
 static const struct snd_kcontrol_new rt5647_rec_l_mix[] = {
 	SOC_DAPM_SINGLE("MONO Switch", RT5647_REC_L2_MIXER,
-			RT5647_M_MM_L_RM_L_SFT, 1, 1),
+		RT5647_M_MM_L_RM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("HPOL Switch", RT5647_REC_L2_MIXER,
-			RT5647_M_HP_L_RM_L_SFT, 1, 1),
+		RT5647_M_HP_L_RM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("INL Switch", RT5647_REC_L2_MIXER,
-			RT5647_M_IN_L_RM_L_SFT, 1, 1),
+		RT5647_M_IN_L_RM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST3 Switch", RT5647_REC_L2_MIXER,
-			RT5647_M_BST3_RM_L_SFT, 1, 1),
+		RT5647_M_BST3_RM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST2 Switch", RT5647_REC_L2_MIXER,
-			RT5647_M_BST2_RM_L_SFT, 1, 1),
+		RT5647_M_BST2_RM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST1 Switch", RT5647_REC_L2_MIXER,
-			RT5647_M_BST1_RM_L_SFT, 1, 1),
+		RT5647_M_BST1_RM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("OUT MIXL Switch", RT5647_REC_L2_MIXER,
-			RT5647_M_OM_L_RM_L_SFT, 1, 1),
+		RT5647_M_OM_L_RM_L_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_rec_r_mix[] = {
 	SOC_DAPM_SINGLE("MONO Switch", RT5647_REC_R2_MIXER,
-			RT5647_M_MM_R_RM_R_SFT, 1, 1),
+		RT5647_M_MM_R_RM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("HPOR Switch", RT5647_REC_R2_MIXER,
-			RT5647_M_HP_R_RM_R_SFT, 1, 1),
+		RT5647_M_HP_R_RM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("INR Switch", RT5647_REC_R2_MIXER,
-			RT5647_M_IN_R_RM_R_SFT, 1, 1),
+		RT5647_M_IN_R_RM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST3 Switch", RT5647_REC_R2_MIXER,
-			RT5647_M_BST3_RM_R_SFT, 1, 1),
+		RT5647_M_BST3_RM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST2 Switch", RT5647_REC_R2_MIXER,
-			RT5647_M_BST2_RM_R_SFT, 1, 1),
+		RT5647_M_BST2_RM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST1 Switch", RT5647_REC_R2_MIXER,
-			RT5647_M_BST1_RM_R_SFT, 1, 1),
+		RT5647_M_BST1_RM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("OUT MIXR Switch", RT5647_REC_R2_MIXER,
-			RT5647_M_OM_R_RM_R_SFT, 1, 1),
+		RT5647_M_OM_R_RM_R_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_spk_l_mix[] = {
 	SOC_DAPM_SINGLE("DAC L1 Switch", RT5647_SPK_L_MIXER,
-			RT5647_M_DAC_L1_SM_L_SFT, 1, 1),
+		RT5647_M_DAC_L1_SM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC L2 Switch", RT5647_SPK_L_MIXER,
-			RT5647_M_DAC_L2_SM_L_SFT, 1, 1),
+		RT5647_M_DAC_L2_SM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("INL Switch", RT5647_SPK_L_MIXER,
-			RT5647_M_IN_L_SM_L_SFT, 1, 1),
+		RT5647_M_IN_L_SM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST3 Switch", RT5647_SPK_L_MIXER,
-			RT5647_M_BST3_L_SM_L_SFT, 1, 1),
+		RT5647_M_BST3_L_SM_L_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST1 Switch", RT5647_SPK_L_MIXER,
-			RT5647_M_BST1_L_SM_L_SFT, 1, 1),
+		RT5647_M_BST1_L_SM_L_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_spk_r_mix[] = {
 	SOC_DAPM_SINGLE("DAC R1 Switch", RT5647_SPK_R_MIXER,
-			RT5647_M_DAC_R1_SM_R_SFT, 1, 1),
+		RT5647_M_DAC_R1_SM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("DAC R2 Switch", RT5647_SPK_R_MIXER,
-			RT5647_M_DAC_R2_SM_R_SFT, 1, 1),
+		RT5647_M_DAC_R2_SM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("INR Switch", RT5647_SPK_R_MIXER,
-			RT5647_M_IN_R_SM_R_SFT, 1, 1),
+		RT5647_M_IN_R_SM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST3 Switch", RT5647_SPK_R_MIXER,
-			RT5647_M_BST3_R_SM_R_SFT, 1, 1),
+		RT5647_M_BST3_R_SM_R_SFT, 1, 1),
 	SOC_DAPM_SINGLE("BST2 Switch", RT5647_SPK_R_MIXER,
-			RT5647_M_BST2_R_SM_R_SFT, 1, 1),
+		RT5647_M_BST2_R_SM_R_SFT, 1, 1),
 };
 
 static const struct snd_kcontrol_new rt5647_out_l_mix[] = {
@@ -1441,7 +1447,6 @@ static const struct snd_kcontrol_new rt5647_hpvoll_mix[] = {
 			RT5647_M_BST1_HV_SFT, 1, 1),
 };
 
-
 static const struct snd_kcontrol_new rt5647_hpvolr_mix[] = {
 	SOC_DAPM_SINGLE("DAC1 Switch", RT5647_HPOMIXR_CTRL,
 			RT5647_M_DAC1_HV_SFT, 1, 1),
@@ -1474,7 +1479,7 @@ static const struct snd_kcontrol_new rt5647_monoamp_mix[] = {
 };
 
 /*DAC1 L/R source*/ /* MX-29 [9:8] [11:10] */
-static const char *rt5647_dac1_src[] = {
+static const char * const rt5647_dac1_src[] = {
 	"IF1 DAC", "IF2 DAC", "IF3 DAC"
 };
 
@@ -1493,7 +1498,7 @@ static const struct snd_kcontrol_new rt5647_dac1r_mux =
 	SOC_DAPM_ENUM("DAC1 R source", rt5647_dac1r_enum);
 
 /*DAC2 L/R source*/ /* MX-1B [6:4] [2:0] */
-static const char *rt5647_dac12_src[] = {
+static const char * const rt5647_dac12_src[] = {
 	"IF1 DAC", "IF2 DAC", "IF3 DAC", "Mono ADC", "VAD_ADC"
 };
 
@@ -1504,7 +1509,7 @@ static const SOC_ENUM_SINGLE_DECL(
 static const struct snd_kcontrol_new rt5647_dac_l2_mux =
 	SOC_DAPM_ENUM("DAC2 L source", rt5647_dac2l_enum);
 
-static const char *rt5647_dacr2_src[] = {
+static const char * const rt5647_dacr2_src[] = {
 	"IF1 DAC", "IF2 DAC", "IF3 DAC", "Mono ADC", "Haptic"
 };
 
@@ -1517,7 +1522,7 @@ static const struct snd_kcontrol_new rt5647_dac_r2_mux =
 
 
 /* INL/R source */
-static const char *rt5647_inl_src[] = {
+static const char * const rt5647_inl_src[] = {
 	"IN2P", "MonoP"
 };
 
@@ -1528,7 +1533,7 @@ static const SOC_ENUM_SINGLE_DECL(
 static const struct snd_kcontrol_new rt5647_inl_mux =
 	SOC_DAPM_ENUM("INL source", rt5647_inl_enum);
 
-static const char *rt5647_inr_src[] = {
+static const char * const rt5647_inr_src[] = {
 	"IN2N", "MonoN"
 };
 
@@ -1541,7 +1546,7 @@ static const struct snd_kcontrol_new rt5647_inr_mux =
 
 /* Stereo1 ADC source */
 /* MX-27 [12] */
-static const char *rt5647_stereo_adc1_src[] = {
+static const char * const rt5647_stereo_adc1_src[] = {
 	"DAC MIX", "ADC"
 };
 
@@ -1556,7 +1561,7 @@ static const struct snd_kcontrol_new rt5647_sto_adc_r1_mux =
 	SOC_DAPM_ENUM("Stereo1 ADC R1 source", rt5647_stereo1_adc1_enum);
 
 /* MX-27 [11] */
-static const char *rt5647_stereo_adc2_src[] = {
+static const char * const rt5647_stereo_adc2_src[] = {
 	"DAC MIX", "DMIC"
 };
 
@@ -1571,7 +1576,7 @@ static const struct snd_kcontrol_new rt5647_sto_adc_r2_mux =
 	SOC_DAPM_ENUM("Stereo1 ADC R2 source", rt5647_stereo1_adc2_enum);
 
 /* MX-27 [8] */
-static const char *rt5647_stereo_dmic_src[] = {
+static const char * const rt5647_stereo_dmic_src[] = {
 	"DMIC1", "DMIC2"
 };
 
@@ -1584,7 +1589,7 @@ static const struct snd_kcontrol_new rt5647_sto1_dmic_mux =
 
 /* Mono ADC source */
 /* MX-28 [12] */
-static const char *rt5647_mono_adc_l1_src[] = {
+static const char * const rt5647_mono_adc_l1_src[] = {
 	"Mono DAC MIXL", "ADC"
 };
 
@@ -1594,8 +1599,9 @@ static const SOC_ENUM_SINGLE_DECL(
 
 static const struct snd_kcontrol_new rt5647_mono_adc_l1_mux =
 	SOC_DAPM_ENUM("Mono ADC1 left source", rt5647_mono_adc_l1_enum);
+
 /* MX-28 [11] */
-static const char *rt5647_mono_adc_l2_src[] = {
+static const char * const rt5647_mono_adc_l2_src[] = {
 	"Mono DAC MIXL", "DMIC"
 };
 
@@ -1607,7 +1613,7 @@ static const struct snd_kcontrol_new rt5647_mono_adc_l2_mux =
 	SOC_DAPM_ENUM("Mono ADC2 left source", rt5647_mono_adc_l2_enum);
 
 /* MX-28 [8] */
-static const char *rt5647_mono_dmic_src[] = {
+static const char * const rt5647_mono_dmic_src[] = {
 	"DMIC1", "DMIC2"
 };
 
@@ -1617,6 +1623,7 @@ static const SOC_ENUM_SINGLE_DECL(
 
 static const struct snd_kcontrol_new rt5647_mono_dmic_l_mux =
 	SOC_DAPM_ENUM("Mono DMIC left source", rt5647_mono_dmic_l_enum);
+
 /* MX-28 [1:0] */
 static const SOC_ENUM_SINGLE_DECL(
 	rt5647_mono_dmic_r_enum, RT5647_MONO_ADC_MIXER,
@@ -1624,8 +1631,9 @@ static const SOC_ENUM_SINGLE_DECL(
 
 static const struct snd_kcontrol_new rt5647_mono_dmic_r_mux =
 	SOC_DAPM_ENUM("Mono DMIC Right source", rt5647_mono_dmic_r_enum);
+
 /* MX-28 [4] */
-static const char *rt5647_mono_adc_r1_src[] = {
+static const char * const rt5647_mono_adc_r1_src[] = {
 	"Mono DAC MIXR", "ADC"
 };
 
@@ -1635,8 +1643,9 @@ static const SOC_ENUM_SINGLE_DECL(
 
 static const struct snd_kcontrol_new rt5647_mono_adc_r1_mux =
 	SOC_DAPM_ENUM("Mono ADC1 right source", rt5647_mono_adc_r1_enum);
+
 /* MX-28 [3] */
-static const char *rt5647_mono_adc_r2_src[] = {
+static const char * const rt5647_mono_adc_r2_src[] = {
 	"Mono DAC MIXR", "DMIC"
 };
 
@@ -1648,7 +1657,7 @@ static const struct snd_kcontrol_new rt5647_mono_adc_r2_mux =
 	SOC_DAPM_ENUM("Mono ADC2 right source", rt5647_mono_adc_r2_enum);
 
 /* MX-77 [9:8] */
-static const char *rt5647_if1_adc_in_src[] = {
+static const char * const rt5647_if1_adc_in_src[] = {
 	"IF_ADC1", "IF_ADC2", "VAD_ADC"
 };
 
@@ -1660,7 +1669,7 @@ static const struct snd_kcontrol_new rt5647_if1_adc_in_mux =
 	SOC_DAPM_ENUM("IF1 ADC IN source", rt5647_if1_adc_in_enum);
 
 /* MX-2F [13:12] */
-static const char *rt5647_if2_adc_in_src[] = {
+static const char * const rt5647_if2_adc_in_src[] = {
 	"IF_ADC1", "IF_ADC2", "VAD_ADC"
 };
 
@@ -1672,7 +1681,7 @@ static const struct snd_kcontrol_new rt5647_if2_adc_in_mux =
 	SOC_DAPM_ENUM("IF2 ADC IN source", rt5647_if2_adc_in_enum);
 
 /* MX-2F [1:0] */
-static const char *rt5647_if3_adc_in_src[] = {
+static const char * const rt5647_if3_adc_in_src[] = {
 	"IF_ADC1", "IF_ADC2", "VAD_ADC"
 };
 
@@ -1684,7 +1693,7 @@ static const struct snd_kcontrol_new rt5647_if3_adc_in_mux =
 	SOC_DAPM_ENUM("IF3 ADC IN source", rt5647_if3_adc_in_enum);
 
 /* MX-31 [15] [13] [11] [9] */
-static const char *rt5647_pdm_src[] = {
+static const char * const rt5647_pdm_src[] = {
 	"Mono DAC", "Stereo DAC"
 };
 
@@ -1703,7 +1712,7 @@ static const struct snd_kcontrol_new rt5647_pdm1_r_mux =
 	SOC_DAPM_ENUM("PDM1 R source", rt5647_pdm1_r_enum);
 
 /* MX-18 [11:9] */
-static const char *rt5647_sidetone_src[] = {
+static const char * const rt5647_sidetone_src[] = {
 	"DMIC L1", "DMIC L2", "Reserved", "ADC L", "ADC R"
 };
 
@@ -1715,7 +1724,7 @@ static const struct snd_kcontrol_new rt5647_sidetone_mux =
 	SOC_DAPM_ENUM("Sidetone source", rt5647_sidetone_enum);
 
 /* MX-18 [6] */
-static const char *rt5647_anc_src[] = {
+static const char * const rt5647_anc_src[] = {
 	"SNC", "Sidetone"
 };
 
@@ -1727,7 +1736,7 @@ static const struct snd_kcontrol_new rt5647_anc_mux =
 	SOC_DAPM_ENUM("ANC source", rt5647_anc_enum);
 
 /* MX-9D [9:8] */
-static const char *rt5647_vad_adc_src[] = {
+static const char * const rt5647_vad_adc_src[] = {
 	"Sto1 ADC L", "Mono ADC L", "Mono ADC R"
 };
 
@@ -1784,7 +1793,7 @@ static int rt5647_sto1_adcl_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		msleep(50);	// Oder 140609
+		msleep(50);	/* Oder 06-09 */
 		snd_soc_update_bits(codec, RT5647_STO1_ADC_DIG_VOL,
 			RT5647_L_MUTE, 0);
 		break;
@@ -1941,6 +1950,7 @@ static void rt5647_pmd_depop(struct snd_soc_codec *codec)
 {
 	/* headphone mute sequence */
 	cancel_delayed_work_sync(&hp_work);
+
 	snd_soc_update_bits(codec, RT5647_DEPOP_M3,
 		RT5647_CP_FQ1_MASK | RT5647_CP_FQ2_MASK | RT5647_CP_FQ3_MASK,
 		(RT5647_CP_FQ_96_KHZ << RT5647_CP_FQ1_SFT) |
@@ -1971,12 +1981,12 @@ static int rt5647_hp_event(struct snd_soc_dapm_widget *w,
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
 		rt5647_pmu_depop(codec);
-       printk(KERN_INFO "hp on\n");
+		pr_debug("%s: hp on\n", __func__);
 		break;
 
 	case SND_SOC_DAPM_PRE_PMD:
 		rt5647_pmd_depop(codec);
-       printk(KERN_INFO "hp off\n");
+		pr_debug("%s: hp off\n", __func__);
 		break;
 
 	default:
@@ -1994,29 +2004,32 @@ static int rt5647_spk_event(struct snd_soc_dapm_widget *w,
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
 		mutex_lock(&event_drc_mutex);
-		printk(KERN_INFO "[DRC] into rt5647_spk_event pmu, stream_usecase = %d, is_recording = %d\n", stream_usecase, is_recording);
+		pr_debug("%s: drc_enable = %s, is_recording = %s\n", __func__, drc_enable ? "true" : "false", is_recording ? "true" : "false");
 
 		rt5647_index_write(codec, 0x1c, 0xfd20);
 		rt5647_index_write(codec, 0x20, 0x611f);
 		rt5647_index_write(codec, 0x21, 0x4040);
 		rt5647_index_write(codec, 0x23, 0x0004);
+		/* pr_debug("%s spk event post PMU\n", __func__); */
 
-		rt5647_update_eqmode(codec, EQ_CH_DACL, SPK); //bard 1-10
-		rt5647_update_eqmode(codec, EQ_CH_DACR, SPK); //bard 1-10
+		rt5647_update_eqmode(codec, EQ_CH_DAC, SPK); /* Realtek 01-10 */
 
 		snd_soc_update_bits(codec, RT5647_PWR_DIG1,
 			RT5647_PWR_CLS_D | RT5647_PWR_CLS_D_R | RT5647_PWR_CLS_D_L,
 			RT5647_PWR_CLS_D | RT5647_PWR_CLS_D_R | RT5647_PWR_CLS_D_L);
                 snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x0200, 0x0200);
 
-		if(stream_usecase == 1 && is_recording == 0) { //enable DRC only on ring/alarm/notification
+		if(drc_enable == true && is_recording == false) {
 			if (!(snd_soc_read(codec_global, RT5647_PWR_DIG2) & RT5647_PWR_DAC_S1F)) {
-				printk(KERN_INFO "DAC filter power is not on, don't enable DRC\n");
+				pr_debug("%s: DAC filter power is not on, DO NOT enable DRC\n", __func__);
 			} else {
 				DRC_CTRL = snd_soc_read(codec_global, RT5647_ALC_CTRL_1) & 0xc000;
-				if(!(DRC_CTRL == 0x4000)) { //check if DRC disable, only when DRC disable needs to be open
+				if(!(DRC_CTRL == 0x4000)) { /* check if DRC to DAC path is disabled */
 
-					//set DRC parameters
+					/* disable DRC to ADC/DAC path */
+					snd_soc_update_bits(codec_global, RT5647_ALC_CTRL_1, 0xc000, 0x0000);
+
+					/* start to apply spk DRC parameters */
 					snd_soc_write(codec, 0xb3, 0x041f);
 					snd_soc_write(codec, 0xb5, 0xdf80);
 					snd_soc_write(codec, 0xb6, 0x05df);
@@ -2025,7 +2038,10 @@ static int rt5647_spk_event(struct snd_soc_dapm_widget *w,
 					snd_soc_write(codec, 0xe6, 0x8000);
 					snd_soc_write(codec, 0xe7, 0x0700);
 					snd_soc_write(codec, 0xea, 0x0c20);
-					#ifdef CONFIG_A500CG_AUDIO_SETTING
+
+					if (Read_PROJ_ID() == PROJ_ID_A500CG || Read_PROJ_ID() == PROJ_ID_A501CG_BZ || Read_PROJ_ID() == PROJ_ID_A501CG
+							|| Read_PROJ_ID() == PROJ_ID_A500CG_ID || Read_PROJ_ID() == PROJ_ID_A501CG_ID) {
+						pr_debug("%s: apply A500CG spk DRC parameters\n", __func__);
 						snd_soc_write(codec, 0xf1, 0x0006);
 						snd_soc_write(codec, 0xf2, 0x5f80);
 						snd_soc_write(codec, 0xf3, 0x05df);
@@ -2039,8 +2055,8 @@ static int rt5647_spk_event(struct snd_soc_dapm_widget *w,
 						rt5647_index_write(codec, 0x9b, 0x003e);
 						rt5647_index_write(codec, 0x9c, 0x0625);
 						rt5647_index_write(codec, 0x9d, 0x3f4e);
-					#endif
-					#ifdef CONFIG_A600CG_AUDIO_SETTING
+					} else if (Read_PROJ_ID() == PROJ_ID_A600CG || Read_PROJ_ID() == PROJ_ID_A601CG) {
+						pr_debug("%s: apply A600CG spk DRC parameters\n", __func__);
 						snd_soc_write(codec, 0xf1, 0x020c);
 						snd_soc_write(codec, 0xf2, 0x1f00);
 						snd_soc_write(codec, 0xf3, 0x001f);
@@ -2054,8 +2070,8 @@ static int rt5647_spk_event(struct snd_soc_dapm_widget *w,
 						rt5647_index_write(codec, 0x9b, 0x003d);
 						rt5647_index_write(codec, 0x9c, 0x10c3);
 						rt5647_index_write(codec, 0x9d, 0x1b04);
-					#endif
-					#ifdef CONFIG_A502CG_AUDIO_SETTING
+					} else if (Read_PROJ_ID() == PROJ_ID_A502CG) {
+						pr_debug("%s: apply A502CG spk DRC parameters\n", __func__);
 						snd_soc_write(codec, 0xf1, 0x0006);
 						snd_soc_write(codec, 0xf2, 0x5f80);
 						snd_soc_write(codec, 0xf3, 0x05df);
@@ -2069,50 +2085,37 @@ static int rt5647_spk_event(struct snd_soc_dapm_widget *w,
 						rt5647_index_write(codec, 0x9b, 0x003e);
 						rt5647_index_write(codec, 0x9c, 0x0625);
 						rt5647_index_write(codec, 0x9d, 0x3f4e);
-					#endif
-					snd_soc_write(codec, 0xb4, 0x4006); //enable DRC
-					printk(KERN_INFO "[DRC] enable spk DRC in spk_event\n");
-					rt5647_index_write(codec, 0x94, 0xcf00); //after parameter ready, enable Cross-Over Filter
+					} else {
+						pr_debug("%s: unknown project ID = %d\n", __func__, Read_PROJ_ID());
+					}
+					snd_soc_write(codec, 0xb4, 0x4006); /* enable spk DRC */
+					pr_debug("%s: enable spk DRC\n", __func__);
+					rt5647_index_write(codec, 0x94, 0xcf00); /* after parameter ready, enable Cross-Over Filter */
 					mdelay(0);
 				}
 			}
 		}
-		/*else {
-		DRC_CTRL = snd_soc_read(codec_global, RT5647_ALC_CTRL_1);
-		if(DRC_CTRL & 0x4000) { //check if DRC enable, only when DRC enable needs to be close
-			printk(KERN_INFO "[DRC] disable spk DRC in spk_event\n");
-			rt5647_index_write(codec, 0x94, 0x8700); //close HPF&LPF before DRC disable
-			snd_soc_write(codec, 0xea, 0x0f20); //close DRC mixer before DRC disable
-			snd_soc_write(codec, 0xb4, 0x0006); //DRC disable
-			mdelay(disable_drc_delay);
-		}
-		}*/
-		//schedule_delayed_work(&spk_work, msecs_to_jiffies(0));  //Jericho 0213
-		queue_delayed_work(rt5647_wq, &spk_work, msecs_to_jiffies(spk_unmute_delay));
+		queue_delayed_work(rt5647_wq, &spk_unmute_work, msecs_to_jiffies(spk_unmute_delay_time));
 		mutex_unlock(&event_drc_mutex);
-
-	/*			
-		snd_soc_update_bits(codec, RT5647_SPK_VOL,   Jericho 0213
-			RT5647_L_MUTE | RT5647_R_MUTE, 0);*/
 
 	break;
 
 	case SND_SOC_DAPM_PRE_PMD:
-		printk(KERN_INFO "[DRC] into rt5647_spk_event pmd, is_recording = %d\n", is_recording);
-		cancel_delayed_work_sync(&spk_work);//Jericho 0213
-		spk_unmute_delay = 0;
+		cancel_delayed_work_sync(&spk_unmute_work);
+		spk_unmute_delay_time = 0;
 		snd_soc_update_bits(codec, RT5647_SPK_VOL,
 			RT5647_L_MUTE | RT5647_R_MUTE,
 			RT5647_L_MUTE | RT5647_R_MUTE);
-                snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x0200, 0x0);
+		snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x0200, 0x0);
 		snd_soc_update_bits(codec, RT5647_PWR_DIG1,
 			RT5647_PWR_CLS_D | RT5647_PWR_CLS_D_R | RT5647_PWR_CLS_D_L, 0);
-		rt5647_update_eqmode(codec, EQ_CH_DACL, NORMAL);//0114 Headset EQ off
-		rt5647_update_eqmode(codec, EQ_CH_DACR, NORMAL);//0114 Headset EQ off
-		if (is_recording == 0) {
-			rt5647_index_write(codec, 0x94, 0x8700); //close HPF&LPF before DRC disable
-			snd_soc_write(codec, 0xea, 0x0f20); //close DRC mixer before DRC disable
-			snd_soc_write(codec, 0xb4, 0x0006); //DRC disable
+		rt5647_update_eqmode(codec, EQ_CH_DAC, NORMAL); /* Headset EQ off */
+		pr_debug("%s: spk PMD, is_recording = %s\n", __func__, is_recording ? "true" : "false");
+		if (is_recording == false) {
+			rt5647_index_write(codec, 0x94, 0x8700); /* close HPF&LPF before DRC disable */
+			snd_soc_write(codec, 0xea, 0x0f20); /* close DRC mixer before DRC disable */
+			snd_soc_write(codec, 0xb4, 0x0006); /* disable DRC */
+			pr_debug("%s: spk PMD, disable DRC\n", __func__);
 		}
 		break;
 
@@ -2184,24 +2187,29 @@ static int rt5647_dmic1_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		printk(KERN_INFO "[DRC] into rt5647_dmic1_event pmu\n");
+
+		mutex_lock(&event_drc_mutex);
+		/* mute spk when disable DRC*/
                 value = snd_soc_read(codec_global, RT5647_SPK_VOL);
                 snd_soc_update_bits(codec_global, RT5647_SPK_VOL,
                         RT5647_L_MUTE | RT5647_R_MUTE,
                         RT5647_L_MUTE | RT5647_R_MUTE);
-		rt5647_index_write(codec_global, 0x94, 0x8700); //close HPF&LPF before DRC disable
-		snd_soc_write(codec_global, 0xea, 0x0f20); //close DRC mixer before DRC disable
-		snd_soc_write(codec_global, 0xb4, 0x0006); //DRC disable
+		rt5647_index_write(codec_global, 0x94, 0x8700); /* close HPF&LPF before DRC disable */
+		snd_soc_write(codec_global, 0xea, 0x0f20); /* close DRC mixer before DRC disable */
+		snd_soc_write(codec_global, 0xb4, 0x0006); /* disable DRC*/
+		pr_debug("%s: dmic1 PMU, disable spk DRC\n", __func__);
 		msleep(10);
+
+		/* resume spk unmute status */
 	        snd_soc_update_bits(codec_global, RT5647_SPK_VOL, RT5647_L_MUTE | RT5647_R_MUTE, value);
 		msleep(10);
 		mdelay(0);
-		printk(KERN_INFO "[DRC] disable DRC in dmic1_event\n");
 
-		//AGC(A500CG)
-		#ifdef CONFIG_A500CG_AUDIO_SETTING
+		/* start to apply recording DRC parameters */
+		if (Read_PROJ_ID() == PROJ_ID_A500CG || Read_PROJ_ID() == PROJ_ID_A501CG_BZ || Read_PROJ_ID() == PROJ_ID_A501CG
+				|| Read_PROJ_ID() == PROJ_ID_A500CG_ID || Read_PROJ_ID() == PROJ_ID_A501CG_ID) {
+			pr_debug("%s: apply A500CG recording DRC parameters\n", __func__);
 			snd_soc_write(codec, 0xb3, 0x099f);
-			snd_soc_write(codec, 0xb4, 0xc20c);
 			snd_soc_write(codec, 0xb5, 0x1f01);
 			snd_soc_write(codec, 0xb6, 0xa01c);
 			snd_soc_write(codec, 0xb7, 0x600a);
@@ -2211,12 +2219,9 @@ static int rt5647_dmic1_event(struct snd_soc_dapm_widget *w,
 			snd_soc_write(codec, 0xf2, 0x1f00);
 			snd_soc_write(codec, 0xf3, 0x0000);
 			snd_soc_write(codec, 0xf4, 0x4000);
-		#endif
-
-		//AGC(A600CG)
-                #ifdef CONFIG_A600CG_AUDIO_SETTING
+		} else if (Read_PROJ_ID() == PROJ_ID_A600CG || Read_PROJ_ID() == PROJ_ID_A601CG) {
+			pr_debug("%s: apply A600CG recording DRC parameters\n", __func__);
                         snd_soc_write(codec, 0xb3, 0x09df);
-                        snd_soc_write(codec, 0xb4, 0xc20c);
                         snd_soc_write(codec, 0xb5, 0x1f01);
                         snd_soc_write(codec, 0xb6, 0xa01c);
                         snd_soc_write(codec, 0xb7, 0x6008);
@@ -2226,12 +2231,9 @@ static int rt5647_dmic1_event(struct snd_soc_dapm_widget *w,
 			snd_soc_write(codec, 0xf2, 0x1f00);
 			snd_soc_write(codec, 0xf3, 0x0000);
 			snd_soc_write(codec, 0xf4, 0x4000);
-                #endif
-
-		//AGC(A502CG)
-		#ifdef CONFIG_A502CG_AUDIO_SETTING
+		} else if (Read_PROJ_ID() == PROJ_ID_A502CG) {
+			pr_debug("%s: apply A502CG recording DRC parameters\n", __func__);
 			snd_soc_write(codec, 0xb3, 0x0997);
-			snd_soc_write(codec, 0xb4, 0xc20c);
 			snd_soc_write(codec, 0xb5, 0x1700);
 			snd_soc_write(codec, 0xb6, 0xa01f);
 			snd_soc_write(codec, 0xb7, 0x4008);
@@ -2241,21 +2243,28 @@ static int rt5647_dmic1_event(struct snd_soc_dapm_widget *w,
 			snd_soc_write(codec, 0xf2, 0x1f00);
 			snd_soc_write(codec, 0xf3, 0x0000);
 			snd_soc_write(codec, 0xf4, 0x4000);
-		#endif
+		} else {
+			pr_debug("%s: unknown project ID = %d\n", __func__, Read_PROJ_ID());
+		}
 
-		printk(KERN_INFO "[DRC] enable recording DRC\n");
-#ifdef CONFIG_A600CG_AUDIO_SETTING
-		rt5647_update_eqmode(codec, EQ_CH_ADC, CLUB);
-		printk(KERN_INFO "[rt5647] enable recording EQ\n");
-#endif
+		snd_soc_write(codec, 0xb4, 0xc20c);
+		pr_debug("%s: enable recording DRC\n", __func__);
+
+		if (Read_PROJ_ID() == PROJ_ID_A600CG || Read_PROJ_ID() == PROJ_ID_A601CG) {
+			rt5647_update_eqmode(codec, EQ_CH_ADC, CLUB);
+			pr_debug("%s: enable A600CG recording EQ\n", __func__);
+		}
+
+		mutex_unlock(&event_drc_mutex);
 		break;
 
-#ifdef CONFIG_A600CG_AUDIO_SETTING
 	case SND_SOC_DAPM_PRE_PMD:
-		rt5647_update_eqmode(codec, EQ_CH_ADC, NORMAL);
-		printk(KERN_INFO "[rt5647] disable recording EQ\n");
+		if (Read_PROJ_ID() == PROJ_ID_A600CG || Read_PROJ_ID() == PROJ_ID_A601CG) {
+			rt5647_update_eqmode(codec, EQ_CH_ADC, NORMAL);
+			pr_debug("%s: disable A600CG recording EQ\n", __func__);
+		}
+
 		break;
-#endif
 
 	default:
 		return 0;
@@ -2271,44 +2280,19 @@ static int rt5647_bst1_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		//AGC(A500CG)
-		#ifdef CONFIG_A500CG_AUDIO_SETTING
-			snd_soc_write(codec, 0xb3, 0x0032);
-			snd_soc_write(codec, 0xb4, 0x020c);
-			snd_soc_write(codec, 0xb5, 0x1f01);
-			snd_soc_write(codec, 0xb6, 0x0012);
-			snd_soc_write(codec, 0xb7, 0x6004);
-			snd_soc_write(codec, 0xd4, 0x0505);
-			snd_soc_write(codec, 0xe7, 0x0700);
-		#endif
 
-                //AGC(A600CG)
-                #ifdef CONFIG_A600CG_AUDIO_SETTING
-                        snd_soc_write(codec, 0xb3, 0x019f);
-                        snd_soc_write(codec, 0xb4, 0x020c);
-                        snd_soc_write(codec, 0xb5, 0x1f01);
-                        snd_soc_write(codec, 0xb6, 0x0012);
-                        snd_soc_write(codec, 0xb7, 0x6004);
-                        snd_soc_write(codec, 0xd4, 0x0505);
-                        snd_soc_write(codec, 0xe7, 0x0700);
-                #endif
-
-                //AGC(A502CG)
-                #ifdef CONFIG_A502CG_AUDIO_SETTING
-                        snd_soc_write(codec, 0xb3, 0x032f);
-                        snd_soc_write(codec, 0xb4, 0x020c);
-                        snd_soc_write(codec, 0xb5, 0x1f01);
-                        snd_soc_write(codec, 0xb6, 0x0012);
-                        snd_soc_write(codec, 0xb7, 0x6004);
-                        snd_soc_write(codec, 0xd4, 0x0505);
-                        snd_soc_write(codec, 0xe7, 0x0700);
-                #endif
+		/* disable recording DRC */
+		snd_soc_write(codec, 0xb4, 0x020c);
+		pr_debug("%s: disable recording DRC\n", __func__);
 
 		break;
 
-	/*case SND_SOC_DAPM_PRE_PMD:
+	/* MX-b4 */
+	/*
+	case SND_SOC_DAPM_PRE_PMD:
 		snd_soc_write(codec, 0xb4, 0x0206);
-		break;*/ //MX-b4
+		break;
+	*/
 
 	default:
 		return 0;
@@ -2417,11 +2401,11 @@ static int rt5647_dac_l_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		//rt5647_update_eqmode(codec, EQ_CH_DACL, rt5647->eq_mode);
+		/* rt5647_update_eqmode(codec, EQ_CH_DACL, rt5647->eq_mode); */
 		break;
 
 	case SND_SOC_DAPM_PRE_PMD:
-		rt5647_update_eqmode(codec, EQ_CH_DACL, NORMAL);
+		rt5647_update_eqmode(codec, EQ_CH_DAC, NORMAL);
 		break;
 
 	default:
@@ -2439,11 +2423,11 @@ static int rt5647_dac_r_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		//rt5647_update_eqmode(codec, EQ_CH_DACR, rt5647->eq_mode);
+		/* rt5647_update_eqmode(codec, EQ_CH_DACR, rt5647->eq_mode); */
 		break;
 
 	case SND_SOC_DAPM_PRE_PMD:
-		rt5647_update_eqmode(codec, EQ_CH_DACR, NORMAL);
+		rt5647_update_eqmode(codec, EQ_CH_DAC, NORMAL);
 		break;
 
 	default:
@@ -2538,14 +2522,14 @@ static int rt5647_drc_event(struct snd_soc_dapm_widget *w,
 {
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		printk(KERN_INFO "[DRC] rt5647_dmic1_event pmu\n");
-		is_recording = 1;
+		is_recording = true;
+		pr_debug("%s: dmic1 PMU, set is_recording = %s\n", __func__, is_recording ? "true" : "false");
 		break;
 
 	case SND_SOC_DAPM_PRE_PMD:
-		printk(KERN_INFO "[DRC] rt5647_dmic1_event pmd\n");
-		is_recording = 0;
-		if (stream_usecase == 1)
+		is_recording = false;
+		pr_debug("%s: dmic1 PMD, set is_recording = %s\n", __func__, is_recording ? "true" : "false");
+		if (drc_enable == true)
 			queue_delayed_work(rt5647_wq, &enable_drc_work, msecs_to_jiffies(0));
 		else
 			queue_delayed_work(rt5647_wq, &disable_drc_work, msecs_to_jiffies(0));
@@ -2564,22 +2548,24 @@ static int rt5647_sto_filter_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMD:
+		mutex_lock(&event_drc_mutex);
 		DRC_CTRL = snd_soc_read(codec, RT5647_ALC_CTRL_1) & 0xc000;
-		if(DRC_CTRL == 0x4000) { //check if DRC DAC path enable, only when DRC DAC path enable needs to be close
-			printk(KERN_INFO "[DRC] disable DRC DAC path\n");
+		if(DRC_CTRL == 0x4000) { /* check if DRC DAC path enable */
+			pr_debug("%s: disable DRC DAC path\n", __func__);
 			value = snd_soc_read(codec, RT5647_SPK_VOL);
 			snd_soc_update_bits(codec, RT5647_SPK_VOL,
 				RT5647_L_MUTE | RT5647_R_MUTE,
 				RT5647_L_MUTE | RT5647_R_MUTE);
 
-			rt5647_index_write(codec, 0x94, 0x8700); //close HPF&LPF before DRC disable
-			snd_soc_write(codec, 0xea, 0x0f20); //close DRC mixer before DRC disable
-			snd_soc_write(codec, 0xb4, 0x0006); //DRC disable
+			rt5647_index_write(codec, 0x94, 0x8700); /* close HPF&LPF before DRC disable */
+			snd_soc_write(codec, 0xea, 0x0f20); /* close DRC mixer before DRC disable */
+			snd_soc_write(codec, 0xb4, 0x0006); /* DRC disable */
 			msleep(10);
 			snd_soc_update_bits(codec, RT5647_SPK_VOL,
 				RT5647_L_MUTE | RT5647_R_MUTE, value);
 			mdelay(0);
 		}
+		mutex_unlock(&event_drc_mutex);
 		break;
 
 	default:
@@ -2648,9 +2634,10 @@ static const struct snd_soc_dapm_widget rt5647_dapm_widgets[] = {
 		SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
 	/*SND_SOC_DAPM_SUPPLY("DMIC2 Power", RT5647_DMIC_CTRL1,
 		RT5647_DMIC_2_EN_SFT, 0, NULL, 0),*/
+	/* AGC */
 	SND_SOC_DAPM_SUPPLY("DMIC2 Power", RT5647_DMIC_CTRL1,
-                RT5647_DMIC_2_EN_SFT, 0,  rt5647_dmic1_event,
-                SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),//AGC
+		RT5647_DMIC_2_EN_SFT, 0,  rt5647_dmic1_event,
+		SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
 
 	/* Boost */
 	SND_SOC_DAPM_PGA_E("BST1", RT5647_PWR_ANLG2,
@@ -2833,6 +2820,7 @@ static const struct snd_soc_dapm_widget rt5647_dapm_widgets[] = {
 				&rt5647_anc_mux),
 	SND_SOC_DAPM_PGA("SNC", SND_SOC_NOPM,
 			0, 0, NULL, 0),
+
 	/* DAC Mixer */
 	SND_SOC_DAPM_SUPPLY_S("dac stereo1 filter", 1, RT5647_PWR_DIG2,
 		RT5647_PWR_DAC_S1F_BIT, 0, rt5647_sto_filter_event,
@@ -2855,18 +2843,19 @@ static const struct snd_soc_dapm_widget rt5647_dapm_widgets[] = {
 		rt5647_dig_r_mix, ARRAY_SIZE(rt5647_dig_r_mix)),
 
 	/* DACs */
-	SND_SOC_DAPM_SUPPLY("DAC L1 Power",RT5647_PWR_DIG1,
+	SND_SOC_DAPM_SUPPLY("DAC L1 Power", RT5647_PWR_DIG1,
 			RT5647_PWR_DAC_L1_BIT, 0, NULL, 0),
-	SND_SOC_DAPM_SUPPLY("DAC R1 Power",RT5647_PWR_DIG1,
+	SND_SOC_DAPM_SUPPLY("DAC R1 Power", RT5647_PWR_DIG1,
 			RT5647_PWR_DAC_R1_BIT, 0, NULL, 0),
-	SND_SOC_DAPM_SUPPLY("DAC L2 Power",RT5647_PWR_DIG1,
+	SND_SOC_DAPM_SUPPLY("DAC L2 Power", RT5647_PWR_DIG1,
 			RT5647_PWR_DAC_L2_BIT, 0, NULL, 0),
-	SND_SOC_DAPM_SUPPLY("DAC R2 Power",RT5647_PWR_DIG1,
+	SND_SOC_DAPM_SUPPLY("DAC R2 Power", RT5647_PWR_DIG1,
 			RT5647_PWR_DAC_R2_BIT, 0, NULL, 0),
 	SND_SOC_DAPM_DAC("DAC L1", NULL, SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_DAC("DAC L2", NULL, SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_DAC("DAC R1", NULL, SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_DAC("DAC R2", NULL, SND_SOC_NOPM, 0, 0),
+
 	/* OUT Mixer */
 	SND_SOC_DAPM_MIXER("SPK MIXL", RT5647_PWR_MIXER, RT5647_PWR_SM_L_BIT,
 		0, rt5647_spk_l_mix, ARRAY_SIZE(rt5647_spk_l_mix)),
@@ -2876,6 +2865,7 @@ static const struct snd_soc_dapm_widget rt5647_dapm_widgets[] = {
 		0, rt5647_out_l_mix, ARRAY_SIZE(rt5647_out_l_mix)),
 	SND_SOC_DAPM_MIXER("OUT MIXR", RT5647_PWR_MIXER, RT5647_PWR_OM_R_BIT,
 		0, rt5647_out_r_mix, ARRAY_SIZE(rt5647_out_r_mix)),
+
 	/* Ouput Volume */
 	SND_SOC_DAPM_SWITCH("SPKVOL L", RT5647_PWR_VOL,
 		RT5647_PWR_SV_L_BIT, 0, &spk_l_vol_control),
@@ -2900,7 +2890,6 @@ static const struct snd_soc_dapm_widget rt5647_dapm_widgets[] = {
 	SND_SOC_DAPM_SWITCH("HPOVOL R", SND_SOC_NOPM,
 		0, 0, &hp_r_vol_control),
 
-
 	/* HPO/LOUT/Mono Mixer */
 	SND_SOC_DAPM_MIXER("SPOL MIX", SND_SOC_NOPM, 0,
 		0, rt5647_spo_l_mix, ARRAY_SIZE(rt5647_spo_l_mix)),
@@ -2910,12 +2899,13 @@ static const struct snd_soc_dapm_widget rt5647_dapm_widgets[] = {
 		rt5647_hpo_mix, ARRAY_SIZE(rt5647_hpo_mix)),
 	SND_SOC_DAPM_MIXER("LOUT MIX", SND_SOC_NOPM, 0, 0,
 		rt5647_lout_mix, ARRAY_SIZE(rt5647_lout_mix)),
-#if 0 /*Original*/
+
+#if 0 /* Original */
 	SND_SOC_DAPM_MIXER("MONOVOL MIX", RT5647_PWR_MIXER, RT5647_PWR_MM_BIT,
 		0, rt5647_mono_mix, ARRAY_SIZE(rt5647_mono_mix)),
 	SND_SOC_DAPM_MIXER("MONOAmp MIX", SND_SOC_NOPM, 0, 0,
 		rt5647_monoamp_mix, ARRAY_SIZE(rt5647_monoamp_mix)),
-#else /*bard*/
+#else /* Realtek */
 	SND_SOC_DAPM_MIXER("MONOVOL MIX", RT5647_PWR_VOL, RT5647_PWR_MO_BIT,
 		0, rt5647_mono_mix, ARRAY_SIZE(rt5647_mono_mix)),
 	SND_SOC_DAPM_MIXER("MONOAmp MIX", RT5647_PWR_MIXER, RT5647_PWR_MM_BIT,
@@ -3342,10 +3332,9 @@ static int get_clk_info(int sclk, int rate)
 	return -EINVAL;
 }
 static int rt5647_hw_free(struct snd_pcm_substream *substream,
-                          struct snd_soc_dai *dai)
+	struct snd_soc_dai *dai)
 {
-      printk(KERN_INFO "hw_free:DAI ID is %d\n",dai->id);
-
+	pr_debug("hw_free: DAI ID is %d\n", dai->id);
 }
 
 
@@ -3358,7 +3347,7 @@ static int rt5647_hw_params(struct snd_pcm_substream *substream,
 	struct rt5647_priv *rt5647 = snd_soc_codec_get_drvdata(codec);
 	unsigned int val_len = 0, val_clk, mask_clk;
 	int pre_div, bclk_ms, frame_size;
-	printk(KERN_INFO "%s : hw_params:DAI ID is %d\n", __func__, dai->id);
+	pr_debug("%s : hw_params:DAI ID is %d\n", __func__, dai->id);
 
 	rt5647->lrck[dai->id] = params_rate(params);
 	pre_div = get_clk_info(rt5647->sysclk, rt5647->lrck[dai->id]);
@@ -3720,7 +3709,7 @@ static ssize_t rt5647_index_store(struct device *dev,
 			break;
 	}
 
-	for (i = i + 1 ; i < count; i++) {
+	for (i = i + 1; i < count; i++) {
 		if (*(buf + i) <= '9' && *(buf + i) >= '0')
 			val = (val << 4) | (*(buf + i) - '0');
 		else if (*(buf + i) <= 'f' && *(buf + i) >= 'a')
@@ -3754,7 +3743,7 @@ static ssize_t rt5647_codec_show(struct device *dev,
 	unsigned int val;
 	int cnt = 0, i;
 
-	codec->cache_bypass = 1; //bard 3-25
+	codec->cache_bypass = 1; /* Realtek 03-25 */
 	for (i = 0; i <= RT5647_VENDOR_ID2; i++) {
 		if (cnt + RT5647_REG_DISP_LEN >= PAGE_SIZE)
 			break;
@@ -3764,7 +3753,7 @@ static ssize_t rt5647_codec_show(struct device *dev,
 		cnt += snprintf(buf + cnt, RT5647_REG_DISP_LEN,
 				"%04x: %04x\n", i, val);
 	}
-	codec->cache_bypass = 0; //bard 3-25
+	codec->cache_bypass = 0; /* Realtek 03-25 */
 	if (cnt >= PAGE_SIZE)
 		cnt = PAGE_SIZE - 1;
 
@@ -3792,7 +3781,7 @@ static ssize_t rt5647_codec_store(struct device *dev,
 			break;
 	}
 
-	for (i = i + 1 ; i < count; i++) {
+	for (i = i + 1; i < count; i++) {
 		if (*(buf + i) <= '9' && *(buf + i) >= '0')
 			val = (val << 4) | (*(buf + i)-'0');
 		else if (*(buf + i) <= 'f' && *(buf + i) >= 'a')
@@ -3844,7 +3833,6 @@ static ssize_t rt5647_codec_adb_show(struct device *dev,
 
 	return cnt;
 }
-
 static ssize_t rt5647_codec_adb_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -3932,7 +3920,6 @@ static ssize_t rt5647_codec_adb_store(struct device *dev,
 	return count;
 }
 static DEVICE_ATTR(codec_reg_adb, 0664, rt5647_codec_adb_show, rt5647_codec_adb_store);
-
 static int rt5647_set_bias_level(struct snd_soc_codec *codec,
 			enum snd_soc_bias_level level)
 {
@@ -3969,11 +3956,11 @@ static int rt5647_set_bias_level(struct snd_soc_codec *codec,
 		snd_soc_write(codec, RT5647_PWR_DIG2, 0x0000);
 		snd_soc_write(codec, RT5647_PWR_VOL, 0x0000);
 		snd_soc_write(codec, RT5647_PWR_MIXER, 0x0000);
-		snd_soc_write(codec, RT5647_PWR_ANLG1, 0x2000); //bard 05-13
-		snd_soc_write(codec, RT5647_PWR_ANLG2, 0x0004); //bard 11-20
-		rt5647_index_write(codec, 0x94, 0x8700); //close HPF&LPF before DRC disable
-		snd_soc_write(codec, 0xea, 0x0f20); //close DRC mixer before DRC disable
-		snd_soc_write(codec, 0xb4, 0x0206); //MX-b4
+		snd_soc_write(codec, RT5647_PWR_ANLG1, 0x2000); /* Realtek 05-13 */
+		snd_soc_write(codec, RT5647_PWR_ANLG2, 0x0004); /* Realtek 11-20 */
+		rt5647_index_write(codec, 0x94, 0x8700); /* close HPF&LPF before DRC disable */
+		snd_soc_write(codec, 0xea, 0x0f20); /* close DRC mixer before DRC disable */
+		snd_soc_write(codec, 0xb4, 0x0206); /* MX-b4 */
 		break;
 
 	default:
@@ -4011,9 +3998,7 @@ void do_hp_work(struct work_struct *work)
 
 	printk(KERN_INFO "[DRC] into do_hp_work\n");
 }
-
-
-void do_spk_work(struct work_struct *work)  //Jericho 0213
+void do_spk_unmute_work(struct work_struct *work)
 {
 	mutex_lock(&event_drc_mutex);
 	msleep(5);
@@ -4021,26 +4006,26 @@ void do_spk_work(struct work_struct *work)  //Jericho 0213
 				RT5647_L_MUTE | RT5647_R_MUTE, 0);
 	msleep(65);
 	mutex_unlock(&event_drc_mutex);
-	printk(KERN_INFO "[DRC] into do_spk_work spk unmute\n");
+	pr_debug("%s: success\n", __func__);
 }
 
 void do_disable_drc_work(struct work_struct *work)
 {
 	mutex_lock(&event_drc_mutex);
-	printk(KERN_INFO "[DRC] into do_disable_drc_work, is_recording = %d\n", is_recording);
-	if (is_recording == 0) { //avoid disable DRC when spk appears during recording
+	pr_debug("%s: is_recording = %s\n", __func__, is_recording ? "true" : "false");
+	if (is_recording == false) {
 		int value;
 		DRC_CTRL = snd_soc_read(codec_global, RT5647_ALC_CTRL_1);
-		if(DRC_CTRL & 0x4000) { //check if DRC enable, only when DRC enable needs to be close
-			printk(KERN_INFO "[DRC] disable DRC\n");
+		if(DRC_CTRL & 0x4000) { /* check if DRC DAC path enable */
+			pr_debug("%s: disable spk DRC\n", __func__);
 			value = snd_soc_read(codec_global, RT5647_SPK_VOL);
 			snd_soc_update_bits(codec_global, RT5647_SPK_VOL,
 				RT5647_L_MUTE | RT5647_R_MUTE,
 				RT5647_L_MUTE | RT5647_R_MUTE);
 
-			rt5647_index_write(codec_global, 0x94, 0x8700); //close HPF&LPF before DRC disable
-			snd_soc_write(codec_global, 0xea, 0x0f20); //close DRC mixer before DRC disable
-			snd_soc_write(codec_global, 0xb4, 0x0006); //DRC disable
+			rt5647_index_write(codec_global, 0x94, 0x8700); /* close HPF&LPF before DRC disable */
+			snd_soc_write(codec_global, 0xea, 0x0f20); /* close DRC mixer before DRC disable */
+			snd_soc_write(codec_global, 0xb4, 0x0006); /* disable DRC*/
 			msleep(10);
 			snd_soc_update_bits(codec_global, RT5647_SPK_VOL,
 				RT5647_L_MUTE | RT5647_R_MUTE, value);
@@ -4050,21 +4035,24 @@ void do_disable_drc_work(struct work_struct *work)
 	mutex_unlock(&event_drc_mutex);
 }
 
-/* enable DRC on ring/alarm/notification */
 void do_enable_drc_work(struct work_struct *work)
 {
 	mutex_lock(&event_drc_mutex);
-	printk(KERN_INFO "[DRC] into do_enable_drc_work, is_recording = %d\n", is_recording);
+	pr_debug("%s: is_recording = %s\n", __func__, is_recording ? "true" : "false");
 	if (!(snd_soc_read(codec_global, RT5647_PWR_DIG2) & RT5647_PWR_DAC_S1F)) {
-		printk(KERN_INFO "DAC filter power is not on, don't enable DRC\n");
+		pr_debug("%s: DAC filter power is not on, DO NOT enable DRC\n", __func__);
 		mutex_unlock(&event_drc_mutex);
 		return;
 	}
-	if ((snd_soc_read(codec_global, RT5647_PWR_DIG1) & RT5647_PWR_CLS_D) && (is_recording == 0)){ //open DRC when spk pmu and not recording
+	if ((snd_soc_read(codec_global, RT5647_PWR_DIG1) & RT5647_PWR_CLS_D) && (is_recording == false)){ /* open DRC when spk pmu and not recording */
 	DRC_CTRL = snd_soc_read(codec_global, RT5647_ALC_CTRL_1) & 0xc000;
-	printk(KERN_INFO "[DRC] DRC_CTRL = %x\n", DRC_CTRL);
-	if(!(DRC_CTRL == 0x4000)) { //check if DRC disable, only when DRC disable needs to be open
-		//Set DRC parameters
+	pr_debug("%s: DRC_CTRL = %x\n", __func__, DRC_CTRL);
+	if(!(DRC_CTRL == 0x4000)) { /* check if DRC to DAC path is disabled */
+
+		/* disable DRC to ADC/DRC path */
+		snd_soc_update_bits(codec_global, RT5647_ALC_CTRL_1, 0xc000, 0x0000);
+
+		/* start to apply spk DRC parameters */
 		snd_soc_write(codec_global, 0xb3, 0x041f);
 		snd_soc_write(codec_global, 0xb5, 0xdf80);
 		snd_soc_write(codec_global, 0xb6, 0x05df);
@@ -4073,7 +4061,10 @@ void do_enable_drc_work(struct work_struct *work)
 		snd_soc_write(codec_global, 0xe6, 0x8000);
 		snd_soc_write(codec_global, 0xe7, 0x0700);
 		snd_soc_write(codec_global, 0xea, 0x0c20);
-		#ifdef CONFIG_A500CG_AUDIO_SETTING
+
+		if (Read_PROJ_ID() == PROJ_ID_A500CG || Read_PROJ_ID() == PROJ_ID_A501CG_BZ || Read_PROJ_ID() == PROJ_ID_A501CG
+				|| Read_PROJ_ID() == PROJ_ID_A500CG_ID || Read_PROJ_ID() == PROJ_ID_A501CG_ID) {
+			pr_debug("%s: apply A500CG spk DRC parameters\n", __func__);
 			snd_soc_write(codec_global, 0xf1, 0x0006);
 			snd_soc_write(codec_global, 0xf2, 0x5f80);
 			snd_soc_write(codec_global, 0xf3, 0x05df);
@@ -4087,8 +4078,8 @@ void do_enable_drc_work(struct work_struct *work)
 			rt5647_index_write(codec_global, 0x9b, 0x003e);
 			rt5647_index_write(codec_global, 0x9c, 0x0625);
 			rt5647_index_write(codec_global, 0x9d, 0x3f4e);
-		#endif
-		#ifdef CONFIG_A600CG_AUDIO_SETTING
+		} else if (Read_PROJ_ID() == PROJ_ID_A600CG || Read_PROJ_ID() == PROJ_ID_A601CG) {
+			pr_debug("%s: apply A600CG spk DRC parameters\n", __func__);
 			snd_soc_write(codec_global, 0xf1, 0x020c);
 			snd_soc_write(codec_global, 0xf2, 0x1f00);
 			snd_soc_write(codec_global, 0xf3, 0x001f);
@@ -4102,8 +4093,8 @@ void do_enable_drc_work(struct work_struct *work)
 			rt5647_index_write(codec_global, 0x9b, 0x003d);
 			rt5647_index_write(codec_global, 0x9c, 0x10c3);
 			rt5647_index_write(codec_global, 0x9d, 0x1b04);
-		#endif
-		#ifdef CONFIG_A502CG_AUDIO_SETTING
+		} else if (Read_PROJ_ID() == PROJ_ID_A502CG) {
+			pr_debug("%s: apply A502CG spk DRC parameters\n", __func__);
 			snd_soc_write(codec_global, 0xf1, 0x0006);
 			snd_soc_write(codec_global, 0xf2, 0x5f80);
 			snd_soc_write(codec_global, 0xf3, 0x05df);
@@ -4117,11 +4108,13 @@ void do_enable_drc_work(struct work_struct *work)
 			rt5647_index_write(codec_global, 0x9b, 0x003e);
 			rt5647_index_write(codec_global, 0x9c, 0x0625);
 			rt5647_index_write(codec_global, 0x9d, 0x3f4e);
-		#endif
+		} else {
+			pr_debug("%s: unknown project ID = %d\n", __func__, Read_PROJ_ID());
+		}
 
-		snd_soc_write(codec_global, 0xb4, 0x4006); //enable DRC
-		printk(KERN_INFO "[DRC] enable spk DRC\n");
-		rt5647_index_write(codec_global, 0x94, 0xcf00); //after parameter ready, enable Cross-Over Filter
+		snd_soc_write(codec_global, 0xb4, 0x4006); /* enable spk DRC */
+		pr_debug("%s: enable spk DRC\n", __func__);
+		rt5647_index_write(codec_global, 0x94, 0xcf00); /* after parameter ready, enable Cross-Over Filter */
 
 		mdelay(0);
 	}
@@ -4129,7 +4122,6 @@ void do_enable_drc_work(struct work_struct *work)
 	mutex_unlock(&event_drc_mutex);
 }
 
-//bard 1-27 s
 static void jd_check_handler(struct work_struct *work)
 {
 	struct snd_soc_codec *codec = rt5647_codec;
@@ -4156,7 +4148,7 @@ static void jd_check_handler(struct work_struct *work)
 	}
 }
 
-void jd_check_callback(unsigned long data )
+void jd_check_callback(unsigned long data)
 {
 	int ret = 0;
 
@@ -4164,9 +4156,10 @@ void jd_check_callback(unsigned long data )
 
 	ret = mod_timer(&jd_check_timer, jiffies + msecs_to_jiffies(100));
 	if (ret)
-		printk(KERN_INFO "Error in mod_timer\n");
+		pr_err("Error in mod_timer\n");
 }
-//bard 1-27 e
+/* Realtek JD work -- */
+
 static int rt5647_probe(struct snd_soc_codec *codec)
 {
 	struct rt5647_priv *rt5647 = snd_soc_codec_get_drvdata(codec);
@@ -4177,11 +4170,11 @@ static int rt5647_probe(struct snd_soc_codec *codec)
 #endif
 	int ret;
 
-//	pr_info("Codec driver version %s\n", VERSION);
-	printk(KERN_INFO "Codec driver version %s\n", VERSION);
+	pr_info("Codec driver version %s\n", VERSION);
 
 	codec->dapm.idle_bias_off = 1;
-       codec_global = codec;
+	codec_global = codec;
+
 	ret = snd_soc_codec_set_cache_io(codec, 8, 16, SND_SOC_I2C);
 	if (ret != 0) {
 		dev_err(codec->dev, "Failed to set cache I/O: %d\n", ret);
@@ -4209,6 +4202,7 @@ static int rt5647_probe(struct snd_soc_codec *codec)
 #endif
 	snd_soc_update_bits(codec, RT5647_PWR_ANLG1, RT5647_LDO_SEL_MASK, 0x0);
 
+	/* dc_calibrate(codec); */
 	rt5647_set_bias_level(codec, SND_SOC_BIAS_OFF);
 
 	rt5647->codec = codec;
@@ -4251,47 +4245,57 @@ static int rt5647_probe(struct snd_soc_codec *codec)
 			"Failed to create codec_reg_adb sysfs files: %d\n", ret);
 		return ret;
 	}
-
 	rt5647->jack_type = 0;
-	rt5647->eq_mode = SPK; //SPK HPF, Wenhong
+
+	/* SPK HPF */
+	rt5647->eq_mode = SPK;
 	rt5647_wq = create_singlethread_workqueue("rt5647_wq");
 
 	INIT_DELAYED_WORK(&hp_work, do_hp_work);
-	INIT_DELAYED_WORK(&spk_work, do_spk_work);//Jericho 0213
+	/* JD work to report HS status after stablized */
+
+	/* for DRC work */
 	INIT_DELAYED_WORK(&disable_drc_work, do_disable_drc_work);
 	INIT_DELAYED_WORK(&enable_drc_work, do_enable_drc_work);
 
-	rt5647_codec = codec; //bard 1-27
-	setup_timer( &jd_check_timer, jd_check_callback, 0 ); //bard 1-27
-	INIT_WORK(&jd_check_work, jd_check_handler); //bard 1-27
-
-       /**weli revise for GPIO45 issue begin**************************************/
-       gpio_3v = 45;//get_gpio_by_name("P_+3VSO_SYNC_5");
-       if (gpio_3v > 0) {
-           int ret = gpio_request_one(gpio_3v, GPIOF_DIR_OUT,"P_+3VSO_SYNC_5");
-           if (ret) {
-               //   dev_err(&pdev->dev,"%s : failed to request gpio %d\n", __func__, gpio_3v);
-           }
-
-           if (gpio_get_value(gpio_3v)) {
-               //    dev_err(&pdev->dev,">>> gpio_3v(%d):  High <<<\n", gpio_3v);
-           } else {
-               //   dev_err(&pdev->dev,">>> gpio_3v(%d):  LOW <<<\n", gpio_3v);
-               gpio_direction_output(gpio_3v,1);
-           }
-       }
-
-       early_suspend_gpio45.level =
-           EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
-       early_suspend_gpio45.suspend = GPIO45_set_low_early_suspend;
-       early_suspend_gpio45.resume = GPIO_set_high_late_resume;
-       register_early_suspend(&early_suspend_gpio45);
+	/* for spk unmute delay work */
+	INIT_DELAYED_WORK(&spk_unmute_work, do_spk_unmute_work);
 
 
-	is_recording = 0;
-	stream_usecase = 1;
-	spk_unmute_delay = 0;
-       /**weli revise for GPIO45 issue end***************************************/
+	/* Realtek JD work */
+	rt5647_codec = codec;
+	setup_timer(&jd_check_timer, jd_check_callback, 0);
+	INIT_WORK(&jd_check_work, jd_check_handler);
+
+	/* A500CG for close gpio45 ++ */
+	gpio_3v = 45; /* get_gpio_by_name("P_+3VSO_SYNC_5"); */
+	if (gpio_3v > 0) {
+		int ret = gpio_request_one(gpio_3v, GPIOF_DIR_OUT, "P_+3VSO_SYNC_5");
+		if (ret) {
+			/* dev_err(&pdev->dev,"%s : failed to request gpio %d\n", __func__, gpio_3v); */
+		}
+
+		if (gpio_get_value(gpio_3v)) {
+			/* dev_err(&pdev->dev,">>> gpio_3v(%d):  High <<<\n", gpio_3v); */
+		} else {
+			/* dev_err(&pdev->dev,">>> gpio_3v(%d):  LOW <<<\n", gpio_3v); */
+			gpio_direction_output(gpio_3v, 1);
+		}
+	}
+
+	early_suspend_gpio45.level =
+		EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
+	early_suspend_gpio45.suspend = GPIO45_set_low_early_suspend;
+	early_suspend_gpio45.resume = GPIO_set_high_late_resume;
+	register_early_suspend(&early_suspend_gpio45);
+	/* A500CG for close gpio45 -- */
+
+	/* for DRC work */
+	is_recording = false;
+	drc_enable = true;
+
+	/* for spk unmute delay work */
+	spk_unmute_delay_time = 0;
 
 	mutex_init(&event_drc_mutex);
 	return 0;
@@ -4333,7 +4337,7 @@ struct snd_soc_dai_ops rt5647_aif_dai_ops = {
 	.set_fmt = rt5647_set_dai_fmt,
 	.set_sysclk = rt5647_set_dai_sysclk,
 	.set_pll = rt5647_set_dai_pll,
-        .hw_free = rt5647_hw_free,
+	.hw_free = rt5647_hw_free,
 };
 
 struct snd_soc_dai_driver rt5647_dai[] = {
@@ -4416,12 +4420,12 @@ static const struct i2c_device_id rt5647_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, rt5647_i2c_id);
 
-static int __devinit rt5647_i2c_probe(struct i2c_client *i2c,
+static int rt5647_i2c_probe(struct i2c_client *i2c,
 		    const struct i2c_device_id *id)
 {
 	struct rt5647_priv *rt5647;
 	int ret;
-	printk(KERN_INFO "rt5647_i2c_probe \n");
+
 	rt5647 = kzalloc(sizeof(struct rt5647_priv), GFP_KERNEL);
 	if (NULL == rt5647)
 		return -ENOMEM;
@@ -4436,7 +4440,7 @@ static int __devinit rt5647_i2c_probe(struct i2c_client *i2c,
 	return ret;
 }
 
-static int __devexit rt5647_i2c_remove(struct i2c_client *i2c)
+static int rt5647_i2c_remove(struct i2c_client *i2c)
 {
 	snd_soc_unregister_codec(&i2c->dev);
 	kfree(i2c_get_clientdata(i2c));
@@ -4458,14 +4462,13 @@ struct i2c_driver rt5647_i2c_driver = {
 		.owner = THIS_MODULE,
 	},
 	.probe = rt5647_i2c_probe,
-	.remove   = __devexit_p(rt5647_i2c_remove),
+	.remove   = rt5647_i2c_remove,
 	.shutdown = rt5647_i2c_shutdown,
 	.id_table = rt5647_i2c_id,
 };
 
 static int __init rt5647_modinit(void)
 {
-        printk(KERN_INFO "rt5647_modinit \n");
 	return i2c_add_driver(&rt5647_i2c_driver);
 }
 module_init(rt5647_modinit);

@@ -23,7 +23,6 @@
 #include "sh_css_defs.h"
 #include "ia_css_debug.h"
 #include "sh_css_frac.h"
-#include "assert_support.h"
 
 #include "ia_css_dp.host.h"
 
@@ -37,14 +36,18 @@ const struct ia_css_dp_config default_dp_config = {
 };
 
 void
-ia_css_dp_encode(struct sh_css_isp_dp_params *to,
-		 const struct ia_css_dp_config *from)
+ia_css_dp_encode(
+	struct sh_css_isp_dp_params *to,
+	const struct ia_css_dp_config *from,
+	unsigned size)
 {
 	int gain = from->gain;
 	int gr   = from->gr;
 	int r    = from->r;
 	int b    = from->b;
 	int gb   = from->gb;
+
+	(void)size;
 	to->threshold_single =
 	    SH_CSS_BAYER_MAXVAL;
 	to->threshold_2adjacent =
@@ -71,8 +74,11 @@ ia_css_dp_encode(struct sh_css_isp_dp_params *to,
 }
 
 void
-ia_css_dp_dump(const struct sh_css_isp_dp_params *dp, unsigned level)
+ia_css_dp_dump(
+	const struct sh_css_isp_dp_params *dp,
+	unsigned level)
 {
+	if (!dp) return;
 	ia_css_debug_dtrace(level, "Defect Pixel Correction:\n");
 	ia_css_debug_dtrace(level, "\t%-32s = %d\n",
 		"dp_threshold_single_w_2adj_on",
@@ -101,9 +107,19 @@ ia_css_dp_dump(const struct sh_css_isp_dp_params *dp, unsigned level)
 }
 
 void
-ia_css_dp_debug_dtrace(const struct ia_css_dp_config *config, unsigned level)
+ia_css_dp_debug_dtrace(
+	const struct ia_css_dp_config *config,
+	unsigned level)
 {
 	ia_css_debug_dtrace(level,
 		"config.threshold=%d, config.gain=%d\n",
 		config->threshold, config->gain);
+}
+
+void
+ia_css_init_dp_state(
+	void/*struct sh_css_isp_dp_vmem_state*/ *state,
+	size_t size)
+{
+	memset(state, 0, size);
 }

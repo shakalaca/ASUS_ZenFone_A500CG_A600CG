@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -60,7 +60,7 @@
 #if defined(DRV_IA32)
 #define FIND_VMA(mm, data)   find_vma ((mm), (U32)(data));
 #endif
-#if defined(DRV_EM64T) || defined(DRV_IA64)
+#if defined(DRV_EM64T)
 #define FIND_VMA(mm, data)   find_vma ((mm), (U64)(data));
 #endif
 

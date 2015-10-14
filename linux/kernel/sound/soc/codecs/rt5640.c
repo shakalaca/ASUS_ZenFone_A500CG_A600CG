@@ -77,7 +77,7 @@ static struct rt5640_init_reg init_list[] = {
 	{RT5640_PRIV_INDEX, 0x0023},	/*PR23 = 0804'h */
 	{RT5640_PRIV_DATA, 0x0804},
 	/*playback */
-	{RT5640_STO_DAC_MIXER, 0x0404},	/*Dig inf 1 -> Sto DAC mixer -> DACL */
+	{RT5640_STO_DAC_MIXER, 0x1404},	/*Dig inf 1 -> Sto DAC mixer -> DACL */
 	{RT5640_OUT_L3_MIXER, 0x01fe},	/*DACL1 -> OUTMIXL */
 	{RT5640_OUT_R3_MIXER, 0x01fe},	/*DACR1 -> OUTMIXR */
 	{RT5640_HP_VOL, 0x8888},	/*OUTMIX -> HPVOL */
@@ -513,6 +513,7 @@ void DC_Calibrate(struct snd_soc_codec *codec)
 
 	rt5640_index_write(codec, RT5640_HP_DCC_INT1, 0x9f00);
 	snd_soc_update_bits(codec, RT5640_PWR_ANLG2, RT5640_PWR_MB1, 0);
+	snd_soc_write(codec, RT5640_CHARGE_PUMP, 0x0f00);
 }
 
 int rt5640_check_jd_status(struct snd_soc_codec *codec)
@@ -598,20 +599,15 @@ int rt5640_detect_hs_type(struct snd_soc_codec *codec, int jack_insert)
 		   checking the status. */
 		msleep(HEADSET_DET_DELAY);
 		/* Make sure jack is still connected at this point before checking for HS*/
-		if (!rt5640_check_jd_status(codec)) {
-			if (rt5640_check_bp_status(codec)) {
-				/*Over current detected;i.e there is a  short between mic and
-				  ground ring. i.e the accessory does not have mic. i.e accessory
-				  is Headphone*/
-				rt5640->jack_type = RT5640_HEADPHO_DET;
-				pr_debug("%s:detected headphone", __func__);
-			} else {
-				rt5640->jack_type = RT5640_HEADSET_DET;
-				pr_debug("%s:detected headset", __func__);
-			}
+		if (rt5640_check_bp_status(codec)) {
+			/*Over current detected;i.e there is a  short between mic and
+			  ground ring. i.e the accessory does not have mic. i.e accessory
+			  is Headphone*/
+			rt5640->jack_type = RT5640_HEADPHO_DET;
+			pr_debug("%s:detected headphone", __func__);
 		} else {
-			pr_debug("%s:NO Jack detected", __func__);
-			rt5640->jack_type = RT5640_NO_JACK;
+			rt5640->jack_type = RT5640_HEADSET_DET;
+			pr_debug("%s:detected headset", __func__);
 		}
 		snd_soc_update_bits(codec, RT5640_IRQ_CTRL2,
 				    RT5640_MB1_OC_CLR, 0);
@@ -1706,15 +1702,8 @@ void hp_amp_power(struct snd_soc_codec *codec, int on)
 			/* depop parameters */
 			rt5640_index_update_bits(codec, RT5640_CHPUMP_INT_REG1,
 						 0x0700, 0x0200);
-			snd_soc_update_bits(codec, RT5640_DEPOP_M2,
-					    RT5640_DEPOP_MASK,
-					    RT5640_DEPOP_MAN);
-			snd_soc_update_bits(codec, RT5640_DEPOP_M1,
-					    RT5640_HP_CP_MASK |
-					    RT5640_HP_SG_MASK |
-					    RT5640_HP_CB_MASK,
-					    RT5640_HP_CP_PU | RT5640_HP_SG_DIS |
-					    RT5640_HP_CB_PU);
+			snd_soc_write(codec, RT5640_DEPOP_M2, 0x3100);
+			snd_soc_write(codec, RT5640_DEPOP_M1, 0x0009);
 			/* headphone amp power on */
 			snd_soc_update_bits(codec, RT5640_PWR_ANLG1,
 					    RT5640_PWR_FV1 | RT5640_PWR_FV2, 0);
@@ -3176,14 +3165,15 @@ static int rt5640_set_bias_level(struct snd_soc_codec *codec,
 	case SND_SOC_BIAS_OFF:
 		pr_debug("In case SND_SOC_BIAS_OFF:\n");
 		set_sys_clk(codec, RT5640_SCLK_S_RCCLK);
-		snd_soc_write(codec, RT5640_DEPOP_M1, 0x0004);
-		snd_soc_write(codec, RT5640_DEPOP_M2, 0x1100);
 		snd_soc_write(codec, RT5640_PWR_DIG1, 0x0000);
 		snd_soc_write(codec, RT5640_PWR_DIG2, 0x0000);
 		snd_soc_write(codec, RT5640_PWR_VOL, 0x0000);
 		snd_soc_write(codec, RT5640_PWR_MIXER, 0x0000);
 		snd_soc_write(codec, RT5640_PWR_ANLG1, 0x0000);
 		snd_soc_write(codec, RT5640_PWR_ANLG2, 0x0000);
+		/* Turn off the Voice DSP */
+		snd_soc_update_bits(codec, RT5640_DSP_CTRL3,
+			RT5640_DSP_PD_PIN_MASK, RT5640_DSP_PD_PIN_LO);
 		break;
 
 	default:

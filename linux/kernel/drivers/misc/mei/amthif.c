@@ -35,7 +35,6 @@
 
 #include "mei_dev.h"
 #include "hbm.h"
-#include "hw-me.h"
 #include "client.h"
 
 const uuid_le mei_amthif_guid  = UUID_LE(0x12f80028, 0xb4b7, 0x4b2d,
@@ -111,16 +110,11 @@ int mei_amthif_host_init(struct mei_device *dev)
 		return -ENOENT;
 	}
 
-	cl->state = MEI_FILE_CONNECTING;
+	ret = mei_cl_connect(cl, NULL);
 
-	if (mei_hbm_cl_connect_req(dev, cl)) {
-		dev_dbg(&dev->pdev->dev, "amthif: Failed to connect to ME client\n");
-		cl->state = MEI_FILE_DISCONNECTED;
-		cl->host_client_id = 0;
-	} else {
-		cl->timer_count = MEI_CONNECT_TIMEOUT;
-	}
-	return 0;
+	dev->iamthif_state = MEI_IAMTHIF_IDLE;
+
+	return ret;
 }
 
 /**
@@ -253,8 +247,7 @@ int mei_amthif_read(struct mei_device *dev, struct file *file,
 	if (copy_to_user(ubuf, cb->response_buffer.data + *offset, length)) {
 		dev_err(&dev->pdev->dev, "failed to copy data to userland\n");
 		rets = -EFAULT;
-	}
-	else {
+	} else {
 		rets = length;
 		if ((*offset + length) < cb->buf_idx) {
 			*offset += length;

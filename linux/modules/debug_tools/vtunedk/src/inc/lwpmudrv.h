@@ -1,6 +1,6 @@
 /*
-    Copyright 2005-2012 Intel Corporation.  All Rights Reserved.
- 
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
+
     This file is part of SEP Development Kit
  
     SEP Development Kit is free software; you can redistribute it
@@ -37,9 +37,7 @@
 #include "lwpmudrv_types.h"
 #include "lwpmudrv_version.h"
 #include "lwpmudrv_struct.h"
-#if defined(BUILD_CHIPSET)
 #include "lwpmudrv_chipset.h"
-#endif
 
 
 /*
@@ -61,11 +59,7 @@
 // Macro to return the thread group id
 #define GET_CURRENT_TGID() (current->tgid)
 
-#if defined(DRV_IA32) || defined(DRV_EM64T)
 #define OVERFLOW_ARGS  U64*, U64*
-#elif defined(DRV_IA64)
-#define OVERFLOW_ARGS  U64*, U64*, U64*, U64*, U64*, U64*
-#endif
 
 /*
  *  Dispatch table for virtualized functions.
@@ -84,7 +78,7 @@ struct DISPATCH_NODE_S {
     VOID (*read_data)(PVOID);
     VOID (*check_overflow)(DRV_MASKS);
     VOID (*swap_group)(DRV_BOOL);
-    VOID (*read_lbrs)(PVOID);
+    U64  (*read_lbrs)(PVOID);
     VOID (*cleanup)(PVOID);
     VOID (*hw_errata)(VOID);
     VOID (*read_power)(PVOID);
@@ -94,11 +88,11 @@ struct DISPATCH_NODE_S {
     VOID (*read_ro)(PVOID, U32, U32);
     VOID (*platform_info)(PVOID);
     VOID (*trigger_read)(VOID);    // Counter reads triggered/initiated by User mode timer
+    VOID (*scan_for_uncore)(PVOID);
 };
 
 extern DISPATCH dispatch;
 
-#if defined(BUILD_CHIPSET)
 /*
  *  Dispatch table for virtualized functions.
  *  Used to enable common functionality for different
@@ -115,10 +109,11 @@ struct CS_DISPATCH_NODE_S {
     VOID (*Trigger_Read)(VOID);    // GMCH counter reads triggered/initiated by User mode timer
 };
 extern CS_DISPATCH    cs_dispatch;
-#endif
 
 extern VOID         **PMU_register_data;
 extern VOID         **desc_data;
+extern U64           *prev_counter_data;
+extern U64           *cur_counter_data;
 
 /*!
  * @struct LWPMU_DEVICE_NODE_S
@@ -141,6 +136,8 @@ struct LWPMU_DEVICE_NODE_S {
     U64        counter_mask;
     U64        num_events;
     U32        num_units;
+    VOID       *ec;
+    S32        cur_group;
 };
 
 #define LWPMU_DEVICE_PMU_register_data(dev)   (dev)->PMU_register_data_unc
@@ -152,6 +149,8 @@ struct LWPMU_DEVICE_NODE_S {
 #define LWPMU_DEVICE_counter_mask(dev)        (dev)->counter_mask
 #define LWPMU_DEVICE_num_events(dev)          (dev)->num_events
 #define LWPMU_DEVICE_num_units(dev)           (dev)->num_units
+#define LWPMU_DEVICE_ec(dev)                  (dev)->ec
+#define LWPMU_DEVICE_cur_group(dev)           (dev)->cur_group
 
 extern U32            num_devices;
 extern U32            cur_devices;

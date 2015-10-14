@@ -156,7 +156,8 @@ enum VssProcCommandType {
 	VssProcPictureCommand =                   0xFFF9,
 	VspFencePictureParamCommand =             0xEBEC,
 	VspSetContextCommand =                    0xEBED,
-	Vss_Sys_STATE_BUF_COMMAND
+	Vss_Sys_STATE_BUF_COMMAND =		  0xEBEE,
+	VspFenceComposeCommand =		  0xEBEF
 };
 
 #define VSP_CMD_QUEUE_SIZE (64)
@@ -219,7 +220,23 @@ enum VssStatus {
 	VssInvalidDdrAddress          = 0x8005,
 	VssInvalidSequenceParameters_VP8 = 0x1,
 	VssInvalidPictureParameters_VP8  = 0x2,
-	VssInitFailure_VP8               = 0x5
+	VssContextMustBeDestroyed_VP8    = 0x3,
+	VssInitFailure_VP8               = 0x5,
+	VssCorruptFrame                  = 0x6,
+	VssCorruptFramecontinue_VP8      = 0x7
+};
+
+enum VssWiDi_ComposeStatus {
+	VssInvalidFrameParameters = 1,
+	VssInitFailure,
+	VssReserved
+};
+
+enum BypassMode {
+    BP_NONE = 0, /*Full path to upscale yuv and belend with rgba*/
+    BP_BLEND, /* PAS Bypass A - upscale yuv and write yuv as output thereby bypassing blending*/
+    BP_UPSCALE, /* PAS Bypass B - blends the input yuv with rgba thereby bypassing upscaling*/
+    BP_YUV /* PAS Bypass C - discards yuv and does CSC on RGB adn writes to output*/
 };
 
 enum FrcResponseType {
@@ -297,7 +314,7 @@ struct vsp_secure_boot_header {
 	unsigned int boot_start_reg;
 };
 
-#define VSP_MULTI_APP_MAGIC_NR 0xb10b0004
+#define VSP_MULTI_APP_MAGIC_NR 0xb10b0005
 /*
  * Note: application index/id 0 is reserved.
  * So the maximum number of applications is one less than listed here.
@@ -331,6 +348,10 @@ struct vsp_multi_app_blob_data {
 	/** default context-buffer size of apps in this blob (each app also has it's
 	 * context-size in it's header. */
 	unsigned int apps_default_context_buffer_size;
+	/**
+	* Address of genboot-helper-program in blob (relative to start of this header)
+	*/
+	unsigned int genboot_helper_prog_offset;
 	/*
 	 * * This table contains a zero (offset of zero) for unused entries
 	 * * Offsets here are relative to the start-address of this header.
@@ -570,6 +591,13 @@ struct VssVp8encSequenceParameterBuffer {
 	uint32_t cyclic_intra_refresh;
 	uint32_t concatenate_partitions;
 	uint32_t recon_buffer_mode;
+	uint32_t generate_skip_frames;
+	uint32_t max_num_dropped_frames;
+	uint32_t ts_number_layers;
+	uint32_t ts_target_bitrate[3];
+	uint32_t ts_rate_decimator[3];
+	uint32_t ts_periodicity;
+	uint8_t ts_layer_id[32];
 	struct VssProcPictureVP8 ref_frame_buffers[4];
 };
 
@@ -583,8 +611,9 @@ struct VssVp8encEncodedFrame {
 	uint32_t quantizer[4];
 	uint32_t frame_flags;
 	uint32_t partition_id;
-	uint32_t buffer_level;
+	uint32_t buffer_level[3];
 	uint32_t quality;
+	uint32_t overflow_bytes;
 	uint32_t surfaceId_of_ref_frame[4];
 	uint32_t reserved[15];
 	uint32_t coded_data[1];
@@ -635,6 +664,71 @@ enum VssGenCommandType {
 	 * de-initialize and destroy. The size-field should always be set to 0.
 	 */
 	VssGenDestroyContext          = 0xab02
+};
+
+/****************************
+ * WiDi Compose data structures
+ ****************************/
+enum VssWiDi_ComposeCommandType {
+	VssWiDi_ComposeFrameCommand = 200,
+	VssWiDi_ComposeEndOfSequenceCommand,
+	VssWiDi_ComposeInit
+};
+
+enum VssWiDi_ComposeResponseType {
+	VssWiDi_ComposeFrameResponse = 250,
+};
+
+enum VssWiDi_ColorFormat {
+	MonoChrome = 0,
+	YUV_4_2_0,
+	YUV_4_2_0_NV12,
+	YUV_4_2_2,
+	YUV_4_4_4
+};
+/**
+ * WiDi Compose sequence parameter data structure.
+ */
+struct VssWiDi_ComposeSequenceParameterBuffer {
+	/* Input RGB-CSC related */
+	unsigned int RGBA_Buffer;
+	uint32_t RGB_Width;
+	uint32_t RGB_Height;
+	uint32_t RGBA_IN_Stride;
+
+	/* Input YUV related */
+	unsigned int Video_IN_Y_Buffer;
+	unsigned int Video_IN_UV_Buffer;
+	uint32_t Video_IN_Y_stride;
+
+	/* Output YUV related */
+	unsigned int Video_OUT_Y_Buffer;
+	unsigned int Video_OUT_UV_Buffer;
+	uint32_t Video_OUT_xsize;
+	uint32_t Video_OUT_ysize;
+	uint32_t Video_OUT_Y_stride;
+
+	/* Scaling parameters */
+	uint32_t ROI_scaling_ip_width;
+	uint32_t ROI_scaling_ip_height;
+	uint32_t ROI_scaling_ip_x;
+	uint32_t ROI_scaling_ip_y;
+	uint32_t ROI_scaling_op_width;
+	uint32_t ROI_scaling_op_height;
+	uint32_t ROI_scaling_op_x;
+	uint32_t ROI_scaling_op_y;
+	/*expecting from driver for float reasons*/
+	uint32_t YUVscalefactor_dx;
+	uint32_t YUVscalefactor_dy;
+
+	/*Blending related params */
+	uint32_t Is_video_the_back_ground;
+	uint32_t RGBA_Format;
+	/*Bypass mode*/
+	uint32_t bypass_mode;
+	/* Tiling*/
+	uint32_t Is_input_tiled;
+	uint32_t Is_output_tiled;
 };
 
 #pragma pack()

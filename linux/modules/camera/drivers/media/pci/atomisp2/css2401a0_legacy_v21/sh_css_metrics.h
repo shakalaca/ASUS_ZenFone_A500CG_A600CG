@@ -22,11 +22,7 @@
 #ifndef _SH_CSS_METRICS_H_
 #define _SH_CSS_METRICS_H_
 
-#ifdef __KERNEL__
-#include <linux/kernel.h>
-#else
-#include <stdbool.h>
-#endif
+#include <type_support.h>
 
 struct sh_css_pc_histogram {
 	unsigned length;

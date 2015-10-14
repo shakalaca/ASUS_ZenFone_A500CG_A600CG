@@ -37,11 +37,15 @@
 *
 * Byt-cr RVP board,94 for Baylake board
 * Get from ACPI if BIOS provided
+* #define	PS_STM8T143_DATA_GPIO 	149
+* #define	PS_STM8T143_LPM_GPIO 	122
 */
-#define	PS_STM8T143_DATA_GPIO 	149
 
 #define PS_STM8T143_DRIVER_NAME "stm8t143"
 #define PS_STM8T143_INPUT_NAME 	"stm8t143"
+
+/*Enable when ctrl gpio is ready*/
+static bool ps_lpm_enable = 0;
 
 #ifdef CONFIG_PS_STM8T143_DEBUG
 static unsigned int debug_level = 0;
@@ -67,13 +71,26 @@ struct stm8t143_data {
 	struct input_dev *input_dev;
 	struct mutex lock;
 	int enabled;
+	int enabled_suspend; //state before suspend
 	int gpio_data;
 	int gpio_irq;
+	int gpio_ctrl;
 };
 
 static int stm8t143_init(struct stm8t143_data *stm8t143)
 {
-	return 0;
+	int ret = 0;
+	SENSOR_DBG(DBG_LEVEL3);
+
+	if (ps_lpm_enable) {
+		/* put PS sensor into low power mode if not used */
+		ret = gpio_direction_output(stm8t143->gpio_ctrl, 1);
+		if (ret < 0) {
+			dev_err(&stm8t143->pdev->dev,
+			"stm8t143 gpio direction output 0 failed with %d\n", ret);
+		}
+	}
+	return ret;
 }
 
 static void stm8t143_get_data(struct stm8t143_data *stm8t143, s32 *data)
@@ -86,6 +103,7 @@ static void stm8t143_get_data(struct stm8t143_data *stm8t143, s32 *data)
 static void stm8t143_enable(struct stm8t143_data *stm8t143)
 {
 	int data;
+	int ret;
 
 	SENSOR_DBG(DBG_LEVEL3);
 
@@ -94,6 +112,13 @@ static void stm8t143_enable(struct stm8t143_data *stm8t143)
 	if (!stm8t143->enabled) {
 		int irq = gpio_to_irq(stm8t143->gpio_irq);
 		enable_irq(irq);
+		if (ps_lpm_enable) {
+			ret = gpio_direction_output(stm8t143->gpio_ctrl, 0);
+			if (ret < 0) {
+				dev_err(&stm8t143->pdev->dev,
+				"stm8t143 gpio direction output 0 failed with %d\n", ret);
+			}
+		}
 		stm8t143->enabled = 1;
 	}
 	mutex_unlock(&stm8t143->lock);
@@ -106,15 +131,25 @@ static void stm8t143_enable(struct stm8t143_data *stm8t143)
 
 static void stm8t143_disable(struct stm8t143_data *stm8t143)
 {
+	int ret;
 	SENSOR_DBG(DBG_LEVEL3);
 
 	mutex_lock(&stm8t143->lock);
 	//gpio_set_value(stm8t143->gpio_data, 1);
 	if (stm8t143->enabled) {
 		int irq = gpio_to_irq(stm8t143->gpio_irq);
+		if (ps_lpm_enable) {
+			/* the CTRL pin is tied high for Halt conversion mode */
+			ret = gpio_direction_output(stm8t143->gpio_ctrl, 1);
+			if (ret < 0) {
+				dev_err(&stm8t143->pdev->dev,
+				"stm8t143 gpio direction output 0 failed with %d\n", ret);
+			}
+		}
 		disable_irq(irq);
 		stm8t143->enabled = 0;
 	}
+
 	mutex_unlock(&stm8t143->lock);
 }
 
@@ -167,7 +202,6 @@ static int stm8t143_get_data_init(struct stm8t143_data *stm8t143)
 	int ret;
 	int irq;
 
-	gpio_request(stm8t143->gpio_irq, PS_STM8T143_DRIVER_NAME);
 	gpio_direction_input(stm8t143->gpio_irq);
 	irq = gpio_to_irq(stm8t143->gpio_irq);
 
@@ -179,9 +213,32 @@ static int stm8t143_get_data_init(struct stm8t143_data *stm8t143)
 		gpio_free(stm8t143->gpio_irq);
 		dev_err(&stm8t143->pdev->dev,
 			"Fail to request irq:%d ret=%d\n", irq, ret);
-		return ret;
 	}
 	return ret;
+}
+
+static ssize_t stm8t143_lpm_enable_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", ps_lpm_enable);
+}
+
+static ssize_t stm8t143_lpm_enable_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned long val;
+	struct stm8t143_data *stm8t143 = dev_get_drvdata(dev);
+
+	if (kstrtoul(buf, 0, &val))
+		return -EINVAL;
+
+	if (val) {
+		if (stm8t143->gpio_ctrl >= 0)
+			ps_lpm_enable = 1;
+	} else
+		ps_lpm_enable = 0;
+
+	return count;
 }
 
 static ssize_t stm8t143_enable_show(struct device *dev,
@@ -229,10 +286,13 @@ static DEVICE_ATTR(poll, S_IRUGO|S_IWUSR, stm8t143_delay_show,
 		stm8t143_delay_store);
 static DEVICE_ATTR(enable, S_IRUGO|S_IWUSR, stm8t143_enable_show,
 		stm8t143_enable_store);
+static DEVICE_ATTR(lpm_enable, S_IRUGO|S_IWUSR, stm8t143_lpm_enable_show,
+		stm8t143_lpm_enable_store);
 
 static struct attribute *stm8t143_attributes[] = {
 	&dev_attr_poll.attr,
 	&dev_attr_enable.attr,
+	&dev_attr_lpm_enable.attr,
 	NULL
 };
 
@@ -256,10 +316,34 @@ static int stm8t143_probe(struct platform_device *pdev)
 
 	stm8t143->pdev = pdev;
 	mutex_init(&stm8t143->lock);
-	stm8t143->gpio_irq = acpi_get_gpio("\\_SB.GPO0", PS_STM8T143_DATA_GPIO);
+	stm8t143->gpio_irq = acpi_get_gpio_by_index(&pdev->dev, 0, NULL);
+	if (stm8t143->gpio_irq < 0) {
+		dev_err(&pdev->dev, "Fail to get irq gpio pin by ACPI\n");
+		err = -EINVAL;
+		goto err_gpio;
+	}
+	err = gpio_request(stm8t143->gpio_irq, PS_STM8T143_DRIVER_NAME);
+	if (err < 0) {
+		dev_err(&pdev->dev, "stm8t143 gpio request failed with %d\n", err);
+		goto err_gpio;
+	}
 	stm8t143->gpio_data = stm8t143->gpio_irq;
 
+	stm8t143->gpio_ctrl = acpi_get_gpio_by_index(&pdev->dev, 1, NULL);
+	if (stm8t143->gpio_ctrl < 0) {
+		dev_warn(&pdev->dev, "Fail to get ctrl gpio pin by ACPI\n");
+	} else {
+		err = gpio_request(stm8t143->gpio_ctrl, PS_STM8T143_DRIVER_NAME);
+		if (err < 0) {
+			dev_err(&pdev->dev, "stm8t143 gpio request failed with %d\n", err);
+			stm8t143->gpio_ctrl = -1;
+		}
+	}
+	if (stm8t143->gpio_ctrl >= 0)
+		ps_lpm_enable = 1;
+
 	SENSOR_DBG(DBG_LEVEL3, "data gpio:%d\n", stm8t143->gpio_data);
+	SENSOR_DBG(DBG_LEVEL3, "ctrl gpio:%d\n", stm8t143->gpio_ctrl);
 
 	err = stm8t143_init(stm8t143);
 	if (err < 0) {
@@ -289,10 +373,13 @@ static int stm8t143_probe(struct platform_device *pdev)
 
 err_sys_init:
 	free_irq(stm8t143->gpio_irq, stm8t143);
-	gpio_free(stm8t143->gpio_irq);
 err_data_init:
 	input_unregister_device(stm8t143->input_dev);
 err_init:
+	gpio_free(stm8t143->gpio_irq);
+	if (stm8t143->gpio_ctrl >= 0)
+		gpio_free(stm8t143->gpio_ctrl);
+err_gpio:
 	kfree(stm8t143);
 	return err;
 }
@@ -307,6 +394,8 @@ static int stm8t143_remove(struct platform_device *pdev)
 	input_unregister_device(stm8t143->input_dev);
 	free_irq(irq, stm8t143);
 	gpio_free(stm8t143->gpio_irq);
+	if (stm8t143->gpio_ctrl >= 0)
+		gpio_free(stm8t143->gpio_ctrl);
 	kfree(stm8t143);
 	return 0;
 }
@@ -316,6 +405,7 @@ static int stm8t143_suspend(struct device *dev)
 {
 	struct stm8t143_data *stm8t143 = dev_get_drvdata(dev);
 
+	stm8t143->enabled_suspend = stm8t143->enabled;
 	stm8t143_disable(stm8t143);
 	return 0;
 }
@@ -324,7 +414,8 @@ static int stm8t143_resume(struct device *dev)
 {
 	struct stm8t143_data *stm8t143 = dev_get_drvdata(dev);
 
-	stm8t143_enable(stm8t143);
+	if (stm8t143->enabled_suspend)
+		stm8t143_enable(stm8t143);
 	return 0;
 }
 static SIMPLE_DEV_PM_OPS(stm8t143_pm, stm8t143_suspend, stm8t143_resume);

@@ -66,7 +66,6 @@ static const char * const iio_chan_type_name_spec[] = {
 	[IIO_ALTVOLTAGE] = "altvoltage",
 	[IIO_CCT] = "cct",
 	[IIO_PRESSURE] = "pressure",
-        [IIO_QUATERNION] = "quaternion",//for MA514
 	[IIO_RESISTANCE] = "resistance",
 };
 
@@ -74,7 +73,7 @@ static const char * const iio_modifier_names[] = {
 	[IIO_MOD_X] = "x",
 	[IIO_MOD_Y] = "y",
 	[IIO_MOD_Z] = "z",
-        [IIO_MOD_ROOT_SUM_SQUARED_X_Y] = "sqrt(x^2+y^2)",
+	[IIO_MOD_ROOT_SUM_SQUARED_X_Y] = "sqrt(x^2+y^2)",
 	[IIO_MOD_SUM_SQUARED_X_Y_Z] = "x^2+y^2+z^2",
 	[IIO_MOD_LIGHT_BOTH] = "both",
 	[IIO_MOD_LIGHT_IR] = "ir",
@@ -82,7 +81,6 @@ static const char * const iio_modifier_names[] = {
 	[IIO_MOD_LIGHT_RED] = "red",
 	[IIO_MOD_LIGHT_GREEN] = "green",
 	[IIO_MOD_LIGHT_BLUE] = "blue",
-        [IIO_MOD_R]  = "r",//for MA514
 };
 
 /* relies on pairs of these shared then separate */
@@ -364,36 +362,34 @@ ssize_t iio_enum_write(struct iio_dev *indio_dev,
 }
 EXPORT_SYMBOL_GPL(iio_enum_write);
 
-static ssize_t iio_read_channel_info(struct device *dev,
-				     struct device_attribute *attr,
-				     char *buf)
+/**
+ * iio_format_value() - Formats a IIO value into its string representation
+ * @buf: The buffer to which the formatted value gets written
+ * @type: One of the IIO_VAL_... constants. This decides how the val and val2
+ *        parameters are formatted.
+ * @val: First part of the value, exact meaning depends on the type parameter.
+ * @val2: Second part of the value, exact meaning depends on the type parameter.
+ */
+ssize_t iio_format_value(char *buf, unsigned int type, int val, int val2)
 {
-	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
-	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
 	unsigned long long tmp;
-	int val, val2;
 	bool scale_db = false;
-	int ret = indio_dev->info->read_raw(indio_dev, this_attr->c,
-					    &val, &val2, this_attr->address);
 
-	if (ret < 0)
-		return ret;
-
-	switch (ret) {
+	switch (type) {
 	case IIO_VAL_INT:
 		return sprintf(buf, "%d\n", val);
 	case IIO_VAL_INT_PLUS_MICRO_DB:
 		scale_db = true;
 	case IIO_VAL_INT_PLUS_MICRO:
 		if (val2 < 0)
-			return sprintf(buf, "-%d.%06u%s\n", val, -val2,
+			return sprintf(buf, "-%ld.%06u%s\n", abs(val), -val2,
 				scale_db ? " dB" : "");
 		else
 			return sprintf(buf, "%d.%06u%s\n", val, val2,
 				scale_db ? " dB" : "");
 	case IIO_VAL_INT_PLUS_NANO:
 		if (val2 < 0)
-			return sprintf(buf, "-%d.%09u\n", val, -val2);
+			return sprintf(buf, "-%ld.%09u\n", abs(val), -val2);
 		else
 			return sprintf(buf, "%d.%09u\n", val, val2);
 	case IIO_VAL_FRACTIONAL:
@@ -409,6 +405,22 @@ static ssize_t iio_read_channel_info(struct device *dev,
 	default:
 		return 0;
 	}
+}
+
+static ssize_t iio_read_channel_info(struct device *dev,
+				     struct device_attribute *attr,
+				     char *buf)
+{
+	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
+	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
+	int val, val2;
+	int ret = indio_dev->info->read_raw(indio_dev, this_attr->c,
+					    &val, &val2, this_attr->address);
+
+	if (ret < 0)
+		return ret;
+
+	return iio_format_value(buf, ret, val, val2);
 }
 
 /**

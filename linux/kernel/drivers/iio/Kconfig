@@ -28,6 +28,7 @@ boolean "IIO callback buffer used for push in-kernel interfaces"
 	  usage.  That is, those where the data is pushed to the consumer.
 config IIO_SW_RING
        select IIO_TRIGGER
+        default n
 	tristate "Industrial I/O lock free software ring"
 	help
 	  Example software ring buffer implementation.  The design aim
@@ -58,7 +59,7 @@ endif # IIO_BUFFER
 config IIO_TRIGGER
 	boolean "Enable triggered sampling support"
         default y
-        help
+	help
 	  Provides IIO core support for triggers.  Currently these
 	  are used to initialize capture of samples to push into
 	  ring buffers.  The triggers are effectively a 'capture

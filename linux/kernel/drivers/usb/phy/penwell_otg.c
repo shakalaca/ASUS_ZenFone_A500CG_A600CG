@@ -43,15 +43,14 @@
 #include <asm/intel-mid.h>
 #include "../core/usb.h"
 #include <linux/intel_mid_pm.h>
-#include <linux/HWVersion.h>
-#include <linux/debugfs.h>
-
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
+extern int setSMB345Charger(int usb_state);
+#endif
 #include <linux/usb/penwell_otg.h>
 #include <linux/notifier.h>
 
 #define	DRIVER_DESC		"Intel Penwell USB OTG transceiver driver"
 #define	DRIVER_VERSION		"0.8"
-extern int Read_PROJ_ID(void);
 
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_AUTHOR("Henry Yuan <hang.yuan@intel.com>, Hao Wu <hao.wu@intel.com>");
@@ -81,12 +80,7 @@ static void update_hsm(void);
 static void set_client_mode(void);
 
 #ifdef CONFIG_A500CG_BATTERY_SMB347
-#include "../../power/ASUS_BATTERY/smb347_external_include.h"
 extern int setSMB347Charger(int usb_state);
-#endif
-
-#ifdef CONFIG_USB_OTG_SUPPLY_VOLT_CAP
-static u32 usb_otg_support=1;
 #endif
 
 enum usb_charger_type usb_cable_status = CHRG_UNKNOWN;
@@ -917,11 +911,14 @@ static int penwell_otg_set_vbus(struct usb_otg *otg, bool enabled)
 						enabled ? "ON" : "OFF");
 			atomic_notifier_call_chain(&pnw->iotg.otg.notifier,
 				USB_EVENT_DRIVE_VBUS, &enabled);
-#ifdef CONFIG_USB_OTG_SUPPLY_VOLT_CAP
-                        if (usb_otg_support)
-                                setSMB347Charger(enabled ? ENABLE_5V: DISABLE_5V);
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
 
+			setSMB345Charger(enabled ? ENABLE_5V : DISABLE_5V);
 #endif
+#if defined(CONFIG_A500CG_BATTERY_SMB347)
+			setSMB347Charger(enabled ? ENABLE_5V : DISABLE_5V);
+#endif
+
 			kfree(evt);
 			goto done;
 		}
@@ -3262,6 +3259,10 @@ static void penwell_otg_work(struct work_struct *work)
 				/* DCP: set charger type, current, notify EM */
 				penwell_otg_update_chrg_cap(CHRG_DCP,
 							CHRG_CURR_DCP);
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
+
+				setSMB345Charger(AC_IN);
+#endif
 				set_client_mode();
 				break;
 
@@ -3323,7 +3324,10 @@ static void penwell_otg_work(struct work_struct *work)
 						"MFLD WA: enable PHY int\n");
 					penwell_otg_phy_intr(0);
 				}
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
 
+				setSMB345Charger(AC_IN);
+#endif
 				/* CDP: set charger type, current, notify EM */
 				penwell_otg_update_chrg_cap(CHRG_CDP,
 							CHRG_CURR_CDP);
@@ -3342,7 +3346,10 @@ static void penwell_otg_work(struct work_struct *work)
 				}
 			} else if (charger_type == CHRG_SDP) {
 				dev_info(pnw->dev, "SDP detected\n");
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
 
+				setSMB345Charger(USB_IN);
+#endif
 				/* MFLD WA: MSIC issue need disable phy intr */
 				if (!is_clovertrail(pdev)) {
 					dev_dbg(pnw->dev,
@@ -3375,7 +3382,10 @@ static void penwell_otg_work(struct work_struct *work)
 						INVALID_SDP_TIMEOUT);
 			} else if (charger_type == CHRG_UNKNOWN) {
 				dev_info(pnw->dev, "Unknown Charger Found\n");
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
 
+				setSMB345Charger(USB_IN);
+#endif
 				/* Unknown: set charger type */
 				penwell_otg_update_chrg_cap(CHRG_UNKNOWN, 0);
 			}
@@ -3469,6 +3479,10 @@ static void penwell_otg_work(struct work_struct *work)
 				penwell_otg_update_chrg_cap(CHRG_UNKNOWN,
 						CHRG_CURR_DISCONN);
 			}
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
+
+			setSMB345Charger(CABLE_OUT);
+#endif
 		}
 		break;
 
@@ -5188,13 +5202,6 @@ static int penwell_otg_probe(struct pci_dev *pdev,
 	pm_runtime_allow(&pdev->dev);
 
 	penwell_update_transceiver();
-        //-->20140401Eve_Wen usb eye_diagram_value change to 0x7f
-        if(PROJ_ID_A502CG == Read_PROJ_ID())
-        {
-                eye_diagram_value = 0x7f;
-                printk("A502CG: usb eye_diagram_value = 0x7f\n");
-        }
-        //<--
 
 	return 0;
 
@@ -5838,19 +5845,10 @@ static struct pci_driver otg_pci_driver = {
 	},
 };
 
-
 static int __init penwell_otg_init(void)
 {
 #ifdef	CONFIG_DEBUG_FS
-
 	pm_sss0_base = ioremap_nocache(0xFF11D030, 0x100);
-#ifdef CONFIG_USB_OTG_SUPPLY_VOLT_CAP
-	if (!debugfs_create_u32("usb_otg_support", S_IRUGO | S_IWUSR, NULL,&usb_otg_support)) 
-                pr_err("create usb_otg_support node FAIL\n");
-#endif
-	if (!debugfs_create_x8("usb_eye_diagram", S_IRUGO | S_IWUSR, NULL,&eye_diagram_value)) 
-                pr_err("create usb_eye_diagram node FAIL\n");
-
 #endif
 	return pci_register_driver(&otg_pci_driver);
 }

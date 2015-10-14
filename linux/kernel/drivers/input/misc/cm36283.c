@@ -2606,7 +2606,7 @@ static int CM36283_suspend(struct i2c_client *client , pm_message_t mesg)
     struct CM36283_info *lpi = lp_info_cm36283;
 	int status_calling = lpi->status_calling;
     D("CM32683:  CM36283_suspend  no.1 \n");
-
+#if 0
 	if (lpi->ps_enable && !status_calling){
 		  D("CM32683:  CM36283_suspend  no.2 \n");
   		  psensor_disable(lpi);
@@ -2614,6 +2614,7 @@ static int CM36283_suspend(struct i2c_client *client , pm_message_t mesg)
 		  D("CM32683:  CM36283_suspend  no.3 \n");
 //		disable_irq_nosync(lp_info_cm36283->irq);
 	}
+#endif
 
     D("CM32683:  CM36283_suspend  no.4 \n");
 	return 0;
@@ -2623,11 +2624,13 @@ static int CM32683_resume(struct i2c_client *client)
 {
      D("CM36283:  CM32683_resume\n");
 	 struct CM36283_info *lpi = lp_info_cm36283;
+#if 0
 	 if (!lpi->ps_enable && lpi->psensor_sleep_becuz_suspend){
 		 psensor_enable(lpi);
          lpi->psensor_sleep_becuz_suspend =0;
 //		enable_irq(lp_info_cm36283->irq);
     }
+#endif
 	return 0;
 }
 

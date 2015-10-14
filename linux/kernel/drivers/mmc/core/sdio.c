@@ -568,6 +568,13 @@ static int mmc_sdio_init_uhs_card(struct mmc_card *card)
 	if (err)
 		goto out;
 
+	/*
+	 * revert me :
+	 * SW enable for EAI is required for SDR50 & SDR104 modes in LnP A0/K0
+	 */
+	if ((card->cis.vendor == 0x0089) && (card->cis.device == 0x5502))
+		mmc_io_rw_direct(card, 1, 0, 0x16, 0x2, 0);
+
 	/* Initialize and start re-tuning timer */
 	if (!mmc_host_is_spi(card->host) && card->host->ops->execute_tuning)
 		err = card->host->ops->execute_tuning(card->host,
@@ -929,41 +936,18 @@ out:
  */
 static int mmc_sdio_suspend(struct mmc_host *host)
 {
-	int i, err = 0;
-
-	for (i = 0; i < host->card->sdio_funcs; i++) {
-		struct sdio_func *func = host->card->sdio_func[i];
-		if (func && sdio_func_present(func) && func->dev.driver) {
-			const struct dev_pm_ops *pmops = func->dev.driver->pm;
-			if (!pmops || !pmops->suspend || !pmops->resume) {
-				/* force removal of entire card in that case */
-				err = -ENOSYS;
-			} else
-				err = pmops->suspend(&func->dev);
-			if (err)
-				break;
-		}
-	}
-	while (err && --i >= 0) {
-		struct sdio_func *func = host->card->sdio_func[i];
-		if (func && sdio_func_present(func) && func->dev.driver) {
-			const struct dev_pm_ops *pmops = func->dev.driver->pm;
-			pmops->resume(&func->dev);
-		}
-	}
-
-	if (!err && mmc_card_keep_power(host) && mmc_card_wake_sdio_irq(host)) {
+	if (mmc_card_keep_power(host) && mmc_card_wake_sdio_irq(host)) {
 		mmc_claim_host(host);
 		sdio_disable_wide(host->card);
 		mmc_release_host(host);
 	}
 
-	return err;
+	return 0;
 }
 
 static int mmc_sdio_resume(struct mmc_host *host)
 {
-	int i, err = 0;
+	int err = 0;
 
 	BUG_ON(!host);
 	BUG_ON(!host->card);
@@ -989,24 +973,6 @@ static int mmc_sdio_resume(struct mmc_host *host)
 	if (!err && host->sdio_irqs)
 		wake_up_process(host->sdio_irq_thread);
 	mmc_release_host(host);
-
-	/*
-	 * If the card looked to be the same as before suspending, then
-	 * we proceed to resume all card functions.  If one of them returns
-	 * an error then we simply return that error to the core and the
-	 * card will be redetected as new.  It is the responsibility of
-	 * the function driver to perform further tests with the extra
-	 * knowledge it has of the card to confirm the card is indeed the
-	 * same as before suspending (same MAC address for network cards,
-	 * etc.) and return an error otherwise.
-	 */
-	for (i = 0; !err && i < host->card->sdio_funcs; i++) {
-		struct sdio_func *func = host->card->sdio_func[i];
-		if (func && sdio_func_present(func) && func->dev.driver) {
-			const struct dev_pm_ops *pmops = func->dev.driver->pm;
-			err = pmops->resume(&func->dev);
-		}
-	}
 
 	return err;
 }
@@ -1093,8 +1059,6 @@ int mmc_attach_sdio(struct mmc_host *host)
 
 	BUG_ON(!host);
 	WARN_ON(!host->claimed);
-
-        pr_debug("enter %s %d\n", __func__, __LINE__);
 
 	err = mmc_send_io_op_cond(host, 0, &ocr);
 	if (err)

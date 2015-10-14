@@ -5,7 +5,7 @@
  *  agreement or nondisclosure agreement with Intel Corporation and may not
  *  be copied or disclosed except in accordance with the terms of that
  *  agreement.
- *        Copyright (c) 2004-2012 Intel Corporation.  All Rights Reserved.
+ *        Copyright (C) 2004-2014 Intel Corporation.  All Rights Reserved.
  * -------------------------------------------------------------------------
 **COPYRIGHT*/
 
@@ -28,7 +28,7 @@
 // possible matches the number of error strings it has
 //
 // 4) Don't forget to update the error string table to include your
-// error code (rise_class.cpp). Since the goal is something human readable
+// error code (rise.c). Since the goal is something human readable
 // you don't need to use abbreviations in there (ie. don't say "bad param",
 // say "bad parameter" or "illegal parameter passed in")
 //
@@ -235,6 +235,8 @@
 #define VT_NO_PMU_RESOURCES             189
 #define VT_MIC_CARD_NOT_ONLINE          190
 #define VT_FREEZE_ON_PMI_NOT_AVAIL      191
+#define VT_FLUSH_FAILED                 192
+#define VT_FLUSH_SUCCESS                193
 
 /*
  * define error code for checking on async marker request
@@ -247,7 +249,7 @@
  *       update the following:
  *           1) VT_LAST_ERROR_CODE below
  *           2) viewer/sampling_utils/src/rise.c
- *           3) collector/runsa/sep_msg_catalog.xmc
+ *           3) collector/controller/sep_msg_catalog.xmc
  *
  * ************************************************************
  */
@@ -256,7 +258,7 @@
 // To make error checking easier, the special VT_LAST_ERROR_CODE
 // should be set to whatever is the last error on the list above
 //
-#define VT_LAST_ERROR_CODE         VT_MIC_CARD_NOT_ONLINE+1
+#define VT_LAST_ERROR_CODE         VT_FLUSH_SUCCESS
 
 //
 // Define a macro to determine success or failure. Users of this

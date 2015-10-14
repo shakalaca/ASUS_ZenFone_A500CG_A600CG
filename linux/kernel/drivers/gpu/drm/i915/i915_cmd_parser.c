@@ -227,7 +227,7 @@ int i915_parse_cmds(struct intel_ring_buffer *ring,
 	return ret;
 }
 
-static void cleanup_append_tables(drm_i915_private_t *dev_priv, int ring_id)
+static void cleanup_append_cmd_table(drm_i915_private_t *dev_priv, int ring_id)
 {
 	if (dev_priv->append_cmd_table[ring_id]) {
 		const struct drm_i915_cmd_descriptor *table =
@@ -238,7 +238,10 @@ static void cleanup_append_tables(drm_i915_private_t *dev_priv, int ring_id)
 
 		dev_priv->append_cmd_table[ring_id] = NULL;
 	}
+}
 
+static void cleanup_append_reg_table(drm_i915_private_t *dev_priv, int ring_id)
+{
 	if (dev_priv->append_reg[ring_id].table) {
 		drm_free_large((void *)dev_priv->append_reg[ring_id].table);
 
@@ -251,8 +254,10 @@ void i915_cmd_parser_cleanup(drm_i915_private_t *dev_priv)
 {
 	int i;
 
-	for (i = 0; i < I915_NUM_RINGS; i++)
-		cleanup_append_tables(dev_priv, i);
+	for (i = 0; i < I915_NUM_RINGS; i++) {
+		cleanup_append_cmd_table(dev_priv, i);
+		cleanup_append_reg_table(dev_priv, i);
+	}
 }
 
 static int append_cmds(drm_i915_private_t *dev_priv,
@@ -364,29 +369,31 @@ int i915_cmd_parser_append_ioctl(struct drm_device *dev, void *data,
 		goto out;
 	}
 
-	if ((dev_priv->append_cmd_table[ring->id] && args->cmds) ||
-	    (dev_priv->append_reg[ring->id].table && args->regs)) {
-		DRM_ERROR("CMD: append was already sent\n");
-		ret = -EEXIST;
-		goto out;
-	}
-
 	if (args->cmds) {
-		ret = append_cmds(dev_priv, ring->id, args);
+		if (dev_priv->append_cmd_table[ring->id]) {
+			DRM_ERROR("CMD: append cmd was already sent\n");
+			ret = -EEXIST;
+		} else {
+			ret = append_cmds(dev_priv, ring->id, args);
+		}
 		if (ret)
 			goto out;
 	}
 
 	if (args->regs) {
-		ret = append_regs(dev_priv, ring->id, args);
+		if (dev_priv->append_reg[ring->id].table) {
+			DRM_ERROR("CMD: append reg was already sent\n");
+			ret = -EEXIST;
+		} else {
+			ret = append_regs(dev_priv, ring->id, args);
+			if (ret)
+				cleanup_append_cmd_table(dev_priv, ring->id);
+		}
 		if (ret)
 			goto out;
 	}
 
 out:
-	if (ret && ring)
-		cleanup_append_tables(dev_priv, ring->id);
-
 	mutex_unlock(&dev->struct_mutex);
 	return ret;
 }

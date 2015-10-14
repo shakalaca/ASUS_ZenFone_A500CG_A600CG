@@ -19,22 +19,38 @@
  *
  */
 
-#include "ia_css_frame.h"
-#include "ia_css.h"
-#include "ia_css_pipeline.h"
+#include "ia_css_vf.host.h"
+#include <assert_support.h>
+#include <ia_css_err.h>
+#include <ia_css_frame.h>
+#include <ia_css_frame_public.h>
+#include <ia_css_pipeline.h>
 #define IA_CSS_INCLUDE_CONFIGURATIONS
-#include HRTSTR(ia_css_isp_configs.SYSTEM.h)
-#include "assert_support.h"
+#include "ia_css_isp_configs.h"
+#include <assert_support.h>
 
 #include "isp.h"
-#include "ia_css_vf.host.h"
 
 void
 ia_css_vf_config(
-	struct sh_css_isp_vf_isp_config *to,
-	const struct ia_css_vf_configuration  *from)
+	struct sh_css_isp_vf_isp_config      *to,
+	const struct ia_css_vf_configuration *from,
+	unsigned size)
 {
-       to->vf_downscale_bits = from->vf_downscale_bits;
+	unsigned elems_a = ISP_VEC_NELEMS;
+
+	(void)size;
+	to->vf_downscale_bits = from->vf_downscale_bits;
+	to->enable = from->info != NULL;
+
+	if (from->info) {
+		ia_css_frame_info_to_frame_sp_info(&to->info, from->info);
+		ia_css_dma_configure_from_info(&to->dma.port_b, from->info);
+		to->dma.width_a_over_b = elems_a / to->dma.port_b.elems;
+
+		/* Assume divisiblity here, may need to generalize to fixed point. */
+		assert (elems_a % to->dma.port_b.elems == 0);
+	}
 }
 
 /* compute the log2 of the downscale factor needed to get closest
@@ -42,9 +58,10 @@ ia_css_vf_config(
  * be smaller than the requested viewfinder resolution.
  */
 enum ia_css_err
-sh_css_vf_downscale_log2(const struct ia_css_frame_info *out_info,
-			const struct ia_css_frame_info *vf_info,
-			unsigned int *downscale_log2)
+sh_css_vf_downscale_log2(
+	const struct ia_css_frame_info *out_info,
+	const struct ia_css_frame_info *vf_info,
+	unsigned int *downscale_log2)
 {
        unsigned int ds_log2 = 0;
        unsigned int out_width;
@@ -92,12 +109,20 @@ configure_kernel(
 	       if (err != IA_CSS_SUCCESS)
 		       return err;
        }
-       vf_log_ds = min(vf_log_ds, info->max_vf_log_downscale);
+       vf_log_ds = min(vf_log_ds, info->vf_dec.max_log_downscale);
        *downscale_log2 = vf_log_ds;
 
        /* Then store it in isp config section */
        config->vf_downscale_bits = vf_log_ds;
        return IA_CSS_SUCCESS;
+}
+
+static void
+configure_dma(
+	struct ia_css_vf_configuration *config,
+	const struct ia_css_frame_info *vf_info)
+{
+	config->info = vf_info;
 }
 
 enum ia_css_err
@@ -112,7 +137,12 @@ ia_css_vf_configure(
 	const struct ia_css_binary_info *info = &binary->info->sp;
 
 	err = configure_kernel(info, out_info, vf_info, downscale_log2, &config);
-	if (binary) ia_css_configure_vf (binary, &config);
+	configure_dma(&config, vf_info);
+	if (binary) {
+		if (vf_info)
+			vf_info->raw_bit_depth = info->dma.vfdec_bits_per_pixel;
+		ia_css_configure_vf (binary, &config);
+	}
 	return IA_CSS_SUCCESS;
 }
 

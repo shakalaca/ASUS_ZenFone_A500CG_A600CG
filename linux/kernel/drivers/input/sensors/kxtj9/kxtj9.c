@@ -1130,6 +1130,11 @@ static int __devinit kxtj9_probe(struct i2c_client *client,
 	int gpio=0, iloop=0;
 	int err;
 	ex_client= client;
+	// a600cg unused kxj9
+	if (Read_PROJ_ID() == PROJ_ID_A600CG) {
+		printk("KXTJ9 skip probe, PROJ ID = %d\n", Read_PROJ_ID());
+	    return -ENOMEM;
+	}
  	g_ilocation = Read_PROJ_ID();
 	printk("GSENSOR KXTJ9 read PROJ ID = %d\n", g_ilocation);
 

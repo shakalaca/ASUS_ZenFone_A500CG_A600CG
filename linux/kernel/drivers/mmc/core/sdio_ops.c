@@ -86,7 +86,10 @@ static int mmc_io_rw_direct_host(struct mmc_host *host, int write, unsigned fn,
 	cmd.arg |= in;
 	cmd.flags = MMC_RSP_SPI_R5 | MMC_RSP_R5 | MMC_CMD_AC;
 
-	err = mmc_wait_for_cmd(host, &cmd, 0);
+	if (SDIO_CCCR_ABORT == addr)
+		err = mmc_wait_for_cmd(host, &cmd, 0);
+	else
+		err = mmc_wait_for_cmd(host, &cmd, 1);
 	if (err)
 		return err;
 
@@ -210,7 +213,6 @@ int sdio_reset(struct mmc_host *host)
 	u8 abort;
 
 	/* SDIO Simplified Specification V2.0, 4.4 Reset for SDIO */
-        pr_debug("enter %s %d\n", __func__, __LINE__);
 
 	ret = mmc_io_rw_direct_host(host, 0, 0, SDIO_CCCR_ABORT, 0, &abort);
 	if (ret)

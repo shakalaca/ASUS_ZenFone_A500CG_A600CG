@@ -1621,10 +1621,12 @@ static struct edid *
 intel_sdvo_get_analog_edid(struct drm_connector *connector)
 {
 	struct drm_i915_private *dev_priv = connector->dev->dev_private;
+	struct i2c_adapter *i2c = NULL;
 
-	return drm_get_edid(connector,
-			    intel_gmbus_get_adapter(dev_priv,
-						    dev_priv->vbt.crt_ddc_pin));
+	i2c = intel_gmbus_get_adapter(dev_priv, dev_priv->vbt.crt_ddc_pin);
+	if (i2c == NULL)
+		return NULL;
+	return drm_get_edid(connector, i2c);
 }
 
 static enum drm_connector_status

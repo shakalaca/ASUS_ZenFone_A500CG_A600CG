@@ -36,7 +36,7 @@
  */
 #define	ISP_PAGE_OFFSET		12
 #define	ISP_PAGE_SIZE		(1U << ISP_PAGE_OFFSET)
-#define	ISP_PAGE_MASK		(~(ISP_PAGE_SIZE - 1))
+#define	ISP_PAGE_MASK		(~(phys_addr_t)(ISP_PAGE_SIZE - 1))
 
 #define	ISP_L1PT_OFFSET		22
 #define	ISP_L1PT_MASK		(~((1U << ISP_L1PT_OFFSET) - 1))
@@ -115,7 +115,7 @@ struct isp_mmu_client {
 struct isp_mmu {
 	struct isp_mmu_client *driver;
 	unsigned int l1_pte;
-	unsigned int base_address;
+	phys_addr_t base_address;
 
 	struct mutex pt_mutex;
 #ifdef USE_KMEM_CACHE

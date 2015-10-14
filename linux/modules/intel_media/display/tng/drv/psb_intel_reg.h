@@ -399,6 +399,7 @@
 #define LVDS_B0B3_POWER_UP		(3 << 2)
 
 #define PIPEADSL 0x70000
+#define PIPE_LINE_CNT_MASK	0x1fff
 #define PIPEACONF 0x70008
 #define PIPEACONF_ENABLE	(1<<31)
 #define PIPEACONF_DISABLE	0
@@ -447,6 +448,7 @@
 #define PIPE_DPST_EVENT_STATUS		     (1UL<<7)
 #define PIPE_VSYNC_CLEAR                     (1UL<<9)
 #define PIPE_VSYNC_STATUS                    (1UL<<9)
+#define PIPE_REPEATED_FRAME_STATUS	     (1UL<<11)
 #define PIPE_HDMI_AUDIO_UNDERRUN_STATUS      (1UL<<10)
 #define PIPE_FRAME_DONE_STATUS		     (1UL<<10)
 #define PIPE_HDMI_AUDIO_BUFFER_DONE_STATUS   (1UL<<11)
@@ -459,6 +461,7 @@
 #define PIPE_HDMI_AUDIO_UNDERRUN             (1UL<<26)
 #define PIPE_FRAME_DONE_ENABLE		     (1UL<<26)
 #define PIPE_HDMI_AUDIO_BUFFER_DONE          (1UL<<27)
+#define PIPE_REPEATED_FRAME_ENABLE           (1UL<<27)
 #define PIPE_CMD_DONE_ENABLE		     (1UL<<30)
 #define PIPE_HDMI_AUDIO_INT_MASK (PIPE_HDMI_AUDIO_UNDERRUN | PIPE_HDMI_AUDIO_BUFFER_DONE)
 #define PIPE_EVENT_MASK (BIT29|BIT28|BIT27|BIT26|BIT25|BIT24|BIT23|BIT22|BIT21 \
@@ -524,18 +527,27 @@ struct dpst_guardband {
 #define PIPE_PIXEL_MASK         0x00ffffff
 #define PIPE_PIXEL_SHIFT        0
 
+#define GCI_CTRL		0x650c
 #define DSPARB			0x70030
+#define DSPARB2			0x7002C
 #define DSPFW1			0x70034
 #define DSPFW2			0x70038
 #define DSPFW3			0x7003c
 #define DSPFW4			0x70050
 #define DSPFW5			0x70054
 #define DSPFW6			0x70058
+#define DSPFW7			0x70070
+#define DDL1			0x70060
+#define DDL2			0x70064
+#define DDL3			0x70068
+#define DDL4			0x7006C
 #define DSPCHICKENBIT		0x70400
 #define DSPACNTR		0x70180
 #define DSPBCNTR		0x71180
 #define DSPCCNTR		0x72180
 #define DSPDCNTR		0x73180
+#define DSPECNTR		0x74180
+#define DSPFCNTR		0x75180
 #define DISPLAY_PLANE_ENABLE 			(1<<31)
 #define DISPLAY_PLANE_DISABLE			0
 #define DISPPLANE_GAMMA_ENABLE			(1<<30)
@@ -546,6 +558,7 @@ struct dpst_guardband {
 #define DISPPLANE_16BPP				(0x5<<26)
 #define DISPPLANE_32BPP_NO_ALPHA 		(0x6<<26)
 #define DISPPLANE_32BPP				(0x7<<26)
+#define DISPPLANE_PREMULT_DISABLE		(0x1<<23)
 #define DISPPLANE_STEREO_ENABLE			(1<<25)
 #define DISPPLANE_STEREO_DISABLE		0
 #define DISPPLANE_SEL_PIPE_MASK			(3<<24)
@@ -833,6 +846,7 @@ struct dpst_guardband {
 #define MIPI			0x61190
 #define MIPI_C			0x62190
 #define MIPI_PORT_EN			(1 << 31)
+#define DUAL_LINK_MODE_PIXEL_ALTER	(1 << 26)
 /** Turns on border drawing to allow centered display. */
 #define SEL_FLOPPED_HSTX		(1 << 23)
 #define PASS_FROM_SPHY_TO_AFE 		(1 << 16)
@@ -842,6 +856,8 @@ struct dpst_guardband {
 #define MIPIA_2LANE_MIPIC_2LANE	0x2
 #define TE_TRIGGER_DSI_PROTOCOL	(1 << 2)
 #define TE_TRIGGER_GPIO_PIN		(1 << 3)
+#define DUAL_LINK_ENABLE		(1 << 1)
+#define DUAL_LINK_CAPABLE		(1)
 #define MIPI_TE_COUNT			0x61194
 
 /* #define PP_CONTROL	0x61204 */
@@ -857,6 +873,18 @@ struct dpst_guardband {
 
 /* #define PIPEACONF 0x70008 */
 #define PIPEACONF_PIPE_STATE	(1<<30)
+
+/* Registers for S0i1 Display Enabling */
+#define PIPEA_REPEAT_FRM_CNT_TRESHOLD_REG	0x60090
+#define PIPEA_REPEAT_FRM_CNT_TRESHOLD_ENABLE	(1<<31)
+#define PIPEA_REPEAT_FRM_CNT_TRESHOLD_DISABLE	(0)
+#define PIPEA_CALCULATE_CRC_REG			0x60050
+#define PIPEA_CALCULATE_CRC_ENABLE		(1<<31)
+#define PIPEA_CALCULATE_CRC_DISABLE		(0)
+#define DSPSRCTRL_REG				0x7005C
+#define DSPSRCTRL_MAXFIFO_ENABLE		(1<<20)
+#define DSPSRCTRL_MAXFIFO_MODE_ALWAYS_MAXFIFO	(1<<23)
+#define PUNIT_DSPSSPM_ENABLE_S0i1_DISPLAY	(1<<8)
 
 #define MRST_DSPABASE		0x7019c
 #define MRST_DSPBBASE		0x7119c
@@ -1245,9 +1273,11 @@ When in Sleep Mode, the value returned by get_scanline is undefined.
 #define write_display_brightness	0x51
 #define write_ctrl_display		0x53
 #define write_ctrl_cabc			0x55
-#define UI_IMAGE		0x01
-#define STILL_IMAGE		0x02
-#define MOVING_IMAGE		0x03
+#define read_ctrl_cabc			0x56
+#define CABC_MODE_OFF			0x00
+#define CABC_MODE_UI_IMAGE		0x01
+#define CABC_MODE_STILL_IMAGE		0x02
+#define CABC_MODE_MOVING_IMAGE		0x03
 #define write_hysteresis		0x57
 #define write_gamma_setting		0x58
 #define write_cabc_min_bright		0x5e
@@ -1337,5 +1367,14 @@ gamma settings.
 #define PIPEC_COLOR_COEF12 	0x6207c
 #define PIPEC_COLOR_COEF21 	0x62080
 #define PIPEC_COLOR_COEF22 	0x62084
+
+/* Necessary reset registers for ANN A0*/
+#define DSPCLK_GATE_D		0x70500
+#define RAMCLK_GATE_D		0x70504
+#define DSPIEDCFGSHDW		0x6414
+#define DSPSRCTRL		0x7005c
+#define FBDC_CHICKEN		0x70508
+#define IEP_OVA_CTRL 		0x32000
+#define IEP_OVC_CTRL 		0x3A000
 
 #endif

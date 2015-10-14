@@ -613,16 +613,10 @@ int mdfld_intel_crtc_set_gamma(struct drm_device *dev,
 					REG_WRITE(regs->palette_reg + j + 4, temp);
 					ctx->palette[(i / 8) * 2 + 1] = temp;
 				} else {
-#if 0
-					REG_WRITE(regs->gamma_red_max_reg, MAX_GAMMA);
-					REG_WRITE(regs->gamma_green_max_reg, MAX_GAMMA);
-					REG_WRITE(regs->gamma_blue_max_reg, MAX_GAMMA);
-#else
 					//AP team will assign MAX_GAMMA
 					REG_WRITE(regs->gamma_red_max_reg, setting_data->gamma_tableX100[128]);
 					REG_WRITE(regs->gamma_green_max_reg, setting_data->gamma_tableX100[129]);
 					REG_WRITE(regs->gamma_blue_max_reg, setting_data->gamma_tableX100[130]);
-#endif
 				}
 			} else {
 				if (temp < 0)
@@ -1770,12 +1764,21 @@ static int mdfld_crtc_dsi_mode_set(struct drm_crtc *crtc,
 	* is 608x1024(64 bits align), then the information between android
 	* and Linux frame buffer is not consistent.
 	*/
+//ASUS_BSP: [DDS] +++
+#ifdef CONFIG_SUPPORT_DDS_MIPI_SWITCH
+	if (0)
+		ctx->dspsize = (800 - 1) | ((1280 - 1) << 16);
+	else
+		ctx->dspsize = (480 - 1) | ((854 - 1) << 16);
+#else
 	if (is_tmd_6x10_panel(dev, 0))
 		ctx->dspsize = ((mode->crtc_vdisplay - 1) << 16) |
 			(mode->crtc_hdisplay - 200  - 1);
 	else
 		ctx->dspsize = ((mode->crtc_vdisplay - 1) << 16) |
 			(mode->crtc_hdisplay - 1);
+#endif
+//ASUS_BSP: [DDS] ---
 
 	ctx->dspstride = fb_pitch;
 	ctx->dspsurf = mode_dev->bo_offset(dev, mdfld_fb);

@@ -105,6 +105,7 @@ struct sdhci_pci_slot {
 	bool			dev_power;
 	struct mutex		power_lock;
 	bool			dma_enabled;
+	unsigned int		tuning_count;
 };
 
 struct sdhci_pci_chip {
@@ -230,21 +231,7 @@ static irqreturn_t sdhci_pci_sd_cd(int irq, void *dev_id)
 	struct sdhci_pci_slot *slot = dev_id;
 	struct sdhci_host *host = slot->host;
 
-    int gpio_status = gpio_get_value(slot->cd_gpio);
-
-    if (gpio_status == 0) {
-        host->mmc->caps |= MMC_CAP_NEEDS_POLL;
-        host->mmc->retry_timeout = 10;
-    }
-    else {
-        host->mmc->caps &= ~MMC_CAP_NEEDS_POLL;
-    }
-    pr_debug("%s (polling %s)\n", mmc_hostname(host->mmc),
-             gpio_status ? "disabled" : "enabled");
-    if (host->mmc->caps2 & MMC_CAP2_DEFERRED_RESUME)
-        mmc_set_force_pm_resume(host->mmc);
-	mmc_detect_change(host->mmc,
-                      (gpio_status == 0) ? msecs_to_jiffies(200) : msecs_to_jiffies(20));
+	mmc_detect_change(host->mmc, msecs_to_jiffies(200));
 	return IRQ_HANDLED;
 }
 
@@ -362,7 +349,7 @@ static int mfd_emmc_probe_slot(struct sdhci_pci_slot *slot)
 		sdhci_alloc_panic_host(slot->host);
 		slot->host->mmc->caps |= MMC_CAP_1_8V_DDR;
 		slot->host->mmc->caps2 |= MMC_CAP2_INIT_CARD_SYNC |
-					MMC_CAP2_CACHE_CTRL | MMC_CAP2_DEFERRED_RESUME;
+					MMC_CAP2_CACHE_CTRL;
 		slot->host->quirks2 |= SDHCI_QUIRK2_V2_0_SUPPORT_DDR50;
 		/*
 		 * CLV host controller has a special POWER_CTL register,
@@ -509,8 +496,6 @@ static int ctp_sd_card_power_restore(struct sdhci_pci_slot *slot)
 	u16 addr;
 	u8 data;
 	struct sdhci_pci_chip *chip;
-
-        pr_debug("enter %s %d\n", __func__, __LINE__);
 
 	if (slot->dev_power)
 		return 0;
@@ -668,6 +653,7 @@ static int byt_emmc_probe_slot(struct sdhci_pci_slot *slot)
 			MMC_CAP2_CACHE_CTRL;
 		slot->host->mmc->qos = kzalloc(sizeof(struct pm_qos_request),
 				GFP_KERNEL);
+		slot->tuning_count = 8;
 		break;
 	default:
 		break;
@@ -843,16 +829,17 @@ static int intel_mrfl_mmc_probe_slot(struct sdhci_pci_slot *slot)
 					MMC_CAP_NONREMOVABLE |
 					MMC_CAP_1_8V_DDR;
 		slot->host->mmc->caps2 |= MMC_CAP2_POLL_R1B_BUSY |
-					MMC_CAP2_INIT_CARD_SYNC;
+					MMC_CAP2_INIT_CARD_SYNC |
+					MMC_CAP2_CACHE_CTRL;
 		if (slot->chip->pdev->revision == 0x1) { /* B0 stepping */
-			slot->host->mmc->caps2 |= MMC_CAP2_HS200_1_8V_SDR |
-						MMC_CAP2_HS200_DIS;
+			slot->host->mmc->caps2 |= MMC_CAP2_HS200_1_8V_SDR;
 			/* WA for async abort silicon issue */
 			slot->host->quirks2 |= SDHCI_QUIRK2_CARD_CD_DELAY |
 					SDHCI_QUIRK2_WAIT_FOR_IDLE |
 					SDHCI_QUIRK2_TUNING_POLL;
 		}
 		mrfl_ioapic_rte_reg_addr_map(slot);
+		slot->tuning_count = 8;
 		break;
 	case INTEL_MRFL_SD:
 		slot->host->quirks2 |= SDHCI_QUIRK2_WAIT_FOR_IDLE;
@@ -888,14 +875,28 @@ static void intel_mrfl_mmc_remove_slot(struct sdhci_pci_slot *slot, int dead)
 			iounmap(slot->host->rte_addr);
 }
 
+static int intel_mrfl_mmc_suspend(struct sdhci_pci_chip *chip)
+{
+	int i;
+
+	if (PCI_FUNC(chip->pdev->devfn) != INTEL_MRFL_SD)
+		return 0;
+
+	/* Clear SDHCI host POWER CONTROL bit 0 to disable sd_lvl_enb */
+	for (i = 0; i < chip->num_slots; i++)
+		sdhci_writeb(chip->slots[i]->host, 0, SDHCI_POWER_CONTROL);
+
+	return 0;
+}
+
 static const struct sdhci_pci_fixes sdhci_intel_mrfl_mmc = {
 	.quirks		= SDHCI_QUIRK_NO_ENDATTR_IN_NOPDESC,
-	.quirks2	= SDHCI_QUIRK2_BROKEN_AUTO_CMD23 |
-				SDHCI_QUIRK2_HIGH_SPEED_SET_LATE |
+	.quirks2	= SDHCI_QUIRK2_HIGH_SPEED_SET_LATE |
 				SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
 	.allow_runtime_pm = true,
 	.probe_slot	= intel_mrfl_mmc_probe_slot,
 	.remove_slot	= intel_mrfl_mmc_remove_slot,
+	.suspend	= intel_mrfl_mmc_suspend,
 };
 
 static int intel_moor_emmc_probe_slot(struct sdhci_pci_slot *slot)
@@ -907,16 +908,23 @@ static int intel_moor_emmc_probe_slot(struct sdhci_pci_slot *slot)
 	sdhci_alloc_panic_host(slot->host);
 
 	slot->host->mmc->caps2 |= MMC_CAP2_POLL_R1B_BUSY |
-				MMC_CAP2_INIT_CARD_SYNC;
+				MMC_CAP2_INIT_CARD_SYNC |
+				MMC_CAP2_CACHE_CTRL;
 
 	/* Enable HS200 and HS400 */
-	slot->host->mmc->caps2 |= MMC_CAP2_HS200_1_8V_SDR;
+	slot->host->mmc->caps2 |= MMC_CAP2_HS200_1_8V_SDR |
+				MMC_CAP2_HS200_DIS;
 
 	if (slot->chip->pdev->revision == 0x1) { /* B0 stepping */
 		slot->host->mmc->caps2 |= MMC_CAP2_HS400_1_8V_DDR;
 	}
 
-	if (slot->data)
+	/* Enable Packed Command */
+	slot->host->mmc->caps2 |= MMC_CAP2_PACKED_CMD;
+
+	slot->host->quirks2 |= SDHCI_QUIRK2_TUNING_POLL;
+
+	if (slot->data) {
 		if (slot->data->platform_quirks & PLFM_QUIRK_NO_HIGH_SPEED) {
 			slot->host->quirks2 |= SDHCI_QUIRK2_DISABLE_HIGH_SPEED;
 			slot->host->mmc->caps &= ~MMC_CAP_1_8V_DDR;
@@ -927,9 +935,12 @@ static int intel_moor_emmc_probe_slot(struct sdhci_pci_slot *slot)
 			}
 		}
 
-	if (slot->data)
 		if (slot->data->platform_quirks & PLFM_QUIRK_NO_EMMC_BOOT_PART)
 			slot->host->mmc->caps2 |= MMC_CAP2_BOOTPART_NOACC;
+
+		slot->host->mmc->tpru = slot->data->tpru;
+		slot->host->mmc->tramp = slot->data->tramp;
+	}
 
 	return 0;
 }
@@ -942,6 +953,7 @@ static int intel_moor_sd_probe_slot(struct sdhci_pci_slot *slot)
 {
 	int ret = 0;
 
+	slot->host->mmc->caps2 |= MMC_CAP2_FIXED_NCRC;
 	if (slot->data)
 		if (slot->data->platform_quirks & PLFM_QUIRK_NO_HOST_CTRL_HW)
 			ret = -ENODEV;
@@ -959,6 +971,10 @@ static int intel_moor_sdio_probe_slot(struct sdhci_pci_slot *slot)
 
 	slot->host->mmc->caps |= MMC_CAP_NONREMOVABLE;
 
+	/* SDR104 tuning (which is an expensive operation) is done when resuming,
+	   so increase the auto suspend delay to 200ms */
+	slot->chip->autosuspend_delay = 200;
+
 	if (slot->data)
 		if (slot->data->platform_quirks & PLFM_QUIRK_NO_HOST_CTRL_HW)
 			ret = -ENODEV;
@@ -972,8 +988,7 @@ static void intel_moor_sdio_remove_slot(struct sdhci_pci_slot *slot, int dead)
 
 static const struct sdhci_pci_fixes sdhci_intel_moor_emmc = {
 	.quirks		= SDHCI_QUIRK_NO_ENDATTR_IN_NOPDESC,
-	.quirks2	= SDHCI_QUIRK2_BROKEN_AUTO_CMD23 |
-				SDHCI_QUIRK2_HIGH_SPEED_SET_LATE,
+	.quirks2	= SDHCI_QUIRK2_HIGH_SPEED_SET_LATE,
 	.allow_runtime_pm = true,
 	.probe_slot	= intel_moor_emmc_probe_slot,
 	.remove_slot	= intel_moor_emmc_remove_slot,
@@ -981,8 +996,7 @@ static const struct sdhci_pci_fixes sdhci_intel_moor_emmc = {
 
 static const struct sdhci_pci_fixes sdhci_intel_moor_sd = {
 	.quirks		= SDHCI_QUIRK_NO_ENDATTR_IN_NOPDESC,
-	.quirks2	= SDHCI_QUIRK2_BROKEN_AUTO_CMD23 |
-				SDHCI_QUIRK2_HIGH_SPEED_SET_LATE,
+	.quirks2	= SDHCI_QUIRK2_HIGH_SPEED_SET_LATE,
 	.allow_runtime_pm = true,
 	.probe_slot	= intel_moor_sd_probe_slot,
 	.remove_slot	= intel_moor_sd_remove_slot,
@@ -990,9 +1004,11 @@ static const struct sdhci_pci_fixes sdhci_intel_moor_sd = {
 
 static const struct sdhci_pci_fixes sdhci_intel_moor_sdio = {
 	.quirks		= SDHCI_QUIRK_NO_ENDATTR_IN_NOPDESC,
-	.quirks2	= SDHCI_QUIRK2_BROKEN_AUTO_CMD23 |
-				SDHCI_QUIRK2_HIGH_SPEED_SET_LATE |
-				SDHCI_QUIRK2_FAKE_VDD,
+	.quirks2	= SDHCI_QUIRK2_HIGH_SPEED_SET_LATE |
+				SDHCI_QUIRK2_FAKE_VDD |
+				SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
+				SDHCI_QUIRK2_WA_LNP |
+				SDHCI_QUIRK2_BCM_WIFI_WA,
 	.allow_runtime_pm = true,
 	.probe_slot	= intel_moor_sdio_probe_slot,
 	.remove_slot	= intel_moor_sdio_remove_slot,
@@ -1810,40 +1826,6 @@ static int sdhci_pci_bus_width(struct sdhci_host *host, int width)
 	return 0;
 }
 
-/*
- * Work around of a hw_reset functionality in mmc1
- * by turning OFF & back ON the regulator supplying mmc1.
- */
-void asus_mmc1_hw_reset(struct sdhci_host *host)
-{
-    struct regulator *vmmc;
-	int rc;
-
-    pr_info("%s: reset start\n", mmc_hostname(host->mmc));
-    vmmc = host->vmmc;
-    if (!vmmc)
-        return;
-
-    rc = regulator_disable(vmmc);
-    if (rc) {
-            pr_err("%s: %s disable regulator: failed: %d\n",
-                            mmc_hostname(host->mmc), __func__, rc);
-    }
-
-    /* 20ms delay */
-    usleep_range(20000, 22000);
-
-    rc = regulator_enable(vmmc);
-    if (rc) {
-            pr_err("%s: %s enable regulator: failed: %d\n",
-                            mmc_hostname(host->mmc), __func__, rc);
-    }
-
-    /* 10ms delay */
-    usleep_range(10000, 12000);
-    pr_info("%s: reset complete\n", mmc_hostname(host->mmc));
-}
-
 static void sdhci_pci_hw_reset(struct sdhci_host *host)
 {
 	struct sdhci_pci_slot *slot = sdhci_priv(host);
@@ -1861,10 +1843,6 @@ static void sdhci_pci_hw_reset(struct sdhci_host *host)
 		 */
 		usleep_range(300, 1000);
 	} else if (slot->host->mmc->caps & MMC_CAP_HW_RESET) {
-                if (slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_CLV_SDIO0) {
-                        asus_mmc1_hw_reset(host);
-                        return;
-                }
 		/* first set bit4 of power control register */
 		pwr = sdhci_readb(host, SDHCI_POWER_CONTROL);
 		pwr |= SDHCI_HW_RESET;
@@ -1921,8 +1899,6 @@ static void sdhci_pci_set_dev_power(struct sdhci_host *host, bool poweron)
 	struct sdhci_pci_slot *slot;
 	struct sdhci_pci_chip *chip;
 
-        pr_debug("enter %s %d\n", __func__, __LINE__);
-
 	slot = sdhci_priv(host);
 	if (slot)
 		chip = slot->chip;
@@ -1935,9 +1911,8 @@ static void sdhci_pci_set_dev_power(struct sdhci_host *host, bool poweron)
 		mutex_lock(&slot->power_lock);
 		if (poweron)
 			ctp_sd_card_power_restore(slot);
-                else
+		else
 			ctp_sd_card_power_save(slot);
-
 		mutex_unlock(&slot->power_lock);
 	}
 }
@@ -1975,20 +1950,8 @@ static void  sdhci_platform_reset_exit(struct sdhci_host *host, u8 mask)
 static int sdhci_pci_get_tuning_count(struct sdhci_host *host)
 {
 	struct sdhci_pci_slot *slot = sdhci_priv(host);
-	int tuning_count = 0;
 
-	switch (slot->chip->pdev->device) {
-	case PCI_DEVICE_ID_INTEL_BYT_EMMC45:
-		tuning_count = 4; /* using 8 seconds, this can be tuning */
-		break;
-	case PCI_DEVICE_ID_INTEL_MRFL_MMC:
-		tuning_count = 8; /* using 128 seconds, this can be tuning */
-		break;
-	default:
-		break;
-	}
-
-	return tuning_count;
+	return slot->tuning_count;
 }
 
 static int sdhci_gpio_buf_check(struct sdhci_host *host, unsigned int clk)
@@ -2070,13 +2033,6 @@ static int sdhci_pci_suspend(struct device *dev)
 		if (ret)
 			goto err_pci_suspend;
 	}
-
-	/*nick_hsiao:for TT304983 sometimes MMC driver resumes right after suspending because
-	other driver fails to suspend.
-	This behavior may cause some SD card init error -110 while resuming.
-	Workaround is prolonging time(50ms) between suspend/resume to reduce init error -110 possibility*/
-
-	msleep(50);
 
 	return 0;
 
@@ -2385,16 +2341,15 @@ static struct sdhci_pci_slot *sdhci_pci_probe_slot(
 	if (host->quirks2 & SDHCI_QUIRK2_ENABLE_MMC_PM_IGNORE_PM_NOTIFY)
 		host->mmc->pm_flags |= MMC_PM_IGNORE_PM_NOTIFY;
 
-        //<ASUS-Wade+>
-        if (slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_CLV_SDIO0) {
+	//<ASUS-Wade+>
+    if (slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_CLV_SDIO0) {
                 host->mmc->pm_caps &= ~MMC_PM_KEEP_POWER;
                 host->mmc->caps |= MMC_CAP_HW_RESET;
-		host->mmc->caps2 |= MMC_CAP2_BROKEN_VOLTAGE | MMC_CAP2_DETECT_ON_ERR  | MMC_CAP2_BROKEN_MAX_CLK | MMC_CAP2_DEFERRED_RESUME;
-                host->mmc->half_max_clk_count = REQ_COUNT_FMID;
-        }
-        //<ASUS-Wade->
-
-
+                host->mmc->caps2 |= MMC_CAP2_BROKEN_VOLTAGE | MMC_CAP2_DETECT_ON_ERR  | MMC_CAP2_BROKEN_MAX_CLK;
+                 host->mmc->half_max_clk_count = REQ_COUNT_FMID;
+    }
+    //<ASUS-Wade->
+		
 	ret = sdhci_add_host(host);
 	if (ret)
 		goto remove;
@@ -2600,20 +2555,28 @@ static void sdhci_pci_remove(struct pci_dev *pdev)
 	}
 
 	pci_disable_device(pdev);
-#ifndef ASUS_SDCC_ATD_INTERFACE	2507
-    sysfs_remove_group(&pdev->dev.kobj, &dev_attr_grp);	2508
+#ifndef ASUS_SDCC_ATD_INTERFACE
+    sysfs_remove_group(&pdev->dev.kobj, &dev_attr_grp);
 #endif
 }
 
 static void sdhci_pci_shutdown(struct pci_dev *pdev)
 {
 	struct sdhci_pci_chip *chip;
+	struct sdhci_pci_slot *slot;
 	int i;
 
 	chip = pci_get_drvdata(pdev);
 
 	if (!chip || !chip->pdev)
 		return;
+
+	for (i = 0; i < chip->num_slots; i++) {
+		slot = chip->slots[i];
+		if (slot && slot->data)
+			if (slot->data->cleanup)
+				slot->data->cleanup(slot->data);
+	}
 
 	switch (chip->pdev->device) {
 	case PCI_DEVICE_ID_INTEL_CLV_SDIO0:

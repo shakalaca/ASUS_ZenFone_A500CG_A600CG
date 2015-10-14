@@ -9,73 +9,112 @@
  * published by the Free Software Foundation.
  */
 
+#define DEBUG 1
 #include <linux/spi/spi.h>
 #include <sound/soc.h>
 #include "rt_codec_ioctl.h"
 #include "rt5647_ioctl.h"
 #include "rt5647.h"
+#include <linux/HWVersion.h>
+
+extern int Read_PROJ_ID(void);
 
 hweq_t hweq_param[] = {
 	{/* NORMAL */
-		{0},
-		{0},
+		{
+			{0, 0},
+		},
 		0x0000,
 	},
 	{/* CLUB */
-		{0},
-		{0x0635, 0x0cd9, 0xf405, 0x0635, 0x0cd9, 0xf405},
+		{
+			{0xd0, 0x0635},
+			{0xd1, 0x0cd9},
+			{0xd2, 0xf405},
+			{0xd3, 0x0635},
+			{0xd4, 0x0cd9},
+			{0xd5, 0xf405},
+		},
 		0x0006,
 	},
 	{/* SPK */
-		/*{0},
-		{0x1c10, 0x01f4, 0xc5e9, 0x1a98, 0x1d2c, 0xc882, 0x1c10, 0x01f4,
-		0xe904, 0x1c10, 0x01f4, 0xe904,	0x1c10,	0x01f4,	0x1c10,	0x01f4,
-		0x2000,	0x0000, 0x2000},
-		0x0000,*/
-                {0},
-
-	//bard:  0xae,   0xaf,   0xb0,   0xc4,   0xc5,   0xc6 (from eqreg[EQ_CH_NUM][EQ_REG_NUM])
-	//bard:  0xb1,   0xb2,   0xb3,   0xc7,   0xc8,   0xc9
-		//A500CG
-		#ifdef CONFIG_A500CG_AUDIO_SETTING
-			{0xc4ef, 0x1c13, 0xf805, 0x1f68, 0x0094, 0x1f69},
-			0x0044, //Wenhong 140114 bard: MX-B1
-		#endif
-
-		//A600CG
-		#ifdef CONFIG_A600CG_AUDIO_SETTING
-			{0xc501, 0x1c7c, 0xf483, 0x1f68, 0x0094, 0x1f69},
-			0x0044, //Wenhong 140114 bard: MX-B1
-                #endif
-
-		//A502CG
-		#ifdef CONFIG_A502CG_AUDIO_SETTING
-			{0xc4ef, 0x1c13, 0xf805, 0x1f68, 0x0094, 0x1f69},
-			0x0040, //Angus 20140402
-                #endif
+		{
+			{0xae, 0xc4ef},
+			{0xaf, 0x1c13},
+			{0xb0, 0xf805},
+			{0xc4, 0x1f68},
+			{0xc5, 0x0094},
+			{0xc6, 0x1f69},
+			{0xb1, 0xc4ef},
+			{0xb2, 0x1c13},
+			{0xb3, 0xf805},
+			{0xc7, 0x1f68},
+			{0xc8, 0x0094},
+			{0xc9, 0x1f69},
+		},
+		0x0044,
 	},
 	{/* HP */
-		{0},
-		{0x1c10, 0x01f4, 0xc5e9, 0x1a98, 0x1d2c, 0xc882, 0x1c10, 0x01f4,
-		0xe904, 0x1c10, 0x01f4, 0xe904, 0x1c10, 0x01f4, 0x1c10,	0x01f4,
-		0x2000,	0x0000, 0x2000},
+		{
+			{0, 0},
+		},
 		0x0000,
 	},
 };
 #define RT5647_HWEQ_LEN ARRAY_SIZE(hweq_param)
 
-int eqreg[EQ_CH_NUM][EQ_REG_NUM] = {
-	/*{0xa4, 0xa5, 0xeb, 0xec, 0xed, 0xee, 0xe7, 0xe8, 0xe9, 0xea, 0xe5,
-	 0xe6, 0xae, 0xaf, 0xb0, 0xb4, 0xb5, 0xb6, 0xba, 0xbb, 0xbc, 0xc0,
-	 0xc1, 0xc4, 0xc5, 0xc6, 0xca, 0xcc},
-	{0xa6, 0xa7, 0xf5, 0xf6, 0xf7, 0xf8, 0xf1, 0xf2, 0xf3, 0xf4, 0xef,
-	 0xf0, 0xb1, 0xb2, 0xb3, 0xb7, 0xb8, 0xb9, 0xbd, 0xbe, 0xbf, 0xc2,
-	 0xc3, 0xc7, 0xc8, 0xc9, 0xcb, 0xcd},
-	{0xce, 0xcf, 0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8,
-	 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xe1, 0xe2},*/
-        {0xae, 0xaf, 0xb0, 0xc4, 0xc5, 0xc6}, //Wenhong 140114
-        {0xb1, 0xb2, 0xb3, 0xc7, 0xc8, 0xc9}, //Wenhong 140114
-        {0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5}, //Wenhong 140103
+/* Realtek:  0xae,   0xaf,   0xb0,   0xc4,   0xc5,   0xc6 (from eqreg[EQ_CH_NUM][EQ_REG_NUM]) */
+/* Realtek:  0xb1,   0xb2,   0xb3,   0xc7,   0xc8,   0xc9 */
+hweq_t hweq_param_SPK_A500CG = {
+	{
+		{0xae, 0xc4ef},
+		{0xaf, 0x1c13},
+		{0xb0, 0xf805},
+		{0xc4, 0x1f68},
+		{0xc5, 0x0094},
+		{0xc6, 0x1f69},
+		{0xb1, 0xc4ef},
+		{0xb2, 0x1c13},
+		{0xb3, 0xf805},
+		{0xc7, 0x1f68},
+		{0xc8, 0x0094},
+		{0xc9, 0x1f69},
+	},
+	0x0044,
+};
+hweq_t hweq_param_SPK_A600CG = {
+	{
+		{0xae, 0xc501},
+		{0xaf, 0x1c7c},
+		{0xb0, 0xf483},
+		{0xc4, 0x1f68},
+		{0xc5, 0x0094},
+		{0xc6, 0x1f69},
+		{0xb1, 0xc501},
+		{0xb2, 0x1c7c},
+		{0xb3, 0xf483},
+		{0xc7, 0x1f68},
+		{0xc8, 0x0094},
+		{0xc9, 0x1f69},
+	},
+	0x0044,
+};
+hweq_t hweq_param_SPK_A502CG = {
+	{
+		{0xae, 0xc4ef},
+		{0xaf, 0x1c13},
+		{0xb0, 0xf805},
+		{0xc4, 0x1f68},
+		{0xc5, 0x0094},
+		{0xc6, 0x1f69},
+		{0xb1, 0xc4ef},
+		{0xb2, 0x1c13},
+		{0xb3, 0xf805},
+		{0xc7, 0x1f68},
+		{0xc8, 0x0094},
+		{0xc9, 0x1f69},
+	},
+	0x0040,
 };
 
 int rt5647_update_eqmode(
@@ -89,31 +128,32 @@ int rt5647_update_eqmode(
 
 	dev_dbg(codec->dev, "%s(): mode=%d\n", __func__, mode);
 	if (mode != NORMAL) {
-		for (i = 0; i < EQ_REG_NUM; i++) { //bard 1-3
-			if (!eqreg[channel][i]) //bard 1-3
-				break; //bard 1-3
-			hweq_param[mode].reg[i] = eqreg[channel][i];
-		}
 
-		for (i = 0; i < EQ_REG_NUM; i++) { //bard 1-3
-			printk(KERN_INFO "hweq_param[mode].reg[i]=0x%x hweq_param[mode].value[i]=0x%x\n",
-					hweq_param[mode].reg[i], hweq_param[mode].value[i]); //bard 1-3
-			if (hweq_param[mode].reg[i])
-				ioctl_ops->index_write(codec, hweq_param[mode].reg[i],
-						hweq_param[mode].value[i]);
-			else
+		for (i = 0; i < EQ_REG_NUM; i++) {
+			if (hweq_param[mode].par[i].reg) {
+				if (mode == SPK && (Read_PROJ_ID() == PROJ_ID_A500CG || Read_PROJ_ID() == PROJ_ID_A501CG_BZ || Read_PROJ_ID() == PROJ_ID_A501CG
+						|| Read_PROJ_ID() == PROJ_ID_A500CG_ID || Read_PROJ_ID() == PROJ_ID_A501CG_ID)) {
+					ioctl_ops->index_write(codec, hweq_param_SPK_A500CG.par[i].reg, hweq_param_SPK_A500CG.par[i].val);
+
+				} else if (mode == SPK && (Read_PROJ_ID() == PROJ_ID_A600CG || Read_PROJ_ID() == PROJ_ID_A601CG)) {
+					ioctl_ops->index_write(codec, hweq_param_SPK_A600CG.par[i].reg, hweq_param_SPK_A600CG.par[i].val);
+
+				} else if (mode == SPK && Read_PROJ_ID() == PROJ_ID_A502CG) {
+					ioctl_ops->index_write(codec, hweq_param_SPK_A502CG.par[i].reg, hweq_param_SPK_A502CG.par[i].val);
+
+				} else {
+					ioctl_ops->index_write(codec, hweq_param[mode].par[i].reg, hweq_param[mode].par[i].val);
+
+				}
+			} else
 				break;
 		}
 	}
+
 	switch (channel) {
-	case EQ_CH_DACL:
+	case EQ_CH_DAC:
 		reg = RT5647_EQ_CTRL2;
-		mask = 0x11fe;
-		upd_reg = RT5647_EQ_CTRL1;
-		break;
-	case EQ_CH_DACR:
-		reg = RT5647_EQ_CTRL2;
-		mask = 0x22fe;
+		mask = 0x33fe;
 		upd_reg = RT5647_EQ_CTRL1;
 		break;
 	case EQ_CH_ADC:
@@ -125,9 +165,27 @@ int rt5647_update_eqmode(
 		pr_err("Invalid EQ channel\n");
 		return -EINVAL;
 	}
-	snd_soc_update_bits(codec, reg, mask, hweq_param[mode].ctrl);
-    reg = snd_soc_read(codec, upd_reg);
-    snd_soc_write(codec, upd_reg, reg | RT5647_EQ_UPD);
+
+	if (mode == SPK && (Read_PROJ_ID() == PROJ_ID_A500CG || Read_PROJ_ID() == PROJ_ID_A501CG_BZ || Read_PROJ_ID() == PROJ_ID_A501CG
+			|| Read_PROJ_ID() == PROJ_ID_A500CG_ID || Read_PROJ_ID() == PROJ_ID_A501CG_ID)) {
+		snd_soc_update_bits(codec, reg, mask, hweq_param_SPK_A500CG.ctrl);
+		pr_debug("%s: apply A500CG hweq_param ctrl\n", __func__);
+
+	} else if (mode == SPK && (Read_PROJ_ID() == PROJ_ID_A600CG || Read_PROJ_ID() == PROJ_ID_A601CG)) {
+		snd_soc_update_bits(codec, reg, mask, hweq_param_SPK_A600CG.ctrl);
+		pr_debug("%s: apply A600CG hweq_param ctrl\n", __func__);
+
+	} else if (mode == SPK && Read_PROJ_ID() == PROJ_ID_A502CG) {
+		snd_soc_update_bits(codec, reg, mask, hweq_param_SPK_A502CG.ctrl);
+		pr_debug("%s: apply A502CG hweq_param ctrl\n", __func__);
+
+	} else {
+		snd_soc_update_bits(codec, reg, mask, hweq_param[mode].ctrl);
+		pr_debug("%s: apply hweq_param ctrl\n", __func__);
+	}
+
+	reg = snd_soc_read(codec, upd_reg);
+	snd_soc_write(codec, upd_reg, reg | RT5647_EQ_UPD);
 	snd_soc_update_bits(codec, upd_reg, RT5647_EQ_UPD, 0);
 
 	return 0;

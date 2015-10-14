@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2013 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -40,166 +40,55 @@
 #include "lwpmudrv.h"
 #if defined(DRV_IA32) || defined(DRV_EM64T)
 #include "core2.h"
+#include "perfver4.h"
 #include "silvermont.h"
-#if !defined (DRV_ATOM_ONLY)
-#include "core.h"
+#include "valleyview_sochap.h"
+#include "avt_unc_power.h"
+#include "snb_unc_cbo.h"
+#include "snb_unc_imc.h"
+#include "snb_unc_power.h"
+#include "snb_unc_gt.h"
+#include "hsw_unc_ncu.h"
+#include "hsw_unc_power.h"
+#if !defined (DRV_ANDROID)
 #include "corei7_unc.h"
-#include "snbunc_cbo.h"
-#include "snbunc_imc.h"
-#if !defined (DRV_BIGCORE)
-#include "wsmexunc_imc.h"
-#include "wsmexunc_qpi.h"
-#include "wsmexunc_wbox.h"
-#include "jktunc_imc.h"
-#include "jktunc_qpill.h"
-#include "jaketown_ubox.h"
+#include "wsx_unc_imc.h"
+#include "wsx_unc_qpi.h"
+#include "wsx_unc_wbox.h"
+#include "jkt_unc_imc.h"
+#include "jkt_unc_qpill.h"
+#include "jkt_unc_ubox.h"
+#include "ivt_unc_cbo.h"
+#include "ivt_unc_imc.h"
+#include "ivt_unc_pcu.h"
+#include "ivt_unc_ha.h"
+#include "ivt_unc_qpill.h"
+#include "ivt_unc_r3qpi.h"
+#include "ivt_unc_ubox.h"
+#include "ivt_unc_r2pcie.h"
+#include "ivt_unc_irp.h"
+#include "hsx_unc_cbo.h"
+#include "hsx_unc_imc.h"
+#include "hsx_unc_pcu.h"
+#include "hsx_unc_ha.h"
+#include "hsx_unc_qpill.h"
+#include "hsx_unc_r3qpi.h"
+#include "hsx_unc_ubox.h"
+#include "hsx_unc_r2pcie.h"
+#include "hsx_unc_sbox.h"
+#include "hsx_unc_irp.h"
+#include "skl_unc_cbo.h"
+#include "skl_unc_ncu.h"
+#include "chap.h"
 #endif
-#include "haswellunc_ncu.h"
-#if !defined (DRV_BIGCORE)
-#include "ivtunc_cbo.h"
-#include "ivtunc_imc.h"
-#include "ivytown_pcu.h"
-#include "ivytown_ha.h"
-#include "ivytown_qpill.h"
-#include "ivytown_r3qpi.h"
-#include "ivytown_ubox.h"
-#include "ivytown_r2pcie.h"
-#endif
-#endif
-#endif
-#if defined(DRV_IA64)
-#include "montecito.h"
-#include "poulson.h"
 #endif
 #include "utility.h"
-#if defined(BUILD_CHIPSET)
 #include "lwpmudrv_chipset.h"
-#include "chap.h"
 #include "gmch.h"
-#endif
 
 volatile int config_done;
 
-#if defined(BUILD_CHIPSET)
 extern CHIPSET_CONFIG pma;
-#endif
-
-#if defined(DRV_IA64)
-
-#define PMV_MASK_BIT            0x10000    // pmv.m  0 = unmask counter overflow interrrupts
-
-extern U64
-UTILITY_Read_PMV (
-    void
-)
-{
-    U64 r;
-
-    __asm__("mov %0=cr.pmv":"=r"(r));
-
-    return r;
-}
-
-extern VOID
-UTILITY_Set_PMV_Mask (
-    VOID
-)
-{
-    U64 pmv;
-
-    pmv = SYS_Read_PMV();
-    pmv |= PMV_MASK_BIT;
-    SYS_Write_PMV(pmv);
-
-    return;
-}
-
-extern VOID
-UTILITY_Clear_PMV_Mask (
-    VOID
-)
-{
-    U64 pmv;
-
-    pmv = SYS_Read_PMV();
-    pmv &= ~PMV_MASK_BIT;
-    SYS_Write_PMV(pmv);
-
-    return;
-}
-
-/*
- *  History:
- *     Inheritied from sampling 1, which "adapted from Perfmon2 routines in
- *     /usr/src/linux/arch/ia64/kernel/perfmon.c".
- */
-extern void
-UTILITY_Set_PSR_PP (
-    void
-)
-{
-    ia64_ssm(IA64_PSR_PP);
-    ia64_srlz_i();
-
-    return;
-}
-
-extern void
-UTILITY_Clear_PSR_PP (
-    void
-)
-{
-    ia64_rsm(IA64_PSR_PP);
-    ia64_srlz_i();
-
-    return;
-}
-
-extern void
-UTILITY_Set_PSR_UP (
-    void
-)
-{
-    ia64_ssm(IA64_PSR_UP);
-    ia64_srlz_i();
-
-    return;
-}
-
-extern void
-UTILITY_Clear_PSR_UP (
-    void
-)
-{
-    ia64_rsm(IA64_PSR_UP);
-    ia64_srlz_i();
-
-    return;
-}
-
-extern void
-UTILITY_Set_DCR_PP (
-    void
-)
-{
-    ia64_setreg(_IA64_REG_CR_DCR, ia64_getreg(_IA64_REG_CR_DCR) | IA64_DCR_PP);
-    ia64_srlz_i();
-
-    return;
-}
-
-extern void
-UTILITY_Clear_DCR_PP (
-    void
-)
-{
-    ia64_setreg(_IA64_REG_CR_DCR, ia64_getreg(_IA64_REG_CR_DCR) & ~IA64_DCR_PP);
-    ia64_srlz_i();
-
-    return;
-}
-
-#endif
 
 extern DRV_BOOL
 UTILITY_down_read_mm (
@@ -227,20 +116,6 @@ UTILITY_up_read_mm (
 
     return;
 }
-
-#if defined(DRV_IA64)
-static __inline__ unsigned long
-itp_get_itc (
-    void
-)
-{
-    unsigned long result;
-
-    __asm__ __volatile__("mov %0=ar.itc":"=r"(result)::"memory");
-
-    return result;
-}
-#endif
 
 extern VOID
 UTILITY_Read_TSC (
@@ -326,12 +201,6 @@ UTILITY_Configure_CPU (
 {
     DISPATCH     dispatch = NULL;
     switch (dispatch_id) {
-#if defined(DRV_IA32) && !defined(DRV_ATOM_ONLY)
-        case 0:
-            SEP_PRINT_DEBUG("Set up the Core(TM) processor dispatch table\n");
-            dispatch = &core_dispatch;
-            break;
-#endif
 #if defined(DRV_IA32) || defined(DRV_EM64T)
         case 1:
             SEP_PRINT_DEBUG("Set up the Core(TM)2 processor dispatch table\n");
@@ -341,8 +210,23 @@ UTILITY_Configure_CPU (
             SEP_PRINT_DEBUG("Set up the Silvermont dispatch table\n");
             dispatch = &silvermont_dispatch;
             break;
-
-#if !defined(DRV_ATOM_ONLY)
+        case 7:
+            SEP_PRINT_DEBUG("Set up the perfver4 HTON dispatch table such as Skylake\n");
+            dispatch = &perfver4_dispatch;
+            break;
+        case 8:
+            SEP_PRINT_DEBUG("Set up the perfver4 HTOFF dispatch table such as Skylake\n");
+            dispatch = &perfver4_dispatch_htoff_mode;
+            break;
+        case 700:
+            SEP_PRINT_DEBUG("Set up the Valleyview SA dispatch table\n");
+            dispatch = &valleyview_visa_dispatch;
+            break;
+        case 710:
+        case 800:
+            SEP_PRINT_DEBUG("Set up the Silvermont/Haswell Server Power dispatch table\n");
+            dispatch = &avoton_power_dispatch;
+            break;
         case 2:
             dispatch = &corei7_dispatch;
             SEP_PRINT_DEBUG("Set up the Core i7(TM) processor dispatch table\n");
@@ -359,9 +243,9 @@ UTILITY_Configure_CPU (
             SEP_PRINT_DEBUG("Set up the Sandybridge dispatch table\n");
             dispatch = &corei7_dispatch_htoff_mode_2;
             break;
-        case 100:
-            SEP_PRINT_DEBUG("Set up the Core i7 uncore dispatch table\n");
-            dispatch = &corei7_unc_dispatch;
+        case 9:
+            dispatch = &corei7_dispatch_nehalem;
+            SEP_PRINT_DEBUG("Set up the Nehalem, Westemere dispatch table\n");
             break;
         case 200:
             SEP_PRINT_DEBUG("Set up the SNB iMC dispatch table\n");
@@ -371,7 +255,11 @@ UTILITY_Configure_CPU (
             SEP_PRINT_DEBUG("Set up the SNB Cbo dispatch table\n");
             dispatch = &snbunc_cbo_dispatch;
             break;
-#if !defined (DRV_BIGCORE)
+#if !defined (DRV_ANDROID)
+        case 100:
+            SEP_PRINT_DEBUG("Set up the Core i7 uncore dispatch table\n");
+            dispatch = &corei7_unc_dispatch;
+            break;
         case 210:
             SEP_PRINT_DEBUG("Set up the WSM-EX iMC dispatch table\n");
             dispatch = &wsmexunc_imc_dispatch;
@@ -396,12 +284,20 @@ UTILITY_Configure_CPU (
             SEP_PRINT_DEBUG("Set up the Jaketown UBOX dispatch table\n");
             dispatch = &jaketown_ubox_dispatch;
             break;
-#endif            
+#endif
+        case 300:
+            SEP_PRINT_DEBUG("Set up the SNB Power dispatch table\n");
+            dispatch = &snb_power_dispatch;
+            break;
+        case 400:
+            SEP_PRINT_DEBUG("Set up the SNB Power dispatch table\n");
+            dispatch = &snbunc_gt_dispatch;
+            break;
         case 500:
             SEP_PRINT_DEBUG("Set up the Haswell UNC NCU dispatch table\n");
             dispatch = &haswellunc_ncu_dispatch;
             break;
-#if !defined (DRV_BIGCORE)
+#if !defined (DRV_ANDROID)
         case 600:
             SEP_PRINT_DEBUG("Set up the IVT UNC CBO dispatch table\n");
             dispatch = &ivtunc_cbo_dispatch;
@@ -411,11 +307,11 @@ UTILITY_Configure_CPU (
             dispatch = &ivtunc_imc_dispatch;
             break;
         case 620:
-            SEP_PRINT("Set up the Ivytown UNC PCU dispatch table\n");
+            SEP_PRINT_DEBUG("Set up the Ivytown UNC PCU dispatch table\n");
             dispatch = &ivytown_pcu_dispatch;
             break;
         case 630:
-            SEP_PRINT("Set up the Ivytown UNC PCU dispatch table\n");
+            SEP_PRINT_DEBUG("Set up the Ivytown UNC PCU dispatch table\n");
             dispatch = &ivytown_ha_dispatch;
             break;
         case 640:
@@ -427,25 +323,64 @@ UTILITY_Configure_CPU (
             dispatch = &ivytown_r3qpi_dispatch;
             break;
         case 660:
-            SEP_PRINT("Set up the Ivytown UNC UBOX dispatch table\n");
+            SEP_PRINT_DEBUG("Set up the Ivytown UNC UBOX dispatch table\n");
             dispatch = &ivytown_ubox_dispatch;
             break;
         case 670:
-            SEP_PRINT("Set up the Ivytown UNC R2PCIe dispatch table\n");
+            SEP_PRINT_DEBUG("Set up the Ivytown UNC R2PCIe dispatch table\n");
             dispatch = &ivytown_r2pcie_dispatch;
             break;
-#endif            
-#endif
-#endif
-#if defined(DRV_IA64)
-        case 4:
-            dispatch = &montecito_dispatch;
-            SEP_PRINT_DEBUG("Set up the Itanium(TM) Processor dispatch table\n");
+        case 680:
+            SEP_PRINT_DEBUG("Set up the Ivytown UNC IRP dispatch table\n");
+            dispatch = &ivytown_irp_dispatch;
             break;
-        case 5:
-            dispatch = &poulson_dispatch;
-            SEP_PRINT_DEBUG("Set up the Itanium(TM) Processor dispatch table\n");
+#endif
+        case 720:
+            SEP_PRINT_DEBUG("Set up the Haswell Power dispatch table\n");
+            dispatch = &haswell_power_dispatch;
             break;
+#if !defined (DRV_ANDROID)
+       case 790:
+            SEP_PRINT_DEBUG("Set up the Haswell Server CBO  dispatch table\n");
+            dispatch = &haswell_server_cbo_dispatch;
+            break;
+        case 791:
+            SEP_PRINT_DEBUG("Set up the Haswell Server PCU dispatch table\n");
+            dispatch = &haswell_server_pcu_dispatch;
+            break;
+        case 792:
+            SEP_PRINT_DEBUG("Set up the Haswell Server UBOX dispatch table\n");
+            dispatch = &haswell_server_ubox_dispatch;
+            break;
+        case 793:
+            SEP_PRINT_DEBUG("Set up the Haswell Server QPILL dispatch table\n");
+            dispatch = &haswell_server_qpill_dispatch;
+            break;
+        case 794:
+            SEP_PRINT_DEBUG("Set up the Haswell Server iMC dispatch table\n");
+            dispatch = &haswell_server_imc_dispatch;
+            break;
+        case 795:
+            SEP_PRINT_DEBUG("Set up the Haswell Server HA dispatch table\n");
+            dispatch = &haswell_server_ha_dispatch;
+            break;
+        case 796:
+            SEP_PRINT_DEBUG("Set up the Haswell Server R2PCIe dispatch table\n");
+            dispatch = &haswell_server_r2pcie_dispatch;
+            break;
+        case 797:
+            SEP_PRINT_DEBUG("Set up the Haswell Server R3QPI dispatch table\n");
+            dispatch = &haswell_server_r3qpi_dispatch;
+            break;
+        case 798:
+            SEP_PRINT_DEBUG("Set up the Haswell Server SBOX dispatch table\n");
+            dispatch = &haswell_server_sbox_dispatch;
+            break;
+        case 799:
+            SEP_PRINT_DEBUG("Set up the Haswell Server IRP dispatch table\n");
+            dispatch = &haswell_server_irp_dispatch;
+            break;
+#endif
 #endif
         default:
             dispatch = NULL;
@@ -471,7 +406,6 @@ SYS_Read_MSR (
 }
 
 
-#if defined(BUILD_CHIPSET)
 /* ------------------------------------------------------------------------- */
 /*!
  * @fn       VOID UTILITY_Configure_Chipset
@@ -491,15 +425,15 @@ UTILITY_Configure_Chipset (
 )
 {
     if (CHIPSET_CONFIG_gmch_chipset(pma)) {
-#if !defined (DRV_BIGCORE)
         cs_dispatch = &gmch_dispatch;
         SEP_PRINT_DEBUG("UTLITY_Configure_Chipset: using GMCH dispatch table!\n");
-#endif
     }
+#if !defined (DRV_ANDROID)
     else if (CHIPSET_CONFIG_mch_chipset(pma) || CHIPSET_CONFIG_ich_chipset(pma)) {
         cs_dispatch = &chap_dispatch;
         SEP_PRINT_DEBUG("UTLITY_Configure_Chipset: using CHAP dispatch table!\n");
     }
+#endif
     else {
         SEP_PRINT_ERROR("UTLITY_Configure_Chipset: unable to map chipset dispatch table!\n");
     }
@@ -509,6 +443,5 @@ UTILITY_Configure_Chipset (
     return cs_dispatch;
 }
 
-#endif
 
 #endif

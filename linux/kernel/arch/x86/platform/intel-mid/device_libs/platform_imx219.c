@@ -47,7 +47,8 @@ static int imx219_flisclk_ctrl(struct v4l2_subdev *sd, int flag)
 static int imx219_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 {
 	int ret;
-
+	printk("%s imx219_gpio_ctrl() begin leong\n",__func__ );
+	
 	printk("%s: ++\n",__func__);
 
 	if (camera_reset < 0) {
@@ -77,7 +78,9 @@ static int imx219_power_ctrl(struct v4l2_subdev *sd, int flag)
 {
 	int reg_err;
 	int ret;
-
+	
+	printk("%s imx219_power_ctrl() start leong\n",__func__ );
+	
 	printk("%s: ++\n",__func__);
 
 	if (camera_reset < 0) {
@@ -98,7 +101,7 @@ static int imx219_power_ctrl(struct v4l2_subdev *sd, int flag)
 			printk("<<< camera_reset = 0\n");
 			msleep(1);
 		}
-
+#if 1   // leong
 		//turn on VCM power 2.85V
 		if (!camera_vemmc1_on) {
 			camera_vemmc1_on = 1;
@@ -110,7 +113,7 @@ static int imx219_power_ctrl(struct v4l2_subdev *sd, int flag)
 			printk("<<< VCM 2.85V = 1\n");
 			msleep(1);
 		}
-
+#endif
 		//turn on power 1.8V and 2.8V
 		if (!camera_vprog1_on) {
 			camera_vprog1_on = 1;
@@ -167,7 +170,7 @@ static int imx219_power_ctrl(struct v4l2_subdev *sd, int flag)
 			printk("<<< 1.8V and 2.8V = 0\n");
 			msleep(1);
 		}
-
+#if 1		// leong
 		//turn off VCM power 2.85V
 		if (camera_vemmc1_on) {
 			camera_vemmc1_on = 0;
@@ -179,7 +182,12 @@ static int imx219_power_ctrl(struct v4l2_subdev *sd, int flag)
 			printk("<<< VCM 2.85V = 0\n");
 			msleep(1);
 		}
+#endif
+
 	}
+	printk("%s imx219_power_ctrl() finish leong\n",__func__ );
+	
+	
 	return 0;
 }
 
@@ -193,7 +201,8 @@ static int imx219_csi_configure(struct v4l2_subdev *sd, int flag)
 static int imx219_platform_init(struct i2c_client *client)
 {
 	int ret;
-
+	
+	printk("%s\t imx219_platform_init() start leong\n", __func__);
 	printk("%s: ++\n", __func__);
 
 	//VPROG1 for 1.8V and 2.8V
@@ -202,11 +211,16 @@ static int imx219_platform_init(struct i2c_client *client)
 		dev_err(&client->dev, "vprog1 failed\n");
 		return PTR_ERR(vprog1_reg);
 	}
+	printk("%s\t regulator_get() ok leong\n", __func__);
+	
+	printk("%s\t ret = regulator_set_voltage(vprog1_reg, VPROG1_VAL(%d), VPROG1_VAL(%d));   begin leong\n", __func__, VPROG1_VAL, VPROG1_VAL);
 	ret = regulator_set_voltage(vprog1_reg, VPROG1_VAL, VPROG1_VAL);
 	if (ret) {
+		printk("%s\t regulator_set_voltage() fail leong\n", __func__);
 		dev_err(&client->dev, "vprog1 set failed\n");
 		regulator_put(vprog1_reg);
 	}
+	printk("%s\t regulator_set_voltage() ok leong\n", __func__);
 
 	//VPROG2 for 1.2V
 	vprog2_reg = regulator_get(&client->dev, "vprog2");
@@ -214,27 +228,31 @@ static int imx219_platform_init(struct i2c_client *client)
 		dev_err(&client->dev, "vprog2 failed\n");
 		return PTR_ERR(vprog2_reg);
 	}
+	printk("%s\t ret = regulator_set_voltage(vprog2_reg, VPROG2_VAL, VPROG2_VAL);   begin leong\n", __func__, VPROG2_VAL, VPROG2_VAL);
 	ret = regulator_set_voltage(vprog2_reg, VPROG2_VAL, VPROG2_VAL);
 	if (ret) {
 		dev_err(&client->dev, "vprog2 set failed\n");
 		regulator_put(vprog2_reg);
 	}
-
+#if 1		// leong
 	//VEMMC1 for VCM, 2.85V
 	vemmc1_reg = regulator_get(&client->dev, "vemmc1");
 	if (IS_ERR(vemmc1_reg)) {
 		dev_err(&client->dev, "vemmc1 failed\n");
 		return PTR_ERR(vemmc1_reg);
 	}
-
+#endif
 	return ret;
 }
 
 static int imx219_platform_deinit(void)
 {
+	printk("%s\t imx219_platform_deinit() start leong\n",__func__);
 	regulator_put(vprog1_reg);
 	regulator_put(vprog2_reg);
 	regulator_put(vemmc1_reg);
+	
+	printk("%s\t imx219_platform_deinit() finish leong\n",__func__);
 }
 
 static struct camera_sensor_platform_data imx219_sensor_platform_data = {
@@ -248,6 +266,7 @@ static struct camera_sensor_platform_data imx219_sensor_platform_data = {
 
 void *imx219_platform_data(void *info)
 {
+	printk("imx219_platform_data(void *info)  leong\n");
 	camera_reset = -1;
 	return &imx219_sensor_platform_data;
 }

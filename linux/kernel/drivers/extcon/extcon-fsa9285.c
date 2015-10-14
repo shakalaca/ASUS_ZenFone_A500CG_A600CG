@@ -530,11 +530,7 @@ static int fsa9285_irq_init(struct fsa9285_chip *chip)
 	chip->man_chg_cntl = man_chg_cntl;
 
 	/* get kernel GPIO number */
-#ifdef CONFIG_BYT_ULPMC_BATTERY
-	gpio_num = acpi_get_gpio("\\_SB.GPO2", 0x6);
-#else
 	gpio_num = acpi_get_gpio_by_index(&client->dev, 0, &gpio_info);
-#endif
 	/* get irq number */
 	chip->client->irq = gpio_to_irq(gpio_num);
 	if (client->irq) {
@@ -586,9 +582,7 @@ static int fsa9285_probe(struct i2c_client *client,
 
 	chip->client = client;
 	chip->pdata = dev->platform_data;
-#ifndef CONFIG_BYT_ULPMC_BATTERY
 	chip->pdata =   fsa9285_platform_data();
-#endif
 	i2c_set_clientdata(client, chip);
 	chip_ptr = chip;
 

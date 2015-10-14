@@ -37,6 +37,7 @@
 #include "../sst_platform.h"
 #include "../platform_ipc_v2.h"
 #include "sst.h"
+#include "sst_trace.h"
 
 /**
  * sst_alloc_stream - Send msg for a new stream ID
@@ -138,6 +139,8 @@ int sst_alloc_stream_mrfld(char *params, struct sst_block *block)
 	alloc_param.ring_buf_info[0].addr = str_params->aparams.ring_buf_info[0].addr;
 	alloc_param.ring_buf_info[0].size = str_params->aparams.ring_buf_info[0].size;
 	alloc_param.frag_size = str_params->aparams.frag_size;
+	alloc_param.no_irq = str_params->no_irq;
+	pr_debug("Period Elapsed request to LPE is set to %d\n", alloc_param.no_irq);
 
 	memcpy(&alloc_param.codec_params, &str_params->sparams,
 			sizeof(struct snd_sst_stream_params));
@@ -148,6 +151,7 @@ int sst_alloc_stream_mrfld(char *params, struct sst_block *block)
 	 * Currently hardcoding as per FW reqm.
 	 */
 	num_ch = sst_get_num_channel(str_params);
+	pr_debug("%s num_channel = %d\n", __func__, num_ch);
 	for (i = 0; i < 8; i++) {
 		if (i < num_ch)
 			alloc_param.codec_params.uc.pcm_params.channel_map[i] = i;
@@ -193,10 +197,13 @@ int sst_alloc_stream_mrfld(char *params, struct sst_block *block)
 	memcpy(msg->mailbox_data, &dsp_hdr, sizeof(dsp_hdr));
 	memcpy(msg->mailbox_data + sizeof(dsp_hdr), &alloc_param,
 			sizeof(alloc_param));
+	trace_sst_stream("ALLOC ->", str_id, pipe_id);
 	str_info = &sst_drv_ctx->streams[str_id];
 	pr_debug("header:%x\n", msg->mrfld_header.p.header_high.full);
 	pr_debug("response rqd: %x", msg->mrfld_header.p.header_high.part.res_rqd);
 	pr_debug("calling post_message\n");
+	pr_info("Alloc for str %d pipe %#x\n", str_id, pipe_id);
+
 	sst_add_to_dispatch_list_and_post(sst_drv_ctx, msg);
 	return str_id;
 }
@@ -239,6 +246,9 @@ int sst_start_stream(int str_id)
 				str_info->pipe_id, sizeof(u16));
 		memcpy(msg->mailbox_data, &dsp_hdr, sizeof(dsp_hdr));
 		memset(msg->mailbox_data + sizeof(dsp_hdr), 0, sizeof(u16));
+		trace_sst_stream("START ->", str_id, str_info->pipe_id);
+		pr_info("Start for str %d pipe %#x\n", str_id, str_info->pipe_id);
+
 	} else {
 		pr_debug("fill START_STREAM for CTP\n");
 		sst_fill_header(&msg->header, IPC_IA_START_STREAM, 1, str_id);
@@ -277,6 +287,7 @@ int sst_send_byte_stream_mrfld(void *sbytes)
 	msg->mrfld_header.p.header_low_payload = length;
 	pr_debug("length is %d\n", length);
 	memcpy(msg->mailbox_data, &bytes->bytes, bytes->len);
+	trace_sst_stream("BYTES ->", bytes->type, bytes->pipe_id);
 	if (bytes->block) {
 		block = sst_create_block(sst_drv_ctx, bytes->ipc_msg, pvt_id);
 		if (block == NULL) {
@@ -302,6 +313,7 @@ int sst_send_byte_stream_mrfld(void *sbytes)
 			unsigned char *r = block->data;
 			pr_debug("read back %d bytes", bytes->len);
 			memcpy(bytes->bytes, r, bytes->len);
+			trace_sst_stream("BYTES <-", bytes->type, bytes->pipe_id);
 		}
 	}
 	if (bytes->block)
@@ -378,6 +390,7 @@ int sst_pause_stream(int str_id)
 			sst_fill_header_dsp(&dsp_hdr, IPC_IA_PAUSE_STREAM_MRFLD,
 						str_info->pipe_id, 0);
 			memcpy(msg->mailbox_data, &dsp_hdr, sizeof(dsp_hdr));
+			trace_sst_stream("PAUSE ->", str_id, str_info->pipe_id);
 		} else {
 			retval = sst_create_block_and_ipc_msg(&msg, false,
 					sst_drv_ctx, &block,
@@ -395,9 +408,9 @@ int sst_pause_stream(int str_id)
 			str_info->status = STREAM_PAUSED;
 		} else if (retval == SST_ERR_INVALID_STREAM_ID) {
 			retval = -EINVAL;
-			mutex_lock(&sst_drv_ctx->stream_lock);
+			mutex_lock(&sst_drv_ctx->sst_lock);
 			sst_clean_stream(str_info);
-			mutex_unlock(&sst_drv_ctx->stream_lock);
+			mutex_unlock(&sst_drv_ctx->sst_lock);
 		}
 	} else {
 		retval = -EBADRQC;
@@ -447,6 +460,7 @@ int sst_resume_stream(int str_id)
 						IPC_IA_RESUME_STREAM_MRFLD,
 						str_info->pipe_id, 0);
 			memcpy(msg->mailbox_data, &dsp_hdr, sizeof(dsp_hdr));
+			trace_sst_stream("RESUME->", str_id, str_info->pipe_id);
 		} else {
 			retval = sst_create_block_and_ipc_msg(&msg, false,
 					sst_drv_ctx, &block,
@@ -467,9 +481,9 @@ int sst_resume_stream(int str_id)
 			str_info->prev = STREAM_PAUSED;
 		} else if (retval == -SST_ERR_INVALID_STREAM_ID) {
 			retval = -EINVAL;
-			mutex_lock(&sst_drv_ctx->stream_lock);
+			mutex_lock(&sst_drv_ctx->sst_lock);
 			sst_clean_stream(str_info);
-			mutex_unlock(&sst_drv_ctx->stream_lock);
+			mutex_unlock(&sst_drv_ctx->sst_lock);
 		}
 	} else {
 		retval = -EBADRQC;
@@ -520,6 +534,9 @@ int sst_drop_stream(int str_id)
 			sst_fill_header_dsp(&dsp_hdr, IPC_IA_DROP_STREAM_MRFLD,
 					str_info->pipe_id, 0);
 			memcpy(msg->mailbox_data, &dsp_hdr, sizeof(dsp_hdr));
+			trace_sst_stream("STOP  ->", str_id, str_info->pipe_id);
+			pr_info("Stop for str %d pipe %#x\n", str_id, str_info->pipe_id);
+
 			sst_drv_ctx->ops->sync_post_message(msg);
 		}
 	} else {
@@ -590,6 +607,7 @@ int sst_drain_stream(int str_id, bool partial_drain)
 		memcpy(msg->mailbox_data, &dsp_hdr, sizeof(dsp_hdr));
 		memcpy(msg->mailbox_data + sizeof(dsp_hdr),
 				&partial_drain, sizeof(u8));
+		trace_sst_stream("DRAIN ->", str_id, str_info->pipe_id);
 	} else {
 		retval = sst_create_block_and_ipc_msg(&msg, false,
 				sst_drv_ctx, &block,
@@ -630,7 +648,7 @@ int sst_free_stream(int str_id)
 	pr_debug("SST DBG:sst_free_stream for %d\n", str_id);
 
 	mutex_lock(&sst_drv_ctx->sst_lock);
-	if (sst_drv_ctx->sst_state == SST_UN_INIT) {
+	if (sst_drv_ctx->sst_state == SST_RESET) {
 		mutex_unlock(&sst_drv_ctx->sst_lock);
 		return -ENODEV;
 	}
@@ -660,6 +678,9 @@ int sst_free_stream(int str_id)
 			sst_fill_header_dsp(&dsp_hdr, IPC_IA_FREE_STREAM_MRFLD,
 						str_info->pipe_id,  0);
 			memcpy(msg->mailbox_data, &dsp_hdr, sizeof(dsp_hdr));
+			trace_sst_stream("FREE  ->", str_id, str_info->pipe_id);
+			pr_info("Free for str %d pipe %#x\n", str_id, str_info->pipe_id);
+
 		} else {
 			retval = sst_create_block_and_ipc_msg(&msg, false,
 						sst_drv_ctx, &block,
@@ -683,9 +704,9 @@ int sst_free_stream(int str_id)
 		ops->post_message(&sst_drv_ctx->ipc_post_msg_wq);
 		retval = sst_wait_timeout(sst_drv_ctx, block);
 		pr_debug("sst: wait for free returned %d\n", retval);
-		mutex_lock(&sst_drv_ctx->stream_lock);
+		mutex_lock(&sst_drv_ctx->sst_lock);
 		sst_clean_stream(str_info);
-		mutex_unlock(&sst_drv_ctx->stream_lock);
+		mutex_unlock(&sst_drv_ctx->sst_lock);
 		pr_debug("SST DBG:Stream freed\n");
 		sst_free_block(sst_drv_ctx, block);
 	} else {
@@ -698,7 +719,7 @@ int sst_free_stream(int str_id)
 }
 
 int sst_request_vtsv_file(char *fname, struct intel_sst_drv *ctx,
-		void **out_file, u32 *out_size)
+		void **out_file, u32 *out_size, int max_size)
 {
 	int retval = 0;
 	const struct firmware *file;
@@ -720,9 +741,13 @@ int sst_request_vtsv_file(char *fname, struct intel_sst_drv *ctx,
 		pr_err("request fw failed %d\n", retval);
 		return retval;
 	}
+	if (file->size > max_size) {
+		pr_err("VTSV file is exceeding max limit %x\n", max_size);
+		return -ENOMEM;
+	}
 
-	if ((*out_file == NULL) || (*out_size < file->size)) {
-		retval = sst_get_next_lib_mem(&ctx->lib_mem_mgr, file->size,
+	if (*out_file == NULL) {
+		retval = sst_get_next_lib_mem(&ctx->lib_mem_mgr, max_size,
 			&file_base);
 		*out_file = (void *)file_base;
 	}
@@ -743,8 +768,8 @@ int sst_format_vtsv_message(struct intel_sst_drv *ctx,
 	struct snd_sst_vtsv_info vinfo;
 	struct ipc_post *msg;
 
-	BUG_ON((unsigned long)ctx->vcache.file1_in_mem & 0xffffffff00000000);
-	BUG_ON((unsigned long)ctx->vcache.file2_in_mem & 0xffffffff00000000);
+	BUG_ON((unsigned long)(ctx->vcache.file1_in_mem) & 0xffffffff00000000ULL);
+	BUG_ON((unsigned long)(ctx->vcache.file2_in_mem) & 0xffffffff00000000ULL);
 
 	vinfo.vfiles[0].addr = (u32)((unsigned long)ctx->vcache.file1_in_mem
 				& 0xffffffff);
@@ -752,6 +777,10 @@ int sst_format_vtsv_message(struct intel_sst_drv *ctx,
 	vinfo.vfiles[1].addr = (u32)((unsigned long)ctx->vcache.file2_in_mem
 				& 0xffffffff);
 	vinfo.vfiles[1].size = ctx->vcache.size2;
+	if (vinfo.vfiles[0].addr == 0 || vinfo.vfiles[1].addr == 0) {
+		pr_err("%s: invalid address for vtsv libs\n", __func__);
+		return -EINVAL;
+	}
 
 	/* Create the vtsv message */
 	pvt_id = sst_assign_pvt_id(ctx);
@@ -777,26 +806,41 @@ int sst_format_vtsv_message(struct intel_sst_drv *ctx,
 	return 0;
 }
 
-int sst_send_vtsv_data_to_fw(struct intel_sst_drv *ctx)
+/* Total 48 KB is allocated for vtsv net/grammar file */
+#define VTSV_NET_MAX_SIZE 0xB800	/* max size for vtsv net file is 46 KB */
+#define VTSV_GRAMMAR_MAX_SIZE 0x800	/* max size for vtsv grammar file is 2 KB */
+
+int sst_cache_vtsv_libs(struct intel_sst_drv *ctx)
 {
-	int retval = 0;
-	struct ipc_post *msg = NULL;
-	struct sst_block *block = NULL;
+	int retval;
+	char buff[SST_MAX_VTSV_PATH_BUF_LEN];
+
+	snprintf(buff, sizeof(buff), "%s/%s", ctx->vtsv_path.bytes, "vtsv_net.bin");
 
 	/* Download both the data files */
-	retval = sst_request_vtsv_file("vtsv_net_119a.bin", ctx,
-			&ctx->vcache.file1_in_mem, &ctx->vcache.size1);
+	retval = sst_request_vtsv_file(buff, ctx,
+			&ctx->vcache.file1_in_mem, &ctx->vcache.size1, VTSV_NET_MAX_SIZE);
 	if (retval) {
 		pr_err("vtsv data file1 request failed %d\n", retval);
 		return retval;
 	}
 
-	retval = sst_request_vtsv_file("vtsv_grammar_119a.bin", ctx,
-			&ctx->vcache.file2_in_mem, &ctx->vcache.size2);
+	snprintf(buff, sizeof(buff), "%s/%s", ctx->vtsv_path.bytes, "vtsv_grammar.bin");
+
+	retval = sst_request_vtsv_file(buff, ctx,
+			&ctx->vcache.file2_in_mem, &ctx->vcache.size2, VTSV_GRAMMAR_MAX_SIZE);
 	if (retval) {
 		pr_err("vtsv data file2 request failed %d\n", retval);
 		return retval;
 	}
+	return retval;
+}
+
+int sst_send_vtsv_data_to_fw(struct intel_sst_drv *ctx)
+{
+	int retval = 0;
+	struct ipc_post *msg = NULL;
+	struct sst_block *block = NULL;
 
 	retval = sst_format_vtsv_message(ctx, &msg, &block);
 	if (retval) {

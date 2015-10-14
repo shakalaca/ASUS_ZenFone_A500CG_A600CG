@@ -37,12 +37,12 @@
 #define DFRGX_DEBUG 0
 
 #if (defined DFRGX_DEBUG) && DFRGX_DEBUG
-#define DFRGX_DPF(mask,...) if (mask & DFRGX_DEBUG_MASK ) \
+#define DFRGX_DPF(mask, ...) if (mask & DFRGX_DEBUG_MASK) \
 		{ \
 			printk(DFRGX_ALERT __VA_ARGS__); \
 		}
 #else
-#define DFRGX_DPF(mask,...)
+#define DFRGX_DPF(mask, ...)
 #endif
 #endif /*DEVFREQ_DEBUG_H*/
 

@@ -112,6 +112,7 @@ struct smb347_charger_platform_data {
 	struct power_supply_throttle *throttle_states;
 	struct ps_batt_chg_prof *chg_profile;
 	bool	detect_chg;
+	bool	use_regulator;
 	int	gpio_mux;
 };
 

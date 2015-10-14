@@ -1128,10 +1128,16 @@ static int mn34130_s_stream(struct v4l2_subdev *sd, int enable)
 		printk("<ASUS> Detect first frame coming\n");
 		// Detect first frame coming
 		delayTime = 0;
-		ret = mn34130_read_reg(client, MN34130_8BIT, 0x0005, &rvalue);
+		ret = mn34130_read_reg(client
+														, MN34130_8BIT
+														, 0x0005
+														, (u16 *)&rvalue);	//  expected 'u16 *' but argument is of type 'unsigned int *'
 		tmp = rvalue;
 		while(tmp == rvalue){
-			ret = mn34130_read_reg(client, MN34130_8BIT, 0x0005, &rvalue);
+			ret = mn34130_read_reg(client
+															, MN34130_8BIT
+															, 0x0005
+															,  (u16 *)&rvalue);
 			mdelay(1);
 			delayTime++;
 			printk("<ASUS> rvalue = 0x%x\n", rvalue);
@@ -1755,6 +1761,8 @@ static int mn34130_probe(struct i2c_client *client,
 	struct mn34130_device *dev;
 	unsigned int i;
 	int ret;
+
+	printk("%s\t start leong_p\n",__func__);
 
 	/* allocate sensor device & init sub device */
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);

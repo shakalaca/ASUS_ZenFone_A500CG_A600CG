@@ -128,9 +128,7 @@ static enum psy_algo_stat pse_get_next_cc_cv(struct batt_props bat_prop,
 	if ((bat_prop.status == POWER_SUPPLY_STATUS_DISCHARGING) ||
 		(bat_prop.status == POWER_SUPPLY_STATUS_NOT_CHARGING) ||
 			bat_prop.voltage_now < maint_exit_volt) {
-
 		algo_stat = PSY_ALGO_STAT_NOT_CHARGE;
-
 	}
 
 	/* read cc and cv based on temperature and algorithm status*/
@@ -140,6 +138,13 @@ static enum psy_algo_stat pse_get_next_cc_cv(struct batt_props bat_prop,
 		/* if status is full and voltage is lower than maintenance lower
 		*  threshold change status to maintenenance
 		*/
+
+		if (algo_stat == PSY_ALGO_STAT_FULL) {
+			*cv = pse_mod_bprof->temp_mon_range
+					[tzone].full_chrg_vol;
+			*cc = pse_mod_bprof->temp_mon_range
+					[tzone].full_chrg_cur;
+		}
 
 		if (algo_stat == PSY_ALGO_STAT_FULL && (bat_prop.voltage_now <=
 			pse_mod_bprof->temp_mon_range[tzone].maint_chrg_vol_ll))
@@ -158,10 +163,16 @@ static enum psy_algo_stat pse_get_next_cc_cv(struct batt_props bat_prop,
 		algo_stat = PSY_ALGO_STAT_CHARGE;
 	}
 
-	if (is_battery_full(bat_prop, pse_mod_bprof, *cv)) {
-		*cc = *cv = 0;
-		algo_stat = PSY_ALGO_STAT_FULL;
+	if (bat_prop.voltage_now > *cv) {
+		algo_stat = PSY_ALGO_STAT_NOT_CHARGE;
+		return algo_stat;
 	}
+
+	if (algo_stat == PSY_ALGO_STAT_FULL)
+		return algo_stat;
+
+	if (is_battery_full(bat_prop, pse_mod_bprof, *cv))
+		algo_stat = PSY_ALGO_STAT_FULL;
 
 	return algo_stat;
 }

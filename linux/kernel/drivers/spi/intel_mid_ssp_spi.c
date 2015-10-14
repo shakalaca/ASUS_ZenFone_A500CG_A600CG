@@ -42,6 +42,7 @@
 #include <linux/pm_qos.h>
 #include <linux/pm_runtime.h>
 #include <linux/completion.h>
+#include <linux/acpi.h>
 #include <asm/intel-mid.h>
 
 #include <linux/spi/spi.h>
@@ -83,8 +84,7 @@ static void dump_trailer(const struct device *dev, char *buf, int len, int sz)
 static inline u8 ssp_cfg_get_mode(u8 ssp_cfg)
 {
 	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER ||
-	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE ||
-	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON)
+	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)
 		return (ssp_cfg) & 0x03;
 	else
 		return (ssp_cfg) & 0x07;
@@ -93,8 +93,7 @@ static inline u8 ssp_cfg_get_mode(u8 ssp_cfg)
 static inline u8 ssp_cfg_get_spi_bus_nb(u8 ssp_cfg)
 {
 	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER ||
-	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE ||
-	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON)
+	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)
 		return ((ssp_cfg) >> 2) & 0x07;
 	else
 		return ((ssp_cfg) >> 3) & 0x07;
@@ -103,8 +102,7 @@ static inline u8 ssp_cfg_get_spi_bus_nb(u8 ssp_cfg)
 static inline u8 ssp_cfg_is_spi_slave(u8 ssp_cfg)
 {
 	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER ||
-	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE ||
-	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON)
+	    intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)
 		return (ssp_cfg) & 0x20;
 	else
 		return (ssp_cfg) & 0x40;
@@ -998,8 +996,7 @@ static int handle_message(struct ssp_drv_context *sspc)
 
 	/* [REVERT ME] Bug in status register clear for Tangier simulation */
 	if ((intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_TANGIER) ||
-	    (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE) ||
-	    (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON)) {
+	    (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)) {
 		if ((intel_mid_identify_sim() != INTEL_MID_CPU_SIMULATION_VP &&
 		    (intel_mid_identify_sim() != INTEL_MID_CPU_SIMULATION_HVP)))
 			write_SSSR(sspc->clear_sr, reg);
@@ -1310,21 +1307,6 @@ static int intel_mid_ssp_spi_probe(struct pci_dev *pdev,
 		goto err_abort_probe;
 	}
 
-	/*
-	* KKSANAG
-	* Remove registering SSP6(pci:0000:00:07.2)
-	* or it will cause tons of unprovoked interrupts
-	* This issue will be fixed in RTL. Then no need of this
-	* fix
-	*/
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_CARBONCANYON) {
-		dev_info(dev, "The devfn (%0xh)\n", pdev->devfn);
-		if (0x2 == (pdev->devfn & 0x03)) {
-			dev_info(dev, "The SSP6 needs to be disabled, causing spurious interrupts\n");
-			goto err_abort_probe;
-		}
-	}
-
 	dev_info(dev, "found PCI SSP controller (ID: %04xh:%04xh cfg: %02xh)\n",
 		pdev->vendor, pdev->device, ssp_cfg);
 
@@ -1527,6 +1509,21 @@ static void intel_mid_ssp_spi_remove(struct pci_dev *pdev)
 	return;
 }
 
+static int intel_mid_ssp_spi_plat_probe(struct platform_device *pdev)
+{
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_allow(&pdev->dev);
+
+	return 0;
+}
+
+static int intel_mid_ssp_spi_plat_remove(struct platform_device *pdev)
+{
+	pm_runtime_forbid(&pdev->dev);
+	return;
+}
+
 #ifdef CONFIG_PM
 static int intel_mid_ssp_spi_suspend(struct device *dev)
 {
@@ -1632,6 +1629,12 @@ static const struct dev_pm_ops intel_mid_ssp_spi_pm_ops = {
 	.runtime_idle = intel_mid_ssp_spi_runtime_idle,
 };
 
+static const struct dev_pm_ops intel_mid_ssp_spi_plat_pm_ops = {
+	.runtime_suspend = intel_mid_ssp_spi_runtime_suspend,
+	.runtime_resume = intel_mid_ssp_spi_runtime_resume,
+	.runtime_idle = intel_mid_ssp_spi_runtime_idle,
+};
+
 static struct pci_driver intel_mid_ssp_spi_driver = {
 	.name =		DRIVER_NAME,
 	.id_table =	pci_ids,
@@ -1639,6 +1642,29 @@ static struct pci_driver intel_mid_ssp_spi_driver = {
 	.remove =	intel_mid_ssp_spi_remove,
 	.driver =	{
 		.pm	= &intel_mid_ssp_spi_pm_ops,
+	},
+};
+
+#ifdef CONFIG_ACPI
+static const struct acpi_device_id intel_mid_ssp_spi_acpi_ids[] = {
+	{ "8086228E", 0},
+	{ }
+};
+MODULE_DEVICE_TABLE(acpi, intel_mid_ssp_spi_acpi_ids);
+#endif
+
+static struct platform_driver intel_mid_ssp_spi_plat_driver = {
+	.remove		= intel_mid_ssp_spi_plat_remove,
+	.driver		= {
+		.name	= DRIVER_NAME,
+		.owner	= THIS_MODULE,
+/* Disable PM only when kgdb(poll mode uart) is enabled */
+#if defined(CONFIG_PM) && !defined(CONFIG_CONSOLE_POLL)
+		.pm     = &intel_mid_ssp_spi_plat_pm_ops,
+#endif
+#ifdef CONFIG_ACPI
+		.acpi_match_table = ACPI_PTR(intel_mid_ssp_spi_acpi_ids),
+#endif
 	},
 };
 
@@ -1655,3 +1681,17 @@ static void __exit intel_mid_ssp_spi_exit(void)
 }
 
 module_exit(intel_mid_ssp_spi_exit);
+
+static int __init intel_mid_ssp_spi_plat_init(void)
+{
+	return platform_driver_probe(&intel_mid_ssp_spi_plat_driver, intel_mid_ssp_spi_plat_probe);
+}
+
+late_initcall(intel_mid_ssp_spi_plat_init);
+
+static void __exit intel_mid_ssp_spi_plat_exit(void)
+{
+	platform_driver_unregister(&intel_mid_ssp_spi_plat_driver);
+}
+
+module_exit(intel_mid_ssp_spi_plat_exit);

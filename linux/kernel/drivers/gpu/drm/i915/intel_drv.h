@@ -27,6 +27,7 @@
 
 #include <linux/i2c.h>
 #include <linux/hdmi.h>
+#include <linux/switch.h>
 #include <drm/i915_drm.h>
 #include "i915_drv.h"
 #include <drm/drm_crtc.h>
@@ -52,7 +53,7 @@
 			break;						\
 		}							\
 		if (W && drm_can_sleep())  {				\
-			msleep(W);					\
+			usleep_range(W*1000, W*2*1000);					\
 		} else {						\
 			cpu_relax();					\
 		}							\
@@ -225,13 +226,18 @@ struct intel_encoder {
 	 * be set correctly before calling this function. */
 	void (*get_config)(struct intel_encoder *,
 			   struct intel_crtc_config *pipe_config);
+	void (*set_drrs_state)(struct intel_encoder *);
 	int crtc_mask;
 	enum hpd_pin hpd_pin;
 };
 
 struct intel_panel {
 	struct drm_display_mode *fixed_mode;
+	struct drm_display_mode *downclock_mode;
+	struct drm_display_mode *target_mode;
 	int fitting_mode;
+	bool downclock_avail;
+	int downclock;
 };
 
 struct intel_connector {
@@ -339,6 +345,20 @@ struct intel_crtc_config {
 	int pipe_bpp;
 	struct intel_link_m_n dp_m_n;
 
+	/* m2_n2 for eDP downclock */
+	struct intel_link_m_n dp_m2_n2;
+
+	/* m3_n3 for eDP Media Playback RR */
+	struct intel_link_m_n dp_m3_n3;
+
+	struct intel_dsi_mnp dsi_mnp;
+
+	/* Divider values for DSI downclock */
+	struct intel_dsi_mnp dsi_mnp2;
+
+	/* Divider values for DSI Media Playback RR */
+	struct intel_dsi_mnp dsi_mnp3;
+
 	/*
 	 * Frequence the dpll for the port should run at. Differs from the
 	 * adjusted dotclock e.g. for DP or 12bpc hdmi mode.
@@ -368,12 +388,38 @@ struct intel_crtc_config {
 	bool ips_enabled;
 };
 
+struct intel_disp_reg {
+	u32 pfit_control;
+	u32 pipesrc;
+	u32 stride;
+	u32 pos;
+	u32 tileoff;
+	u32 linoff;
+	u32 size;
+	u32 cntr;
+	u32 surf;
+	u32 dspcntr;
+	u32 spacntr;
+	u32 spbcntr;
+};
+
+struct intel_ddl_reg {
+	u32 plane_ddl;
+	u32 plane_ddl_mask;
+	u32 spritea_ddl;
+	u32 spritea_ddl_mask;
+	u32 spriteb_ddl;
+	u32 spriteb_ddl_mask;
+};
+
 struct intel_crtc {
 	struct drm_crtc base;
 	enum pipe pipe;
 	enum plane plane;
 	bool rotate180;
 	u8 lut_r[256], lut_g[256], lut_b[256];
+	u32 flags;
+	__u32 z_order;
 	/*
 	 * Whether the crtc and the connected output pipeline is active. Implies
 	 * that crtc->enabled is set, i.e. the current mode configuration has
@@ -384,6 +430,7 @@ struct intel_crtc {
 	bool s0ix_suspend_state;
 	bool primary_disabled; /* is the crtc obscured by a plane? */
 	bool lowfreq_avail;
+	bool pri_update;
 	struct intel_overlay *overlay;
 	struct intel_unpin_work *unpin_work;
 	struct intel_unpin_work *sprite_unpin_work;
@@ -406,6 +453,7 @@ struct intel_crtc {
 	bool primary_alpha;
 	bool sprite0_alpha;
 	bool sprite1_alpha;
+	uint32_t last_pixel_size;
 
 	/* reset counter value when the last flip was submitted */
 	unsigned int reset_counter;
@@ -413,6 +461,13 @@ struct intel_crtc {
 	/* Access to these should be protected by dev_priv->irq_lock. */
 	bool cpu_fifo_underrun_disabled;
 	bool pch_fifo_underrun_disabled;
+	/* panel fitter input src size */
+	uint32_t scaling_src_size;
+	/* panel fitter status flag */
+	bool	pfit_en_status;
+	bool	dummy_flip;
+	struct intel_disp_reg reg;
+	struct intel_ddl_reg reg_ddl;
 };
 
 struct intel_plane_wm_parameters {
@@ -431,10 +486,14 @@ struct intel_plane {
 	int max_downscale;
 	bool rotate180;
 	u32 lut_r[1024], lut_g[1024], lut_b[1024];
+	u32 flags;
+	__u32 z_order;
+	__u32 rrb2_enable;
 	int crtc_x, crtc_y;
 	unsigned int crtc_w, crtc_h;
 	uint32_t src_x, src_y;
 	uint32_t src_w, src_h;
+	bool last_plane_state;
 
 	/* Since we need to change the watermarks before/after
 	 * enabling/disabling the planes, we need to store the parameters here
@@ -444,6 +503,8 @@ struct intel_plane {
 	struct intel_plane_wm_parameters wm;
 	/* Added for deffered plane disable*/
 	struct work_struct work;
+	struct intel_disp_reg reg;
+	bool pri_update;
 
 	void (*update_plane)(struct drm_plane *plane,
 			     struct drm_crtc *crtc,
@@ -503,6 +564,16 @@ struct cxsr_latency {
 #define   HDMIB_HOTPLUG_LIVE_STATUS             (1 << 29)
 #define   HDMIC_HOTPLUG_LIVE_STATUS             (1 << 28)
 #define   HDMID_HOTPLUG_LIVE_STATUS             (1 << 27)
+#define   HDMI_LIVE_STATUS_BASE			30
+#define   HDMI_LIVE_STATUS_DELAY_STEP		10
+#define   HDMI_EDID_RETRY_COUNT			3
+
+enum monitor_changed_status {
+	MONITOR_INVALID = 0,
+	MONITOR_UNCHANGED,
+	MONITOR_CHANGED,
+	MONITOR_PLUG_UNPLUG
+};
 
 struct intel_hdmi {
 	u32 hdmi_reg;
@@ -515,7 +586,9 @@ struct intel_hdmi {
 	enum panel_fitter pfit;
 	bool rgb_quant_range_selectable;
 	struct edid *edid;
+	struct intel_connector *attached_connector;
 	uint32_t edid_mode_count;
+	struct switch_dev sdev;
 	void (*write_infoframe)(struct drm_encoder *encoder,
 				enum hdmi_infoframe_type type,
 				const uint8_t *frame, ssize_t len);
@@ -613,11 +686,19 @@ struct intel_unpin_work {
 #define NANOSEC_MULTIPLIER	1000000000
 #define INVERSE_BEND_RESOLUTION	(VLV_ACCUMULATOR_SIZE*48*128)
 
+/* Added to control Backlight Slope programming */
+#define LP8556_MODE_SL_50MS_FL_HV_PWM_12BIT      0x3E
+
 struct intel_program_clock_bending {
 	u32 dotclock;
 	u32 referenceclk;
 	u32 targetclk;
-	bool is_enable;
+};
+
+struct intel_program_clock_spread {
+	u32 dotclock;
+	u32 referenceclk;
+	u32 targetclk;
 };
 
 int intel_pch_rawclk(struct drm_device *dev);
@@ -630,8 +711,11 @@ void intel_cleanup_modes(struct drm_connector *connector);
 extern void intel_attach_force_audio_property(struct drm_connector *connector);
 extern void intel_attach_broadcast_rgb_property(struct drm_connector *connector);
 
+extern void intel_attach_drrs_capability_property(struct drm_connector *connector,
+							unsigned int init_val);
 extern bool intel_pipe_has_type(const struct drm_crtc *crtc, int type);
 extern void intel_attach_force_pfit_property(struct drm_connector *connector);
+extern void intel_attach_scaling_src_size_property(struct drm_connector *connector);
 extern void intel_crt_init(struct drm_device *dev);
 extern void intel_hdmi_init(struct drm_device *dev,
 			    int hdmi_reg, enum port port);
@@ -677,7 +761,8 @@ extern void intel_flush_display_plane(struct drm_i915_private *dev_priv,
 
 /* intel_panel.c */
 extern int intel_panel_init(struct intel_panel *panel,
-			    struct drm_display_mode *fixed_mode);
+			struct drm_display_mode *fixed_mode,
+			struct drm_display_mode *downclock_mode);
 extern void intel_panel_fini(struct intel_panel *panel);
 
 extern void intel_fixed_panel_mode(struct drm_display_mode *fixed_mode,
@@ -699,7 +784,15 @@ extern enum drm_connector_status intel_panel_detect(struct drm_device *dev);
 extern void intel_get_cd_cz_clk(struct drm_i915_private *dev_priv, int *cd_clk,
 				int *cz_clk);
 
+extern struct drm_display_mode *intel_find_panel_downclock(
+				struct drm_device *dev,
+				struct drm_display_mode *fixed_mode,
+				struct drm_connector *connector);
 
+extern struct drm_display_mode *intel_dsi_calc_panel_downclock(
+				struct drm_device *dev,
+				struct drm_display_mode *fixed_mode,
+				struct drm_connector *connector);
 struct intel_set_config {
 	struct drm_encoder **save_connector_encoders;
 	struct drm_crtc **save_encoder_crtcs;
@@ -922,6 +1015,15 @@ extern bool intel_set_pch_fifo_underrun_reporting(struct drm_device *dev,
 extern void intel_edp_psr_enable(struct intel_dp *intel_dp);
 extern void intel_edp_psr_disable(struct intel_dp *intel_dp);
 extern void intel_edp_psr_update(struct drm_device *dev);
+extern int intel_drrs_init(struct drm_device *dev,
+				struct intel_connector *intel_connector,
+				struct drm_display_mode *downclock_mode);
+extern int intel_media_playback_drrs_configure(struct drm_device *dev,
+					struct drm_display_mode *mode);
+extern bool is_media_playback_drrs_request(struct drm_mode_set *set);
+
+extern void intel_update_drrs(struct drm_device *dev);
+extern void intel_disable_drrs(struct drm_device *dev);
 extern void hsw_disable_lcpll(struct drm_i915_private *dev_priv,
 			      bool switch_to_fclk, bool allow_power_down);
 extern void hsw_restore_lcpll(struct drm_i915_private *dev_priv);
@@ -947,8 +1049,16 @@ extern int intel_edp_psr_exit_ioctl(struct drm_device *device, void *data,
 extern int intel_edp_get_psr_support(struct drm_device *device, void *data,
 					struct drm_file *file);
 /* VLV LP clock bending */
-extern void valleyview_program_clock_bending(struct drm_i915_private *dev_priv,
-		struct intel_program_clock_bending *clockbendargs);
+extern void valleyview_program_clock_bending(
+		struct drm_i915_private *dev_priv,
+		struct intel_program_clock_bending *clockbend);
+
+extern void valleyview_program_clock_spread(
+		struct drm_i915_private *dev_priv,
+		struct intel_program_clock_spread *clockspread);
+
+extern void clock_off_bend_spread(struct drm_i915_private *dev_priv);
+extern void disable_bend_clock(struct drm_i915_private *dev_priv);
 
 extern ssize_t display_runtime_suspend(struct drm_device *drm_dev);
 extern ssize_t display_runtime_resume(struct drm_device *drm_dev);
@@ -960,7 +1070,11 @@ bool is_sprite_enabled(struct drm_i915_private *dev_priv,
 bool is_cursor_enabled(struct drm_i915_private *dev_priv,
 			enum pipe pipe);
 bool is_maxfifo_needed(struct drm_i915_private *dev_priv);
+void i915_update_plane_stat(struct drm_i915_private *dev_priv, int pipe,
+		int plane, bool enable, int planes);
 
 extern void intel_unpin_work_fn(struct work_struct *__work);
 extern void intel_unpin_sprite_work_fn(struct work_struct *__work);
+bool vlv_calculate_ddl(struct drm_crtc *crtc, int pixel_size,
+		int *prec_multi, int *ddl);
 #endif /* __INTEL_DRV_H__ */

@@ -1,7 +1,7 @@
 #
 # Version: 1.5
 #
-# Copyright (C) 2009-2012 Intel Corporation.  All Rights Reserved.
+# Copyright (C) 2009-2014 Intel Corporation.  All Rights Reserved.
 #
 #     This file is part of SEP Development Kit
 #
@@ -38,15 +38,13 @@ INSTALL = .
 
 # If KERNELRELEASE is defined, we've been invoked from the
 # kernel build system and can use its language.
-#EXTRA_CFLAGS += -I$(LDDINCDIR) -I$(LDDINCDIR1) -DDRV_ANDROID
 EXTRA_CFLAGS += -I$(M)/../../include -I$(M)/../inc -DDRV_ANDROID
 
 # if ARCH variable is set, unset it to avoid conflicts with kbuild
 unexport ARCH
 
 # platform details
-#MACH := $(shell uname -m)
-MACH := i686
+MACH ?= i686
 ifeq ($(MACH),x86_64)
 PLATFORM=x32_64
 endif
@@ -66,14 +64,13 @@ ifneq ($(KERNELRELEASE),)
 # Otherwise, we were called directly from the command
 # line; invoke the kernel build system.
 else
-	#KERNEL_SRC_DIR ?= /lib/modules/$(shell uname -r)/build
         PWD := $(shell pwd)
-        KERNEL_SRC_DIR := $(PWD)/../../../../../../$(KERNEL_SRC_DIR)	
+        KERNEL_SRC_DIR := $(PWD)/../../../../../../$(KERNEL_SRC_DIR)
 
 all: default
 
 default:
-	$(MAKE) -C $(KERNEL_SRC_DIR) M=$(PWD) LDDINCDIR=$(PWD)/../../include LDDINCDIR1=$(PWD)/../inc modules PWD=$(PWD)
+	$(MAKE) -C $(KERNEL_SRC_DIR) M=$(PWD) LDDINCDIR=$(PWD)/../../include modules PWD=$(PWD)
 
 endif
 

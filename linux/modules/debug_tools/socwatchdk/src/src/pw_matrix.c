@@ -70,33 +70,25 @@
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/version.h>
-#if 0
-#if DO_ANDROID
-    #include <asm/intel-mid.h>
-    #include <asm/intel_mid_rpmsg.h>
-    #include <asm/intel_scu_pmic.h>	/* Needed for 3.4 kernel port */
-#endif // DO_ANDROID
-#endif // if 0
 #ifdef CONFIG_X86_WANT_INTEL_MID
     #include <asm/intel-mid.h>
 #endif
 #ifdef CONFIG_RPMSG_IPC
     #include <asm/intel_mid_rpmsg.h>
 #endif // CONFIG_RPMSG_IPC
-// #if DO_ANDROID
 #ifdef CONFIG_INTEL_SCU_IPC
     #include <asm/intel_scu_pmic.h>	/* Needed for 3.4 kernel port */
 #endif // CONFIG_INTEL_SCU_IPC
-// #endif // if DO_ANDROID
 #include <linux/kdev_t.h>
 #include <asm/paravirt.h>
+#include <linux/sfi.h> // To retrieve SCU F/W version
 
 #include "pw_structs.h"
 #include "pw_output_buffer.h"
 #include "matrix.h"
 
 // #define NAME "matrix"
-#define NAME "socwatch"
+#define DRV_NAME "socwatch"
 //#define DRIVER_VERSION "1.0"
 
 #define MT_SUCCESS 0
@@ -104,9 +96,6 @@
 
 #define MCR_WRITE_OPCODE    0x11
 #define BIT_POS_OPCODE      24
-/*
- * Added by GU
- */
 /*
  * Should we be doing 'direct' PCI reads and writes?
  * '1' ==> YES, call "pci_{read,write}_config_dword()" directly
@@ -121,14 +110,17 @@
     #undef DO_DIRECT_PCI_READ_WRITE
     #define DO_DIRECT_PCI_READ_WRITE  1
 #endif
-#if !DO_DIRECT_PCI_READ_WRITE 
+#if !DO_DIRECT_PCI_READ_WRITE
     #include <asm/intel_mid_pcihelpers.h>
 #endif
+
+#define PW_NUM_SOC_COUNTERS 9
+extern void SOCPERF_Read_Data (void *data_buffer);
 
 static int matrix_major_number;
 static bool instantiated;
 static bool mem_alloc_status;
-static u8 *ptr_lut_ops;
+static u8 *ptr_lut_ops = NULL;
 static unsigned long io_pm_status_reg;
 static unsigned long io_pm_lower_status;
 static unsigned long io_pm_upper_status;
@@ -158,38 +150,23 @@ static int mt_free_memory(void);
         __length += ptr_lut->mem_##type##_length * sizeof(struct memory_map); \
         __length += ptr_lut->pci_ops_##type##_length * sizeof(struct mtx_pci_ops); \
         __length += ptr_lut->cfg_db_##type##_length * sizeof(unsigned long); \
+        __length += ptr_lut->soc_perf_##type##_length * sizeof(struct mtx_soc_perf); \
         __length;})
 
-#if 0
-#define TOTAL_ONE_SHOT_LEN(type) ({unsigned long __length = 0; \
-        __length += ptr_lut->msr_##type##_wb * sizeof(struct msr_buffer); \
-        __length += ptr_lut->mem_##type##_wb * sizeof(unsigned long); \
-        __length += ptr_lut->pci_ops_##type##_wb * sizeof(unsigned long); \
-        __length += ptr_lut->cfg_db_##type##_wb * sizeof(unsigned long); \
-        __length;})
-#endif
 #define TOTAL_ONE_SHOT_LEN(type) ({unsigned long __length = 0; \
         __length += ptr_lut->msr_##type##_wb * sizeof(struct mt_msr_buffer); \
         __length += ptr_lut->mem_##type##_wb * sizeof(u32); \
         __length += ptr_lut->pci_ops_##type##_wb * sizeof(u32); \
         __length += ptr_lut->cfg_db_##type##_wb * sizeof(u32); \
+        /*__length += ptr_lut->soc_perf_##type##_wb * sizeof(struct mt_soc_perf_buffer); */\
+        /* GU: Ring-3 now sets 'soc_perf_poll_wb' == MAX_soc_perf_VALUES */ \
+        __length += ptr_lut->soc_perf_##type##_wb * sizeof(u64); \
         __length;})
 
-#if 0
-typedef struct {
-    u8 *ops;
-    size_t len;
-} mt_msg_buff_t;
-#endif
-
-// static u8 *mt_msg_init_buff_ops = NULL, *mt_msg_poll_buff_ops = NULL, *mt_msg_term_buff_ops = NULL;
-// static mt_msg_buff_t mt_msg_init_buff = {NULL, 0}, mt_msg_poll_buff = {NULL, 0}, mt_msg_term_buff = {NULL, 0};
-// static pw_mt_msg_t mt_msg_init_buff = {0, 0, 0x0}, mt_msg_poll_buff = {0, 0, 0x0}, mt_msg_term_buff = {0, 0, 0x0};
 static pw_mt_msg_t *mt_msg_init_buff = NULL, *mt_msg_poll_buff = NULL, *mt_msg_term_buff = NULL;
 
 static u32 mt_platform_pci_read32(u32 address);
 static void mt_platform_pci_write32(unsigned long address, unsigned long data);
-
 
 /**
  * Matrix Driver works in such a way that only one thread
@@ -235,6 +212,8 @@ static void mt_platform_pci_write32(unsigned long address, unsigned long data);
                 ioremap_nocache(ptr_lut-> \
                         mmap_##state[count].ctrl_addr, \
                         sizeof(unsigned long)); \
+            } else { \
+                ptr_lut->mmap_##state[count].ctrl_remap_address = NULL; \
             } \
             if (ptr_lut->mmap_##state[count].data_addr) { \
                 ptr_lut->mmap_##state[count].data_remap_address = \
@@ -243,6 +222,8 @@ static void mt_platform_pci_write32(unsigned long address, unsigned long data);
                         (ptr_lut-> \
                          mmap_##state[count].data_size) \
                         * sizeof(unsigned long));\
+            }  else { \
+                ptr_lut->mmap_##state[count].data_remap_address = NULL; \
             }  \
         } \
     } while (0)
@@ -287,6 +268,15 @@ static void mt_platform_pci_write32(unsigned long address, unsigned long data);
         ptr_lut->member##_##state = NULL; \
     } while (0)
 
+#define ALLOW_MATRIX_MSR_READ_WRITE 1
+#if ALLOW_MATRIX_MSR_READ_WRITE
+    #define MATRIX_RDMSR_ON_CPU(cpu, addr, low, high) ({int __tmp = rdmsr_on_cpu((cpu), (addr), (low), (high)); __tmp;})
+    #define MATRIX_WRMSR_ON_CPU(cpu, addr, low, high) ({int __tmp = wrmsr_on_cpu((cpu), (addr), (low), (high)); __tmp;})
+#else
+    #define MATRIX_RDMSR_ON_CPU(cpu, addr, low, high) ({int __tmp = 0; *(low) = 0; *(high) = 0; __tmp;})
+    #define MATRIX_WRMSR_ON_CPU(cpu, addr, low, high) ({int __tmp = 0; __tmp;})
+#endif // ALLOW_MATRIX_MSR_READ
+
 /*
  * Function declarations (incomplete).
  */
@@ -298,15 +288,17 @@ static void mt_platform_pci_write32(unsigned long address, unsigned long data);
     static long mt_device_compat_config_db_ioctl_i(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param);
     static int mt_ioctl_mtx_msr_compat_i(struct mtx_msr_container __user *remote_args, struct mtx_msr_container32 __user *remote_args32);
     static int mt_ioctl_pci_config_compat_i(struct pci_config __user *remote_args, struct pci_config32 __user *remote_args32);
-    static int mt_copy_mtx_msr_info_i(struct mtx_msr __user *msr, const struct mtx_msr32 __user *msr32, u32 length);
-    static int mt_copy_mmap_info_i(struct memory_map __user *mem, const struct memory_map32 __user *mem32, unsigned long length);
-    static int mt_copy_pci_info_i(struct mtx_pci_ops __user *pci, const struct mtx_pci_ops32 __user *pci32, unsigned long length);
-    static int mt_copy_cfg_db_info_i(unsigned long __user *cfg, const u32 __user *cfg32, unsigned long length);
+    static long mt_get_scu_fw_version_compat_i(u16 __user *remote_args32);
+    static int mt_copy_mtx_msr_info_i(struct mtx_msr *msr, const struct mtx_msr32 __user *msr32, u32 length);
+    static int mt_copy_mmap_info_i(struct memory_map *mem, const struct memory_map32 __user *mem32, unsigned long length);
+    static int mt_copy_pci_info_i(struct mtx_pci_ops *pci, const struct mtx_pci_ops32 __user *pci32, unsigned long length);
+    static int mt_copy_cfg_db_info_i(unsigned long *cfg, const u32 __user *cfg32, unsigned long length);
+    static int mt_copy_soc_perf_info_i(struct mtx_soc_perf *soc_perf, const struct mtx_soc_perf32 __user *soc_perf32, unsigned long length);
 #endif
 /*
  * MT_MSG functions.
  */
-static void mt_free_msg_memory()
+static void mt_free_msg_memory(void)
 {
     if (mt_msg_init_buff) {
         vfree(mt_msg_init_buff);
@@ -331,6 +323,8 @@ static int mt_init_msg_memory(void)
     unsigned int poll_len = TOTAL_ONE_SHOT_LEN(poll);
     unsigned int term_len = TOTAL_ONE_SHOT_LEN(term);
 
+    // printk(KERN_INFO "sizeof mt_xchange = %lu, sizeof mt_msr_buffer = %lu, header_size = %lu\n", sizeof(struct mt_xchange_buffer), sizeof(struct mt_msr_buffer), PW_MT_MSG_HEADER_SIZE());
+
     mt_msg_init_buff = (pw_mt_msg_t *)vmalloc(PW_MT_MSG_HEADER_SIZE() + sizeof(struct mt_xchange_buffer) + init_len);
     if (!mt_msg_init_buff) {
         mt_free_msg_memory();
@@ -347,18 +341,22 @@ static int mt_init_msg_memory(void)
         __buff->mem_length = ptr_lut->mem_init_wb;
         __buff->pci_ops_length = ptr_lut->pci_ops_init_wb;
         __buff->cfg_db_length = ptr_lut->cfg_db_init_wb;
+        __buff->soc_perf_length = ptr_lut->soc_perf_init_wb;
 
         if (__buff->msr_length) {
-            __buff->ptr_msr_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(struct mt_msr_buffer) * __buff->msr_length;
+            __buff->ptr_msr_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(struct mt_msr_buffer) * __buff->msr_length;
         }
         if (__buff->mem_length) {
-            __buff->ptr_mem_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->mem_length;
+            __buff->ptr_mem_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->mem_length;
         }
         if (__buff->pci_ops_length) {
-            __buff->ptr_pci_ops_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->pci_ops_length;
+            __buff->ptr_pci_ops_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->pci_ops_length;
         }
         if (__buff->cfg_db_length) {
-            __buff->ptr_cfg_db_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->cfg_db_length;
+            __buff->ptr_cfg_db_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->cfg_db_length;
+        }
+        if (__buff->soc_perf_length) {
+            __buff->ptr_soc_perf_buff = (u64)(unsigned long)&__buff_ops[__dst_idx];
         }
     }
 
@@ -378,18 +376,22 @@ static int mt_init_msg_memory(void)
         __buff->mem_length = ptr_lut->mem_poll_wb;
         __buff->pci_ops_length = ptr_lut->pci_ops_poll_wb;
         __buff->cfg_db_length = ptr_lut->cfg_db_poll_wb;
+        __buff->soc_perf_length = ptr_lut->soc_perf_poll_wb;
 
         if (__buff->msr_length) {
-            __buff->ptr_msr_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(struct mt_msr_buffer) * __buff->msr_length;
+            __buff->ptr_msr_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(struct mt_msr_buffer) * __buff->msr_length;
         }
         if (__buff->mem_length) {
-            __buff->ptr_mem_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->mem_length;
+            __buff->ptr_mem_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->mem_length;
         }
         if (__buff->pci_ops_length) {
-            __buff->ptr_pci_ops_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->pci_ops_length;
+            __buff->ptr_pci_ops_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->pci_ops_length;
         }
         if (__buff->cfg_db_length) {
-            __buff->ptr_cfg_db_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->cfg_db_length;
+            __buff->ptr_cfg_db_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->cfg_db_length;
+        }
+        if (__buff->soc_perf_length) {
+            __buff->ptr_soc_perf_buff = (u64)(unsigned long)&__buff_ops[__dst_idx];
         }
     }
 
@@ -409,18 +411,22 @@ static int mt_init_msg_memory(void)
         __buff->mem_length = ptr_lut->mem_term_wb;
         __buff->pci_ops_length = ptr_lut->pci_ops_term_wb;
         __buff->cfg_db_length = ptr_lut->cfg_db_term_wb;
+        __buff->soc_perf_length = ptr_lut->soc_perf_term_wb;
 
         if (__buff->msr_length) {
-            __buff->ptr_msr_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(struct mt_msr_buffer) * __buff->msr_length;
+            __buff->ptr_msr_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(struct mt_msr_buffer) * __buff->msr_length;
         }
         if (__buff->mem_length) {
-            __buff->ptr_mem_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->mem_length;
+            __buff->ptr_mem_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->mem_length;
         }
         if (__buff->pci_ops_length) {
-            __buff->ptr_pci_ops_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->pci_ops_length;
+            __buff->ptr_pci_ops_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->pci_ops_length;
         }
         if (__buff->cfg_db_length) {
-            __buff->ptr_cfg_db_buff = (u64)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->cfg_db_length;
+            __buff->ptr_cfg_db_buff = (u64)(unsigned long)&__buff_ops[__dst_idx]; __dst_idx += sizeof(u32) * __buff->cfg_db_length;
+        }
+        if (__buff->soc_perf_length) {
+            __buff->ptr_soc_perf_buff = (u64)(unsigned long)&__buff_ops[__dst_idx];
         }
     }
     return MT_SUCCESS;
@@ -433,7 +439,7 @@ static int mt_msg_scan_msr(struct mt_xchange_buffer *xbuff, const struct mtx_msr
         unsigned int cpu;
         u32 *lo_rd, *high_rd, lo_wr, high_wr;
         u32 msr_no;
-        struct mt_msr_buffer *msr_buff = (struct mt_msr_buffer *)xbuff->ptr_msr_buff;
+        struct mt_msr_buffer *msr_buff = (struct mt_msr_buffer *)(unsigned long)xbuff->ptr_msr_buff;
 
         cpu = (unsigned int)msrs[lut_loop].n_cpu;
         msr_no = msrs[lut_loop].ecx_address;
@@ -450,25 +456,25 @@ static int mt_msg_scan_msr(struct mt_xchange_buffer *xbuff, const struct mtx_msr
 
         switch (msrs[lut_loop].operation) {
             case READ_OP:
-                rdmsr_on_cpu(cpu, msr_no, lo_rd, high_rd);
+                MATRIX_RDMSR_ON_CPU(cpu, msr_no, lo_rd, high_rd);
                 ++msr_loop;
                 // printk(KERN_INFO "GU: read MSR addr 0x%lx on cpu %d in INIT/TERM MT_MSG scan! Val = %llu\n", msr_no, cpu, ((u64)*high_rd << 32 | (u64)*lo_rd));
                 break;
             case WRITE_OP:
-                wrmsr_on_cpu(cpu, msr_no, lo_wr, high_wr);
+                MATRIX_WRMSR_ON_CPU(cpu, msr_no, lo_wr, high_wr);
                 break;
             case SET_BITS_OP:
-                { 
-                    u32 eax_LSB, edx_MSB; 
-                    rdmsr_on_cpu(cpu, msr_no, &eax_LSB, &edx_MSB); 
-                    wrmsr_on_cpu(cpu, msr_no, (eax_LSB | lo_wr), (edx_MSB | high_wr));
+                {
+                    u32 eax_LSB, edx_MSB;
+                    MATRIX_RDMSR_ON_CPU(cpu, msr_no, &eax_LSB, &edx_MSB);
+                    MATRIX_WRMSR_ON_CPU(cpu, msr_no, (eax_LSB | lo_wr), (edx_MSB | high_wr));
                 }
                 break;
             case RESET_BITS_OP:
                 {
                     u32 eax_LSB, edx_MSB;
-                    rdmsr_on_cpu(cpu, msr_no, &eax_LSB, &edx_MSB);
-                    wrmsr_on_cpu(cpu, msr_no, (eax_LSB & ~(lo_wr)), (edx_MSB & ~(high_wr)));
+                    MATRIX_RDMSR_ON_CPU(cpu, msr_no, &eax_LSB, &edx_MSB);
+                    MATRIX_WRMSR_ON_CPU(cpu, msr_no, (eax_LSB & ~(lo_wr)), (edx_MSB & ~(high_wr)));
                 }
                 break;
             default:
@@ -500,16 +506,17 @@ static int mt_msg_scan_mmap(struct mt_xchange_buffer *xbuff, const struct memory
          * _address should point to the mmio address from which
          * we need to read 
          */
+        // printk(KERN_INFO "lut_loop = %lu, ctrl_addr = %lu, data_addr = %lu, data_size = %lu\n", lut_loop, mmap[lut_loop].ctrl_addr, mmap[lut_loop].data_addr, mmap[lut_loop].data_size);
         if (mmap[lut_loop].ctrl_addr) {
             scu_cmd = mmap[lut_loop].ctrl_data & 0xFF;
             scu_sub_cmd = (mmap[lut_loop].ctrl_data >> 12) & 0xF;
             if (MATRIX_SCAN_MMAP_DO_IPC(scu_cmd, scu_sub_cmd)) {
-                dev_dbg(matrix_device, "Unagle to get SCU data...\n");
+                dev_dbg(matrix_device, "Unable to get SCU data...\n");
                 return -MT_ERROR;
             }
         }
         if (mmap[lut_loop].data_size != 0) {
-            memcpy(&((u32 *)xbuff->ptr_mem_buff)[mem_loop], mmap[lut_loop].data_remap_address, mmap[lut_loop].data_size * sizeof(u32));
+            memcpy(&((u32 *)(unsigned long)xbuff->ptr_mem_buff)[mem_loop], mmap[lut_loop].data_remap_address, mmap[lut_loop].data_size * sizeof(u32));
             mem_loop += mmap[lut_loop].data_size;
             if (mem_loop > max_mem_loop) {
                 dev_dbg(matrix_device, "A(%04d) [0x%40lu]of [0x%40lu]\n", __LINE__, mem_loop, max_mem_loop);
@@ -529,6 +536,7 @@ static int mt_msg_scan_mmap(struct mt_xchange_buffer *xbuff, const struct memory
 static int mt_msg_scan(struct mt_xchange_buffer *xbuff, const struct mtx_msr *msrs, const struct memory_map *mmap, const unsigned long *cfg_db, unsigned long max_msr_loop, unsigned long max_mem_loop, unsigned long max_mem_lut_loop, unsigned long max_cfg_db_loop)
 {
     unsigned long lut_loop = 0;
+    // printk(KERN_INFO "MT_MSG_SCAN: msrs = %p, mmap = %p, cfg_db = %p\n", msrs, mmap, cfg_db);
     if (msrs && mt_msg_scan_msr(xbuff, msrs, max_msr_loop)) {
         printk(KERN_INFO "ERROR reading MT_MSG MSRs!\n");
         return -MT_ERROR;
@@ -538,8 +546,9 @@ static int mt_msg_scan(struct mt_xchange_buffer *xbuff, const struct mtx_msr *ms
         return -MT_ERROR;
     }
     for (lut_loop = 0; lut_loop < max_cfg_db_loop; ++lut_loop) {
-        ((u32 *)xbuff->ptr_cfg_db_buff)[lut_loop] = mt_platform_pci_read32(cfg_db[lut_loop]);
+        ((u32 *)(unsigned long)xbuff->ptr_cfg_db_buff)[lut_loop] = mt_platform_pci_read32(cfg_db[lut_loop]);
     }
+    // TODO pci_ops?
     return MT_SUCCESS;
 };
 
@@ -631,7 +640,7 @@ static int mt_msg_poll_scan(unsigned long poll_loop)
     unsigned long max_msr_read;
     unsigned long max_cfg_db_loop;
     unsigned long cfg_db_base_addr;
-    unsigned long delta_time;
+    // unsigned long delta_time;
 
     u64 tsc;
 
@@ -656,10 +665,12 @@ static int mt_msg_poll_scan(unsigned long poll_loop)
     if (ptr_lut->msrs_poll) {
         for (lut_loop = 0; lut_loop < max_msr_loop; lut_loop++) {
             if (ptr_lut->msrs_poll[lut_loop].operation == READ_OP) {
-                rdmsr_on_cpu(ptr_lut->msrs_poll[lut_loop].n_cpu, ptr_lut->msrs_poll[lut_loop].ecx_address, (u32 *) &(((struct mt_msr_buffer *)xbuff->ptr_msr_buff)[msr_base_addr + msr_loop].eax_LSB), (u32 *) &(((struct mt_msr_buffer *)xbuff->ptr_msr_buff)[msr_base_addr + msr_loop].edx_MSB));
+                u32 *__lsb = &(((struct mt_msr_buffer *)(unsigned long)xbuff->ptr_msr_buff)[msr_base_addr+msr_loop].eax_LSB);
+                u32 *__msb = &(((struct mt_msr_buffer *)(unsigned long)xbuff->ptr_msr_buff)[msr_base_addr+msr_loop].edx_MSB);
+                MATRIX_RDMSR_ON_CPU(ptr_lut->msrs_poll[lut_loop].n_cpu, ptr_lut->msrs_poll[lut_loop].ecx_address, __lsb, __msb);
                 msr_loop++;
             } else if (ptr_lut->msrs_poll[lut_loop].operation == WRITE_OP) {
-                wrmsr_on_cpu(ptr_lut->msrs_poll[lut_loop].n_cpu, ptr_lut->msrs_poll[lut_loop].ecx_address, ptr_lut->msrs_poll[lut_loop].eax_LSB, ptr_lut->msrs_poll[lut_loop].edx_MSB);
+                MATRIX_WRMSR_ON_CPU(ptr_lut->msrs_poll[lut_loop].n_cpu, ptr_lut->msrs_poll[lut_loop].ecx_address, ptr_lut->msrs_poll[lut_loop].eax_LSB, ptr_lut->msrs_poll[lut_loop].edx_MSB);
             } else {
                 dev_dbg(matrix_device, "Error in MSR_OP value..\n");
                 goto MT_MSG_POLL_ERROR;
@@ -676,7 +687,7 @@ static int mt_msg_poll_scan(unsigned long poll_loop)
             if (ptr_lut->mmap_poll[lut_loop].ctrl_remap_address)
                 writel(ptr_lut->mmap_poll[lut_loop].ctrl_data, ptr_lut->mmap_poll[lut_loop].ctrl_remap_address);
             if (ptr_lut->mmap_poll[lut_loop].data_size != 0) {
-                memcpy(&((u32 *)xbuff->ptr_mem_buff)[mem_base_addr + mem_loop], ptr_lut->mmap_poll[lut_loop].data_remap_address, ptr_lut->mmap_poll[lut_loop].data_size * sizeof(u32));
+                memcpy(&((u32 *)(unsigned long)xbuff->ptr_mem_buff)[mem_base_addr + mem_loop], ptr_lut->mmap_poll[lut_loop].data_remap_address, ptr_lut->mmap_poll[lut_loop].data_size * sizeof(u32));
                 mem_loop += ptr_lut->mmap_poll[lut_loop].data_size;
                 if (mem_loop > max_mem_loop) {
                     dev_dbg(matrix_device, "A(%04d) [0x%40lu]of [0x%40lu]\n", __LINE__, mem_loop, max_mem_loop);
@@ -689,8 +700,8 @@ static int mt_msg_poll_scan(unsigned long poll_loop)
     /* Get the status of power islands in the North Complex */
     io_pm_lower_status = inl(io_pm_status_reg + PWR_STS_NORTH_CMPLX_LOWER);
     io_pm_upper_status = inl(io_base_pwr_address + PWR_STS_NORTH_CMPLX_UPPER);
-    memcpy(&((u32 *)xbuff->ptr_pci_ops_buff)[0], &io_pm_lower_status, sizeof(u32));
-    memcpy(&((u32 *)xbuff->ptr_pci_ops_buff)[1], &io_pm_upper_status, sizeof(u32));
+    memcpy(&((u32 *)(unsigned long)xbuff->ptr_pci_ops_buff)[0], &io_pm_lower_status, sizeof(u32));
+    memcpy(&((u32 *)(unsigned long)xbuff->ptr_pci_ops_buff)[1], &io_pm_upper_status, sizeof(u32));
 
     /* SCU IO */
 #ifdef CONFIG_INTEL_SCU_IPC
@@ -708,9 +719,28 @@ static int mt_msg_poll_scan(unsigned long poll_loop)
 #endif // CONFIG_INTEL_SCU_IPC
     cfg_db_base_addr = 0; // (poll_loop * max_cfg_db_loop);
     for (lut_loop = 0; lut_loop < max_cfg_db_loop; lut_loop++) {
-        ((u32 *)xbuff->ptr_cfg_db_buff)[cfg_db_base_addr + lut_loop] = mt_platform_pci_read32(ptr_lut->cfg_db_poll[lut_loop]);
+        ((u32 *)(unsigned long)xbuff->ptr_cfg_db_buff)[cfg_db_base_addr + lut_loop] = mt_platform_pci_read32(ptr_lut->cfg_db_poll[lut_loop]);
+        // printk(KERN_INFO "DEBUG: cfg_db_poll val[%lu] (cfg_db address 0x%lx) = %u\n", cfg_db_base_addr+lut_loop, ptr_lut->cfg_db_poll[lut_loop], ((u32 *)(unsigned long)xbuff->ptr_cfg_db_buff)[cfg_db_base_addr + lut_loop]);
     }
 #endif // DO_ANDROID
+
+    /* Get the SOCPERF counter values */
+    if (NULL != ptr_lut->soc_perf_poll) {
+        if (ptr_lut->soc_perf_poll[0].operation == READ_OP) {
+            //int i = 0;
+            u64 __soc_perf_buffer[PW_NUM_SOC_COUNTERS];
+
+            memset(__soc_perf_buffer, 0, sizeof(__soc_perf_buffer));
+
+            SOCPERF_Read_Data(__soc_perf_buffer);
+
+            memcpy(&((struct soc_perf_buffer *)(unsigned long)xbuff->ptr_soc_perf_buff)[0], __soc_perf_buffer, sizeof(__soc_perf_buffer));
+        } else {
+            dev_dbg(matrix_device, "SOCPERF operation is NOT read!\n");
+        }
+    } else {
+        dev_dbg(matrix_device, "SOCPERF poll is NULL!\n");
+    }
 
     if (mt_produce_mt_msg(mt_msg_poll_buff, tsc)) {
         printk(KERN_INFO "ERROR producing a POLL MT_MSG!\n");
@@ -719,7 +749,7 @@ static int mt_msg_poll_scan(unsigned long poll_loop)
 
     // printk(KERN_INFO "OK: POLL MT_MSG scan was SUCCESSFUL!\n");
     return MT_SUCCESS;
-    
+
 MT_MSG_POLL_ERROR:
     printk(KERN_INFO "ERROR doing a POLL MT_MSG scan!\n");
     mt_free_memory();
@@ -803,6 +833,7 @@ static void mt_calculate_memory_requirements(void)
 	MATRIX_INCREMENT_MEMORY(struct, mtx_pci_ops, lut, pci_ops, 1);
 	MATRIX_INCREMENT_MEMORY(unsigned, long, lut, cfg_db, 1);
 	// MATRIX_INCREMENT_MEMORY(unsigned, int, lut, cfg_db, 1);
+	MATRIX_INCREMENT_MEMORY(struct, mtx_soc_perf, lut, soc_perf, 1);
 	lut_info.poll_scu_drv_size =
 	    ptr_lut->scu_poll.length * ptr_lut->scu_poll_length;
 	lut_info.total_mem_bytes_req += lut_info.poll_scu_drv_size;
@@ -847,6 +878,13 @@ static int mt_bookmark_lookup_table(void)
 	/* scu part of the lookup table */
 	ptr_lut->scu_poll.drv_data = (unsigned char *)&ptr_lut_ops[offset];
 
+	/* soc_perf part of the lookup table */
+	MATRIX_BOOK_MARK_LUT(init, soc_perf, struct, mtx_soc_perf, soc_perf, 0,
+			     COPY_FAIL);
+	MATRIX_BOOK_MARK_LUT(poll, soc_perf, struct, mtx_soc_perf, soc_perf, 0,
+			     COPY_FAIL);
+	MATRIX_BOOK_MARK_LUT(term, soc_perf, struct, mtx_soc_perf, soc_perf, 0,
+			     COPY_FAIL);
 	return 0;
 COPY_FAIL:
 	return -EFAULT;
@@ -866,8 +904,10 @@ static int mt_free_memory(void)
 		ptr_lut = NULL;
 	}
 	/*Freeing LUT Memory */
-	vfree(ptr_lut_ops);
-	ptr_lut_ops = NULL;
+        if (ptr_lut_ops) {
+            vfree(ptr_lut_ops);
+            ptr_lut_ops = NULL;
+        }
 
 	mem_alloc_status = false;
 
@@ -882,6 +922,7 @@ static int mt_free_memory(void)
  */
 static int mt_initialize_memory(unsigned long ptr_data)
 {
+
 	if (mem_alloc_status) {
 		dev_dbg(matrix_device,
 			"Initialization of Memory is already done..\n");
@@ -892,6 +933,7 @@ static int mt_initialize_memory(unsigned long ptr_data)
 	/* get information about lookup table from user space */
 	MATRIX_VMALLOC(ptr_lut, sizeof(struct lookup_table), ERROR);
 
+
 	if (copy_from_user(ptr_lut,
 			   (struct lookup_table *)ptr_data,
 			   sizeof(struct lookup_table)) > 0) {
@@ -901,46 +943,11 @@ static int mt_initialize_memory(unsigned long ptr_data)
 		goto ERROR;
 	}
 
-        /*
-        PRINT_LUT_LENGTHS(msr, init);
-        PRINT_LUT_LENGTHS(msr, poll);
-        PRINT_LUT_LENGTHS(msr, term);
-
-        PRINT_LUT_LENGTHS(mem, init);
-        PRINT_LUT_LENGTHS(mem, poll);
-        PRINT_LUT_LENGTHS(mem, term);
-
-        PRINT_LUT_LENGTHS(pci_ops, init);
-        PRINT_LUT_LENGTHS(pci_ops, poll);
-        PRINT_LUT_LENGTHS(pci_ops, term);
-
-        PRINT_LUT_LENGTHS(cfg_db, init);
-        PRINT_LUT_LENGTHS(cfg_db, poll);
-        PRINT_LUT_LENGTHS(cfg_db, term);
-        */
-
-        /*
-        PRINT_LUT_WBS(msr, init);
-        PRINT_LUT_WBS(msr, poll);
-        PRINT_LUT_WBS(msr, term);
-
-        PRINT_LUT_WBS(mem, init);
-        PRINT_LUT_WBS(mem, poll);
-        PRINT_LUT_WBS(mem, term);
-
-        PRINT_LUT_WBS(pci_ops, init);
-        PRINT_LUT_WBS(pci_ops, poll);
-        PRINT_LUT_WBS(pci_ops, term);
-
-        PRINT_LUT_WBS(cfg_db, init);
-        PRINT_LUT_WBS(cfg_db, poll);
-        PRINT_LUT_WBS(cfg_db, term);
-        */
 
         {
-            unsigned long init_length = TOTAL_ONE_SHOT_LENGTH(init);
-            unsigned long poll_length = TOTAL_ONE_SHOT_LENGTH(poll);
-            unsigned long term_length = TOTAL_ONE_SHOT_LENGTH(term);
+            // unsigned long init_length = TOTAL_ONE_SHOT_LENGTH(init);
+            // unsigned long poll_length = TOTAL_ONE_SHOT_LENGTH(poll);
+            // unsigned long term_length = TOTAL_ONE_SHOT_LENGTH(term);
 
 
             // printk(KERN_INFO "GU: init_length = %lu, poll_length = %lu, term_length = %lu\n", init_length, poll_length, term_length);
@@ -979,12 +986,12 @@ ERROR:
 	mt_free_memory();
 	return -EFAULT;
 }
-
 #if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
     #define MT_MATCH_IOCTL(num, pred) ( (num) == (pred) || (num) == (pred##32) )
 #else
     #define MT_MATCH_IOCTL(num, pred) ( (num) == (pred) )
 #endif // COMPAT && x64
+
 /**
  * initial_scan - function that is run once before polling at regular intervals
  * sets the msr's and other variables to their default values
@@ -1029,14 +1036,14 @@ ERROR:
 static int mt_transfer_data(unsigned long ptr_data)
 {
     return 0; // SUCCESS
-};
+}
 
 /**
  * ioctl_mtx_msr - mtx_msr_container refers to structure designed to hold data related
  * to MSR( Model Specific Registers).
  * @ptr_data : gets the address of the user buffer that has to be populated
  */
-static int IOCTL_mtx_msr(unsigned long ptr_data)
+static int IOCTL_mtx_msr(unsigned long ptr_data, unsigned int request)
 {
 	struct mtx_msr_container mtx_msr_drv;
 	unsigned long *buffer = NULL;
@@ -1069,13 +1076,13 @@ static int IOCTL_mtx_msr(unsigned long ptr_data)
 	}
 	switch (mtx_msr_drv.msrType1.operation) {
 	case WRITE_OP:
-		err = wrmsr_on_cpu(mtx_msr_drv.msrType1.n_cpu,
+		err = MATRIX_WRMSR_ON_CPU(mtx_msr_drv.msrType1.n_cpu,
 				   mtx_msr_drv.msrType1.ecx_address,
 				   mtx_msr_drv.msrType1.eax_LSB,
 				   mtx_msr_drv.msrType1.edx_MSB);
 		break;
 	case READ_OP:
-		err = rdmsr_on_cpu(mtx_msr_drv.msrType1.n_cpu,
+		err = MATRIX_RDMSR_ON_CPU(mtx_msr_drv.msrType1.n_cpu,
 				   mtx_msr_drv.msrType1.ecx_address,
 				   (u32 *) & mtx_msr_drv.msrType1.eax_LSB,
 				   (u32 *) & mtx_msr_drv.msrType1.edx_MSB);
@@ -1093,6 +1100,49 @@ static int IOCTL_mtx_msr(unsigned long ptr_data)
 	}
 	if (err != 0)
 		goto ERROR;
+
+#if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
+        if (request == IOCTL_MSR32) {
+            struct mtx_msr_container32 __user *__msr32 = compat_ptr(ptr_data);
+            // struct mtx_msr_container32 __user *__msr32 = (struct mtx_msr_container32 *)ptr_data;
+            u32 data;
+            // printk(KERN_INFO "SIZE = %u (%u)\n", sizeof(*__msr32), sizeof(__msr32->msrType1));
+            data = (u32)mtx_msr_drv.length;
+            if (put_user(data, &__msr32->length)) {
+                goto ERROR;
+            }
+            data = (u32)mtx_msr_drv.msrType1.eax_LSB;
+            if (put_user(data, &__msr32->msrType1.eax_LSB)) {
+                goto ERROR;
+            }
+            // printk(KERN_INFO "eax_LSB = %u\n", data);
+            data = (u32)mtx_msr_drv.msrType1.edx_MSB;
+            if (put_user(data, &__msr32->msrType1.edx_MSB)) {
+                goto ERROR;
+            }
+            // printk(KERN_INFO "edx_MSB = %u\n", data);
+            data = (u32)mtx_msr_drv.msrType1.ecx_address;
+            if (put_user(data, &__msr32->msrType1.ecx_address)) {
+                goto ERROR;
+            }
+            data = (u32)mtx_msr_drv.msrType1.ebx_value;
+            if (put_user(data, &__msr32->msrType1.ebx_value)) {
+                goto ERROR;
+            }
+            data = (u32)mtx_msr_drv.msrType1.n_cpu;
+            if (put_user(data, &__msr32->msrType1.n_cpu)) {
+                goto ERROR;
+            }
+            data = (u32)mtx_msr_drv.msrType1.operation;
+            if (put_user(data, &__msr32->msrType1.operation)) {
+                goto ERROR;
+            }
+            // printk(KERN_INFO "OK: copied MSR32!\n");
+            vfree(buffer);
+            return 0;
+        }
+#endif // COMPAT && x64
+
 	if (copy_to_user
 	    ((struct mtx_msr_container *)ptr_data, &mtx_msr_drv,
 	     sizeof(mtx_msr_drv)) > 0) {
@@ -1477,9 +1527,10 @@ static long mt_get_version(u32 __user *remote_data)
     /*
      * Protocol:
      * Driver version info is:
-     * [Major Num] << 16 | [Minor Num] << 8 | [Other Num]
+     * [Internal/External] << 24 | [Major Num] << 16 | [Minor Num] << 8 | [Other Num]
+     * Internal/External is: 1 ==> INTERNAL, 0 ==> EXTERNAL
      */
-    u32 local_data = ((u8)PW_DRV_VERSION_MAJOR) << 16 | ((u8)PW_DRV_VERSION_MINOR) << 8 | (u8)PW_DRV_VERSION_OTHER;
+    u32 local_data = (0 /*External*/ << 24) | ((u8)PW_DRV_VERSION_MAJOR) << 16 | ((u8)PW_DRV_VERSION_MINOR) << 8 | (u8)PW_DRV_VERSION_OTHER;
     if (put_user(local_data, remote_data)) {
         printk(KERN_INFO "ERROR transfering driver version information to userspace!\n");
         return -EFAULT;
@@ -1493,26 +1544,27 @@ static long mt_get_version(u32 __user *remote_data)
 static long matrix_ioctl(struct file
 			 *filp, unsigned int request, unsigned long ptr_data)
 {
-    // printk(KERN_INFO "Received MATRIX IOCTL: %lu\n", request);
+    // printk(KERN_INFO "Received MATRIX IOCTL: %u\n", request);
     switch (request) {
         case IOCTL_VERSION_INFO:
-            // printk(KERN_INFO "IOCTL_VERSION_INFO received!\n");
-            if (copy_to_user((char *)ptr_data, PW_DRV_VERSION_STRING,
-                        strlen(PW_DRV_VERSION_STRING) + 1) > 0) {
-                dev_dbg(matrix_device,
-                        "file : %s ,function : %s ,line %i\n",
-                        __FILE__, __func__, __LINE__);
-                return -EFAULT;
-            }
+#if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
+        case IOCTL_VERSION_INFO32:
+#endif // COMPAT && x64
+            /*
+             * UNSUPPORTED
+             * Use 'IOCTL_GET_DRIVER_VERSION/IOCTL_GET_DRIVER_VERSION32' instead.
+             */
+            printk(KERN_INFO "ERROR: INVALID ioctl num %u received!\n", request);
+            return -PW_ERROR;
             break;
         case IOCTL_INIT_MEMORY:
 #if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
         case IOCTL_INIT_MEMORY32:
 #endif // COMPAT && x64
-            //printk(KERN_INFO "IOCTL_INIT_MEMORY received!\n");
+            // printk(KERN_INFO "IOCTL_INIT_MEMORY received!\n");
             return mt_initialize_memory(ptr_data);
         case IOCTL_FREE_MEMORY:
-            //printk(KERN_INFO "IOCTL_FREE_MEMORY received!\n");
+            // printk(KERN_INFO "IOCTL_FREE_MEMORY received!\n");
             return mt_free_memory();
         case IOCTL_OPERATE_ON_MSR:
             // printk(KERN_INFO "IOCTL_OPERATE_ON_MSR received!\n");
@@ -1529,19 +1581,16 @@ static long matrix_ioctl(struct file
 #if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
         case IOCTL_POLL_SCAN32:
 #endif // COMPAT && x64
-            //printk(KERN_INFO "IOCTL_POLL_SCAN received!\n");
+            // printk(KERN_INFO "IOCTL_POLL_SCAN received!\n");
             // return mt_poll_scan(ptr_data);
             return mt_msg_poll_scan(ptr_data);
         case IOCTL_COPY_TO_USER:
-            //printk(KERN_INFO "IOCTL_COPY_TO_USER received!\n");
+            // printk(KERN_INFO "IOCTL_COPY_TO_USER received!\n");
             return mt_transfer_data(ptr_data);
             /* MSR based ioctl's */
         case IOCTL_MSR:
-#if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
-        case IOCTL_MSR32:
-#endif // COMPAT && x64
             // printk(KERN_INFO "IOCTL_MSR received!\n");
-            return IOCTL_mtx_msr(ptr_data);
+            return IOCTL_mtx_msr(ptr_data, request);
             /* SRAM based ioctl's */
         case IOCTL_SRAM:
             // printk(KERN_INFO "IOCTL_SRAM received!\n");
@@ -1581,14 +1630,14 @@ static long matrix_ioctl(struct file
                 printk(KERN_INFO "NULL ptr_data in matrix_ioctl IOCTL_GET_SCU_FW_VERSION\n");
                 return -EFAULT;
             }
-            return mt_get_scu_fw_version((u16 *)ptr_data);
+            return mt_get_scu_fw_version((u16 __user *)ptr_data);
         case IOCTL_GET_DRIVER_VERSION:
 #if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
         case IOCTL_GET_DRIVER_VERSION32:
 #endif // compat && x64
             return mt_get_version((u32 *)ptr_data);
         default:
-            printk(KERN_INFO "INVALID IOCTL = %lu received!\n", request);
+            printk(KERN_INFO "INVALID IOCTL = %u received!\n", request);
             dev_dbg(matrix_device,
                     "file : %s ,function : %s ,line %i\n", __FILE__,
                     __func__, __LINE__);
@@ -1596,95 +1645,6 @@ static long matrix_ioctl(struct file
     }
     return 0;
 }
-
-#if 0
-/*
- * GU: Use this version of the function after full HSW support has been enabled
- */
-static long matrix_ioctl(struct file *filp, unsigned int request, unsigned long ptr_data)
-{
-    // printk(KERN_INFO "Received MATRIX IOCTL: %lu\n", request);
-    if (MT_MATCH_IOCTL(request, IOCTL_VERSION_INFO)) {
-        printk(KERN_INFO "IOCTL_VERSION_INFO received!\n");
-        if (copy_to_user((char *)ptr_data, PW_DRV_VERSION_STRING,
-                    strlen(PW_DRV_VERSION_STRING) + 1) > 0) {
-            dev_dbg(matrix_device,
-                    "file : %s ,function : %s ,line %i\n",
-                    __FILE__, __func__, __LINE__);
-            return -EFAULT;
-        }
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_INIT_MEMORY)) {
-        printk(KERN_INFO "IOCTL_INIT_MEMORY received!\n");
-        return mt_initialize_memory(ptr_data);
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_FREE_MEMORY)) {
-        printk(KERN_INFO "IOCTL_FREE_MEMORY received!\n");
-        return mt_free_memory();
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_OPERATE_ON_MSR)) {
-            printk(KERN_INFO "IOCTL_OPERATE_ON_MSR received!\n");
-            return mt_operate_on_msr(ptr_data);
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_INIT_SCAN)) {
-            printk(KERN_INFO "IOCTL_INIT_SCAN received!\n");
-            return mt_msg_data_scan(request);
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_TERM_SCAN)) {
-            printk(KERN_INFO "IOCTL_TERM_SCAN received!\n");
-            return mt_msg_data_scan(request);
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_POLL_SCAN)) {
-            printk(KERN_INFO "IOCTL_POLL_SCAN received!\n");
-            // return mt_poll_scan(ptr_data);
-            return mt_msg_poll_scan(ptr_data);
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_COPY_TO_USER)) {
-            printk(KERN_INFO "IOCTL_COPY_TO_USER received!\n");
-            return mt_transfer_data(ptr_data);
-    }
-    /* MSR based ioctl's */
-    else if (MT_MATCH_IOCTL(request, IOCTL_MSR)) {
-            printk(KERN_INFO "IOCTL_MSR received!\n");
-            return IOCTL_mtx_msr(ptr_data);
-    }
-    /* SRAM based ioctl's */
-    else if (MT_MATCH_IOCTL(request, IOCTL_SRAM)) {
-            printk(KERN_INFO "IOCTL_SRAM received!\n");
-            return IOCTL_sram(ptr_data);
-    }
-            // return -1;
-    /* GMCH based ioctl's */
-    else if (MT_MATCH_IOCTL(request, IOCTL_GMCH)) {
-            printk(KERN_INFO "IOCTL_GMCH received!\n");
-            return IOCTL_gmch(request, ptr_data);
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_GMCH_RESET)) {
-            printk(KERN_INFO "IOCTL_GMCH_REQUEST received!\n");
-            return IOCTL_gmch(request, ptr_data);
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_READ_CONFIG_DB)) {
-            printk(KERN_INFO "IOCTL_READ_CONFIG_DB received!\n");
-            return mt_read_config((unsigned long *)ptr_data);
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_WRITE_CONFIG_DB)) {
-        printk(KERN_INFO "IOCTL_WRITE_CONFIG_DB received!\n");
-        return mt_write_config((unsigned long *)ptr_data);
-    }
-    else if (MT_MATCH_IOCTL(request, IOCTL_READ_PCI_CONFIG)) {
-        printk(KERN_INFO "IOCTL_READ_PCI_CONFIG received!\n");
-        return mt_read_pci_config((unsigned long *)ptr_data);
-    }
-    else {
-            printk(KERN_INFO "INVALID IOCTL = %lu received!\n", request);
-            dev_dbg(matrix_device,
-                    "file : %s ,function : %s ,line %i\n", __FILE__,
-                    __func__, __LINE__);
-            return -EFAULT;
-    }
-    return 0;
-}
-#endif // if 0
 
 static int matrix_release(struct inode *in, struct file *filp)
 {
@@ -1711,134 +1671,196 @@ static const struct file_operations matrix_fops = {
  */
 #if defined(HAVE_COMPAT_IOCTL) && defined(CONFIG_X86_64)
 
-static int mt_copy_mtx_msr_info_i(struct mtx_msr __user *msr, const struct mtx_msr32 __user *msr32, u32 length)
+#if 1
+static int mt_copy_mtx_msr_info_i(struct mtx_msr *local_msr, const struct mtx_msr32 __user *remote_msr32, u32 length)
 {
+    int retVal = PW_SUCCESS;
     unsigned long i=0;
-    u32 data;
+    // u32 data;
 
     for (i=0; i<length; ++i) {
-        if (get_user(data, &msr32[i].eax_LSB) || put_user(data, &msr[i].eax_LSB)) {
+        if (get_user(local_msr[i].eax_LSB, &remote_msr32[i].eax_LSB)) {
             return -EFAULT;
         }
-        if (get_user(data, &msr32[i].edx_MSB) || put_user(data, &msr[i].edx_MSB)) {
+        if (get_user(local_msr[i].edx_MSB, &remote_msr32[i].edx_MSB)) {
             return -EFAULT;
         }
-        if (get_user(data, &msr32[i].ecx_address) || put_user(data, &msr[i].ecx_address)) {
+        if (get_user(local_msr[i].ecx_address, &remote_msr32[i].ecx_address)) {
             return -EFAULT;
         }
-        if (get_user(data, &msr32[i].ebx_value) || put_user(data, &msr[i].ebx_value)) {
+        if (get_user(local_msr[i].ebx_value, &remote_msr32[i].ebx_value)) {
             return -EFAULT;
         }
-        if (get_user(data, &msr32[i].n_cpu) || put_user(data, &msr[i].n_cpu)) {
+        if (get_user(local_msr[i].n_cpu, &remote_msr32[i].n_cpu)) {
             return -EFAULT;
         }
-        if (get_user(data, &msr32[i].operation) || put_user(data, &msr[i].operation)) {
+        if (get_user(local_msr[i].operation, &remote_msr32[i].operation)) {
+            return -EFAULT;
+        }
+        // printk(KERN_INFO "DEBUG: addr[%lu] = 0x%lx, cpu = %lu, operation = %lu\n", i, local_msr[i].ecx_address, local_msr[i].n_cpu, local_msr[i].operation);
+    }
+    return retVal;
+};
+#endif // if 0
+
+#if 1
+static int mt_copy_mmap_info_i(struct memory_map *local_mem, const struct memory_map32 __user *remote_mem32, unsigned long length)
+{
+    unsigned long i=0;
+    int retVal = PW_SUCCESS;
+    // u32 data;
+
+    for (i=0; i<length; ++i) {
+        if (get_user(local_mem[i].ctrl_addr, &remote_mem32[i].ctrl_addr)) {
+            return -EFAULT;
+        }
+        /*
+         * 'ctrl_remap_address' is never passed in from user space.
+         * Set to NULL explicitly.
+         */
+        /*
+        if (copy_from_user(&local_mem[i].ctrl_remap_address, &remote_remote_mem32[i].ctrl_remap_address, sizeof(remote_remote_mem32[i].ctrl_remap_address))) {
+            return -EFAULT;
+        }
+        */
+        local_mem[i].ctrl_remap_address = NULL;
+        if (get_user(local_mem[i].ctrl_data, &remote_mem32[i].ctrl_data)) {
+            return -EFAULT;
+        }
+        if (get_user(local_mem[i].data_addr, &remote_mem32[i].data_addr)) {
+            return -EFAULT;
+        }
+        /*
+         * 'data_remap_address' is never passed in from user space.
+         * Set to NULL explicitly.
+         */
+        local_mem[i].data_remap_address = NULL;
+        /*
+        if (get_user(local_mem[i].data_remap_address, compat_ptr(remote_mem32[i].data_remap_address))) {
+            return -EFAULT;
+        }
+        */
+        /*
+         * 'ptr_data_usr' is only used in 'IOCTL_sram', which doesn't utilize
+         * the lookup table.
+         * Set to NULL explicitly.
+         */
+        /*
+        if (get_user(local_mem[i].ptr_data_usr, &remote_mem32[i].ptr_data_usr)) {
+            return -EFAULT;
+        }
+        */
+        local_mem[i].ptr_data_usr = NULL;
+        if (get_user(local_mem[i].data_size, &remote_mem32[i].data_size)) {
+            return -EFAULT;
+        }
+        if (get_user(local_mem[i].operation, &remote_mem32[i].operation)) {
+            return -EFAULT;
+        }
+        // printk(KERN_INFO "DEBUG: [%lu]: ctrl_addr = %lu, ctrl_data = %lu, data_addr = %lu, data_size = %lu, operation = %lu\n", i, local_mem[i].ctrl_addr, local_mem[i].ctrl_data, local_mem[i].data_addr, local_mem[i].data_size, local_mem[i].operation);
+    }
+    return retVal;
+};
+#endif // if 0
+
+#if 1
+static int mt_copy_pci_info_i(struct mtx_pci_ops *local_pci, const struct mtx_pci_ops32 __user *remote_pci32, unsigned long length)
+{
+    unsigned long i=0;
+
+    for (i=0; i<length; ++i) {
+        if (get_user(local_pci[i].port, &remote_pci32[i].port)) {
+            return -EFAULT;
+        }
+        if (get_user(local_pci[i].data, &remote_pci32[i].data)) {
+            return -EFAULT;
+        }
+        if (get_user(local_pci[i].io_type, &remote_pci32[i].io_type)) {
+            return -EFAULT;
+        }
+        if (get_user(local_pci[i].port_island, &remote_pci32[i].port_island)) {
+            return -EFAULT;
+        }
+        // printk(KERN_INFO "DEBUG: pci port = %lu, data = %lu, type = %lu, port_island = %lu\n", local_pci[i].port, local_pci[i].data, local_pci[i].io_type, local_pci[i].port_island);
+    }
+    return PW_SUCCESS;
+};
+#endif // if 0
+
+#if 1
+static int mt_copy_cfg_db_info_i(unsigned long *local_cfg, const u32 __user *remote_cfg32, unsigned long length)
+{
+    unsigned long i=0;
+
+    for (i=0; i<length; ++i) {
+        if (get_user(local_cfg[i], &remote_cfg32[i])) {
+            return -EFAULT;
+        }
+        // printk(KERN_INFO "DEBUG: local_cfg[%lu] = %lu\n", i, local_cfg[i]);
+    }
+    return PW_SUCCESS;
+};
+#endif // if 0
+
+#if 1
+static int mt_copy_soc_perf_info_i(struct mtx_soc_perf *local_soc_perf, const struct mtx_soc_perf32 __user *remote_soc_perf32, unsigned long length)
+{
+    unsigned long i=0;
+
+    for (i=0; i<length; ++i) {
+        /*
+         * 'ptr_data_usr' is never used.
+         * Set to NULL explicitly.
+         */
+        local_soc_perf[i].ptr_data_usr = NULL;
+        if (get_user(local_soc_perf[i].data_size, &remote_soc_perf32[i].data_size)) {
+            return -EFAULT;
+        }
+        if (get_user(local_soc_perf[i].operation, &remote_soc_perf32[i].operation)) {
             return -EFAULT;
         }
     }
     return PW_SUCCESS;
 };
-
-static int mt_copy_mmap_info_i(struct memory_map __user *mem, const struct memory_map32 __user *mem32, unsigned long length)
-{
-    unsigned long i=0;
-    u32 data;
-
-    for (i=0; i<length; ++i) {
-        if (get_user(data, &mem32[i].ctrl_addr) || put_user(data, &mem[i].ctrl_addr)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &mem32[i].ctrl_remap_address) || put_user(data, &mem[i].ctrl_remap_address)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &mem32[i].ctrl_data) || put_user(data, &mem[i].ctrl_data)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &mem32[i].data_addr) || put_user(data, &mem[i].data_addr)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &mem32[i].data_remap_address) || put_user(compat_ptr(data), &mem[i].data_remap_address)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &mem32[i].ptr_data_usr) || put_user(compat_ptr(data), &mem[i].ptr_data_usr)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &mem32[i].data_size) || put_user(data, &mem[i].data_size)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &mem32[i].operation) || put_user(data, &mem[i].operation)) {
-            return -EFAULT;
-        }
-    }
-    return PW_SUCCESS;
-};
-
-static int mt_copy_pci_info_i(struct mtx_pci_ops __user *pci, const struct mtx_pci_ops32 __user *pci32, unsigned long length)
-{
-    unsigned long i=0;
-    u32 data;
-
-    for (i=0; i<length; ++i) {
-        if (get_user(data, &pci32[i].port) || put_user(data, &pci[i].port)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &pci32[i].data) || put_user(data, &pci[i].data)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &pci32[i].io_type) || put_user(data, &pci[i].io_type)) {
-            return -EFAULT;
-        }
-        if (get_user(data, &pci32[i].port_island) || put_user(data, &pci[i].port_island)) {
-            return -EFAULT;
-        }
-    }
-    return PW_SUCCESS;
-};
-
-static int mt_copy_cfg_db_info_i(unsigned long __user *cfg, const u32 __user *cfg32, unsigned long length)
-{
-    unsigned long i=0;
-    u32 data;
-
-    for (i=0; i<length; ++i) {
-        if (get_user(data, &cfg32[i]) || put_user(data, &cfg[i])) {
-            return -EFAULT;
-        }
-    }
-    return PW_SUCCESS;
-};
+#endif // if 0
 
 static long mt_device_compat_ioctl(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param)
 {
     switch (ioctl_num) {
         case IOCTL_INIT_MEMORY32:
+            // printk(KERN_INFO "IOCTL_INIT_MEMORY32\n");
             return mt_device_compat_init_ioctl_i(file, ioctl_num, ioctl_param);
         case IOCTL_MSR32:
+            // printk(KERN_INFO "IOCTL_MSR32\n");
             return mt_device_compat_msr_ioctl_i(file, ioctl_num, ioctl_param);
         case IOCTL_READ_CONFIG_DB32:
+            // printk(KERN_INFO "IOCTL_READ_CONFIG_DB32\n");
             return mt_device_compat_config_db_ioctl_i(file, ioctl_num, ioctl_param);
         case IOCTL_READ_PCI_CONFIG32:
+            // printk(KERN_INFO "IOCTL_READ_PCI_CONFIG32\n");
             return mt_device_compat_pci_config_ioctl_i(file, ioctl_num, ioctl_param);
+        case IOCTL_GET_SCU_FW_VERSION32:
+            // printk(KERN_INFO "IOCTL_GET_SCU_FW_VERSION32\n");
+            return mt_get_scu_fw_version_compat_i(compat_ptr(ioctl_param));
         default:
+            // printk(KERN_INFO "OTHER\n");
             break;
     }
     return matrix_ioctl(file, ioctl_num, ioctl_param);
 };
 
+#if 1
 static long mt_device_compat_init_ioctl_i(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param)
 {
     struct lookup_table32 __user *__tab32 = compat_ptr(ioctl_param);
-    struct lookup_table __user *__tab = NULL;
+    // struct lookup_table __user *__tab = NULL;
+    // u8 *__buffer = NULL;
+    // u32 data = 0;
     struct lookup_table32 __tmp;
-    u32 data;
+    // struct lookup_table *ptr_lut = NULL;
+    // struct lookup_table __user *remote_tab = NULL;
     size_t __size = 0;
-    u32 __dst_idx = 0;
-    u8 __user *__buffer = NULL;
-
-
-    // printk(KERN_INFO "OK, received \"matrix\" compat ioctl!\n");
-
-    // printk(KERN_INFO "sizeof __tmp = %u\n", sizeof(__tmp));
+    long retVal = PW_SUCCESS;
 
     /*
      * Basic algo:
@@ -1854,6 +1876,18 @@ static long mt_device_compat_init_ioctl_i(struct file *file, unsigned int ioctl_
         printk(KERN_INFO "ERROR in length user copy!\n");
         return -EFAULT;
     }
+    ptr_lut = vmalloc(sizeof(*ptr_lut));
+    if (!ptr_lut) {
+        printk(KERN_INFO "ERROR allocating ptr_lut\n");
+        return -EFAULT;
+    }
+    memset(ptr_lut, 0, sizeof(*ptr_lut));
+    /*
+    if (true) {
+        printk(KERN_INFO "DEBUG: setting pci_ops length to zero!\n");
+        __tmp.pci_ops_init_length = __tmp.pci_ops_poll_length = __tmp.pci_ops_term_length = 0;
+    }
+    */
     /*
      * Step 1.
      */
@@ -1890,304 +1924,246 @@ static long mt_device_compat_init_ioctl_i(struct file *file, unsigned int ioctl_
         // printk(KERN_INFO "cfg_db_poll_length = %u\n", __tmp.cfg_db_poll_length);
         // printk(KERN_INFO "cfg_db_term_length = %u\n", __tmp.cfg_db_term_length);
 
-        __size += sizeof(struct lookup_table);
+        __size += (size_t)__tmp.soc_perf_init_length * sizeof(struct mtx_soc_perf);
+        __size += (size_t)__tmp.soc_perf_poll_length * sizeof(struct mtx_soc_perf);
+        __size += (size_t)__tmp.soc_perf_term_length * sizeof(struct mtx_soc_perf);
+
+        // printk(KERN_INFO "soc_perf_init_length = %u\n", __tmp.soc_perf_init_length);
+        // printk(KERN_INFO "soc_perf_poll_length = %u\n", __tmp.soc_perf_poll_length);
+        // printk(KERN_INFO "soc_perf_term_length = %u\n", __tmp.soc_perf_term_length);
+
+        // __size += sizeof(struct lookup_table);
     }
+
+    // printk(KERN_INFO "SIZE = %lu\n", __size);
     /*
-     * Step 2
-     */
-    __buffer = compat_alloc_user_space(__size);
-    if (!__buffer) {
-        printk(KERN_INFO "ERROR allocating compat space for size = %u!\n", __size);
-        return -EFAULT;
-    }
-    // printk(KERN_INFO "OK: ALLOCATED compat space of size = %u\n", __size);
-    /*
-     * Step 3
+     * Step 2.
      */
     {
-        __dst_idx = 0;
-        __tab = (struct lookup_table *)&__buffer[__dst_idx]; __dst_idx += sizeof(*__tab);
-
-        __tab->msrs_init = (struct mtx_msr *)&__buffer[__dst_idx]; __dst_idx += __tmp.msr_init_length * sizeof(*__tab->msrs_init);
-        __tab->mmap_init = (struct memory_map *)&__buffer[__dst_idx]; __dst_idx += __tmp.mem_init_length * sizeof(*__tab->mmap_init);
-        __tab->pci_ops_init = (struct mtx_pci_ops *)&__buffer[__dst_idx]; __dst_idx += __tmp.pci_ops_init_length * sizeof(*__tab->pci_ops_init);
-        __tab->cfg_db_init = (unsigned long *)&__buffer[__dst_idx]; __dst_idx += __tmp.cfg_db_init_length * sizeof(*__tab->cfg_db_init);
-
-        __tab->msrs_poll = (struct mtx_msr *)&__buffer[__dst_idx]; __dst_idx += __tmp.msr_poll_length * sizeof(*__tab->msrs_poll);
-        __tab->mmap_poll = (struct memory_map *)&__buffer[__dst_idx]; __dst_idx += __tmp.mem_poll_length * sizeof(*__tab->mmap_poll);
-        __tab->pci_ops_poll = (struct mtx_pci_ops *)&__buffer[__dst_idx]; __dst_idx += __tmp.pci_ops_poll_length * sizeof(*__tab->pci_ops_poll);
-        __tab->cfg_db_poll = (unsigned long *)&__buffer[__dst_idx]; __dst_idx += __tmp.cfg_db_poll_length * sizeof(*__tab->cfg_db_poll);
-
-        __tab->msrs_term = (struct mtx_msr *)&__buffer[__dst_idx]; __dst_idx += __tmp.msr_term_length * sizeof(*__tab->msrs_term);
-        __tab->mmap_term = (struct memory_map *)&__buffer[__dst_idx]; __dst_idx += __tmp.mem_term_length * sizeof(*__tab->mmap_term);
-        __tab->pci_ops_term = (struct mtx_pci_ops *)&__buffer[__dst_idx]; __dst_idx += __tmp.pci_ops_term_length * sizeof(*__tab->pci_ops_term);
-        __tab->cfg_db_term = (unsigned long *)&__buffer[__dst_idx]; __dst_idx += __tmp.cfg_db_term_length * sizeof(*__tab->cfg_db_term);
+        ptr_lut_ops = vmalloc(__size);
+        if (!ptr_lut_ops) {
+            printk(KERN_INFO "ERROR allocating space for lookup_table\n");
+            goto error;
+        }
     }
     /*
-     * Step 4
+     * Step 3.
+     */
+    {
+        int __dst_idx = 0;
+        // ptr_lut = (struct lookup_table *)&__buffer[__dst_idx]; __dst_idx += sizeof(*ptr_lut);
+
+        ptr_lut->msrs_init = (struct mtx_msr *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.msr_init_length * sizeof(*ptr_lut->msrs_init);
+        ptr_lut->mmap_init = (struct memory_map *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.mem_init_length * sizeof(*ptr_lut->mmap_init);
+        ptr_lut->pci_ops_init = (struct mtx_pci_ops *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.pci_ops_init_length * sizeof(*ptr_lut->pci_ops_init);
+        ptr_lut->cfg_db_init = (unsigned long *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.cfg_db_init_length * sizeof(*ptr_lut->cfg_db_init);
+        ptr_lut->soc_perf_init = (struct mtx_soc_perf *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.soc_perf_init_length * sizeof(*ptr_lut->soc_perf_init);
+
+        ptr_lut->msrs_poll = (struct mtx_msr *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.msr_poll_length * sizeof(*ptr_lut->msrs_poll);
+        ptr_lut->mmap_poll = (struct memory_map *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.mem_poll_length * sizeof(*ptr_lut->mmap_poll);
+        ptr_lut->pci_ops_poll = (struct mtx_pci_ops *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.pci_ops_poll_length * sizeof(*ptr_lut->pci_ops_poll);
+        ptr_lut->cfg_db_poll = (unsigned long *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.cfg_db_poll_length * sizeof(*ptr_lut->cfg_db_poll);
+        ptr_lut->soc_perf_poll = (struct mtx_soc_perf *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.soc_perf_poll_length * sizeof(*ptr_lut->soc_perf_poll);
+
+        ptr_lut->msrs_term = (struct mtx_msr *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.msr_term_length * sizeof(*ptr_lut->msrs_term);
+        ptr_lut->mmap_term = (struct memory_map *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.mem_term_length * sizeof(*ptr_lut->mmap_term);
+        ptr_lut->pci_ops_term = (struct mtx_pci_ops *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.pci_ops_term_length * sizeof(*ptr_lut->pci_ops_term);
+        ptr_lut->cfg_db_term = (unsigned long *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.cfg_db_term_length * sizeof(*ptr_lut->cfg_db_term);
+        ptr_lut->soc_perf_term = (struct mtx_soc_perf *)&ptr_lut_ops[__dst_idx]; __dst_idx += __tmp.soc_perf_term_length * sizeof(*ptr_lut->soc_perf_term);
+    }
+    /*
+     * Step 4.
      */
     {
         /*
          * INIT
          */
         {
-            /*
-             * MSRs
-             */
-            {
-                // printk(KERN_INFO "init = %u\n", __tmp.msr_init_length);
-                if (put_user(__tmp.msr_init_length, &__tab->msr_init_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.msr_init_wb, &__tab->msr_init_wb)) {
-                    return -EFAULT;
-                }
-            }
-            /*
-             * MEM
-             */
-            {
-                if (put_user(__tmp.mem_init_length, &__tab->mem_init_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.mem_init_wb, &__tab->mem_init_wb)) {
-                    return -EFAULT;
-                }
-            }
-            /*
-             * PCI
-             */
-            {
-                if (put_user(__tmp.pci_ops_init_length, &__tab->pci_ops_init_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.pci_ops_init_wb, &__tab->pci_ops_init_wb)) {
-                    return -EFAULT;
-                }
-            }
-            /*
-             * CFG
-             */
-            {
-                if (put_user(__tmp.cfg_db_init_length, &__tab->cfg_db_init_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.cfg_db_init_wb, &__tab->cfg_db_init_wb)) {
-                    return -EFAULT;
-                }
-            }
+            ptr_lut->msr_init_length = __tmp.msr_init_length;
+            ptr_lut->msr_init_wb = __tmp.msr_init_wb;
+            ptr_lut->mem_init_length = __tmp.mem_init_length;
+            ptr_lut->mem_init_wb = __tmp.mem_init_wb;
+            ptr_lut->pci_ops_init_length = __tmp.pci_ops_init_length;
+            ptr_lut->pci_ops_init_wb = __tmp.pci_ops_init_wb;
+            ptr_lut->cfg_db_init_length = __tmp.cfg_db_init_length;
+            ptr_lut->cfg_db_init_wb = __tmp.cfg_db_init_wb;
+            ptr_lut->soc_perf_init_length = __tmp.soc_perf_init_length;
+            ptr_lut->soc_perf_init_wb = __tmp.soc_perf_init_wb;
         }
         /*
          * POLL
          */
         {
+            ptr_lut->msr_poll_length = __tmp.msr_poll_length;
+            ptr_lut->msr_poll_wb = __tmp.msr_poll_wb;
+            ptr_lut->mem_poll_length = __tmp.mem_poll_length;
+            ptr_lut->mem_poll_wb = __tmp.mem_poll_wb;
+            ptr_lut->records = __tmp.records;
+            ptr_lut->pci_ops_poll_length = __tmp.pci_ops_poll_length;
+            ptr_lut->pci_ops_poll_wb = __tmp.pci_ops_poll_wb;
+            ptr_lut->pci_ops_records = __tmp.pci_ops_records;
+            ptr_lut->cfg_db_poll_length = __tmp.cfg_db_poll_length;
+            ptr_lut->cfg_db_poll_wb = __tmp.cfg_db_poll_wb;
             /*
-             * MSRs
+             * TODO
+             * 'scu_poll'
              */
             {
-                if (put_user(__tmp.msr_poll_length, &__tab->msr_poll_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.msr_poll_wb, &__tab->msr_poll_wb)) {
-                    return -EFAULT;
-                }
+                ptr_lut->scu_poll_length = 0; // __tmp.scu_poll_length;
+                ptr_lut->scu_poll.address = NULL;
+                ptr_lut->scu_poll.usr_data = NULL;
+                ptr_lut->scu_poll.drv_data = NULL;
+                ptr_lut->scu_poll.length = 0;
             }
-            /*
-             * MEM
-             */
-            {
-                if (put_user(__tmp.mem_poll_length, &__tab->mem_poll_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.mem_poll_wb, &__tab->mem_poll_wb)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.records, &__tab->records)) {
-                    return -EFAULT;
-                }
+            ptr_lut->soc_perf_poll_length = __tmp.soc_perf_poll_length;
+            ptr_lut->soc_perf_poll_wb = __tmp.soc_perf_poll_wb;
+            ptr_lut->soc_perf_records = __tmp.soc_perf_records;
+        }
+        /*
+         * TERM
+         */
+        {
+            ptr_lut->msr_term_length = __tmp.msr_term_length;
+            ptr_lut->msr_term_wb = __tmp.msr_term_wb;
+            ptr_lut->mem_term_length = __tmp.mem_term_length;
+            ptr_lut->mem_term_wb = __tmp.mem_term_wb;
+            ptr_lut->pci_ops_term_length = __tmp.pci_ops_term_length;
+            ptr_lut->pci_ops_term_wb = __tmp.pci_ops_term_wb;
+            ptr_lut->cfg_db_term_length = __tmp.cfg_db_term_length;
+            ptr_lut->cfg_db_term_wb = __tmp.cfg_db_term_wb;
+            ptr_lut->soc_perf_term_length = __tmp.soc_perf_term_length;
+            ptr_lut->soc_perf_term_wb = __tmp.soc_perf_term_wb;
+        }
+    }
+    /*
+     * Step 5.
+     */
+    {
+        /*
+         * INIT
+         */
+        {
+            if (mt_copy_mtx_msr_info_i(ptr_lut->msrs_init, (struct mtx_msr32 __user *)compat_ptr(__tmp.msrs_init), __tmp.msr_init_length)) {
+                printk(KERN_INFO "ERROR copying init msrs!\n");
+                retVal = -EFAULT;
+                goto error;
             }
-            /*
-             * PCI
-             */
-            {
-                if (put_user(__tmp.pci_ops_poll_length, &__tab->pci_ops_poll_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.pci_ops_poll_wb, &__tab->pci_ops_poll_wb)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.pci_ops_records, &__tab->pci_ops_records)) {
-                    return -EFAULT;
-                }
+            if (mt_copy_mmap_info_i(ptr_lut->mmap_init, (struct memory_map32 __user *)compat_ptr(__tmp.mmap_init), __tmp.mem_init_length)) {
+                printk(KERN_INFO "ERROR copying init mmap!\n");
+                retVal = -EFAULT;
+                goto error;
             }
-            /*
-             * CFG
-             */
-            {
-                if (put_user(__tmp.cfg_db_poll_length, &__tab->cfg_db_poll_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.cfg_db_poll_wb, &__tab->cfg_db_poll_wb)) {
-                    return -EFAULT;
-                }
+            if (mt_copy_pci_info_i(ptr_lut->pci_ops_init, (struct mtx_pci_ops32 __user *)compat_ptr(__tmp.pci_ops_init), __tmp.pci_ops_init_length)) {
+                printk(KERN_INFO "ERROR copying init pci!\n");
+                retVal = -EFAULT;
+                goto error;
             }
-            /*
-             * SCU
-             */
-            {
-                if (put_user(compat_ptr(__tmp.scu_poll.address), &__tab->scu_poll.address)) {
-                    return -EFAULT;
-                }
-                if (put_user(compat_ptr(__tmp.scu_poll.usr_data), &__tab->scu_poll.usr_data)) {
-                    return -EFAULT;
-                }
-                if (put_user(compat_ptr(__tmp.scu_poll.drv_data), &__tab->scu_poll.drv_data)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.scu_poll.length, &__tab->scu_poll.length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.scu_poll_length, &__tab->scu_poll_length)) {
-                    return -EFAULT;
-                }
+            if (mt_copy_cfg_db_info_i(ptr_lut->cfg_db_init, (u32 __user *)compat_ptr(__tmp.cfg_db_init), __tmp.cfg_db_init_length)) {
+                printk(KERN_INFO "ERROR copying init cfg_db!\n");
+                retVal = -EFAULT; 
+                goto error;
+            }
+            if (mt_copy_soc_perf_info_i(ptr_lut->soc_perf_init, (struct mtx_soc_perf32 __user *)compat_ptr(__tmp.soc_perf_init), __tmp.soc_perf_init_length)) {
+                printk(KERN_INFO "ERROR copying term soc_perf!\n");
+                retVal = -EFAULT; 
+                goto error;
+            }
+        }
+        /*
+         * POLL 
+         */
+        {
+            if (mt_copy_mtx_msr_info_i(ptr_lut->msrs_poll, (struct mtx_msr32 __user *)compat_ptr(__tmp.msrs_poll), __tmp.msr_poll_length)) {
+                printk(KERN_INFO "ERROR copying poll msrs!\n");
+                retVal = -EFAULT;
+                goto error;
+            }
+            if (mt_copy_mmap_info_i(ptr_lut->mmap_poll, (struct memory_map32 __user *)compat_ptr(__tmp.mmap_poll), __tmp.mem_poll_length)) {
+                printk(KERN_INFO "ERROR copying poll mmap!\n");
+                retVal = -EFAULT;
+                goto error;
+            }
+            if (mt_copy_pci_info_i(ptr_lut->pci_ops_poll, (struct mtx_pci_ops32 __user *)compat_ptr(__tmp.pci_ops_poll), __tmp.pci_ops_poll_length)) {
+                printk(KERN_INFO "ERROR copying poll pci!\n");
+                retVal = -EFAULT; 
+                goto error;
+            }
+            if (mt_copy_cfg_db_info_i(ptr_lut->cfg_db_poll, (u32 __user *)compat_ptr(__tmp.cfg_db_poll), __tmp.cfg_db_poll_length)) {
+                printk(KERN_INFO "ERROR copying poll cfg_db!\n");
+                retVal = -EFAULT;
+                goto error;
+            }
+            if (mt_copy_soc_perf_info_i(ptr_lut->soc_perf_poll, (struct mtx_soc_perf32 __user *)compat_ptr(__tmp.soc_perf_poll), __tmp.soc_perf_poll_length)) {
+                printk(KERN_INFO "ERROR copying term soc_perf!\n");
+                retVal = -EFAULT;
+                goto error;
             }
         }
         /*
          * TERM
          */
         {
-            /*
-             * MSRs
-             */
-            {
-                if (put_user(__tmp.msr_term_length, &__tab->msr_term_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.msr_term_wb, &__tab->msr_term_wb)) {
-                    return -EFAULT;
-                }
+            if (mt_copy_mtx_msr_info_i(ptr_lut->msrs_term, (struct mtx_msr32 __user *)compat_ptr(__tmp.msrs_term), __tmp.msr_term_length)) {
+                printk(KERN_INFO "ERROR copying term msrs!\n");
+                retVal = -EFAULT;
+                goto error;
             }
-            /*
-             * MEM
-             */
-            {
-                if (put_user(__tmp.mem_term_length, &__tab->mem_term_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.mem_term_wb, &__tab->mem_term_wb)) {
-                    return -EFAULT;
-                }
+            if (mt_copy_mmap_info_i(ptr_lut->mmap_term, (struct memory_map32 __user *)compat_ptr(__tmp.mmap_term), __tmp.mem_term_length)) {
+                printk(KERN_INFO "ERROR copying term mmap!\n");
+                retVal = -EFAULT;
+                goto error;
             }
-            /*
-             * PCI
-             */
-            {
-                if (put_user(__tmp.pci_ops_term_length, &__tab->pci_ops_term_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.pci_ops_term_wb, &__tab->pci_ops_term_wb)) {
-                    return -EFAULT;
-                }
+            if (mt_copy_pci_info_i(ptr_lut->pci_ops_term, (struct mtx_pci_ops32 __user *)compat_ptr(__tmp.pci_ops_term), __tmp.pci_ops_term_length)) {
+                printk(KERN_INFO "ERROR copying term pci!\n");
+                retVal = -EFAULT;
+                goto error;
             }
-            /*
-             * CFG
-             */
-            {
-                if (put_user(__tmp.cfg_db_term_length, &__tab->cfg_db_term_length)) {
-                    return -EFAULT;
-                }
-                if (put_user(__tmp.cfg_db_term_wb, &__tab->cfg_db_term_wb)) {
-                    return -EFAULT;
-                }
+            if (mt_copy_cfg_db_info_i(ptr_lut->cfg_db_term, (u32 __user *)compat_ptr(__tmp.cfg_db_term), __tmp.cfg_db_term_length)) {
+                printk(KERN_INFO "ERROR copying term cfg_db!\n");
+                retVal = -EFAULT;
+                goto error;
+            }
+            if (mt_copy_soc_perf_info_i(ptr_lut->soc_perf_term, (struct mtx_soc_perf32 __user *)compat_ptr(__tmp.soc_perf_term), __tmp.soc_perf_term_length)) {
+                printk(KERN_INFO "ERROR copying term soc_perf!\n");
+                retVal = -EFAULT;
+                goto error;
             }
         }
     }
+
+    if (mt_init_msg_memory()) {
+        printk(KERN_INFO "ERROR allocating memory for matrix messages!\n");
+        goto error;
+    }
+    mt_calculate_memory_requirements();
+
+    io_pm_status_reg =
+        (mt_platform_pci_read32(ptr_lut->pci_ops_poll->port) &
+         PWR_MGMT_BASE_ADDR_MASK);
+    io_base_pwr_address =
+        (mt_platform_pci_read32(ptr_lut->pci_ops_poll->port_island) &
+         PWR_MGMT_BASE_ADDR_MASK);
+    mem_alloc_status = true;
+
     /*
-     * Step 5
+     * io_remap
      */
     {
-        struct mtx_msr32 __user *__msr32 = compat_ptr(__tab32->msrs_init);
-        struct mtx_msr __user *__msr = __tab->msrs_init;
-        struct memory_map32 __user *__mem32 = compat_ptr(__tab32->mmap_init);
-        struct memory_map __user *__mem = __tab->mmap_init;
-        struct mtx_pci_ops32 __user *__pci32 = compat_ptr(__tab32->pci_ops_init);
-        struct mtx_pci_ops __user *__pci = __tab->pci_ops_init;
-        u32 __user *__cfg_db32 = NULL;
-        unsigned long __user *__cfg_db = NULL;
-
-        if (mt_copy_mtx_msr_info_i(__msr, __msr32, __tmp.msr_init_length)) {
-            printk(KERN_INFO "ERROR copying init msrs!\n");
-            return -EFAULT;
-        }
-        if (mt_copy_mmap_info_i(__mem, __mem32, __tmp.mem_init_length)) {
-            printk(KERN_INFO "ERROR copying init mem!\n");
-            return -EFAULT;
-        }
-        if (mt_copy_pci_info_i(__pci, __pci32, __tmp.pci_ops_init_length)) {
-            printk(KERN_INFO "ERROR copying init pci!\n");
-            return -EFAULT;
-        }
-        __cfg_db32 = compat_ptr(__tab32->cfg_db_init);
-        __cfg_db = __tab->cfg_db_init;
-        if (mt_copy_cfg_db_info_i(__cfg_db, __cfg_db32, __tmp.cfg_db_init_length)) {
-            printk(KERN_INFO "ERROR copying init cfg_db!\n");
-            return -EFAULT;
-        }
-
-        __msr32 = compat_ptr(__tab32->msrs_poll);
-        __msr = __tab->msrs_poll;
-        if (mt_copy_mtx_msr_info_i(__msr, __msr32, __tmp.msr_poll_length)) {
-            printk(KERN_INFO "ERROR copying poll msrs!\n");
-        }
-        __mem32 = compat_ptr(__tab32->mmap_poll);
-        __mem = __tab->mmap_poll;
-        if (mt_copy_mmap_info_i(__mem, __mem32, __tmp.mem_poll_length)) {
-            printk(KERN_INFO "ERROR copying poll mem!\n");
-            return -EFAULT;
-        }
-        __pci32 = compat_ptr(__tab32->pci_ops_poll);
-        __pci = __tab->pci_ops_poll;
-        if (mt_copy_pci_info_i(__pci, __pci32, __tmp.pci_ops_poll_length)) {
-            printk(KERN_INFO "ERROR copying init pci!\n");
-            return -EFAULT;
-        }
-        __cfg_db32 = compat_ptr(__tab32->cfg_db_poll);
-        __cfg_db = __tab->cfg_db_poll;
-        if (mt_copy_cfg_db_info_i(__cfg_db, __cfg_db32, __tmp.cfg_db_poll_length)) {
-            printk(KERN_INFO "ERROR copying poll cfg_db!\n");
-            return -EFAULT;
-        }
-
-        __msr32 = compat_ptr(__tab32->msrs_term);
-        __msr = __tab->msrs_term;
-        if (mt_copy_mtx_msr_info_i(__msr, __msr32, __tmp.msr_term_length)) {
-            printk(KERN_INFO "ERROR copying term msrs!\n");
-        }
-        __mem32 = compat_ptr(__tab32->mmap_term);
-        __mem = __tab->mmap_term;
-        if (mt_copy_mmap_info_i(__mem, __mem32, __tmp.mem_term_length)) {
-            printk(KERN_INFO "ERROR copying term mem!\n");
-            return -EFAULT;
-        }
-        __pci32 = compat_ptr(__tab32->pci_ops_term);
-        __pci = __tab->pci_ops_term;
-        if (mt_copy_pci_info_i(__pci, __pci32, __tmp.pci_ops_term_length)) {
-            printk(KERN_INFO "ERROR copying init pci!\n");
-            return -EFAULT;
-        }
-        __cfg_db32 = compat_ptr(__tab32->cfg_db_term);
-        __cfg_db = __tab->cfg_db_term;
-        if (mt_copy_cfg_db_info_i(__cfg_db, __cfg_db32, __tmp.cfg_db_term_length)) {
-            printk(KERN_INFO "ERROR copying term cfg_db!\n");
-            return -EFAULT;
-        }
-
-        // printk(KERN_INFO "OK, copied everything!\n");
+        MATRIX_IO_REMAP_MEMORY(init);
+        MATRIX_IO_REMAP_MEMORY(poll);
+        MATRIX_IO_REMAP_MEMORY(term);
     }
-    // return pw_unlocked_handle_ioctl_i(ioctl_num, (unsigned long)__tab);
-    return matrix_ioctl(file, (unsigned int)ioctl_num, (unsigned long)__tab);
-};
 
+    return retVal;
+
+error:
+    printk(KERN_INFO "Memory Initialization Error!\n");
+    mt_free_memory();
+    return -EFAULT;
+};
+#endif // if 1
+
+#if 1
 static int mt_ioctl_mtx_msr_compat_i(struct mtx_msr_container __user *remote_args, struct mtx_msr_container32 __user *remote_args32)
 {
     struct mtx_msr_container local_args;
@@ -2200,6 +2176,9 @@ static int mt_ioctl_mtx_msr_compat_i(struct mtx_msr_container __user *remote_arg
                 __FILE__, __func__, __LINE__);
         return -EFAULT;
     }
+
+    // printk(KERN_INFO "local.op = %lu, local.address = %lu\n", local_args.msrType1.operation, local_args.msrType1.ecx_address);
+
     if (local_args.length > 0) {
         MATRIX_VMALLOC(buffer, sizeof(unsigned long) * local_args.length, ERROR);
         if (copy_from_user(buffer, local_args.buffer, (sizeof(unsigned long) * local_args.length)) > 0) {
@@ -2209,21 +2188,16 @@ static int mt_ioctl_mtx_msr_compat_i(struct mtx_msr_container __user *remote_arg
     }
     switch (local_args.msrType1.operation) {
         case WRITE_OP:
-            err = wrmsr_on_cpu(local_args.msrType1.n_cpu,
+            err = MATRIX_WRMSR_ON_CPU(local_args.msrType1.n_cpu,
                     local_args.msrType1.ecx_address,
                     local_args.msrType1.eax_LSB,
                     local_args.msrType1.edx_MSB);
             break;
         case READ_OP:
-            err = rdmsr_on_cpu(local_args.msrType1.n_cpu,
+            err = MATRIX_RDMSR_ON_CPU(local_args.msrType1.n_cpu,
                     local_args.msrType1.ecx_address,
                     (u32 *) & local_args.msrType1.eax_LSB,
                     (u32 *) & local_args.msrType1.edx_MSB);
-            if (false) {
-                u32 __lsb = local_args.msrType1.eax_LSB, __msb = local_args.msrType1.edx_MSB;
-                u64 __val = ((u64)__msb << 32) | (u64)__lsb;
-                printk(KERN_INFO "eax_LSB = %u, edx_MSB = %u, actual = %llu\n", __lsb, __msb, __val);
-            }
             break;
         case ENABLE_OP:
             wrmsrl(local_args.msrType1.ecx_address,
@@ -2259,6 +2233,7 @@ ERROR:
     vfree(buffer);
     return -EFAULT;
 };
+#endif // if 0
 
 static int mt_ioctl_pci_config_compat_i(struct pci_config __user *remote_args, struct pci_config32 __user *remote_args32)
 {
@@ -2302,112 +2277,69 @@ exit:
 
 };
 
+static long mt_get_scu_fw_version_compat_i(u16 __user *remote_data)
+{
+    u16 local_data = pw_scu_fw_major_minor;
+    if (put_user(local_data, remote_data)) {
+        printk(KERN_INFO "ERROR transfering SCU F/W version to userspace!\n");
+        return -EFAULT;
+    }
+    return 0; // SUCCESS
+};
+
 static long mt_device_compat_msr_ioctl_i(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param)
 {
     struct mtx_msr_container32 __user *__msr32 = compat_ptr(ioctl_param);
     struct mtx_msr_container __user *__msr = NULL;
     struct mtx_msr_container32 __tmp;
-    u32 data;
-    size_t __size = 0;
-    u32 __dst_idx = 0;
-    u8 __user *__buffer = NULL;
-    struct mtx_msr_container mtx_msr_drv;
-    unsigned long *buffer = NULL;
-    int err = 0;
+    u32 data = 0;
 
-
-    // printk(KERN_INFO "OK, received \"matrix\" compat ioctl!\n");
-
-    // printk(KERN_INFO "sizeof __tmp = %u\n", sizeof(__tmp));
-
-    /*
-     * Basic algo:
-     * 1. Calculate total memory requirement for the 64b structure (including space required for all arrays etc.)
-     * 2. Allocate entire lookup table chunk in 'compat' space (via 'compat_alloc_user_space()').
-     * 3. Patch up pointers (individual array pointers in the lookup table need to point into the chunk allocated in 2, above).
-     * 4. Copy over the "header" (all of the non-pointer fields) from 32b --> 64b
-     * 5. For each pointer
-     * a. Manually copy all fields from 32b userspace struct to 64b userspace struct.
-     */
-
-    if (copy_from_user(&__tmp, __msr32, sizeof(__tmp))) {
-        printk(KERN_INFO "ERROR in length user copy!\n");
-        return -EFAULT;
+    if (copy_from_user(&__tmp, __msr32, sizeof(*__msr32))) {
+        printk(KERN_INFO "ERROR copying in mtx_msr32 struct from userspace\n");
+        return -PW_ERROR;
     }
-    /*
-     * Step 1.
-     */
-    {
-        __size += (size_t)__tmp.length * sizeof(unsigned long);
-        // printk(KERN_INFO "length = %u\n", __tmp.length);
-
-        __size += sizeof(struct mtx_msr_container);
-    }
-    /*
-     * Step 2
-     */
-    __buffer = compat_alloc_user_space(__size);
-    if (!__buffer) {
-        printk(KERN_INFO "ERROR allocating compat space for size = %u!\n", __size);
-        return -EFAULT;
-    }
-    // printk(KERN_INFO "OK: ALLOCATED compat space of size = %u\n", __size);
-    /*
-     * Step 3
-     */
-    {
-        __dst_idx = 0;
-        __msr = (struct mtx_msr_container *)&__buffer[__dst_idx]; __dst_idx += sizeof(*__msr);
-        __msr->buffer = (unsigned long *)&__buffer[__dst_idx]; __dst_idx += __tmp.length * sizeof(*__msr->buffer);
-    }
-    /*
-     * Step 4
-     */
-    {
+    __msr = compat_alloc_user_space(sizeof(*__msr));
+    // printk(KERN_INFO "length = %u, __msr = %p\n", __tmp.length, __msr);
+    if (__tmp.length == 0 || compat_ptr(__tmp.buffer) == NULL) {
         if (put_user(__tmp.length, &__msr->length)) {
-            return -EFAULT;
+            return -PW_ERROR;
         }
-        if (put_user(__tmp.msrType1.eax_LSB, &__msr->msrType1.eax_LSB)) {
-            return -EFAULT;
+        if (put_user(compat_ptr(__tmp.buffer), &__msr->buffer)) {
+            return -PW_ERROR;
         }
-        if (put_user(__tmp.msrType1.edx_MSB, &__msr->msrType1.edx_MSB)) {
-            return -EFAULT;
+        if (get_user(data, &__msr32->msrType1.eax_LSB) || put_user(data, &__msr->msrType1.eax_LSB)) {
+            return -PW_ERROR;
         }
-        if (put_user(__tmp.msrType1.ecx_address, &__msr->msrType1.ecx_address)) {
-            return -EFAULT;
+        if (get_user(data, &__msr32->msrType1.edx_MSB) || put_user(data, &__msr->msrType1.edx_MSB)) {
+            return -PW_ERROR;
         }
-        if (put_user(__tmp.msrType1.ebx_value, &__msr->msrType1.ebx_value)) {
-            return -EFAULT;
+        if (get_user(data, &__msr32->msrType1.ecx_address) || put_user(data, &__msr->msrType1.ecx_address)) {
+            return -PW_ERROR;
         }
-        if (put_user(__tmp.msrType1.n_cpu, &__msr->msrType1.n_cpu)) {
-            return -EFAULT;
+        if (get_user(data, &__msr32->msrType1.ebx_value) || put_user(data, &__msr->msrType1.ebx_value)) {
+            return -PW_ERROR;
         }
-        if (put_user(__tmp.msrType1.operation, &__msr->msrType1.operation)) {
-            return -EFAULT;
+        if (get_user(data, &__msr32->msrType1.n_cpu) || put_user(data, &__msr->msrType1.n_cpu)) {
+            return -PW_ERROR;
         }
+        if (get_user(data, &__msr32->msrType1.operation) || put_user(data, &__msr->msrType1.operation)) {
+            return -PW_ERROR;
+        }
+        /*
+         * OK, everything copied. Now perform the IOCTL action here.
+         * We need to do this here instead of delegating to 'matrix_ioctl()'
+         * because this IOCTL needs to return information to Ring3, which means
+         * we need the *original* ptr to call 'put_user()' on.
+         */
+        return mt_ioctl_mtx_msr_compat_i(__msr, __msr32);
+        /*
+        printk(KERN_INFO "ERROR: compat_msr_ioctl not supported (yet)!\n");
+        return -PW_ERROR;
+        */
+    } else {
+        printk(KERN_INFO "ERROR: NO support for \"ENABLE_OP\" in compat space!\n");
+        return -PW_ERROR;
     }
-    /*
-     * Step 5
-     */
-    {
-        u32 __user *__buff32 = compat_ptr(__msr32->buffer);
-        unsigned long __user *__buff = __msr->buffer;
-        unsigned long i=0;
-        u32 data;
-        for (i=0; i<__tmp.length; ++i) {
-            if (get_user(data, &__buff32[i]) || put_user(data, &__buff[i])) {
-                return -EFAULT;
-            }
-        }
-        // printk(KERN_INFO "OK, copied everything!\n");
-    }
-    /*
-     * OK, everything copied. Now perform the IOCTL action here.
-     * We need to do this here instead of delegating to 'matrix_ioctl()'
-     * because this IOCTL needs to return information to Ring3, which means
-     * we need the *original* ptr to call 'put_user()' on.
-     */
-    return mt_ioctl_mtx_msr_compat_i(__msr, __msr32);
 };
 
 static long mt_device_compat_pci_config_ioctl_i(struct file *file, unsigned int ioctl_num, unsigned long ioctl_param)
@@ -2415,13 +2347,13 @@ static long mt_device_compat_pci_config_ioctl_i(struct file *file, unsigned int 
     struct pci_config32 __user *__pci32 = compat_ptr(ioctl_param);
     struct pci_config __user *__pci = NULL;
     struct pci_config32 __tmp;
-    u32 data;
+    // u32 data;
     size_t __size = 0;
     u32 __dst_idx = 0;
     u8 __user *__buffer = NULL;
-    struct pci_config mtx_pci_drv;
-    unsigned long *buffer = NULL;
-    int err = 0;
+    // struct pci_config mtx_pci_drv;
+    // unsigned long *buffer = NULL;
+    // int err = 0;
 
 
     // printk(KERN_INFO "OK, received \"matrix\" compat ioctl!\n");
@@ -2451,7 +2383,7 @@ static long mt_device_compat_pci_config_ioctl_i(struct file *file, unsigned int 
      */
     __buffer = compat_alloc_user_space(__size);
     if (!__buffer) {
-        printk(KERN_INFO "ERROR allocating compat space for size = %u!\n", __size);
+        printk(KERN_INFO "ERROR allocating compat space for size = %u!\n", (unsigned)__size);
         return -EFAULT;
     }
     // printk(KERN_INFO "OK: ALLOCATED compat space of size = %u\n", __size);
@@ -2516,23 +2448,24 @@ static long mt_device_compat_config_db_ioctl_i(struct file *file, unsigned int i
 };
 
 #endif // HAVE_COMPAT_IOCTL && CONFIG_X86_64
+
 int mt_register_dev(void)
 {
 	int error;
-	error = alloc_chrdev_region(&matrix_dev, 0, 1, NAME);
+	error = alloc_chrdev_region(&matrix_dev, 0, 1, DRV_NAME);
 	if (error < 0) {
 		pr_err("Matrix : Could not allocate char dev region");
 		// return 1;
 		return error;
 	}
 	matrix_major_number = MAJOR(matrix_dev);
-	matrix_class = class_create(THIS_MODULE, NAME);
+	matrix_class = class_create(THIS_MODULE, DRV_NAME);
 	if (IS_ERR(matrix_class)) {
 		pr_err("Matrix :Error registering class\n");
 		// return 1;
 		return -MT_ERROR;
 	}
-	device_create(matrix_class, NULL, matrix_dev, NULL, NAME);
+	device_create(matrix_class, NULL, matrix_dev, NULL, DRV_NAME);
 
 	/*Device Registration */
 	matrix_cdev = cdev_alloc();
@@ -2542,7 +2475,7 @@ int mt_register_dev(void)
 	}
 	matrix_cdev->owner = THIS_MODULE;
 	matrix_cdev->ops = &matrix_fops;
-	matrix_device = (struct device *)matrix_cdev->dev;
+	matrix_device = (struct device *)(unsigned long)matrix_cdev->dev;
 	if (cdev_add(matrix_cdev, matrix_dev, 1) < 0) {
 		pr_err("Error registering device driver\n");
 		// return error;
@@ -2556,7 +2489,7 @@ int mt_register_dev(void)
 void mt_unregister_dev(void)
 {
 	pr_info("Matrix De-Registered Successfully...\n");
-	unregister_chrdev(matrix_major_number, NAME);
+	unregister_chrdev(matrix_major_number, DRV_NAME);
 	device_destroy(matrix_class, matrix_dev);
 	class_destroy(matrix_class);
 	unregister_chrdev_region(matrix_dev, 1);

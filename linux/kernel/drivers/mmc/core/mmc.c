@@ -1222,10 +1222,6 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 		err = mmc_read_ext_csd(card, ext_csd);
 		if (err)
 			goto free_card;
-                /* give host chance to change default configuration*/
-                if (host && host->ops && host->ops->change_configuration) {
-                        (host->ops->change_configuration)(host, card);
-                }
 
 		/* If doing byte addressing, check if required to do sector
 		 * addressing.  Handle the case of <2GB cards needing sector
@@ -1759,8 +1755,6 @@ static int mmc_resume(struct mmc_host *host)
 	BUG_ON(!host->card);
 
 	mmc_claim_host(host);
-    if (host->card->state & MMC_STATE_SLEEP)
-        mmc_card_awake(host);
 	err = mmc_init_card(host, host->ocr, host->card);
 	mmc_release_host(host);
 
@@ -1771,7 +1765,7 @@ static int mmc_power_restore(struct mmc_host *host)
 {
 	int ret;
 
-	host->card->state &= ~(MMC_STATE_HIGHSPEED | MMC_STATE_HIGHSPEED_200 | MMC_STATE_SLEEP);
+	host->card->state &= ~(MMC_STATE_HIGHSPEED | MMC_STATE_HIGHSPEED_200);
 	mmc_claim_host(host);
 	ret = mmc_init_card(host, host->ocr, host->card);
 	mmc_release_host(host);
@@ -1789,8 +1783,6 @@ static int mmc_sleep(struct mmc_host *host)
 		if (err < 0)
 			pr_debug("%s: Error %d while putting card into sleep",
 				 mmc_hostname(host), err);
-        else
-            host->card->state |= MMC_STATE_SLEEP;
 	}
 
 	return err;
@@ -1806,8 +1798,6 @@ static int mmc_awake(struct mmc_host *host)
 		if (err < 0)
 			pr_debug("%s: Error %d while awaking sleeping card",
 				 mmc_hostname(host), err);
-        else
-            host->card->state &= ~MMC_STATE_SLEEP;
 	}
 
 	return err;
@@ -1856,8 +1846,6 @@ int mmc_attach_mmc(struct mmc_host *host)
 
 	BUG_ON(!host);
 	WARN_ON(!host->claimed);
-
-        pr_debug("enter %s %d\n", __func__, __LINE__);
 
 	/* Set correct bus mode for MMC before attempting attach */
 	if (!mmc_host_is_spi(host))

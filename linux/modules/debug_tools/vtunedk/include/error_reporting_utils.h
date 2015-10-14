@@ -5,7 +5,7 @@
  *  agreement or nondisclosure agreement with Intel Corporation and may not
  *  be copied or disclosed except in accordance with the terms of that
  *  agreement.
- *        Copyright (c) 2002-2012 Intel Corporation. All Rights Reserved.
+ *        Copyright (C) 2002-2014 Intel Corporation. All Rights Reserved.
  * -------------------------------------------------------------------------
 **COPYRIGHT*/
 
@@ -84,8 +84,22 @@
         return rise_err;                                               \
     }
 
+#define DRV_CHECK_PTR_N_CLEANUP(ptr, gotolabel, ret_val)                 \
+    if ((ptr) == NULL) {                                                 \
+        LOG_ERR0(VTSA_T("Encountered null pointer"));                    \
+        ret_val = VT_SAM_ERROR;                                          \
+        goto gotolabel;                                                  \
+    }
+
 #define DRV_CHECK_ON_FAIL_CLEANUP_N_RETURN(ret_val, gotolabel)         \
     if ((ret_val) != VT_SUCCESS) {                                     \
+        DRV_CHECK_N_LOG_NO_RETURN(ret_val);                            \
+        goto gotolabel;                                                \
+    } 
+
+
+#define DRV_CHECK_N_CLEANUP_N_RETURN_RET_NEG_ONE(ret_val, gotolabel)   \
+    if ((ret_val) == -1) {                                             \
         DRV_CHECK_N_LOG_NO_RETURN(ret_val);                            \
         goto gotolabel;                                                \
     } 
@@ -101,6 +115,10 @@
         free(ptr);                                                     \
         ptr = NULL;                                                    \
     }
+
+#define DELETE_N_SET_NULL(ptr)                                         \
+        delete ptr;                                                    \
+        ptr = NULL;
 
 #endif
 

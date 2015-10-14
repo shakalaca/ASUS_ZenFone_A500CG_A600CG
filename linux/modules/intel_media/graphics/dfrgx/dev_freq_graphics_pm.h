@@ -30,7 +30,5 @@
 
 /*PM on dfrgx*/
 int df_rgx_is_active(void);
-int df_rgx_suspend(void);
-int df_rgx_resume(void);
 
 #endif /*DEVFREQ_GRAPHICS_PM_H*/

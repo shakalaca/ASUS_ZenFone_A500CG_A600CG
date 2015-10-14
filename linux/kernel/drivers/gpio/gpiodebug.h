@@ -30,7 +30,8 @@ struct gpio_debug;
 #define TYPE_SBY_OVR_INDIR		0x14
 #define TYPE_SBY_PUPD_STATE		0x15
 #define TYPE_SBY_OD_DIS			0x16
-#define TYPE_MAX			0x17
+#define TYPE_IRQ_LINE			0x17
+#define TYPE_MAX			0x18
 
 struct gpio_control {
 	unsigned type, num;
@@ -42,6 +43,8 @@ struct gpio_control {
 		unsigned gpio);
 	int (*set)(struct gpio_control *control, void *private_data,
 		unsigned gpio, unsigned int num);
+	int (*get_handle)(int val);
+	void (*set_handle)(unsigned int num, int *val);
 };
 
 struct gpio_debug_ops {

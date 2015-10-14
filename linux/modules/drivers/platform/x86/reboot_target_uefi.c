@@ -46,6 +46,7 @@ static void uefi_string_to_varname(const char *name, int size, wchar_t *varname)
 static const efi_guid_t LOADER_GUID =
 	EFI_GUID(0x4a67b082, 0x0a4c, 0x41cf, 0xb6, 0xc7, 0x44, 0x0b, 0x29, 0xbb, 0x8c, 0x4f);
 static const char TARGET_VARNAME[] = "LoaderEntryOneShot";
+static const char PANIC_VARNAME[] = "PanicOccured";
 
 static int uefi_set_loader_entry_one_shot(const char *name)
 {
@@ -64,8 +65,12 @@ static int uefi_set_loader_entry_one_shot(const char *name)
 
 static const char RESCUE_MODE_TARGET[]		     = "dnx";
 static const char OS_INDICATIONS_SUPPORTED_VARNAME[] = "OsIndicationsSupported";
-static const char OS_INDICATIONS_VARNAME[] 	     = "OsIndications";
-static const u64  EFI_OS_INDICATION_RESCUE_MODE      = 1 << 5;
+static const char OS_INDICATIONS_VARNAME[]	     = "OsIndications";
+
+enum os_indication_option {
+	RESCUE_MODE_OPT	       = 5,
+	OS_INITIATED_RESET_OPT = 6
+};
 
 static int uefi_read_u64_entry(struct efivar_entry *entry, u64 *value,
 			       u32 *attributes)
@@ -84,7 +89,7 @@ static int uefi_read_u64_entry(struct efivar_entry *entry, u64 *value,
 	return 0;
 }
 
-static bool uefi_is_os_indication_supported(const u64 os_indication)
+static bool uefi_is_os_indication_supported(enum os_indication_option option)
 {
 	wchar_t varname[sizeof(OS_INDICATIONS_SUPPORTED_VARNAME)];
 	struct efivar_entry *entry;
@@ -108,22 +113,22 @@ static bool uefi_is_os_indication_supported(const u64 os_indication)
 		pr_err("%s: Failed to read %s EFI variable, return=%d\n",
 		       __func__, OS_INDICATIONS_SUPPORTED_VARNAME, ret);
 
-	return ret ? false : !!(value & os_indication);
+	return ret ? false : !!(value & (1 << option));
 }
 
-static int uefi_ask_for_rescue_mode(void)
+static int uefi_set_os_indication_option(enum os_indication_option option)
 {
 	wchar_t varname[sizeof(OS_INDICATIONS_VARNAME)];
 	struct efivar_entry *entry;
-	u64 value = EFI_OS_INDICATION_RESCUE_MODE;
+	u64 value = 1 << option;
 	u32 attributes = EFI_VARIABLE_NON_VOLATILE
 		| EFI_VARIABLE_BOOTSERVICE_ACCESS
 		| EFI_VARIABLE_RUNTIME_ACCESS;
 	int ret;
 
-	if (!uefi_is_os_indication_supported(EFI_OS_INDICATION_RESCUE_MODE)) {
-		pr_err("%s: Rescue mode OS indication is not supported\n",
-		       __func__);
+	if (!uefi_is_os_indication_supported(option)) {
+		pr_err("%s: OS indication option #%d is not supported\n",
+		       __func__, option);
 		return -ENODEV;
 	}
 
@@ -143,16 +148,16 @@ static int uefi_ask_for_rescue_mode(void)
 		return ret;
 	}
 
-	value |= EFI_OS_INDICATION_RESCUE_MODE;
+	value |= 1 << option;
 	return efivar_entry_set(entry, attributes, sizeof(u64), &value, NULL);
 }
 
-static const u16 ANDROID_LOAD_OPTION_MASK = 1 << 8;
-
 static int uefi_set_reboot_target(const char *name, const int id)
 {
+	uefi_set_os_indication_option(OS_INITIATED_RESET_OPT);
+
 	if (strcmp(name, RESCUE_MODE_TARGET) == 0)
-		return uefi_ask_for_rescue_mode();
+		return uefi_set_os_indication_option(RESCUE_MODE_OPT);
 
 	return uefi_set_loader_entry_one_shot(name);
 }
@@ -161,13 +166,37 @@ struct reboot_target reboot_target_uefi = {
 	.set_reboot_target = uefi_set_reboot_target,
 };
 
+static int panic_uefi_notify(struct notifier_block *this, unsigned long event,
+		       void *ptr)
+{
+	wchar_t varname[sizeof(PANIC_VARNAME)];
+	u32 attributes = EFI_VARIABLE_NON_VOLATILE
+		| EFI_VARIABLE_BOOTSERVICE_ACCESS
+		| EFI_VARIABLE_RUNTIME_ACCESS;
+	u8 val = 1;
+
+	uefi_string_to_varname(PANIC_VARNAME, sizeof(PANIC_VARNAME), varname);
+
+	if (efivar_entry_set_safe(varname, LOADER_GUID, attributes, true, sizeof(val), &val))
+		printk(KERN_WARNING "%s: failed to set uefi variable %s\n",
+		       __func__, PANIC_VARNAME);
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block panic_uefi = {
+	.notifier_call = panic_uefi_notify,
+};
+
 static int reboot_target_uefi_probe(struct platform_device *pdev)
 {
+	atomic_notifier_chain_register(&panic_notifier_list, &panic_uefi);
 	return reboot_target_register(&reboot_target_uefi);
 }
 
 static int reboot_target_uefi_remove(struct platform_device *pdev)
 {
+	atomic_notifier_chain_unregister(&panic_notifier_list, &panic_uefi);
 	return reboot_target_unregister(&reboot_target_uefi);
 }
 

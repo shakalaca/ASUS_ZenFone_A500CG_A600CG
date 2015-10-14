@@ -1,21 +1,21 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
- 
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
+
     This file is part of SEP Development Kit
- 
+
     SEP Development Kit is free software; you can redistribute it
     and/or modify it under the terms of the GNU General Public License
     version 2 as published by the Free Software Foundation.
- 
+
     SEP Development Kit is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
- 
+
     You should have received a copy of the GNU General Public License
     along with SEP Development Kit; if not, write to the Free Software
     Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- 
+
     As a special exception, you may use this file as part of a free software
     library without restriction.  Specifically, if other files instantiate
     templates or use macros or inline functions from this file, or you compile
@@ -31,6 +31,7 @@
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/jiffies.h>
+#include <linux/timer.h>
 #include <linux/time.h>
 #include <linux/wait.h>
 #include <linux/fs.h>
@@ -48,14 +49,21 @@
 #include "output.h"
 
 #define OTHER_C_DEVICES  1     // one for module
+
 /*
  *  Global data: Buffer control structure
  */
 static wait_queue_head_t flush_queue;
 static atomic_t          flush_writers;
-static volatile int      flush = 0;
-
 extern S32               abnormal_terminate;
+static volatile int      flush = 0;
+#if defined(CONTINUOUS_PROFILER)
+static int               cp    = 1;
+#endif
+
+#if defined (DRV_USE_NMI)
+struct timer_list  *output_signal_timer;
+#endif
 
 /*
  *  @fn output_Free_Buffers(output, size)
@@ -102,23 +110,28 @@ output_Free_Buffers (
  * <I>Special Notes:</I>
  *
  */
-extern void* 
+extern void*
 OUTPUT_Reserve_Buffer_Space (
     BUFFER_DESC  bd,
     U32          size
 )
 {
-    int     signal_full = FALSE;
     char   *outloc      = NULL;
     OUTPUT  outbuf      = &BUFFER_DESC_outbuf(bd);
 
+#if defined(CONTINUOUS_PROFILER)
+    if (flush) {
+        return NULL;
+    }
+#endif
+
     if (OUTPUT_remaining_buffer_size(outbuf) >= size) {
-        outloc = (OUTPUT_buffer(outbuf,OUTPUT_current_buffer(outbuf)) + 
+        outloc = (OUTPUT_buffer(outbuf,OUTPUT_current_buffer(outbuf)) +
           (OUTPUT_total_buffer_size(outbuf) - OUTPUT_remaining_buffer_size(outbuf)));
     }
     else {
         U32  i, j, start;
-        OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) = 
+        OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) =
                 OUTPUT_total_buffer_size(outbuf) - OUTPUT_remaining_buffer_size(outbuf);
 
         //
@@ -127,29 +140,46 @@ OUTPUT_Reserve_Buffer_Space (
         // The next buffer to fill are monotonically increasing
         // indicies.
         //
-        signal_full = TRUE;
+#if defined(CONTINUOUS_PROFILER)
+        if (!cp) {
+            signal_full = TRUE;
+        }
+#else
+        OUTPUT_signal_full(outbuf) = TRUE;
+#endif
+
         start = OUTPUT_current_buffer(outbuf);
         for (i = start+1; i < start+OUTPUT_NUM_BUFFERS; i++) {
 
             j = i%OUTPUT_NUM_BUFFERS;
 
+#if defined(CONTINUOUS_PROFILER)
+            //don't check if buffer has data when doing CP
+            if (!OUTPUT_buffer_full(outbuf,j) || cp) {
+#else
             if (!OUTPUT_buffer_full(outbuf,j)) {
+#endif
                 OUTPUT_current_buffer(outbuf) = j;
                 OUTPUT_remaining_buffer_size(outbuf) = OUTPUT_total_buffer_size(outbuf);
                 outloc = OUTPUT_buffer(outbuf,j);
             }
+#if !(defined(CONFIG_PREEMPT_RT) || defined(DRV_USE_NMI))
             else {
-                signal_full = FALSE;
+                OUTPUT_signal_full(outbuf) = FALSE;
+                SEP_PRINT_DEBUG("Warning: Output buffers are full. Might be dropping some samples.\n");
+                break;
             }
+#endif
         }
     }
     if (outloc) {
         OUTPUT_remaining_buffer_size(outbuf) -= size;
         memset(outloc, 0, size);
     }
-#if !defined(CONFIG_PREEMPT_RT)
-    if (signal_full) {
+#if !(defined(CONFIG_PREEMPT_RT) || defined (DRV_USE_NMI))
+    if (OUTPUT_signal_full(outbuf)) {
         wake_up_interruptible_sync(&BUFFER_DESC_queue(bd));
+        OUTPUT_signal_full(outbuf) = FALSE;
     }
 #endif
 
@@ -159,7 +189,7 @@ OUTPUT_Reserve_Buffer_Space (
 /* ------------------------------------------------------------------------- */
 /*!
  *
- * @fn  int  OUTPUT_Buffer_Fill (BUFFER_DESC buf, 
+ * @fn  int  OUTPUT_Buffer_Fill (BUFFER_DESC buf,
  *                               PVOID  data,
  *                               U16    size)
  *
@@ -228,9 +258,9 @@ OUTPUT_Module_Fill (
 
 /* ------------------------------------------------------------------------- */
 /*!
- *  @fn  ssize_t  output_Read(struct file  *filp, 
- *                            char         *buf, 
- *                            size_t        count, 
+ *  @fn  ssize_t  output_Read(struct file  *filp,
+ *                            char         *buf,
+ *                            size_t        count,
  *                            loff_t       *f_pos,
  *                            BUFFER_DESC   kernel_buf)
  *
@@ -252,9 +282,9 @@ OUTPUT_Module_Fill (
  */
 static ssize_t
 output_Read (
-    struct file  *filp, 
-    char         *buf, 
-    size_t        count, 
+    struct file  *filp,
+    char         *buf,
+    size_t        count,
     loff_t       *f_pos,
     BUFFER_DESC   kernel_buf
 )
@@ -300,7 +330,7 @@ output_Read (
         return OS_NO_MEM;
     }
 
-    /* Copy data to user space. Note that we use cur_buf as the source */ 
+    /* Copy data to user space. Note that we use cur_buf as the source */
     if (abnormal_terminate == 0) {
         uncopied = copy_to_user(buf,
                                 OUTPUT_buffer(outbuf, cur_buf),
@@ -309,7 +339,7 @@ output_Read (
         OUTPUT_buffer_full(outbuf, cur_buf) = 0;
         *f_pos += to_copy-uncopied;
         if (uncopied) {
-            SEP_PRINT_DEBUG("only copied %d of %lld bytes of module records\n", 
+            SEP_PRINT_DEBUG("only copied %d of %lld bytes of module records\n",
                     (S32)to_copy, (long long)uncopied);
             return (to_copy - uncopied);
         }
@@ -332,11 +362,164 @@ output_Read (
     return to_copy;
 }
 
+#if defined(CONTINUOUS_PROFILER)
+ /* ------------------------------------------------------------------------- */
+ /*!
+ *  @fn  ssize_t  output_Read_Cp(struct file  *filp,
+ *                            char         *buf,
+ *                            size_t        count,
+ *                            loff_t       *f_pos,
+ *                            BUFFER_DESC   kernel_buf)
+ *
+ *  @brief  Return a sample buffer to user-mode. If not full or flush, wait
+ *
+ *  @param *filp          a file pointer
+ *  @param *buf           a sampling buffer
+ *  @param  count         size of the user's buffer
+ *  @param  f_pos         file pointer (current offset in bytes)
+ *  @param  kernel_buf    the kernel output buffer structure
+ *
+ *  @return number of bytes read. zero indicates end of file. Neg means error
+ *
+ *  Place no more than count bytes into the user's buffer.
+ *  Block if unavailable on "BUFFER_DESC_queue(buf)"
+ *
+ * <I>Special Notes:</I>
+ *
+ */
+static ssize_t
+output_Read_Cp (
+    struct file  *filp,
+    char         *buf,
+    size_t        count,
+    loff_t       *f_pos,
+    BUFFER_DESC   kernel_buf
+)
+{
+    ssize_t  to_copy, total_copied = 0;
+    ssize_t  uncopied = 0;
+    OUTPUT   outbuf = &BUFFER_DESC_outbuf(kernel_buf);
+    U32      cur_buf, other_buf, outloc_val;
+    char    *outloc = NULL;
+
+/* Buffer is filled by output_fill_modules. */
+
+    if (!flush) {
+#if defined(CONFIG_PREEMPT_RT)
+        do {
+            unsigned long delay;
+            delay = msecs_to_jiffies(1000);
+            wait_event_interruptible_timeout(BUFFER_DESC_queue(kernel_buf), flush, delay);
+        } while (!flush);
+#else
+        SEP_PRINT("cp read, going to sleep\n");
+        if (wait_event_interruptible(BUFFER_DESC_queue(kernel_buf), flush)) {
+            return OS_RESTART_SYSCALL;
+        }
+#endif
+    }
+
+    SEP_PRINT("cp wakeup!\n");
+    cur_buf = OUTPUT_current_buffer(outbuf);
+    other_buf = (cur_buf + 1)%OUTPUT_NUM_BUFFERS;
+
+    outloc_val = (OUTPUT_BUFFER_SIZE - OUTPUT_remaining_buffer_size(outbuf));
+    outloc = (OUTPUT_buffer(outbuf,cur_buf)) + outloc_val;
+
+    /* Copy data to user space */
+    if (abnormal_terminate == 0) {
+
+        //Current buffer(current location to buffer_full)
+        if (OUTPUT_buffer_full(outbuf, cur_buf) > 0) {
+            to_copy = OUTPUT_buffer_full(outbuf, cur_buf) - outloc_val;
+            /* Ensure that the user's buffer is large enough */
+            if (to_copy > count - total_copied) {
+                SEP_PRINT("1 cp user buffer is too small\nto_copy=%d count=%d\n",(S32)to_copy,(U32)count);
+                return OS_NO_MEM;
+            }
+            uncopied = copy_to_user(buf + total_copied,
+                                    outloc,
+                                    to_copy);
+            SEP_PRINT("1 uncopied=%d, to_copy=%d\n", (S32)uncopied, (S32)to_copy);
+            *f_pos += to_copy-uncopied;
+            if (uncopied) {
+                SEP_PRINT("1 cp only copied %d of %lld bytes of module records\n",
+                    (S32)to_copy, (long long)uncopied);
+                return (to_copy - uncopied);
+            }
+            total_copied += to_copy;
+        }
+
+        //Other buffer(start to buffer_full)
+        if ((to_copy = OUTPUT_buffer_full(outbuf, other_buf))) {
+            /* Ensure that the user's buffer is large enough */
+            if (to_copy > count - total_copied) {
+                SEP_PRINT("2 cp user buffer is too small\nto_copy=%d count=%d\n",(S32)to_copy,(U32)count);
+                return OS_NO_MEM;
+            }
+            uncopied = copy_to_user(buf + total_copied,
+                                    OUTPUT_buffer(outbuf, other_buf),
+                                    to_copy);
+            SEP_PRINT("2 uncopied=%d, to_copy=%d\n", (S32)uncopied, (S32)to_copy);
+            *f_pos += to_copy-uncopied;
+            if (uncopied) {
+                SEP_PRINT("2 only copied %d of %lld bytes of module records\n",
+                    (S32)to_copy, (long long)uncopied);
+                return (to_copy - uncopied);
+            }
+            total_copied += to_copy;
+        }
+
+        //Current buffer(start to current location)
+        if ((to_copy = outloc_val)) {
+            /* Ensure that the user's buffer is large enough */
+            if (to_copy > count - total_copied) {
+                SEP_PRINT("3 cp user buffer is too small\nto_copy=%d count=%d\n",(S32)to_copy,(U32)count);
+                return OS_NO_MEM;
+            }
+            uncopied = copy_to_user(buf + total_copied,
+                                    OUTPUT_buffer(outbuf, cur_buf),
+                                    to_copy);
+            SEP_PRINT("3 uncopied=%d, to_copy=%d\n", (S32)uncopied, (S32)to_copy);
+            *f_pos += to_copy-uncopied;
+            if (uncopied) {
+                SEP_PRINT("3 only copied %d of %lld bytes of module records\n",
+                    (S32)to_copy, (long long)uncopied);
+                return (to_copy - uncopied);
+            }
+            total_copied += to_copy;
+        }
+
+        SEP_PRINT("cp finish total_copied=%d\n", (S32)total_copied);
+
+        /* Mark the buffers empty */
+        OUTPUT_buffer_full(outbuf, cur_buf) = 0;
+        OUTPUT_buffer_full(outbuf, other_buf) = 0;
+        OUTPUT_remaining_buffer_size(outbuf) = OUTPUT_BUFFER_SIZE;
+    }
+    else {
+        to_copy = 0;
+        SEP_PRINT("cp to copy set to 0\n");
+    }
+
+    // At end-of-file, decrement the count of active buffer writers
+    if (total_copied == 0) {
+        DRV_BOOL flush_val = atomic_dec_and_test(&flush_writers);
+        SEP_PRINT("cp output_Read decremented flush_writers\n");
+        if (flush_val == TRUE) {
+            wake_up_interruptible_sync(&flush_queue);
+        }
+    }
+
+    return total_copied;
+}
+#endif
+
 /* ------------------------------------------------------------------------- */
 /*!
- *  @fn  ssize_t  OUTPUT_Module_Read(struct file  *filp, 
- *                                   char         *buf, 
- *                                   size_t        count, 
+ *  @fn  ssize_t  OUTPUT_Module_Read(struct file  *filp,
+ *                                   char         *buf,
+ *                                   size_t        count,
  *                                   loff_t       *f_pos)
  *
  *  @brief  Return a module buffer to user-mode. If not full or flush, wait
@@ -357,23 +540,31 @@ output_Read (
  */
 extern ssize_t
 OUTPUT_Module_Read (
-    struct file  *filp, 
-    char         *buf, 
-    size_t        count, 
+    struct file  *filp,
+    char         *buf,
+    size_t        count,
     loff_t       *f_pos
 )
 {
     SEP_PRINT_DEBUG("read request for modules on minor\n");
-
+#if defined(CONTINUOUS_PROFILER)
+    if (cp) {
+        return output_Read_Cp(filp, buf, count, f_pos, module_buf);
+    }
+    else {
+        return output_Read(filp, buf, count, f_pos, module_buf);
+    }
+#else
     return output_Read(filp, buf, count, f_pos, module_buf);
+#endif
 }
 
 
 /* ------------------------------------------------------------------------- */
 /*!
- *  @fn  ssize_t  OUTPUT_Sample_Read(struct file  *filp, 
- *                                   char         *buf, 
- *                                   size_t        count, 
+ *  @fn  ssize_t  OUTPUT_Sample_Read(struct file  *filp,
+ *                                   char         *buf,
+ *                                   size_t        count,
  *                                   loff_t       *f_pos)
  *
  *  @brief  Return a sample buffer to user-mode. If not full or flush, wait
@@ -394,9 +585,9 @@ OUTPUT_Module_Read (
  */
 extern ssize_t
 OUTPUT_Sample_Read (
-    struct file  *filp, 
-    char         *buf, 
-    size_t        count, 
+    struct file  *filp,
+    char         *buf,
+    size_t        count,
     loff_t       *f_pos
 )
 {
@@ -404,8 +595,16 @@ OUTPUT_Sample_Read (
 
     i = iminor(filp->f_dentry->d_inode); // kernel pointer - not user pointer
     SEP_PRINT_DEBUG("read request for samples on minor %d\n", i);
-
+#if defined(CONTINUOUS_PROFILER)
+    if (cp) {
+        return output_Read_Cp(filp, buf, count, f_pos, &(cpu_buf[i]));
+    }
+    else {
+        return output_Read(filp, buf, count, f_pos, &(cpu_buf[i]));
+    }
+#else
     return output_Read(filp, buf, count, f_pos, &(cpu_buf[i]));
+#endif
 }
 
 /*
@@ -461,12 +660,64 @@ output_Initialized_Buffers (
      *  Initialize the remaining fields in the BUFFER_DESC
      */
     OUTPUT_current_buffer(outbuf)        = 0;
+    OUTPUT_signal_full(outbuf)           = FALSE;
     OUTPUT_remaining_buffer_size(outbuf) = OUTPUT_BUFFER_SIZE * factor;
     OUTPUT_total_buffer_size(outbuf)     = OUTPUT_BUFFER_SIZE * factor;
     init_waitqueue_head(&BUFFER_DESC_queue(desc));
-
     return(desc);
 }
+
+#if defined (DRV_USE_NMI)
+/* ------------------------------------------------------------------------- */
+/*!
+ * @fn          VOID output_Timer_Callback (
+ *                   )
+ *
+ * @brief       Callback for output timers. The function checks if any buffers
+ *              are full, and if full, signals the reader threads.
+ *
+ * @param       none
+ *
+ * @return      NONE
+ *
+ * <I>Special Notes:</I>
+ *              This callback was added to handle out-of-band event delivery
+ *              when running in NMI mode
+ */
+static void
+output_Timer_Callback (
+    unsigned long delay
+)
+{
+    int    i, n;
+    OUTPUT outbuf = &BUFFER_DESC_outbuf(module_buf);
+
+    if (outbuf == NULL) {
+        return;
+    }
+
+    if (OUTPUT_signal_full(outbuf)) {
+        wake_up_interruptible_sync(&BUFFER_DESC_queue(module_buf));
+        OUTPUT_signal_full(outbuf) = FALSE;
+    }
+    if (cpu_buf != NULL) {
+        n = GLOBAL_STATE_num_cpus(driver_state);
+        for (i = 0; i < n; i++) {
+            outbuf = &BUFFER_DESC_outbuf(&cpu_buf[i]);
+            if (outbuf == NULL) {
+                return;
+            }
+            if (OUTPUT_signal_full(outbuf)) {
+                wake_up_interruptible_sync(&BUFFER_DESC_queue(&cpu_buf[i]));
+                OUTPUT_signal_full(outbuf) = FALSE;
+            }
+        }
+    }
+
+    output_signal_timer->expires = jiffies + delay;
+    add_timer(output_signal_timer);
+}
+#endif
 
 /*
  *  @fn extern void OUTPUT_Initialize(buffer, len)
@@ -485,7 +736,7 @@ output_Initialized_Buffers (
  */
 extern OS_STATUS
 OUTPUT_Initialize (
-    char          *buffer, 
+    char          *buffer,
     unsigned long  len
 )
 {
@@ -512,9 +763,65 @@ OUTPUT_Initialize (
         OUTPUT_Destroy();
         return OS_NO_MEM;
     }
+    return status;
+}
+
+#if defined (DRV_USE_NMI)
+/*
+ *  @fn extern OS_STATUS OUTPUT_Initialize_Timers(void)
+ *
+ *  @brief  Allocate and initialize timers for output buffer management
+ *
+ * <I>Special Notes:</I>
+ *      When running in NMI mode, synchronous wait/signal calls cannot be called
+ *      to signal buffer full conditions. This timer will check if the buffer on
+ *      any cpu is full (every second), and if it is full, signals the reader.
+ *
+ */
+extern OS_STATUS
+OUTPUT_Initialize_Timers(
+    void
+)
+{
+    OS_STATUS       status  = OS_SUCCESS;
+    unsigned long   delay   = (unsigned long) msecs_to_jiffies(500);
+
+    output_signal_timer = (struct timer_list *) CONTROL_Allocate_Memory(sizeof(struct timer_list));
+    if (!output_signal_timer) {
+        SEP_PRINT_DEBUG("OUTPUT Initialize: Failed allocation for output timer\n");
+        OUTPUT_Destroy();
+        return OS_NO_MEM;
+    }
+
+    init_timer(output_signal_timer);
+    output_signal_timer->function      = output_Timer_Callback;
+    output_signal_timer->data          = delay;
+    output_signal_timer->expires       = jiffies + delay;
+    add_timer(output_signal_timer);
 
     return status;
 }
+
+/*
+ *  @fn extern void OUTPUT_Delete_Timer()
+ *
+ *  @brief  Delete the timer added for buffer management
+ *
+ * <I>Special Notes:</I>
+ *
+ */
+extern void
+OUTPUT_Delete_Timers(
+    void
+)
+{
+    del_timer(output_signal_timer);
+    CONTROL_Free_Memory(output_signal_timer);
+    output_signal_timer = NULL;
+    return;
+}
+#endif
+
 
 
 /*
@@ -522,13 +829,13 @@ OUTPUT_Initialize (
  *
  *  @brief  Flush the module buffers and sample buffers
  *
- *  @return OS_STATUS 
+ *  @return OS_STATUS
  *
  *  For each CPU in the system, set buffer full to the byte count to flush.
  *  Flush the modules buffer, as well.
  *
  */
-extern int 
+extern int
 OUTPUT_Flush (
     VOID
 )
@@ -549,10 +856,17 @@ OUTPUT_Flush (
         }
         outbuf = &(cpu_buf[i].outbuf);
         writers += 1;
-        OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) = 
+#if defined(CONTINUOUS_PROFILER)
+        if (!cp) {
+            OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) =
+                OUTPUT_BUFFER_SIZE - OUTPUT_remaining_buffer_size(outbuf);
+        }
+#else
+        OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) =
             OUTPUT_total_buffer_size(outbuf) - OUTPUT_remaining_buffer_size(outbuf);
+#endif
     }
-    atomic_set(&flush_writers, writers + OTHER_C_DEVICES);   
+    atomic_set(&flush_writers, writers + OTHER_C_DEVICES);
     // Flip the switch to terminate the output threads
     // Do not do this earlier, as threads may terminate before all the data is flushed
     flush = 1;
@@ -561,16 +875,31 @@ OUTPUT_Flush (
             continue;
         }
         outbuf = &BUFFER_DESC_outbuf(&cpu_buf[i]);
-        OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) = 
+#if defined(CONTINUOUS_PROFILER)
+        if (!cp) {
+            OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) =
+                OUTPUT_BUFFER_SIZE - OUTPUT_remaining_buffer_size(outbuf);
+        }
+        SEP_PRINT("OUTPUT_Flush - waking up cpu_buf[%d]\n", i);
+#else
+        OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) =
             OUTPUT_total_buffer_size(outbuf) - OUTPUT_remaining_buffer_size(outbuf);
+#endif
         wake_up_interruptible_sync(&BUFFER_DESC_queue(&cpu_buf[i]));
     }
 
     // Flush all data from the module buffers
 
     outbuf = &BUFFER_DESC_outbuf(module_buf);
-    OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) = 
+#if defined(CONTINUOUS_PROFILER)
+    if (!cp) {
+        OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) =
+            OUTPUT_BUFFER_SIZE - OUTPUT_remaining_buffer_size(outbuf);
+    }
+#else
+    OUTPUT_buffer_full(outbuf,OUTPUT_current_buffer(outbuf)) =
                               OUTPUT_total_buffer_size(outbuf) - OUTPUT_remaining_buffer_size(outbuf);
+#endif
     SEP_PRINT_DEBUG("OUTPUT_Flush - waking up module_queue\n");
     wake_up_interruptible_sync(&BUFFER_DESC_queue(module_buf));
 
@@ -596,7 +925,7 @@ OUTPUT_Flush (
  *      Free the module buffers
  *      For each CPU in the system, free the sampling buffers
  */
-extern int 
+extern int
 OUTPUT_Destroy (
     VOID
 )
@@ -604,7 +933,7 @@ OUTPUT_Destroy (
     int    i, n;
     OUTPUT outbuf;
 
-    if (module_buf != NULL) {
+    if (module_buf) {
         outbuf = &BUFFER_DESC_outbuf(module_buf);
         output_Free_Buffers(module_buf, OUTPUT_total_buffer_size(outbuf));
     }
@@ -616,6 +945,7 @@ OUTPUT_Destroy (
             output_Free_Buffers(&cpu_buf[i], OUTPUT_total_buffer_size(outbuf));
         }
     }
+
 
     return 0;
 }

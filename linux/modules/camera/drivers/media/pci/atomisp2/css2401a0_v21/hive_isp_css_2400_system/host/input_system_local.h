@@ -22,15 +22,9 @@
 #ifndef __INPUT_SYSTEM_LOCAL_H_INCLUDED__
 #define __INPUT_SYSTEM_LOCAL_H_INCLUDED__
 
-#ifdef __KERNEL__
-#include <linux/types.h>
-#else
-#include <stdbool.h>
-#include <stdint.h>
-#endif
+#include <type_support.h>
 
 #include "input_system_global.h"
-//#include "gp_device_local.h"
 
 #include "input_system_defs.h"		/* HIVE_ISYS_GPREG_MULTICAST_A_IDX,... */
 #include "css_receiver_2400_defs.h"	/* _HRT_CSS_RECEIVER_2400_TWO_PIXEL_EN_REG_IDX, _HRT_CSS_RECEIVER_2400_CSI2_FUNC_PROG_REG_IDX,... */
@@ -53,34 +47,25 @@ typedef enum {
 	INPUT_SYSTEM_ERR_CONFLICT_ON_RESOURCE,
 	INPUT_SYSTEM_ERR_PARAMETER_NOT_SUPPORTED,
 	N_INPUT_SYSTEM_ERR
-} input_system_error_t; 
+} input_system_error_t;
 
 typedef enum {
-    INPUT_SYSTEM_PORT_A = 0,
-    INPUT_SYSTEM_PORT_B,
-    INPUT_SYSTEM_PORT_C,
-    N_INPUT_SYSTEM_PORTS
+	INPUT_SYSTEM_PORT_A = 0,
+	INPUT_SYSTEM_PORT_B,
+	INPUT_SYSTEM_PORT_C,
+	N_INPUT_SYSTEM_PORTS
 } input_system_csi_port_t;
 
-typedef struct ctrl_unit_cfg_s					ctrl_unit_cfg_t; 
-
-typedef struct input_system_network_cfg_s 		input_system_network_cfg_t;
-
-typedef struct target_cfg2400_s 				target_cfg2400_t;
-
-typedef struct channel_cfg_s 							channel_cfg_t;
-
-typedef struct backend_channel_cfg_s 					backend_channel_cfg_t;
-
-typedef struct input_system_cfg2400_s 					input_system_cfg2400_t;
-
-typedef struct mipi_port_state_s				mipi_port_state_t;
-
-typedef struct rx_channel_state_s				rx_channel_state_t;
-
-typedef struct input_switch_cfg_channel_s 		input_switch_cfg_channel_t;
-
-typedef struct input_switch_cfg_s 				input_switch_cfg_t;
+typedef struct ctrl_unit_cfg_s			ctrl_unit_cfg_t;
+typedef struct input_system_network_cfg_s	input_system_network_cfg_t;
+typedef struct target_cfg2400_s 		target_cfg2400_t;
+typedef struct channel_cfg_s 			channel_cfg_t;
+typedef struct backend_channel_cfg_s 		backend_channel_cfg_t;
+typedef struct input_system_cfg2400_s 		input_system_cfg2400_t;
+typedef struct mipi_port_state_s		mipi_port_state_t;
+typedef struct rx_channel_state_s		rx_channel_state_t;
+typedef struct input_switch_cfg_channel_s 	input_switch_cfg_channel_t;
+typedef struct input_switch_cfg_s 		input_switch_cfg_t;
 
 struct ctrl_unit_cfg_s {
 	ib_buffer_t		buffer_mipi[N_CAPTURE_UNIT_ID];
@@ -129,10 +114,10 @@ struct backend_channel_cfg_s {
 };
 
 typedef union  {
-	csi_cfg_t				csi_cfg;
-	tpg_cfg_t				tpg_cfg;	 
-    prbs_cfg_t				prbs_cfg;	 
-    gpfifo_cfg_t			gpfifo_cfg;
+	csi_cfg_t	csi_cfg;
+	tpg_cfg_t	tpg_cfg;
+	prbs_cfg_t	prbs_cfg;
+	gpfifo_cfg_t	gpfifo_cfg;
 } source_cfg_t;
 
 
@@ -142,14 +127,12 @@ struct input_switch_cfg_s {
 };
 
 // Configuration of a channel.
-struct channel_cfg_s{   
-	uint32_t				ch_id;
+struct channel_cfg_s {
+	uint32_t		ch_id;
 	backend_channel_cfg_t	backend_ch;
-
 	input_system_source_t	source_type;
-    source_cfg_t			source_cfg;
-
-	target_cfg2400_t		target_cfg;
+	source_cfg_t		source_cfg;
+	target_cfg2400_t	target_cfg;
 };
 
 
@@ -243,38 +226,38 @@ struct input_system_cfg2400_s {
 #define _HRT_CSS_RECEIVER_BE_IRQ_CLEAR_REG_IDX          (_HRT_CSS_RECEIVER_2400_BE_IRQ_CLEAR_REG_IDX + _HRT_CSS_BE_OFFSET)
 
 
-#define _HRT_CSS_RECEIVER_IRQ_OVERRUN_BIT				_HRT_CSS_RECEIVER_2400_IRQ_OVERRUN_BIT
-#define _HRT_CSS_RECEIVER_IRQ_INIT_TIMEOUT_BIT	        _HRT_CSS_RECEIVER_2400_IRQ_RESERVED_BIT
-#define _HRT_CSS_RECEIVER_IRQ_SLEEP_MODE_ENTRY_BIT		_HRT_CSS_RECEIVER_2400_IRQ_SLEEP_MODE_ENTRY_BIT
-#define _HRT_CSS_RECEIVER_IRQ_SLEEP_MODE_EXIT_BIT		_HRT_CSS_RECEIVER_2400_IRQ_SLEEP_MODE_EXIT_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_SOT_HS_BIT			_HRT_CSS_RECEIVER_2400_IRQ_ERR_SOT_HS_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_SOT_SYNC_HS_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_SOT_SYNC_HS_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_CONTROL_BIT			_HRT_CSS_RECEIVER_2400_IRQ_ERR_CONTROL_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_ECC_DOUBLE_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_ECC_DOUBLE_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_ECC_CORRECTED_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_ECC_CORRECTED_BIT
+#define _HRT_CSS_RECEIVER_IRQ_OVERRUN_BIT		_HRT_CSS_RECEIVER_2400_IRQ_OVERRUN_BIT
+#define _HRT_CSS_RECEIVER_IRQ_INIT_TIMEOUT_BIT		_HRT_CSS_RECEIVER_2400_IRQ_RESERVED_BIT
+#define _HRT_CSS_RECEIVER_IRQ_SLEEP_MODE_ENTRY_BIT	_HRT_CSS_RECEIVER_2400_IRQ_SLEEP_MODE_ENTRY_BIT
+#define _HRT_CSS_RECEIVER_IRQ_SLEEP_MODE_EXIT_BIT	_HRT_CSS_RECEIVER_2400_IRQ_SLEEP_MODE_EXIT_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_SOT_HS_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_SOT_HS_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_SOT_SYNC_HS_BIT	_HRT_CSS_RECEIVER_2400_IRQ_ERR_SOT_SYNC_HS_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_CONTROL_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_CONTROL_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_ECC_DOUBLE_BIT	_HRT_CSS_RECEIVER_2400_IRQ_ERR_ECC_DOUBLE_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_ECC_CORRECTED_BIT	_HRT_CSS_RECEIVER_2400_IRQ_ERR_ECC_CORRECTED_BIT
 #define _HRT_CSS_RECEIVER_IRQ_ERR_ECC_NO_CORRECTION_BIT	_HRT_CSS_RECEIVER_2400_IRQ_ERR_ECC_NO_CORRECTION_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_CRC_BIT				_HRT_CSS_RECEIVER_2400_IRQ_ERR_CRC_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_ID_BIT				_HRT_CSS_RECEIVER_2400_IRQ_ERR_ID_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_FRAME_SYNC_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_FRAME_SYNC_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_FRAME_DATA_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_FRAME_DATA_BIT
-#define _HRT_CSS_RECEIVER_IRQ_DATA_TIMEOUT_BIT			_HRT_CSS_RECEIVER_2400_IRQ_DATA_TIMEOUT_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_ESCAPE_BIT			_HRT_CSS_RECEIVER_2400_IRQ_ERR_ESCAPE_BIT
-#define _HRT_CSS_RECEIVER_IRQ_ERR_LINE_SYNC_BIT			_HRT_CSS_RECEIVER_2400_IRQ_ERR_LINE_SYNC_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_CRC_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_CRC_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_ID_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_ID_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_FRAME_SYNC_BIT	_HRT_CSS_RECEIVER_2400_IRQ_ERR_FRAME_SYNC_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_FRAME_DATA_BIT	_HRT_CSS_RECEIVER_2400_IRQ_ERR_FRAME_DATA_BIT
+#define _HRT_CSS_RECEIVER_IRQ_DATA_TIMEOUT_BIT		_HRT_CSS_RECEIVER_2400_IRQ_DATA_TIMEOUT_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_ESCAPE_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_ESCAPE_BIT
+#define _HRT_CSS_RECEIVER_IRQ_ERR_LINE_SYNC_BIT		_HRT_CSS_RECEIVER_2400_IRQ_ERR_LINE_SYNC_BIT
 
-#define _HRT_CSS_RECEIVER_FUNC_PROG_REG_IDX				_HRT_CSS_RECEIVER_2400_CSI2_FUNC_PROG_REG_IDX
-#define	_HRT_CSS_RECEIVER_DATA_TIMEOUT_IDX				_HRT_CSS_RECEIVER_2400_CSI2_DATA_TIMEOUT_IDX
-#define	_HRT_CSS_RECEIVER_DATA_TIMEOUT_BITS				_HRT_CSS_RECEIVER_2400_CSI2_DATA_TIMEOUT_BITS
+#define _HRT_CSS_RECEIVER_FUNC_PROG_REG_IDX		_HRT_CSS_RECEIVER_2400_CSI2_FUNC_PROG_REG_IDX
+#define	_HRT_CSS_RECEIVER_DATA_TIMEOUT_IDX		_HRT_CSS_RECEIVER_2400_CSI2_DATA_TIMEOUT_IDX
+#define	_HRT_CSS_RECEIVER_DATA_TIMEOUT_BITS		_HRT_CSS_RECEIVER_2400_CSI2_DATA_TIMEOUT_BITS
 
-typedef struct capture_unit_state_s		capture_unit_state_t;
+typedef struct capture_unit_state_s	capture_unit_state_t;
 typedef struct acquisition_unit_state_s	acquisition_unit_state_t;
-typedef struct ctrl_unit_state_s		ctrl_unit_state_t;
+typedef struct ctrl_unit_state_s	ctrl_unit_state_t;
 
 /*
  * In 2300 ports can be configured independently and stream
  * formats need to be specified. In 2400, there are only 8
  * supported configurations but the HW is fused to support
  * only a single one.
- * 
+ *
  * In 2300 the compressed format types are programmed by the
  * user. In 2400 all stream formats are encoded on the stream.
  *

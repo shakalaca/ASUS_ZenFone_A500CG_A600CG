@@ -90,21 +90,77 @@ struct stack_frame_user {
 };
 
 static int
-copy_stack_frame(const void __user *fp, struct stack_frame_user *frame)
+__copy_stack_frame(const void __user *fp, void *frame, unsigned long framesize)
 {
 	int ret;
 
-	if (!access_ok(VERIFY_READ, fp, sizeof(*frame)))
+	if (!access_ok(VERIFY_READ, fp, framesize))
 		return 0;
 
 	ret = 1;
 	pagefault_disable();
-	if (__copy_from_user_inatomic(frame, fp, sizeof(*frame)))
+	if (__copy_from_user_inatomic(frame, fp, framesize))
 		ret = 0;
 	pagefault_enable();
 
 	return ret;
 }
+
+#ifdef CONFIG_COMPAT
+
+#include <asm/compat.h>
+
+struct compat_stack_frame_user {
+	compat_uptr_t next_fp;
+	compat_ulong_t ret_addr;
+};
+
+static inline int copy_stack_frame(const void __user *fp,
+				   struct stack_frame_user *frame)
+{
+	struct compat_stack_frame_user frame32 = { 0 };
+
+	if (!test_thread_flag(TIF_IA32))
+		return __copy_stack_frame(fp, frame, sizeof(*frame));
+
+	if (!__copy_stack_frame(fp, &frame32, sizeof(frame32)))
+		return 0;
+
+	frame->next_fp = compat_ptr(frame32.next_fp);
+	frame->ret_addr = (unsigned long)frame32.ret_addr;
+	return 1;
+}
+
+static inline int access_frame(struct task_struct *task, unsigned long addr,
+			       struct stack_frame_user *frame)
+{
+	struct compat_stack_frame_user frame32 = { 0 };
+
+	if (!test_tsk_thread_flag(task, TIF_IA32))
+		return access_process_vm(task, addr,
+					 (void *)frame, sizeof(*frame), 0);
+
+	if (!access_process_vm(task, addr, (void *)&frame32,
+			       sizeof(frame32), 0))
+		return 0;
+
+	frame->next_fp = compat_ptr(frame32.next_fp);
+	frame->ret_addr = (unsigned long)frame32.ret_addr;
+	return 1;
+}
+#else
+static inline int copy_stack_frame(const void __user *fp,
+				   struct stack_frame_user *frame)
+{
+	return __copy_stack_frame(fp, frame, sizeof(*frame));
+}
+
+static inline int access_frame(struct task_struct *task, unsigned long addr,
+			       struct stack_frame_user *frame)
+{
+	return access_process_vm(task, addr, (void *)frame, sizeof(*frame), 0);
+}
+#endif
 
 static inline void __save_stack_trace_user(struct stack_trace *trace)
 {
@@ -168,8 +224,7 @@ static inline void __save_stack_trace_user_task(struct task_struct *task,
 		frame.ret_addr = 0;
 
 		addr = (unsigned long)fp;
-		if (!access_process_vm(task, addr, (void *)&frame,
-				sizeof(frame), 0))
+		if (!access_frame(task, addr, &frame))
 			break;
 		if ((unsigned long)fp < regs->sp)
 			break;

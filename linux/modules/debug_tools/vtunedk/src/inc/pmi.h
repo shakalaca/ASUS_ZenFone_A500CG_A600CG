@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -31,14 +31,8 @@
 #define _PMI_H_
 
 #include "lwpmudrv_defines.h"
-#if defined(DRV_IA64)
-#include <asm/perfmon.h>
-#endif
 #include <linux/ptrace.h>
 #include <linux/version.h>
-#if defined(DRV_IA64)
-#include "cpumon.h"
-#endif
 
 #if defined(DRV_IA32)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
@@ -64,26 +58,6 @@
 #endif
 #endif
 
-#if defined(DRV_IA32) || defined(DRV_EM64T)
 asmlinkage VOID PMI_Interrupt_Handler(struct pt_regs *regs);
-#endif
-
-#if defined(DRV_IA64)
-#define REGS_cr_iip(regs)       regs->cr_iip
-#define REGS_cr_ipsr(regs)      regs->cr_ipsr
-
-#if defined(PERFMON_V2_ALT)
-  VOID PMI_Interrupt_Handler(IN int irq, IN void *arg, IN struct pt_regs *regs);
-#elif defined(PERFMON_V2)
-  int PMI_Interrupt_Handler(
-      IN struct task_struct *task,
-      IN void *buf,
-      IN pfm_ovfl_arg_t *arg,
-      IN struct pt_regs *regs,
-      IN unsigned long stamp);
-#else
-  irqreturn_t PMI_Interrupt_Handler(IN int irq, IN void *arg, IN struct pt_regs *regs);
-#endif
-#endif 
 
 #endif  

@@ -449,7 +449,6 @@ int ctp_init(struct snd_soc_pcm_runtime *runtime)
 	snd_soc_dapm_ignore_suspend(dapm, "Headset Mic");
 	snd_soc_dapm_ignore_suspend(dapm, "DMICA");
 	snd_soc_dapm_ignore_suspend(dapm, "DMICB");
-	snd_soc_dapm_ignore_suspend(dapm, "MIC1");
 
 	snd_soc_dapm_disable_pin(dapm, "MIC2");
 	snd_soc_dapm_disable_pin(dapm, "SPKLINEOUT");

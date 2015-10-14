@@ -24,6 +24,7 @@ struct smsc375x_pdata {
 	int (*enable_vbus)(void);
 	int (*disable_vbus)(void);
 	int (*is_vbus_online)(void);
+	bool charging_compliance_override;
 };
 
 #endif /* _EXTCON_SMSC375X_H_ */

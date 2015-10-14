@@ -27,21 +27,30 @@
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/dmi.h>
-#include <linux/pci.h>
-#include <acpi/acpi.h>
-#include "../../acpi/acpica/achware.h"
 
 #include "xhci.h"
 
 #define DRIVER_AUTHOR "Sarah Sharp"
 #define DRIVER_DESC "'eXtensible' Host Controller (xHC) Driver"
 
-static struct xhci_hcd *xhci_host;
-
 /* Some 0.95 hardware can't handle the chain bit on a Link TRB being cleared */
 static int link_quirk;
 module_param(link_quirk, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(link_quirk, "Don't clear the chain bit on a link TRB");
+
+/* Anniedale SSIC driver probe flag */
+static unsigned int ssic_probe;
+module_param(ssic_probe, uint, S_IRUGO);
+MODULE_PARM_DESC(ssic_probe, "ANN SSIC flag, default disable SSIC\n");
+
+/*
+ * for external read access to <ssic_probe>
+ */
+unsigned int is_ssic_probe(void)
+{
+	return ssic_probe;
+}
+EXPORT_SYMBOL_GPL(is_ssic_probe);
 
 /* TODO: copied from ehci-hcd.c - can this be refactored? */
 /*
@@ -160,6 +169,7 @@ int xhci_reset(struct xhci_hcd *xhci)
 	u32 command;
 	u32 state;
 	int ret, i;
+	struct usb_hcd *hcd;
 
 	/* If any ports under compliance test, then giveup to reset host */
 	if ((xhci->quirks & XHCI_COMP_PLC_QUIRK) &&
@@ -173,6 +183,14 @@ int xhci_reset(struct xhci_hcd *xhci)
 	if ((state & STS_HALT) == 0) {
 		xhci_warn(xhci, "Host controller not halted, aborting reset.\n");
 		return 0;
+	}
+
+	hcd = xhci_to_hcd(xhci);
+	if (hcd && hcd->driver->private_reset) {
+		xhci_dbg(xhci, "Begin to do Work Around before HCRST\n");
+		ret = hcd->driver->private_reset(hcd);
+		if (ret)
+			return ret;
 	}
 
 	xhci_dbg(xhci, "// Reset the HC\n");
@@ -217,79 +235,6 @@ static int xhci_free_msi(struct xhci_hcd *xhci)
 	return 0;
 }
 
-#ifdef CONFIG_ACPI
-bool pci_check_pme_enable_and_status(struct pci_dev *dev)
-{
-	int pmcsr_pos;
-	u16 pmcsr;
-	bool ret = false;
-
-	if (!dev->pm_cap)
-		return false;
-
-	pmcsr_pos = dev->pm_cap + PCI_PM_CTRL;
-	pci_read_config_word(dev, pmcsr_pos, &pmcsr);
-	if (!(pmcsr & PCI_PM_CTRL_PME_STATUS))
-		return false;
-
-	if (pmcsr & PCI_PM_CTRL_PME_ENABLE)
-		return true;
-
-	return ret;
-}
-
-static void xhci_byt_pm_check_work(struct work_struct *work)
-{
-	struct usb_hcd		*hcd;
-	struct pci_dev		*pdev;
-	u32			gpe_en = 0;
-	unsigned long		flags;
-	int			pmcsr_pos = 0;
-	u16			pmcsr = 0;
-
-	if (xhci_host)
-		hcd = xhci_to_hcd(xhci_host);
-	else
-		return;
-
-	pdev = to_pci_dev(hcd->self.controller);
-
-	/* No need to put XHCI back to D0, as PMC will do */
-	msleep(20);
-
-	if (pci_check_pme_enable_and_status(pdev)) {
-		/* wait for PCI core PME polling to be done */
-		xhci_dbg(xhci_host, "PCI STS/EN set\n");
-		msleep(1200);
-	}
-
-	/* sometimes PME received in D0 which is not expected, clear them */
-	pmcsr_pos = pdev->pm_cap + PCI_PM_CTRL;
-	pci_read_config_word(pdev, pmcsr_pos, &pmcsr);
-
-	/* If PME_STS and PME_EN not cleared in time, then clear it*/
-	if (pmcsr & (PCI_PM_CTRL_PME_STATUS | PCI_PM_CTRL_PME_ENABLE)) {
-		pci_write_config_word(pdev, pmcsr_pos,
-					pmcsr & (~PCI_PM_CTRL_PME_ENABLE));
-		pci_read_config_word(pdev, pmcsr_pos, &pmcsr);
-	}
-
-	xhci_dbg(xhci_host, "PCI STS/EN = 0x%x\n", pmcsr);
-
-	/* clear status of GPE.PME_B0 */
-	acpi_hw_register_write(0xf1, 0x2000);
-
-	/* re-enable GPE.PME_B0 interrupt */
-	acpi_hw_register_read(0xf2, &gpe_en);
-	gpe_en = gpe_en | 0x2000;
-	acpi_hw_register_write(0xf2, gpe_en);
-
-	spin_lock_irqsave(&xhci_host->lock, flags);
-	xhci_host->pm_check_flag = 0;
-	spin_unlock_irqrestore(&xhci_host->lock, flags);
-}
-#endif
-
 /*
  * Set up MSI
  */
@@ -311,24 +256,6 @@ static int xhci_setup_msi(struct xhci_hcd *xhci)
 		pci_disable_msi(pdev);
 	}
 
-#ifdef CONFIG_ACPI
-	/* Workaround: register a shared interrupt handler on ACPI to
-	 * to handle wake up event */
-	if (pdev->vendor == PCI_VENDOR_ID_INTEL &&
-		pdev->device == PCI_DEVICE_ID_INTEL_BYT_USH) {
-		xhci_host = xhci;
-		INIT_WORK(&xhci->pm_check, xhci_byt_pm_check_work);
-
-		/* map PMC related MMIO for this workaround */
-		xhci_host->pmc_base_addr = ioremap_nocache(0xfed03000, 0x1000);
-		/* use Fixed value 9 for the ACPI interrupt */
-		ret = request_irq(9, (irq_handler_t)xhci_byt_pm_irq,
-			IRQF_SHARED, "xhci-acpi-wa", xhci_to_hcd(xhci));
-		if (ret)
-			xhci_dbg(xhci, "fail request interrupt handler\n");
-	}
-#endif
-
 	return ret;
 }
 
@@ -341,13 +268,15 @@ static void xhci_free_irq(struct xhci_hcd *xhci)
 	struct pci_dev *pdev = to_pci_dev(xhci_to_hcd(xhci)->self.controller);
 	int ret;
 
-	/* return if using legacy interrupt */
+	/* free_irq directly if using legacy interrupt */
 	if (xhci_to_hcd(xhci)->irq > 0)
-		return;
+		goto legacy_irq;
 
 	ret = xhci_free_msi(xhci);
 	if (!ret)
 		return;
+
+legacy_irq:
 	if (pdev->irq > 0)
 		free_irq(pdev->irq, xhci_to_hcd(xhci));
 
@@ -419,9 +348,12 @@ static void xhci_cleanup_msix(struct xhci_hcd *xhci)
 	struct usb_hcd *hcd = xhci_to_hcd(xhci);
 	struct pci_dev *pdev = to_pci_dev(hcd->self.controller);
 
+	if (xhci->quirks & XHCI_PLAT)
+		return;
+
 	xhci_free_irq(xhci);
 
-	if (xhci->quirks & XHCI_PLAT)
+	if (xhci->quirks & XHCI_BROKEN_MSI)
 		return;
 
 	if (xhci->msix_entries) {
@@ -484,6 +416,10 @@ static int xhci_try_enable_msi(struct usb_hcd *hcd)
 	}
 
  legacy_irq:
+	if (!strlen(hcd->irq_descr))
+		snprintf(hcd->irq_descr, sizeof(hcd->irq_descr), "%s:usb%d",
+			 hcd->driver->description, hcd->self.busnum);
+
 	/* fall back to legacy interrupt*/
 	ret = request_irq(pdev->irq, &usb_hcd_irq, IRQF_SHARED,
 			hcd->irq_descr, hcd);
@@ -633,6 +569,10 @@ int xhci_init(struct usb_hcd *hcd)
 		xhci->quirks |= XHCI_COMP_MODE_QUIRK;
 		compliance_mode_recovery_timer_init(xhci);
 	}
+
+	/* initialize port reset environment */
+	if (xhci->quirks & XHCI_PORT_RESET)
+		quirk_intel_xhci_pr_init(true);
 
 	return retval;
 }
@@ -854,6 +794,9 @@ void xhci_stop(struct usb_hcd *hcd)
 		xhci_dbg(xhci, "%s: compliance mode recovery timer deleted\n",
 				__func__);
 	}
+
+	if (xhci->quirks & XHCI_PORT_RESET)
+		quirk_intel_xhci_pr_init(false);
 
 	if (xhci->quirks & XHCI_AMD_PLL_FIX)
 		usb_amd_dev_put();
@@ -1597,14 +1540,6 @@ int xhci_urb_dequeue(struct usb_hcd *hcd, struct urb *urb, int status)
 	struct xhci_virt_ep *ep;
 
 	xhci = hcd_to_xhci(hcd);
-	/* Add a 1 ms delay before the stopping of the endpoint.
-	 * This is a workaround to avoid the xHCI controller returning
-	 * event stopped - length invalid when dequeueing a link TRB.
-	 */
-	if (in_interrupt() || irqs_disabled())
-		udelay(1000);
-	else
-		usleep_range(1000, 1001);
 	spin_lock_irqsave(&xhci->lock, flags);
 	/* Make sure the URB hasn't completed or been unlinked already */
 	ret = usb_hcd_check_unlink_urb(hcd, urb, status);
@@ -2754,10 +2689,21 @@ static int xhci_configure_endpoint(struct xhci_hcd *xhci,
 				ctx_change == 0 ?
 					"configure endpoint" :
 					"evaluate context");
-		/* cancel the configure endpoint command */
-		ret = xhci_cancel_cmd(xhci, command, cmd_trb);
-		if (ret < 0)
-			return ret;
+		/* When configure ep command met timeout, the Synopsys OTG3 was
+		 * already messed. Then even driver trying to stop cmd ring also
+		 * have no response.
+		 * So give up to stop cmd ring which waste another 10sec timeout
+		 * delay. Reset xHCI directly.
+		 **/
+		if (xhci->quirks | XHCI_RESET && xhci->reset_hcd_work) {
+			xhci_dbg(xhci, "Trying to reset xHCI host controller.\n");
+			schedule_work(xhci->reset_hcd_work);
+		} else {
+			/* cancel the configure endpoint command */
+			ret = xhci_cancel_cmd(xhci, command, cmd_trb);
+			if (ret < 0)
+				return ret;
+		}
 		return -ETIME;
 	}
 
@@ -3016,7 +2962,6 @@ void xhci_endpoint_reset(struct usb_hcd *hcd,
 		xhci_ring_cmd_db(xhci);
 	}
 	virt_ep->stopped_td = NULL;
-	virt_ep->stopped_trb = NULL;
 	virt_ep->stopped_stream = 0;
 	spin_unlock_irqrestore(&xhci->lock, flags);
 
@@ -3661,6 +3606,9 @@ void xhci_free_dev(struct usb_hcd *hcd, struct usb_device *udev)
 		return;
 	}
 
+	/* udev will be free soon too, clear the pointer firstly */
+	xhci->devs[udev->slot_id]->udev = NULL;
+
 	if (xhci_queue_slot_control(xhci, TRB_DISABLE_SLOT, udev->slot_id)) {
 		spin_unlock_irqrestore(&xhci->lock, flags);
 		xhci_dbg(xhci, "FIXME: allocate a command ring segment\n");
@@ -3707,14 +3655,22 @@ int xhci_alloc_dev(struct usb_hcd *hcd, struct usb_device *udev)
 #endif
 	unsigned long flags;
 	int timeleft;
-	int ret;
+	int ret, count = 0;
 	union xhci_trb *cmd_trb;
+
+	if (xhci->xhc_state & XHCI_STATE_HALTED)
+		return -EFAULT;
 
 	/* Need to wait xhci->cmd_ring_state to be RUNNING before
 	 * issue ENABLE_SLOT command.
 	 */
-	while (!(xhci->cmd_ring_state & CMD_RING_STATE_RUNNING))
+	while (!(xhci->cmd_ring_state & CMD_RING_STATE_RUNNING)) {
+		if (count++ > XHCI_WAIT_CMD_RING_READY_TIMEOUT) {
+			xhci_err(xhci, "%s: cmd ring can't get ready.\n", __func__);
+			return -EFAULT;
+		}
 		msleep(200);
+	}
 
 	spin_lock_irqsave(&xhci->lock, flags);
 	cmd_trb = xhci_find_next_enqueue(xhci->cmd_ring);
@@ -3872,6 +3828,13 @@ int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev)
 	if (timeleft <= 0) {
 		xhci_warn(xhci, "%s while waiting for address device command\n",
 				timeleft == 0 ? "Timeout" : "Signal");
+		xhci_dbg(xhci, "xhci registers:\n");
+		xhci_print_registers(xhci);
+		xhci_dbg(xhci, "Command ring:\n");
+		xhci_debug_ring(xhci, xhci->cmd_ring);
+		xhci_dbg(xhci, "Event ring:\n");
+		xhci_debug_ring(xhci, xhci->event_ring);
+
 		/* cancel the address device command */
 		ret = xhci_cancel_cmd(xhci, NULL, cmd_trb);
 		if (ret < 0)
@@ -3907,6 +3870,14 @@ int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev)
 		break;
 	}
 	if (ret) {
+		/* When this issue reproduce. The controller was already very
+		 * unstable. And easy to met fabric error. So do soft-reset for
+		 * the controller.
+		 */
+		if (xhci->quirks | XHCI_RESET && xhci->reset_hcd_work) {
+			xhci_dbg(xhci, "Trying to reset xHCI host controller.\n");
+			schedule_work(xhci->reset_hcd_work);
+		}
 		return ret;
 	}
 	temp_64 = xhci_read_64(xhci, &xhci->op_regs->dcbaa_ptr);

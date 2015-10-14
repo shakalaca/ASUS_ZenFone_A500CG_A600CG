@@ -35,6 +35,10 @@
 #include <drm/i915_drm.h>
 #include "i915_drv.h"
 
+#ifdef CONFIG_DRM_VXD_BYT
+#define DRM_COMMAND_VXD_BASE 0x90
+#endif
+
 typedef struct _drm_i915_batchbuffer32 {
 	int start;		/* agp offset */
 	int used;		/* nr bytes in use */
@@ -216,10 +220,23 @@ long i915_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	if (nr < DRM_COMMAND_BASE + DRM_ARRAY_SIZE(i915_compat_ioctls))
 		fn = i915_compat_ioctls[nr - DRM_COMMAND_BASE];
 
-	if (fn != NULL)
+	if (fn != NULL) {
 		ret = (*fn) (filp, cmd, arg);
-	else
-		ret = drm_ioctl(filp, cmd, arg);
+	} else {
+#ifdef CONFIG_DRM_VXD_BYT
+		unsigned int nr = DRM_IOCTL_NR(cmd);
+		struct drm_i915_private *dev_priv = dev->dev_private;
+
+		if ((nr >= DRM_COMMAND_VXD_BASE) &&
+				(nr < DRM_COMMAND_VXD_BASE + 0x10)) {
+			BUG_ON(!dev_priv->vxd_ioctl);
+			ret = dev_priv->vxd_ioctl(filp, cmd, arg);
+		} else
+#endif
+		{
+			ret = drm_ioctl(filp, cmd, arg);
+		}
+	}
 
 out:
 	i915_rpm_put_ioctl(dev);

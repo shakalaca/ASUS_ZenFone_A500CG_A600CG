@@ -1,6 +1,6 @@
 /*COPYRIGHT**
 
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -61,6 +61,7 @@ U32 drv_x2apic_enabled = 0;
 extern VOID 
 APIC_Disable_PMI(VOID)
 {
+#ifndef DRV_USE_NMI
     if (drv_x2apic_enabled) {
         SYS_Write_MSR(DRV_APIC_LVT_PMI_MSR, (U64)(CPU_PERF_VECTOR | DRV_LVT_MASK));
     }
@@ -70,6 +71,7 @@ APIC_Disable_PMI(VOID)
             *(int*)&apic[DRV_APIC_LVT_PMI] = CPU_PERF_VECTOR | DRV_LVT_MASK;
         }
     }
+#endif
 }
 
 /*!
@@ -282,6 +284,7 @@ APIC_Unmap (PVOID apic_linear_addr)
 extern VOID 
 APIC_Ack_Eoi(VOID)
 {
+#ifndef DRV_USE_NMI
     if (drv_x2apic_enabled) {
         SYS_Write_MSR(DRV_APIC_LCL_EOI_MSR, 0LL);
     }
@@ -291,6 +294,8 @@ APIC_Ack_Eoi(VOID)
             *(int*)&apic[DRV_APIC_LCL_EOI] = 0;
         }
     }
+#endif
+    return;
 }
 
 /*!

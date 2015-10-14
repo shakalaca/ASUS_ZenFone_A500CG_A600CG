@@ -33,7 +33,7 @@ u8 inline turn_percent_to_s2c(u8);
 static ssize_t flash_show(struct file *dev, char *buffer, size_t count, loff_t *ppos)
 {
 
-   int len, report_light = 0;
+   int len = 0, report_light = 0;
    ssize_t ret = 0;
    char *buff;
 
@@ -53,6 +53,7 @@ static ssize_t flash_show(struct file *dev, char *buffer, size_t count, loff_t *
 static ssize_t flash_store(struct file *dev, const char *buf, size_t count, loff_t *loff)
 {
     int set_light;
+	u8 map_num;		// leong
     set_light = -1;
     set_light_record_odd = 0;
     sscanf(buf, "%d", &set_light);
@@ -72,7 +73,7 @@ static ssize_t flash_store(struct file *dev, const char *buf, size_t count, loff
         set_light /= 2;
         set_light_record = set_light;
         rt8515_flash_off((unsigned long) 0);
-        u8 map_num = turn_percent_to_s2c((u8)set_light);
+        map_num = turn_percent_to_s2c((u8)set_light);
         printk(KERN_INFO "map_num is %x", map_num);
         rt8515_torch_on(map_num);
     }
@@ -86,8 +87,12 @@ static const struct file_operations flash_proc_fops = {
 };
 
 
-
+#if 0		// original
 DEVICE_ATTR(flash, 0664, flash_show, flash_store);
+#else		// leong
+//struct device_attribute dev_attr_##_name = {   .attr = {.name = __stringify(flash), .mode = 0664, .owner = THIS_MODULE },   .show = flash_show,   .store = flash_store,  };
+#endif
+
 
 u8 inline turn_percent_to_s2c(u8 light_intensity_percentage){
 		u8 ret;
@@ -294,19 +299,23 @@ static int rt8515_g_torch_intensity(struct v4l2_subdev *sd, s32 *val)
 	return 0;
 }
 
+#if 0		// leong
 static int rt8515_s_indicator_intensity(struct v4l2_subdev *sd, u32 intensity)
 {
 	struct rt8515 *flash = to_rt8515(sd);
 	flash->flash_indicator_intensity = intensity;
 	return 0;
 }
+#endif
 
+#if 0		// leong
 static int rt8515_g_indicator_intensity(struct v4l2_subdev *sd, s32 *val)
 {
 	struct rt8515 *flash = to_rt8515(sd);
 	*val = flash->flash_indicator_intensity;
 	return 0;
 }
+#endif
 
 static int rt8515_s_flash_strobe(struct v4l2_subdev *sd, u32 val)
 {
@@ -577,10 +586,12 @@ static int rt8515_setup(struct rt8515 *flash)
 }
 
 
+#if 0		// leong
 static int __rt8515_s_power(struct rt8515 *flash, int power)
 {
 	return 0;
 }
+#endif
 
 static int rt8515_s_power(struct v4l2_subdev *sd, int power)
 {
@@ -693,15 +704,22 @@ static int rt8515_resume(struct device *dev)
 	return 0;
 }
 
-
-
-static int __devinit rt8515_probe(struct i2c_client *client,
-				  const struct i2c_device_id *id)
+#if 0   // original
+static int __devint rt8515_probe(struct i2c_client *client, const struct i2c_device_id *id)
+#else
+static int rt8515_probe(struct i2c_client *client, const struct i2c_device_id *id)
+#endif
 {
 	int err;
-	struct rt8515 *flash;
+	struct rt8515 *flash = NULL;
+	void* dummy = NULL;
+    struct proc_dir_entry* proc_entry_flash = NULL;
+
 	//rt8515_ENF = get_gpio_by_name("FLED_DRIVER_ENF");
 	//rt8515_ENT = get_gpio_by_name("FLED_DRIVER_ENT");
+
+
+
 	if (rt8515_ENF== -1) {
 		printk("[FLASH] %s: Unable to find RT8515_FLASH_ENF\n", __func__);
 		rt8515_ENF = RT8515_FLASH_ENF;
@@ -719,7 +737,11 @@ static int __devinit rt8515_probe(struct i2c_client *client,
 
 
 	if (client->dev.platform_data == NULL) {
+		#if 0  // original
 		printk(&client->dev, "[Flash] rt8515 no platform data\n");
+		#else
+		dev_err(&client->dev, "[Flash] rt8515 no platform data\n");
+		#endif
 		return -ENODEV;
 	}
 
@@ -733,6 +755,7 @@ static int __devinit rt8515_probe(struct i2c_client *client,
 
 	v4l2_i2c_subdev_init(&flash->sd, client, &rt8515_ops);
 	flash->sd.internal_ops = &rt8515_internal_ops;
+	flash->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	flash->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	flash->led_mode = ATOMISP_FLASH_MODE_OFF;
 	//flash->timeout = LM3554_MAX_TIMEOUT / LM3554_TIMEOUT_STEPSIZE - 1;
@@ -757,9 +780,8 @@ static int __devinit rt8515_probe(struct i2c_client *client,
     flash_dev = device_create(flash_class, NULL, 0, "%s", "flash_ctrl");
     device_create_file(flash_dev, &dev_attr_flash);
 */
-    void* dummy;
-    struct proc_dir_entry* proc_entry_flash;
-    proc_entry_flash = proc_create_data("driver/asus_flash_brightness", 0664, NULL, &flash_proc_fops, dummy);
+
+    proc_entry_flash = proc_create_data("driver/asus_flash_brightness", 0666, NULL, &flash_proc_fops, dummy);
     proc_set_user(proc_entry_flash, 1000, 1000);
 
 #if 0
@@ -780,8 +802,11 @@ fail1:
 	return err;
 }
 
-
+#if 0		// original
 static int __devexit rt8515_remove(struct i2c_client *client)
+#else		// leong
+static int rt8515_remove(struct i2c_client *client)
+#endif
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct rt8515 *flash = to_rt8515(sd);
@@ -822,7 +847,11 @@ static struct i2c_driver rt8515_driver = {
 		.pm   = &rt8515_pm_ops,
 	},
 	.probe = rt8515_probe,
+	#if 0		// original
 	.remove = __devexit_p(rt8515_remove),
+	#else		// leong
+	.remove = (rt8515_remove),
+	#endif
 	.id_table = rt8515_id,
 };
 /**

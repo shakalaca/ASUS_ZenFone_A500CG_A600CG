@@ -31,4 +31,9 @@
 #include <drm/drm_crtc.h>
 #include "intel_drv.h"
 
+#define BYT_MODESET_HDISPLAY			1920
+#define BYT_MODESET_VDISPLAY			1200
+#define BYT_CR_USERMODE_HDISPLAY		1280
+#define BYT_CR_USERMODE_VDISPLAY		800
+
 #endif /* __DSI_MOD_PANASONIC_VVX09F006A00_H__ */

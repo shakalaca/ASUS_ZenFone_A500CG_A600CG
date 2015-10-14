@@ -38,59 +38,23 @@ static int df_rgx_active = 0;
  */
 int df_rgx_is_active(void)
 {
-	DFRGX_DPF( DFRGX_DEBUG_LOW,"%s: \n",
+	DFRGX_DPF(DFRGX_DEBUG_LOW, "%s\n",
 		__func__);
 
-	/*Initially We need to know the state of RGX ON/OFF, then We keep a local copy of it*/
-	if(RGXAcquireIsDevicePowered())
-	{
-		DFRGX_DPF( DFRGX_DEBUG_MED,"%s: RGX is Powered ON\n",
+	/*Initially We need to know the state of RGX ON/OFF,
+	 *then We keep a local copy of it
+	*/
+	if (rgx_is_device_powered()) {
+		DFRGX_DPF(DFRGX_DEBUG_MED, "%s: RGX is Powered ON\n",
 		__func__);
 		df_rgx_active = 1;
-	}
-	else
-	{
-		DFRGX_DPF( DFRGX_DEBUG_HIGH,"%s: RGX is Powered OFF, dev freq will not change freq \n",
+	} else {
+		DFRGX_DPF(DFRGX_DEBUG_HIGH, "%s: RGX is Powered OFF,"
+		" dev freq will not change freq\n",
 		__func__);
 		df_rgx_active = 0;
 	}
 
 	return df_rgx_active;
 }
-
-/**
- * df_rgx_suspend() - Implements suspend routine on dfrgx,
- * it will include stop polling of hwperf counters and some other ops.
- */
-int df_rgx_suspend(void)
-{
-	int error = 0;
-
-	DFRGX_DPF( DFRGX_DEBUG_LOW,"%s: Suspending dfrgx \n",
-		__func__);
-
-	df_rgx_active = 0;
-
-	/*Perform all suspend ops*/
-
-	return error;
-}
-
-/**
- * df_rgx_resume() - Implements resume routine on dfrgx,
- * it will include re-start polling of hwperf counters and some other ops.
- */
-int df_rgx_resume(void)
-{
-	int error = 0;
-
-	DFRGX_DPF( DFRGX_DEBUG_LOW,"%s: Resuming dfrgx\n",
-		__func__);
-
-	df_rgx_active = 1 ;
-
-	/*Perform all resume ops*/
-	return error;
-}
-
 

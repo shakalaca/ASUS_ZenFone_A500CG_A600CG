@@ -9158,7 +9158,7 @@ static s32 wl_notify_escan_complete(struct wl_priv *wl,
 	struct net_device *dev;
 
 	WL_DBG(("Enter \n"));
-	if (!ndev) {
+	if (!ndev || !wl_to_prmry_ndev(wl)) {
 		WL_ERR(("ndev is null\n"));
 		err = BCME_ERROR;
 		return err;
@@ -9205,7 +9205,7 @@ static s32 wl_notify_escan_complete(struct wl_priv *wl,
 		wl->sched_scan_req = NULL;
 	}
 #endif /* WL_SCHED_SCAN */
-	if (likely(wl->scan_request)) {
+	if (likely(wl->scan_request) && (wl->scan_request->wiphy == wl_to_wiphy(wl)) && (wl->scan_request->wiphy)) {
 		cfg80211_scan_done(wl->scan_request, aborted);
 		wl->scan_request = NULL;
 	}

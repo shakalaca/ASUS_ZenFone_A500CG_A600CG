@@ -42,6 +42,7 @@
 #include "pvr_drm.h"
 
 #include "mdfld_hdmi_audio_if.h"
+#include <linux/pm_qos.h>
 
 /*  Name changed with kernel 3.10 gen graphics patches. */
 #if !defined DRM_MODE_ENCODER_DSI
@@ -69,7 +70,24 @@ extern int drm_psb_enable_color_conversion;
 extern u32 DISP_PLANEB_STATUS;
 extern int drm_psb_use_cases_control;
 extern int dpst_level;
+extern int asus_panel_id;
 
+//ASUS_BSP: Louis +++
+#ifdef CONFIG_SUPPORT_DDS_MIPI_SWITCH
+extern int panel_id;
+extern int hpd;
+extern int panel_turn_on;
+
+enum {
+	DDS_PHONE = 0,
+	DDS_PAD = 1,
+	DDS_NONE = 2,
+};
+#endif
+//ASUS_BSP: Louis ---
+#ifdef CONFIG_SUPPORT_OTM8018B_MIPI_480X854_DISPLAY
+extern bool esd_thread_enable;
+#endif
 
 extern struct ttm_bo_driver psb_ttm_bo_driver;
 
@@ -108,10 +126,11 @@ enum {
 #define PANEL_PROC_ENTRY "panel_status"
 #define CSC_PROC_ENTRY "csc_control"
 #define GPIO_PROC_ENTRY "hdmi_gpio_control"
+#ifdef CONFIG_A500CG
 #define DPST_LEVEL_PROC_ENTRY "dpst_level"
 #define PANEL_ID_PROC_ENTRY "asus_panel_id"
 #define LCD_UNIQUE_ID_PROC_ENTRY "lcd_unique_id"
-
+#endif
 
 #define PSB_DRM_DRIVER_DATE "2009-03-10"
 #define PSB_DRM_DRIVER_MAJOR 8
@@ -386,12 +405,14 @@ struct drm_psb_private {
 #ifdef CONFIG_MDFLD_DSI_DPU
 	void *dbi_dpu_info;
 #endif
+	/* QOS */
+	struct pm_qos_request s0ix_qos;
+
 	struct mdfld_dsi_config *dsi_configs[2];
 
 	struct work_struct te_work;
 	struct work_struct reset_panel_work;
 
-	struct mutex vsync_lock;
 	struct work_struct vsync_event_work;
 	int vsync_pipe;
 	wait_queue_head_t vsync_queue;
@@ -1002,6 +1023,7 @@ struct drm_psb_private {
 	struct mutex gamma_csc_lock;
 	/* overlay setting lock*/
 	struct mutex overlay_lock;
+	struct mutex vsync_lock;
 
 	int brightness_adjusted;
 

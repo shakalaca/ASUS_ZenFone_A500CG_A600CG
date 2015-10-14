@@ -28,7 +28,6 @@
 #define SSP_PERIOD_MAX (1024*2)
 #define SSP_PERIOD_MIN (2)
 
-
 int byt_get_ssp_bt_sco_master_mode(struct snd_kcontrol *kcontrol,
 					struct snd_ctl_elem_value *ucontrol);
 

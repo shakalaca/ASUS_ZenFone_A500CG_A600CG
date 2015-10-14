@@ -15,5 +15,9 @@
 /* BZ 37319- Change the driver name from msic_ocd to msic_vdd */
 #define MSIC_VDD_DEV_NAME	"msic_vdd"
 
+#ifdef CONFIG_ACPI
+extern void *msic_vdd_platform_data(void *info) __attribute__((weak));
+#else
 extern void __init *msic_vdd_platform_data(void *info) __attribute__((weak));
+#endif
 #endif

@@ -17,3 +17,20 @@ config CRYSTAL_COVE
 	  supports to create all sub-devices inside PMIC.
 	  And it also provides IRQ dispatch function to
 	  sub-device drivers.
+
+config INTEL_MID_PMIC
+	bool "Support for Intel MID PMIC"
+	depends on I2C=y
+	select MFD_CORE
+	help
+	  Select this option to enable support of Intel
+	  PMIC chip.
+
+	  PMIC chip embeds ADC, GPIO, Thermals, Charge, etc.
+	  Devices are used in Intel platforms.
+
+	  PMIC driver is a multi function driver which
+	  supports to create all sub-devices inside PMIC.
+	  And it also provides IRQ dispatch function to
+	  sub-device drivers.
+

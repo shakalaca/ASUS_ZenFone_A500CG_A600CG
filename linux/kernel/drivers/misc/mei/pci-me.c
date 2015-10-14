@@ -38,8 +38,9 @@
 #include <linux/mei.h>
 
 #include "mei_dev.h"
-#include "hw-me.h"
 #include "client.h"
+#include "hw-me-regs.h"
+#include "hw-me.h"
 
 /* mei_pci_tbl - PCI Device ID Table */
 static DEFINE_PCI_DEVICE_TABLE(mei_me_pci_tbl) = {
@@ -304,15 +305,13 @@ static int mei_me_pci_resume(struct device *device)
 		return err;
 	}
 
-	mutex_lock(&dev->device_lock);
-	dev->dev_state = MEI_DEV_POWER_UP;
-	mei_reset(dev, 1);
-	mutex_unlock(&dev->device_lock);
-
+	err = mei_restart(dev);
+	if (err)
+		return err;
 	/* Start timer if stopped in suspend */
 	schedule_delayed_work(&dev->timer_work, HZ);
 
-	return err;
+	return 0;
 }
 static SIMPLE_DEV_PM_OPS(mei_me_pm_ops, mei_me_pci_suspend, mei_me_pci_resume);
 #define MEI_ME_PM_OPS	(&mei_me_pm_ops)

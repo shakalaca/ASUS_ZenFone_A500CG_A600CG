@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -47,37 +47,27 @@
 #include "control.h"
 #include "utility.h"
 #include "cpumon.h"
-
-#if defined(DRV_IA64)
-#if defined(PERFMON_V1) || defined(PERFMON_V2) || defined(PERFMON_V2_ALT)
-#include <asm/hw_irq.h>
-#include <asm/perfmon.h>
-#endif
-#include <linux/slab.h>
 #include "pmi.h"
 
-#if defined(PERFMON_V1) || defined(PERFMON_V2_ALT)
-#define SEP_PERFMON_IRQ            IA64_PERFMON_VECTOR
-#else
-#define SEP_PERFMON_IRQ            0xED
+#if defined DRV_USE_NMI
+#include <linux/ptrace.h>
+#include <asm/nmi.h>
+#include <linux/notifier.h>
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
+static int
+cpumon_NMI_Handler(unsigned int cpu, struct pt_regs *regs)
+{
+    PMI_Interrupt_Handler(regs);
+    return NMI_HANDLED;
+}
+
+#define EBS_NMI_CALLBACK                        cpumon_NMI_Handler
+#define SET_NMI_CALLBACK(type,func,flags,name)  register_nmi_handler((type),(func),(flags),(name))
+#define UNSET_NMI_CALLBACK(type,name)           unregister_nmi_handler((type),(name))
 #endif
 
-static U32 ebs_irq = 0;
-#if defined(PERFMON_V1) || defined(PERFMON_V2_ALT)
-static pfm_intr_handler_desc_t desc;
-#endif
-
-#if defined(PERFMON_V1)
-#define CPUMON_INSTALL_INTERRUPT(desc)    pfm_install_alternate_syswide_subsystem((desc))
-#define CPUMON_REMOVE_INTERRUPT(desc)     pfm_remove_alternate_syswide_subsystem((desc))
-#endif
-#if defined(PERFMON_V2_ALT)
-#define CPUMON_INSTALL_INTERRUPT(desc)    pfm_install_alt_pmu_interrupt((desc));
-#define CPUMON_REMOVE_INTERRUPT(desc)     pfm_remove_alt_pmu_interrupt((desc))
-#endif
-
-#endif
-
+#endif // DRV_USE_NMI
 
 /*
  * CPU Monitoring Functionality
@@ -87,8 +77,7 @@ static pfm_intr_handler_desc_t desc;
 /*
  * General per-processor initialization
  */
-
-#if defined(DRV_IA32)
+#if defined(DRV_IA32) && !defined(DRV_USE_NMI)
 
 typedef union {
     unsigned long long    u64[1];
@@ -233,7 +222,8 @@ cpumon_Destroy_Cpu (
 }
 #endif
 
-#if defined(DRV_EM64T)
+#if defined(DRV_EM64T) && !defined(DRV_USE_NMI)
+
 /* ------------------------------------------------------------------------- */
 /*!
  * @fn void cpumon_Set_IDT_Func(idt, func)
@@ -396,17 +386,20 @@ CPUMON_Install_Cpuhooks (
     void
 )
 {
-    S32  me = 0;
-    PVOID linear;
+    S32   me        = 0;
+    PVOID linear    = NULL;
 
+#ifndef DRV_USE_NMI
     CONTROL_Invoke_Parallel(cpumon_Save_Cpu, (PVOID)(size_t)me);
     CONTROL_Invoke_Parallel(cpumon_Init_Cpu, (PVOID)(size_t)me);
-
-    linear = NULL;
+#endif
     APIC_Init(&linear);
     CONTROL_Invoke_Parallel(APIC_Init, &linear);
     CONTROL_Invoke_Parallel(APIC_Install_Interrupt_Handler, (PVOID)(size_t)me);
 
+#ifdef DRV_USE_NMI
+    SET_NMI_CALLBACK(NMI_LOCAL, EBS_NMI_CALLBACK, NMI_FLAG_FIRST, "sep_pmi");
+#endif
     return;
 }
 
@@ -428,6 +421,7 @@ CPUMON_Remove_Cpuhooks (
 )
 {
     int            i;
+#ifndef DRV_USE_NMI
     unsigned long  eflags;
 
     SYS_Local_Irq_Save(eflags);
@@ -435,7 +429,10 @@ CPUMON_Remove_Cpuhooks (
     SYS_Local_Irq_Restore(eflags);
     CONTROL_Invoke_Parallel_XS(cpumon_Destroy_Cpu, 
                                (PVOID)(size_t)0);
-    
+#else
+    UNSET_NMI_CALLBACK(NMI_LOCAL, "sep_pmi");
+#endif
+
     // de-initialize APIC
     APIC_Unmap(CPU_STATE_apic_linear_addr(&pcb[0]));
     for (i = 0; i < GLOBAL_STATE_num_cpus(driver_state); i++) {
@@ -445,129 +442,3 @@ CPUMON_Remove_Cpuhooks (
     return;
 }
 #endif /* defined(DRV_IA32) || defined(DRV_EM64T) */
-
-#if defined(DRV_IA64)
-
-/* ------------------------------------------------------------------------- */
-/*!
- * @fn          int CPUMON_Install_Cpuhooks(VOID)
- * @brief       Assign the PMU interrupt to the driver
- *
- * @return      zero if successful, non-zero error value if something failed
- *
- * Install the driver ebs handler onto the PMU interrupt. If perfmon is
- * compiled in then we ask perfmon for the interrupt, otherwise we ask the
- * kernel...
- *
- * <I>Special Notes:</I>
- *
- * @Note This routine is for Itanium(R)-based systems only!
- *
- *      For IA32, the LBRs are not frozen when a PMU interrupt is taken.
- * Since the LBRs capture information on every branch, for the LBR
- * registers to be useful, we need to freeze them as quickly as
- * possible after the interrupt. This means hooking the IDT directly
- * to call a driver specific interrupt handler. That happens in the
- * vtxsys.S file via samp_get_set_idt_entry. The real routine being
- * called first upon PMU interrupt is t_ebs (in vtxsys.S) and that
- * routine calls PMI_Interrupt_Handler()...
- *
- */
-extern void
-CPUMON_Install_Cpuhooks (
-    void
-)
-{
-    int status = -1;
-
-    SEP_PRINT_DEBUG("CPUMON_Install_Cpuhooks: entered... pmv 0x%p \n", SYS_Read_PMV());
-
-#if defined(PERFMON_V1) || defined(PERFMON_V2_ALT)
-    /*
-     * if Perfmon1 or Perfmon2_alt is set, we can use the perfmon.c
-     * interface to steal perfmon.c's interrupt handler for our use
-     * perfmon.c has already done register_percpu_irq()
-     */
-
-     ebs_irq      = SEP_PERFMON_IRQ;
-     desc.handler = &PMI_Interrupt_Handler;
-     status       = CPUMON_INSTALL_INTERRUPT(&desc);
-     if (status) {
-         SEP_PRINT_ERROR("CPUMON_Install_Cpuhooks: CPUMON_INSTALL_INTERRUPT returned %d\n",status);
-     }
-#elif !defined(PERFMON_V2)
-    if (pebs_irqaction) {
-        return status;
-    }
-
-#ifdef SA_PERCPU_IRQ_SUPPORTED
-    ebs_irq        = SEP_PERFMON_IRQ;
-    pebs_irqaction = (struct irqaction *) 1;
-    status         = request_irq(SEP_PERFMON_IRQ,
-                                 PMI_Interrupt_Handler,
-                                 SA_INTERRUPT | SA_PERCPU_IRQ,
-                                 "SEP Sampling",
-                                 NULL);
-
-#else
-    {
-        pebs_irqaction = kmalloc(sizeof (struct irqaction), GFP_ATOMIC);
-        if (pebs_irqaction) {
-            memset(pebs_irqaction, 0, sizeof (struct irqaction));
-            ebs_irq                 = SEP_PERFMON_IRQ;
-            pebs_irqaction->handler = (void *)PMI_Interrupt_Handler;
-            pebs_irqaction->flags   = SA_INTERRUPT;
-            pebs_irqaction->name    = SEP_DRIVER_NAME;
-            pebs_irqaction->dev_id  = NULL;
-
-            register_percpu_irq(ebs_irq, pebs_irqaction);
-            status = 0;
-        }
-        else {
-            SEP_PRINT_WARNING("couldn't kmalloc pebs_irqaction (%d bytes)\n",
-                              (int)sizeof(struct irqaction));
-        }
-    }
-#endif
-#endif
-    SEP_PRINT("IRQ vector 0x%x will be used for handling PMU interrupts\n", SEP_PERFMON_IRQ);
-
-    SEP_PRINT_DEBUG("CPUMON_Install_Cpuhooks: exit...... rc=0x%x pmv=0x%p \n",
-                    status, SYS_Read_PMV());
-
-    return;
-}
-
-extern VOID
-CPUMON_Remove_Cpuhooks (
-    void
-)
-{
-#if defined(PERFMON_V1) || defined(PERFMON_V2_ALT)
-    int status;
-
-    SEP_PRINT_DEBUG("CPUMON_Remove_Cpuhooks: entered... pmv=0x%p \n", SYS_Read_PMV());
-
-    /*
-     * if Perfmon1 or Perfmon2_alt is set, we used the perfmon.c
-     * interface to steal perfmon.c's interrupt handler for our use.
-     * Now we must release it back.
-     * Don't free_irq() because perfmon.c still wants to use it
-     */
-     status = CPUMON_REMOVE_INTERRUPT(&desc);
-     if (status) {
-         SEP_PRINT_WARNING("CPUMON_Remove_Cpuhooks: CPUMON_REMOVE_INTERRUPT returned: %d\n",status);
-     }
-
-#elif !defined(PERFMON_V2)
-    SEP_PRINT_DEBUG("CPUMON_Remove_Cpuhooks: entered... pmv=0x%p \n", SYS_Read_PMV());
-    if (xchg(&pebs_irqaction, 0)) {
-        free_irq(ebs_irq, NULL);
-    }
-#endif
-
-    SEP_PRINT_DEBUG("CPUMON_Remove_Cpuhooks: exit... pmv=0x%p \n", SYS_Read_PMV());
-
-    return;
-}
-#endif

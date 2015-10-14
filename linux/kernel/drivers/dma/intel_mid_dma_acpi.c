@@ -155,17 +155,44 @@ static int mid_platform_get_resources_edk2(struct middma_device *mid_device,
 	return 0;
 }
 
+static int mid_platform_get_resources_lpio(struct middma_device *mid_device,
+				      struct platform_device *pdev)
+{
+	int ret;
+
+	pr_debug("%s\n", __func__);
+
+	/* No need to request PIMR resource here */
+	ret = mid_get_and_map_rsrc(&mid_device->dma_base, pdev, 0);
+	if (ret)
+		return ret;
+	pr_debug("dma_base:%p\n", mid_device->dma_base);
+
+	mid_device->irq = platform_get_irq(pdev, 0);
+	if (mid_device->irq < 0) {
+		pr_err("invalid irq:%d\n", mid_device->irq);
+		return mid_device->irq;
+	}
+	pr_debug("irq from pdev is:%d\n", mid_device->irq);
+
+	return 0;
+}
+
 static int mid_platform_get_resources(const char *hid,
 		struct middma_device *mid_device, struct platform_device *pdev)
 {
 	if (!strncmp(hid, "DMA0F28", 7))
 		return mid_platform_get_resources_fdk(mid_device, pdev);
 	if (!strncmp(hid, "INTL9C60", 8))
-		return mid_platform_get_resources_fdk(mid_device, pdev);
+		return mid_platform_get_resources_lpio(mid_device, pdev);
 	if (!strncmp(hid, "ADMA0F28", 8))
 		return mid_platform_get_resources_edk2(mid_device, pdev);
 	else if ((!strncmp(hid, "ADMA22A8", 8))) {
 		return mid_platform_get_resources_edk2(mid_device, pdev);
+	} else if ((!strncmp(hid, "80862286", 8))) {
+		return mid_platform_get_resources_lpio(mid_device, pdev);
+	} else if ((!strncmp(hid, "808622C0", 8))) {
+		return mid_platform_get_resources_lpio(mid_device, pdev);
 	} else {
 		pr_err("Invalid device id..\n");
 		return -EINVAL;

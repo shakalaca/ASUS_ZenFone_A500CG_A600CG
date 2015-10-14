@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -45,10 +45,9 @@
 #include "pebs.h"
 #include "apic.h"
 
-#if !defined(DRV_ATOM_ONLY)
-#include "jktunc_ha.h"
-#include "jktunc_ubox.h"
-#include "jktunc_qpill.h"
+#if !defined(DRV_ANDROID)
+#include "jkt_unc_ha.h"
+#include "jkt_unc_qpill.h"
 #include "pci.h"
 #endif
 
@@ -57,11 +56,19 @@ extern U64           *read_counter_info;
 extern LBR            lbr;
 extern DRV_CONFIG     pcfg;
 extern PWR            pwr;
+extern U64           *interrupt_counts;
 
-#if !defined(DRV_ATOM_ONLY)
+#if !defined(DRV_ANDROID)
 static U32            direct2core_data_saved = 0;
 static U32            bl_bypass_data_saved   = 0;
 #endif
+
+typedef struct SADDR_S {
+    S64 addr:LBR_DATA_BITS;
+} SADDR;
+
+#define SADDR_addr(x)                  (x).addr
+#define MSR_ENERGY_MULTIPLIER           0x606        // Energy Multiplier MSR
 
 /* ------------------------------------------------------------------------- */
 /*!
@@ -75,7 +82,7 @@ static U32            bl_bypass_data_saved   = 0;
  *
  * <I>Special Notes</I>
  */
-#if !defined(DRV_ATOM_ONLY)
+#if !defined(DRV_ANDROID)
 static VOID
 core2_Disable_Direct2core (
     ECB pecb
@@ -100,33 +107,7 @@ core2_Disable_Direct2core (
         value = PCI_Read_Ulong(pci_address);
         vendor_id = value & VENDOR_ID_MASK;
         device_id = (value & DEVICE_ID_MASK) >> DEVICE_ID_BITSHIFT;
-            
-        if (vendor_id != DRV_IS_PCI_VENDOR_ID_INTEL) {
-            continue;
-        }
-        if (device_id != JKTUNC_HA_D2C_DID) {
-            continue;
-        }
-        value=0;
-        // now program at the offset
-        pci_address = FORM_PCI_ADDR(busno,
-                                    JKTUNC_HA_DEVICE_NO,
-                                    JKTUNC_HA_D2C_FUNC_NO,
-                                    JKTUNC_HA_D2C_OFFSET);
-        value   = PCI_Read_Ulong(pci_address);
-        restore_ha_direct2core[this_cpu][busno]   = 0;
-        restore_ha_direct2core[this_cpu][busno]   = value;
-        SEP_PRINT_DEBUG(" System value before :ha d2c B:D:F  %d:%d :%d offset 0x%x value = 0x%x\n",busno,JKTUNC_HA_DEVICE_NO,JKTUNC_HA_D2C_FUNC_NO,JKTUNC_HA_D2C_OFFSET, value); 
-    }
-    for (busno = 0; busno < MAX_BUSNO; busno++) {
-        pci_address = FORM_PCI_ADDR(busno,
-                                    JKTUNC_HA_DEVICE_NO,
-                                    JKTUNC_HA_D2C_FUNC_NO,
-                                    0);
-        value = PCI_Read_Ulong(pci_address);
-        vendor_id = value & VENDOR_ID_MASK;
-        device_id = (value & DEVICE_ID_MASK) >> DEVICE_ID_BITSHIFT;
-        
+
         if (vendor_id != DRV_IS_PCI_VENDOR_ID_INTEL) {
             continue;
         }
@@ -140,11 +121,35 @@ core2_Disable_Direct2core (
                                     JKTUNC_HA_D2C_FUNC_NO,
                                     JKTUNC_HA_D2C_OFFSET);
         value   = PCI_Read_Ulong(pci_address);
+        restore_ha_direct2core[this_cpu][busno]   = 0;
+        restore_ha_direct2core[this_cpu][busno]   = value;
+    }
+    for (busno = 0; busno < MAX_BUSNO; busno++) {
+        pci_address = FORM_PCI_ADDR(busno,
+                                    JKTUNC_HA_DEVICE_NO,
+                                    JKTUNC_HA_D2C_FUNC_NO,
+                                    0);
+        value = PCI_Read_Ulong(pci_address);
+        vendor_id = value & VENDOR_ID_MASK;
+        device_id = (value & DEVICE_ID_MASK) >> DEVICE_ID_BITSHIFT;
+
+        if (vendor_id != DRV_IS_PCI_VENDOR_ID_INTEL) {
+            continue;
+        }
+        if (device_id != JKTUNC_HA_D2C_DID) {
+            continue;
+        }
+
+        // now program at the offset
+        pci_address = FORM_PCI_ADDR(busno,
+                                    JKTUNC_HA_DEVICE_NO,
+                                    JKTUNC_HA_D2C_FUNC_NO,
+                                    JKTUNC_HA_D2C_OFFSET);
+        value   = PCI_Read_Ulong(pci_address);
         value  |= value | JKTUNC_HA_D2C_BITMASK;
         PCI_Write_Ulong(pci_address, value);
-        value = PCI_Read_Ulong(pci_address);
-        SEP_PRINT_DEBUG(" System value after apply wkrd :ha d2c B:D:F  %d:%d :%d offset 0x%x value = 0x%x\n",busno,JKTUNC_HA_DEVICE_NO,JKTUNC_HA_D2C_FUNC_NO,JKTUNC_HA_D2C_OFFSET, value);
     }
+
     // Discover the bus # for QPI
     for (dev_idx = 0; dev_idx < 2; dev_idx++) {
         base_idx = dev_idx * MAX_BUSNO;
@@ -156,7 +161,7 @@ core2_Disable_Direct2core (
             value = PCI_Read_Ulong(pci_address);
             vendor_id = value & VENDOR_ID_MASK;
             device_id = (value & DEVICE_ID_MASK) >> DEVICE_ID_BITSHIFT;
-            
+
             if (vendor_id != DRV_IS_PCI_VENDOR_ID_INTEL) {
                 continue;
             }
@@ -164,7 +169,6 @@ core2_Disable_Direct2core (
                 (device_id != JKTUNC_QPILL1_D2C_DID)) {
                 continue;
             }
-            value=0;
             // now program at the corresponding offset
             pci_address = FORM_PCI_ADDR(busno,
                                         core2_qpill_dev_no[dev_idx],
@@ -173,11 +177,9 @@ core2_Disable_Direct2core (
             value   = PCI_Read_Ulong(pci_address);
             restore_qpi_direct2core[this_cpu][base_idx + busno]   = 0;
             restore_qpi_direct2core[this_cpu][base_idx + busno]   = value;
-            SEP_PRINT_DEBUG(" System value before QPILL B:D:F  %d:%d:%d offset 0x%x value = 0x%x\n", busno, core2_qpill_dev_no[dev_idx], JKTUNC_QPILL_D2C_FUNC_NO, JKTUNC_QPILL_D2C_OFFSET, value);
         }
     }
     for (dev_idx = 0; dev_idx < 2; dev_idx++) {
-        base_idx = dev_idx * MAX_BUSNO;
         for (busno = 0; busno < MAX_BUSNO; busno++) {
             pci_address = FORM_PCI_ADDR(busno,
                                         core2_qpill_dev_no[dev_idx],
@@ -186,7 +188,7 @@ core2_Disable_Direct2core (
             value = PCI_Read_Ulong(pci_address);
             vendor_id = value & VENDOR_ID_MASK;
             device_id = (value & DEVICE_ID_MASK) >> DEVICE_ID_BITSHIFT;
-             
+
             if (vendor_id != DRV_IS_PCI_VENDOR_ID_INTEL) {
                 continue;
             }
@@ -194,7 +196,6 @@ core2_Disable_Direct2core (
                 (device_id != JKTUNC_QPILL1_D2C_DID)) {
                 continue;
             }
-            value =0;
             // now program at the corresponding offset
             pci_address = FORM_PCI_ADDR(busno,
                                         core2_qpill_dev_no[dev_idx],
@@ -203,8 +204,6 @@ core2_Disable_Direct2core (
             value   = PCI_Read_Ulong(pci_address);
             value  |= value | JKTUNC_QPILL_D2C_BITMASK;
             PCI_Write_Ulong(pci_address, value);
-            value   = PCI_Read_Ulong(pci_address);
-            SEP_PRINT_DEBUG("Value after applying wkrd QPILL B:D:F %d:%d:%d offset 0x%x value 0x%x\n",busno,core2_qpill_dev_no[dev_idx],JKTUNC_QPILL_D2C_FUNC_NO,JKTUNC_QPILL_D2C_OFFSET,value);
         }
     }
 }
@@ -222,7 +221,7 @@ core2_Disable_Direct2core (
  *
  * <I>Special Notes</I>
  */
-#if !defined(DRV_ATOM_ONLY)
+#if !defined(DRV_ANDROID)
 static VOID
 core2_Disable_BL_Bypass (
     ECB pecb
@@ -239,6 +238,7 @@ core2_Disable_BL_Bypass (
 
 }
 #endif
+
 /* ------------------------------------------------------------------------- */
 /*!
  * @fn void core2_Write_PMU(param)
@@ -263,8 +263,12 @@ core2_Write_PMU (
 {
     U32            this_cpu = CONTROL_THIS_CPU();
     CPU_STATE      pcpu     = &pcb[this_cpu];
+    ECB            pecb     = PMU_register_data[CPU_STATE_current_group(pcpu)];
 
-    
+    if (!pecb) {
+        return;
+    }
+
     if (CPU_STATE_current_group(pcpu) == 0) {
         if (EVENT_CONFIG_mode(global_ec) != EM_DISABLED) {
             U32            index;
@@ -281,7 +285,7 @@ core2_Write_PMU (
                 } END_FOR_EACH_DATA_GP_REG;
             }
             /* Reset the current group to the very first one. */
-            CPU_STATE_current_group(pcpu) = 0;
+            CPU_STATE_current_group(pcpu) = this_cpu % EVENT_CONFIG_num_groups(global_ec);
         }
     }
 
@@ -340,6 +344,15 @@ core2_Disable_PMU (
     PVOID  param
 )
 {
+    U32         this_cpu = CONTROL_THIS_CPU();
+    CPU_STATE   pcpu     = &pcb[this_cpu];
+    ECB         pecb     = PMU_register_data[CPU_STATE_current_group(pcpu)];
+
+    if (!pecb) {
+        // no programming for this device for this group
+        return;
+    }
+
     if (GLOBAL_STATE_current_phase(driver_state) != DRV_STATE_RUNNING) {
         SEP_PRINT_DEBUG("driver state = %d\n", GLOBAL_STATE_current_phase(driver_state));
         SYS_Write_MSR(IA32_PERF_GLOBAL_CTRL, 0LL);
@@ -382,6 +395,11 @@ core2_Enable_PMU (
     U32         this_cpu = CONTROL_THIS_CPU();
     CPU_STATE   pcpu     = &pcb[this_cpu];
     ECB         pecb     = PMU_register_data[CPU_STATE_current_group(pcpu)];
+
+    if (!pecb) {
+        // no programming for this device for this group
+        return;
+    }
 
     if (GLOBAL_STATE_current_phase(driver_state) == DRV_STATE_RUNNING) {
         APIC_Enable_Pmi();
@@ -445,6 +463,10 @@ corei7_Enable_PMU_2 (
     ECB          pecb        = PMU_register_data[CPU_STATE_current_group(pcpu)];
     U64          pebs_val    = 0;
 
+    if (!pecb) {
+        return;
+    }
+
     if (GLOBAL_STATE_current_phase(driver_state) == DRV_STATE_RUNNING) {
         APIC_Enable_Pmi();
         if (CPU_STATE_group_swap(pcpu)) {
@@ -479,7 +501,7 @@ corei7_Enable_PMU_2 (
             CPU_STATE_reset_mask(pcpu) = 0LL;
         }
     }
-    
+
     return;
 }
 
@@ -511,6 +533,10 @@ core2_Read_PMU_Data (
     pcpu      = &pcb[this_cpu];
     pecb      = PMU_register_data[CPU_STATE_current_group(pcpu)];
 
+    if (!pecb) {
+        return;
+    }
+
     start_index = ECB_num_events(pecb) * this_cpu;
     SEP_PRINT_DEBUG("PMU control_data 0x%p, buffer 0x%p, j = %d\n", PMU_register_data, buffer, j);
     FOR_EACH_DATA_REG(pecb,i) {
@@ -538,7 +564,7 @@ core2_Read_PMU_Data (
  * @brief  Go through the overflow errata for the architecture and set the mask
  *
  * <I>Special Notes</I>
- *         fixed_counter1 on some architectures gets interfered by 
+ *         fixed_counter1 on some architectures gets interfered by
  *         other event counts.  Overcome this problem by reading the
  *         counter value and resetting the overflow mask.
  *
@@ -591,7 +617,11 @@ core2_Check_Overflow (
     U64              overflow_status_clr = 0;
     DRV_EVENT_MASK_NODE event_flag;
 
-    // initialize masks 
+    if (!pecb) {
+        return;
+    }
+
+    // initialize masks
     DRV_MASKS_masks_num(masks) = 0;
 
     overflow_status = SYS_Read_MSR(IA32_PERF_GLOBAL_STATUS);
@@ -633,7 +663,17 @@ core2_Check_Overflow (
                             SYS_Read_MSR(ECB_entries_reg_id(pecb,i)));
             SYS_Write_MSR(ECB_entries_reg_id(pecb,i), ECB_entries_reg_value(pecb,i));
 
+            if (DRV_CONFIG_enable_cp_mode(pcfg)) {
+                /* Increment the interrupt count. */
+                if (interrupt_counts) {
+                    interrupt_counts[this_cpu * DRV_CONFIG_num_events(pcfg) + ECB_entries_event_id_index(pecb,i)] += 1;
+                }
+            }
+
             DRV_EVENT_MASK_bitFields1(&event_flag) = (U8) 0;
+            if (ECB_entries_fixed_reg_get(pecb, i)) {
+                CPU_STATE_p_state_counting(pcpu) = 1;
+            }
             if (ECB_entries_precise_get(pecb, i)) {
                 DRV_EVENT_MASK_precise(&event_flag) = 1;
             }
@@ -643,12 +683,15 @@ core2_Check_Overflow (
             if (ECB_entries_uncore_get(pecb, i)) {
                 DRV_EVENT_MASK_uncore_capture(&event_flag) = 1;
             }
+            if (ECB_entries_branch_evt_get(pecb, i)) {
+                DRV_EVENT_MASK_branch(&event_flag) = 1;
+            }
 
             if (DRV_MASKS_masks_num(masks) < MAX_OVERFLOW_EVENTS) {
                 DRV_EVENT_MASK_bitFields1(DRV_MASKS_eventmasks(masks) + DRV_MASKS_masks_num(masks)) = DRV_EVENT_MASK_bitFields1(&event_flag);
                 DRV_EVENT_MASK_event_idx(DRV_MASKS_eventmasks(masks) + DRV_MASKS_masks_num(masks)) = ECB_entries_event_id_index(pecb, i);
                 DRV_MASKS_masks_num(masks)++;
-            } 
+            }
             else {
                 SEP_PRINT_ERROR("The array for event masks is full.\n");
             }
@@ -792,7 +835,7 @@ core2_Initialize (
 {
     U32        this_cpu = CONTROL_THIS_CPU();
     CPU_STATE  pcpu;
-#if !defined(DRV_ATOM_ONLY)
+#if !defined(DRV_ANDROID)
     U32        i        = 0;
     ECB        pecb     = NULL;
 #endif
@@ -822,7 +865,7 @@ core2_Initialize (
     SEP_PRINT_DEBUG("    msr_val(IA32_DEBUG_CTRL)=0x%llx \n", CPU_STATE_pmu_state(pcpu)[0]);
     SEP_PRINT_DEBUG("    msr_val(IA32_PERF_GLOBAL_CTRL)=0x%llx \n", CPU_STATE_pmu_state(pcpu)[1]);
 
-#if !defined(DRV_ATOM_ONLY)
+#if !defined(DRV_ANDROID)
     if (!CPU_STATE_socket_master(pcpu)) {
         return;
     }
@@ -898,7 +941,7 @@ core2_Destroy (
     SEP_PRINT_DEBUG("    msr_val(IA32_DEBUG_CTRL)=0x%llx \n", CPU_STATE_pmu_state(pcpu)[0]);
     SEP_PRINT_DEBUG("    msr_val(IA32_PERF_GLOBAL_CTRL)=0x%llx \n", CPU_STATE_pmu_state(pcpu)[1]);
 
-    // restore the previously saved PMU state 
+    // restore the previously saved PMU state
     // (NOTE: assumes this is only called ONCE per collection)
     SYS_Write_MSR(IA32_DEBUG_CTRL, CPU_STATE_pmu_state(pcpu)[0]);
     SYS_Write_MSR(IA32_PERF_GLOBAL_CTRL, CPU_STATE_pmu_state(pcpu)[1]);
@@ -912,26 +955,102 @@ core2_Destroy (
  * @fn core2_Read_LBRs(buffer)
  *
  * @param   IN buffer - pointer to the buffer to write the data into
- * @return  None
+ * @return  Last branch source IP address
  *
  * @brief   Read all the LBR registers into the buffer provided and return
  *
  */
-static VOID
+static U64
 core2_Read_LBRs (
     VOID   *buffer
 )
 {
-    U32  i;
-    U64 *lbr_buf = (U64 *)buffer;
+    U32   i, count = 0;
+    U64  *lbr_buf = NULL;
+    U64   value = 0;
+    U64   tos_ip_addr = 0;
+    U64   tos_ptr = 0;
+    SADDR saddr;
 
+    if (buffer && DRV_CONFIG_store_lbrs(pcfg)) {
+        lbr_buf = (U64 *)buffer;
+    }
     SEP_PRINT_DEBUG("Inside core2_Read_LBRs\n");
     for (i = 0; i < LBR_num_entries(lbr); i++) {
-        *lbr_buf = SYS_Read_MSR(LBR_entries_reg_id(lbr,i));
-        lbr_buf++;
+        value = SYS_Read_MSR(LBR_entries_reg_id(lbr,i));
+        if (buffer && DRV_CONFIG_store_lbrs(pcfg)) {
+            *lbr_buf = value;
+        }
+        SEP_PRINT_DEBUG("core2_Read_LBRs %u, 0x%llx\n", i, value);
+        if (i == 0) {
+            tos_ptr = value;
+        } else {
+            if (LBR_entries_etype(lbr, i) == 1) { // LBR from register
+                if (tos_ptr == count) {
+                    SADDR_addr(saddr) = value & LBR_BITMASK;
+                    tos_ip_addr = (U64) SADDR_addr(saddr); // Add signed extension 
+                    SEP_PRINT_DEBUG("tos_ip_addr %llu, 0x%llx\n", tos_ptr, value);
+                }
+                count++;
+            }
+        }
+        if (buffer && DRV_CONFIG_store_lbrs(pcfg)) {
+            lbr_buf++;
+        }
     }
 
-    return;
+    return tos_ip_addr;
+}
+
+/*
+ * @fn corei7_Read_LBRs(buffer)
+ *
+ * @param   IN buffer - pointer to the buffer to write the data into
+ * @return  Last branch source IP address
+ *
+ * @brief   Read all the LBR registers into the buffer provided and return
+ *
+ */
+static U64
+corei7_Read_LBRs (
+    VOID   *buffer
+)
+{
+    U32   i, count = 0;
+    U64  *lbr_buf = NULL;
+    U64   value = 0;
+    U64   tos_ip_addr = 0;
+    U64   tos_ptr = 0;
+    SADDR saddr;
+
+    if (buffer && DRV_CONFIG_store_lbrs(pcfg)) {
+        lbr_buf = (U64 *)buffer;
+    }
+    SEP_PRINT_DEBUG("Inside corei7_Read_LBRs\n");
+    for (i = 0; i < LBR_num_entries(lbr); i++) {
+        value = SYS_Read_MSR(LBR_entries_reg_id(lbr,i));
+        if (buffer && DRV_CONFIG_store_lbrs(pcfg)) {
+            *lbr_buf = value;
+        }
+        SEP_PRINT_DEBUG("corei7_Read_LBRs %u, 0x%llx\n", i, value);
+        if (i == 0) {
+            tos_ptr = value;
+        } else {
+            if (LBR_entries_etype(lbr, i) == 1) { // LBR from register
+                if (tos_ptr == count) {
+                    SADDR_addr(saddr) = value & LBR_BITMASK;
+                    tos_ip_addr = (U64) SADDR_addr(saddr); // Add signed extension 
+                    SEP_PRINT_DEBUG("tos_ip_addr %llu, 0x%llx\n", tos_ptr, value);
+                }
+                count++;
+            }
+        }
+        if (buffer && DRV_CONFIG_store_lbrs(pcfg)) {
+            lbr_buf++;
+        }
+    }
+
+    return tos_ip_addr;
 }
 
 static VOID
@@ -939,7 +1058,7 @@ core2_Clean_Up (
     VOID   *param
 )
 {
-#if !defined(DRV_ATOM_ONLY)
+#if !defined(DRV_ANDROID)
     U32            this_cpu    = CONTROL_THIS_CPU();
     CPU_STATE      pcpu        = &pcb[this_cpu];
     U32            busno       = 0;
@@ -951,15 +1070,16 @@ core2_Clean_Up (
     U32            vendor_id   = 0;
     U32 core2_qpill_dev_no[2]  = {8,9};
 #endif
-    
+
     FOR_EACH_REG_ENTRY(pecb, i) {
         if (ECB_entries_clean_up_get(pecb,i)) {
             SEP_PRINT_DEBUG("clean up set --- RegId --- %x\n", ECB_entries_reg_id(pecb,i));
             SYS_Write_MSR(ECB_entries_reg_id(pecb,i), 0LL);
         }
     } END_FOR_EACH_REG_ENTRY;
-#if !defined(DRV_ATOM_ONLY)
 
+
+#if !defined(DRV_ANDROID)
     if (!CPU_STATE_socket_master(pcpu)) {
         return;
     }
@@ -974,7 +1094,7 @@ core2_Clean_Up (
             value = PCI_Read_Ulong(pci_address);
             vendor_id = value & VENDOR_ID_MASK;
             device_id = (value & DEVICE_ID_MASK) >> DEVICE_ID_BITSHIFT;
-            
+
             if (vendor_id != DRV_IS_PCI_VENDOR_ID_INTEL) {
                 continue;
             }
@@ -989,7 +1109,6 @@ core2_Clean_Up (
                                         JKTUNC_HA_D2C_OFFSET);
             PCI_Write_Ulong(pci_address, restore_ha_direct2core[this_cpu][busno]);
             value = PCI_Read_Ulong(pci_address);
-            SEP_PRINT_DEBUG("Restored value HA B:D:F %d:%d:%d offset = 0x%x value = 0x%x\n",busno,JKTUNC_HA_DEVICE_NO,JKTUNC_HA_D2C_FUNC_NO,JKTUNC_HA_D2C_OFFSET,value);
         }
 
         // Discover the bus # for QPI
@@ -1003,7 +1122,7 @@ core2_Clean_Up (
                 value = PCI_Read_Ulong(pci_address);
                 vendor_id = value & VENDOR_ID_MASK;
                 device_id = (value & DEVICE_ID_MASK) >> DEVICE_ID_BITSHIFT;
-                
+
                 if (vendor_id != DRV_IS_PCI_VENDOR_ID_INTEL) {
                     continue;
                 }
@@ -1011,23 +1130,20 @@ core2_Clean_Up (
                     (device_id != JKTUNC_QPILL1_D2C_DID)) {
                     continue;
                 }
-                value = 0;
                 // now program at the corresponding offset
                 pci_address = FORM_PCI_ADDR(busno,
                                             core2_qpill_dev_no[dev_idx],
                                             JKTUNC_QPILL_D2C_FUNC_NO,
                                             JKTUNC_QPILL_D2C_OFFSET);
-                
+
                 PCI_Write_Ulong(pci_address,restore_qpi_direct2core[this_cpu][base_idx + busno] );
                 value = PCI_Read_Ulong(pci_address);
-                SEP_PRINT_DEBUG("Restored value QPILL B:D::F %d:%d:%d offset = 0x%x value = 0x%x\n", (base_idx + busno), core2_qpill_dev_no[dev_idx],JKTUNC_QPILL_D2C_FUNC_NO,JKTUNC_QPILL_D2C_OFFSET, value);
             }
         }
     }
     if (restore_bl_bypass && bl_bypass_data_saved) {
         SYS_Write_MSR(CORE2UNC_DISABLE_BL_BYPASS_MSR, restore_bl_bypass[this_cpu]);
     }
-
 #endif
     return;
 }
@@ -1164,7 +1280,11 @@ core2_Check_Overflow_Htoff_Mode (
 
     SEP_PRINT_DEBUG("core2_Check_Overflow_Htoff_Mode\n");
 
-    // initialize masks 
+    if (!pecb) {
+        return;
+    }
+
+    // initialize masks
     DRV_MASKS_masks_num(masks) = 0;
 
     overflow_status = SYS_Read_MSR(IA32_PERF_GLOBAL_STATUS);
@@ -1193,13 +1313,13 @@ core2_Check_Overflow_Htoff_Mode (
         }
         else if (ECB_entries_is_gp_reg_get(pecb,i) && ECB_entries_reg_value(pecb,i) != 0) {
             index = ECB_entries_reg_id(pecb, i) - IA32_PMC0;
-            if (ECB_entries_reg_id(pecb, i) >= IA32_PMC4 && 
+            if (ECB_entries_reg_id(pecb, i) >= IA32_PMC4 &&
                 ECB_entries_reg_id(pecb, i) <= IA32_PMC7) {
                 value = SYS_Read_MSR(ECB_entries_reg_id(pecb,i));
                 if (value > 0 && value <= 0x100000000LL) {
                     overflow_status |= ((U64)1 << index);
                 }
-            } 
+            }
         }
         else {
             continue;
@@ -1211,19 +1331,32 @@ core2_Check_Overflow_Htoff_Mode (
                             SYS_Read_MSR(ECB_entries_reg_id(pecb,i)));
             SYS_Write_MSR(ECB_entries_reg_id(pecb,i), ECB_entries_reg_value(pecb,i));
 
+            if (DRV_CONFIG_enable_cp_mode(pcfg)) {
+                /* Increment the interrupt count. */
+                if (interrupt_counts) {
+                    interrupt_counts[this_cpu * DRV_CONFIG_num_events(pcfg) + ECB_entries_event_id_index(pecb,i)] += 1;
+                }
+            }
+
             DRV_EVENT_MASK_bitFields1(&event_flag) = (U8) 0;
+            if (ECB_entries_fixed_reg_get(pecb, i)) {
+                CPU_STATE_p_state_counting(pcpu) = 1;
+            }
             if (ECB_entries_precise_get(pecb, i)) {
                 DRV_EVENT_MASK_precise(&event_flag) = 1;
             }
             if (ECB_entries_lbr_value_get(pecb, i)) {
                 DRV_EVENT_MASK_lbr_capture(&event_flag) = 1;
             }
+            if (ECB_entries_branch_evt_get(pecb, i)) {
+                DRV_EVENT_MASK_branch(&event_flag) = 1;
+            }
 
             if (DRV_MASKS_masks_num(masks) < MAX_OVERFLOW_EVENTS) {
                 DRV_EVENT_MASK_bitFields1(DRV_MASKS_eventmasks(masks) + DRV_MASKS_masks_num(masks)) = DRV_EVENT_MASK_bitFields1(&event_flag);
                 DRV_EVENT_MASK_event_idx(DRV_MASKS_eventmasks(masks) + DRV_MASKS_masks_num(masks)) = ECB_entries_event_id_index(pecb, i);
                 DRV_MASKS_masks_num(masks)++;
-            } 
+            }
             else {
                 SEP_PRINT_ERROR("The array for event masks is full.\n");
             }
@@ -1276,13 +1409,13 @@ corei7_Read_Power (
 /*!
  * @fn core2_Read_Counts(param, id)
  *
- * @param    param    The read thread node to process
- * @param    id       The event id for the which the sample is generated
+ * @param    param      The read thread node to process
+ * @param    id         The event id for the which the sample is generated
  *
  * @return   None     No return needed
  *
- * @brief    Read CPU event based counts data and store into the buffer param;
- *           For the case of the trigger event, store the SAV value. 
+ * @brief    Read CPU event based counts for the events with reg value=0 and store into the buffer param;
+ *
  */
 static VOID
 core2_Read_Counts (
@@ -1290,37 +1423,39 @@ core2_Read_Counts (
     U32    id
 )
 {
-    U64            *data;
-    int             data_index;
-    U32             this_cpu            = CONTROL_THIS_CPU();
-    CPU_STATE       pcpu                = &pcb[this_cpu];
-    U32             event_id            = 0;
+    U64       *data;
+    U32        this_cpu = CONTROL_THIS_CPU();
+    CPU_STATE  pcpu     = &pcb[this_cpu];
+    U32        event_id = 0;
 
-    data       = (U64 *)param;
-    data_index = 0;
-
-    // Write GroupID
-    data[data_index] = CPU_STATE_current_group(pcpu) + 1;
-    // Increment the data index as the event id starts from zero
-    data_index++;
+    if (DRV_CONFIG_ebc_group_id_offset(pcfg)) {
+        // Write GroupID
+        data  = (U64 *)((S8*)param + DRV_CONFIG_ebc_group_id_offset(pcfg));
+        *data = CPU_STATE_current_group(pcpu) + 1;
+    }
 
     FOR_EACH_DATA_REG(pecb,i) {
+        if (ECB_entries_is_compound_ctr_sub_bit_set(pecb,i)) {
+            continue;
+        }
+        if (ECB_entries_counter_event_offset(pecb,i) == 0) {
+            continue;
+        }
+        data     = (U64 *)((S8*)param + ECB_entries_counter_event_offset(pecb,i));
         event_id = ECB_entries_event_id_index(pecb,i);
         if (event_id == id) {
-            data[data_index + event_id] = ~(ECB_entries_reg_value(pecb,i) - 1) & 
+            *data = ~(ECB_entries_reg_value(pecb,i) - 1) &
                                            ECB_entries_max_bits(pecb,i);;
         }
         else {
-            if (ECB_entries_is_compound_ctr_sub_bit_set(pecb,i)) {
-                continue;
-            }
-            else {
-                data[data_index + event_id] = SYS_Read_MSR(ECB_entries_reg_id(pecb,i));
-                SYS_Write_MSR(ECB_entries_reg_id(pecb,i), 0LL);
-            }
+            *data = SYS_Read_MSR(ECB_entries_reg_id(pecb,i));
+            SYS_Write_MSR(ECB_entries_reg_id(pecb,i), 0LL);
         }
     } END_FOR_EACH_DATA_REG;
 
+    if (DRV_CONFIG_enable_p_state(pcfg)) {
+        CPU_STATE_p_state_counting(pcpu) = 0;
+    }
     return;
 }
 
@@ -1373,7 +1508,7 @@ corei7_Check_Overflow_Errata (
                 *overflow_status_clr |= ((U64)1 << index);
                 // NOTE: system may hang if these debug statements are used
                 SEP_PRINT_DEBUG("cpu %d counter 0x%x value 0x%llx\n",
-                                this_cpu, ECB_entries_reg_id(pecb,i), value);                                   
+                                this_cpu, ECB_entries_reg_id(pecb,i), value);
             }
             continue;
         }
@@ -1382,9 +1517,9 @@ corei7_Check_Overflow_Errata (
             if (!(overflow_status & ((U64)1 << index))) {
                 value = SYS_Read_MSR(ECB_entries_reg_id(pecb,i));
                 if (ECB_entries_reg_id(pecb,i) == IA32_FIXED_CTR2) {
-                    if (!(value > 0LL && value <= 0x1000000LL) && 
+                    if (!(value > 0LL && value <= 0x1000000LL) &&
                         (*overflow_status_clr & ((U64)1 << index))) {
-                        //Clear it only for overflow_status so that we do not create sample records 
+                        //Clear it only for overflow_status so that we do not create sample records
                         //Please do not remove the check for MSR index
                         overflow_status = overflow_status & ~((U64)1 << index);
                         continue;
@@ -1397,7 +1532,7 @@ corei7_Check_Overflow_Errata (
                                     this_cpu, ECB_entries_reg_id(pecb,i), value);
                 }
             }
-        } 
+        }
     } END_FOR_EACH_DATA_REG;
 
     return overflow_status;
@@ -1416,8 +1551,52 @@ corei7_Check_Overflow_Errata (
  * <I>Special Notes:</I>
  *              <NONE>
  */
-static void
+static VOID
 corei7_Platform_Info (
+    PVOID data
+)
+{
+    DRV_PLATFORM_INFO      platform_data               = (DRV_PLATFORM_INFO)data;
+    U64                    value                       = 0;
+
+    if (!platform_data) {
+        return;
+    }
+
+    DRV_PLATFORM_INFO_energy_multiplier(platform_data) = 0;
+ 
+#define IA32_MSR_PLATFORM_INFO 0xCE
+    value = SYS_Read_MSR(IA32_MSR_PLATFORM_INFO);
+ 
+    DRV_PLATFORM_INFO_info(platform_data)           = value;
+    DRV_PLATFORM_INFO_ddr_freq_index(platform_data) = 0;
+#undef IA32_MSR_PLATFORM_INFO
+#define IA32_MSR_MISC_ENABLE 0x1A4
+    DRV_PLATFORM_INFO_misc_valid(platform_data)     = 1;
+    value = SYS_Read_MSR(IA32_MSR_MISC_ENABLE);
+    DRV_PLATFORM_INFO_misc_info(platform_data)      = value;
+#undef  IA32_MSR_MISC_ENABLE
+    SEP_PRINT_DEBUG ("corei7_Platform_Info: Read from MSR_ENERGY_MULTIPLIER reg is %d\n", SYS_Read_MSR(MSR_ENERGY_MULTIPLIER));
+    DRV_PLATFORM_INFO_energy_multiplier(platform_data) = (U32) (SYS_Read_MSR(MSR_ENERGY_MULTIPLIER) & 0x00001F00) >> 8;
+
+    return;
+}
+
+/* ------------------------------------------------------------------------- */
+/*!
+ * @fn          U64 corei7_Platform_Info_Nehalem
+ *
+ * @brief       Reads the MSR_PLATFORM_INFO register if present
+ *
+ * @param       void
+ *
+ * @return      value read from the register
+ *
+ * <I>Special Notes:</I>
+ *              <NONE>
+ */
+static VOID
+corei7_Platform_Info_Nehalem (
     PVOID data
 )
 {
@@ -1433,9 +1612,15 @@ corei7_Platform_Info (
  
     DRV_PLATFORM_INFO_info(platform_data)           = value;
     DRV_PLATFORM_INFO_ddr_freq_index(platform_data) = 0;
- 
-    return;
+#undef IA32_MSR_PLATFORM_INFO
+#define IA32_MSR_MISC_ENABLE 0x1A4
+    DRV_PLATFORM_INFO_misc_valid(platform_data)     = 1;
+    value = SYS_Read_MSR(IA32_MSR_MISC_ENABLE);
+    DRV_PLATFORM_INFO_misc_info(platform_data)      = value;
+#undef  IA32_MSR_MISC_ENABLE
+    DRV_PLATFORM_INFO_energy_multiplier(platform_data) = 0;
 
+    return;
 }
 
 /*
@@ -1459,7 +1644,9 @@ DISPATCH_NODE  core2_dispatch =
     core2_Read_Counts,
     NULL,
     NULL,                   // read_ro
-    NULL                    // platform_info
+    NULL,                   // platform_info
+    NULL,
+    NULL                    // scan for uncore
 };
 
 DISPATCH_NODE  corei7_dispatch =
@@ -1472,7 +1659,7 @@ DISPATCH_NODE  corei7_dispatch =
     core2_Read_PMU_Data,    // read
     core2_Check_Overflow,   // check for overflow
     core2_Swap_Group,
-    core2_Read_LBRs,
+    corei7_Read_LBRs,
     core2_Clean_Up,
     corei7_Errata_Fix,
     corei7_Read_Power,
@@ -1480,7 +1667,33 @@ DISPATCH_NODE  corei7_dispatch =
     core2_Read_Counts,
     corei7_Check_Overflow_Errata,
     NULL,                   // read_ro
-    corei7_Platform_Info    // platform_info
+    corei7_Platform_Info,   // platform_info
+    NULL,
+    NULL                    // scan for uncore
+};
+
+DISPATCH_NODE  corei7_dispatch_nehalem =
+{
+    core2_Initialize,       // init
+    core2_Destroy,          // finis
+    core2_Write_PMU,        // write
+    core2_Disable_PMU,      // freeze
+    core2_Enable_PMU,       // restart
+    core2_Read_PMU_Data,    // read
+    core2_Check_Overflow,   // check for overflow
+    core2_Swap_Group,
+    corei7_Read_LBRs,
+    core2_Clean_Up,
+    corei7_Errata_Fix,
+    corei7_Read_Power,
+    NULL,
+    core2_Read_Counts,
+    corei7_Check_Overflow_Errata,
+    NULL,                   // read_ro
+    corei7_Platform_Info_Nehalem,
+                            // platform_info for nehalem platforms only
+    NULL,
+    NULL                    // scan for uncore
 };
 
 DISPATCH_NODE  corei7_dispatch_2 =
@@ -1493,7 +1706,7 @@ DISPATCH_NODE  corei7_dispatch_2 =
     core2_Read_PMU_Data,    // read
     core2_Check_Overflow,   // check for overflow
     core2_Swap_Group,
-    core2_Read_LBRs,
+    corei7_Read_LBRs,
     core2_Clean_Up,
     corei7_Errata_Fix_2,
     corei7_Read_Power,
@@ -1501,7 +1714,9 @@ DISPATCH_NODE  corei7_dispatch_2 =
     core2_Read_Counts,
     corei7_Check_Overflow_Errata,
     NULL,                   // read_ro
-    corei7_Platform_Info    // platform_info
+    corei7_Platform_Info,   // platform_info
+    NULL,
+    NULL                    // scan for uncore
 };
 
 DISPATCH_NODE  corei7_dispatch_htoff_mode =
@@ -1514,7 +1729,7 @@ DISPATCH_NODE  corei7_dispatch_htoff_mode =
     core2_Read_PMU_Data,    // read
     core2_Check_Overflow_Htoff_Mode,   // check for overflow
     core2_Swap_Group,
-    core2_Read_LBRs,
+    corei7_Read_LBRs,
     core2_Clean_Up,
     corei7_Errata_Fix,
     corei7_Read_Power,
@@ -1522,7 +1737,9 @@ DISPATCH_NODE  corei7_dispatch_htoff_mode =
     core2_Read_Counts,
     corei7_Check_Overflow_Errata,
     NULL,                   // read_ro
-    corei7_Platform_Info    // platform_info
+    corei7_Platform_Info,   // platform_info
+    NULL,
+    NULL                    // scan for uncore
 };
 
 DISPATCH_NODE  corei7_dispatch_htoff_mode_2 =
@@ -1535,7 +1752,7 @@ DISPATCH_NODE  corei7_dispatch_htoff_mode_2 =
     core2_Read_PMU_Data,    // read
     core2_Check_Overflow_Htoff_Mode,   // check for overflow
     core2_Swap_Group,
-    core2_Read_LBRs,
+    corei7_Read_LBRs,
     core2_Clean_Up,
     corei7_Errata_Fix_2,
     corei7_Read_Power,
@@ -1543,7 +1760,9 @@ DISPATCH_NODE  corei7_dispatch_htoff_mode_2 =
     core2_Read_Counts,
     corei7_Check_Overflow_Errata,
     NULL,                   // read_ro
-    corei7_Platform_Info    // platform_info
+    corei7_Platform_Info,   // platform_info
+    NULL,
+    NULL                    // scan for uncore
 };
 
 

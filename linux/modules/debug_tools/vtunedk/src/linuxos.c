@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -82,14 +82,6 @@ linuxos_Get_Exec_Mode (
     if (test_tsk_thread_flag(p,TIF_IA32)) {
         return ((unsigned short) MODE_32BIT);
     }
-    return ((unsigned short) MODE_64BIT);
-}
-#endif
-
-#if defined(DRV_IA64)
-static U16
-linuxos_Get_Exec_Mode(struct task_struct *p)
-{
     return ((unsigned short) MODE_64BIT);
 }
 #endif

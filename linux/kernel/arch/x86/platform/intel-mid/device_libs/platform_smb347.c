@@ -21,9 +21,46 @@
 #include <linux/power_supply.h>
 #include <linux/power/battery_id.h>
 #include <linux/iio/consumer.h>
-
+#include <asm/intel_em_config.h>
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
+#include "platform_me372cg_smb345.h"
+#endif
 #define BYT_FFD8_PR1_BATID_LL 0x2D0
 #define BYT_FFD8_PR1_BATID_UL 0x2F0
+
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
+static struct smb345_charger_platform_data smb345_pdata = {
+	.battery_info	= {
+		.name			= "UP110005",
+		.technology		= POWER_SUPPLY_TECHNOLOGY_LIPO,
+		.voltage_max_design	= 3700000,
+		.voltage_min_design	= 3000000,
+		.charge_full_design	= 6894000,
+	},
+	.max_charge_current		= 3360000,
+	.max_charge_voltage		= 4200000,
+	.otg_uvlo_voltage		= 3300000,
+	.chip_temp_threshold		= 120,
+	.soft_cold_temp_limit		= 5,
+	.soft_hot_temp_limit		= 50,
+	.hard_cold_temp_limit		= 5,
+	.hard_hot_temp_limit		= 55,
+	.suspend_on_hard_temp_limit	= true,
+	.soft_temp_limit_compensation	= SMB347_SOFT_TEMP_COMPENSATE_CURRENT
+	| SMB347_SOFT_TEMP_COMPENSATE_VOLTAGE,
+	.charge_current_compensation	= 900000,
+	.use_mains			= true,
+
+
+	.irq_gpio			= -1,
+	.inok_gpio			= -1,
+
+	.mains_current_limit	= 1200,
+
+	.usb_hc_current_limit	= 500,
+	.twins_h_current_limit	= 1800,
+};
+#endif
 
 /* Redridge DV2.1 */
 static struct smb347_charger_platform_data smb347_rr_pdata = {
@@ -190,17 +227,17 @@ static struct smb347_charger_platform_data byt_t_ffrd8_pr1_pdata = {
 					/* disable opticharge*/
 						0x02, 0x87,
 						0x03, 0xED,
-				/* enable Auto recharge, Turbo charge+ */
-						0x04, 0x3D,
-					/* disable safety timer */
-						0x05, 0x0F,
+			/* enable Auto recharge, Disable Turbo charge+ */
+						0x04, 0x38,
+					/* USB-OK stat, disable safety timer */
+						0x05, 0x4F,
 				/* enable APSD interrupt along with others */
 						0x06, 0x06,
 						0x07, 0x85,
 					/* I2C control OTG */
 						0x9, 0x80,
-					/* OTG current  500mA*/
-						0x0A, 0x47,
+				/* Switch Freq. 1.5MHz OTG current  500mA*/
+						0x0A, 0x87,
 					/* OTG interrupt settings */
 						0x0C, 0xBF,
 						0x0D, 0xF4,
@@ -243,6 +280,42 @@ static struct smb347_charger_platform_data byt_t_cr_crb_pdata = {
 						0x10, 0x40,
 						0x30, 0x42,
 						0x31, 0x00,
+						0xFF, 0xFF
+					},
+};
+
+/* Cherrytrail RVP/FFRD -T */
+static struct smb347_charger_platform_data cht_t_pdata = {
+	.battery_info	= {
+		.name			= "AT4188A2",
+		.technology		= POWER_SUPPLY_TECHNOLOGY_LIPO,
+		.voltage_max_design	= 4350000,
+		.voltage_min_design	= 3000000,
+		.charge_full_design	= 4900000,
+	},
+	.use_mains			= false,
+	.is_valid_battery		= true,
+	.use_usb			= true,
+	.enable_control			= SMB347_CHG_ENABLE_SW,
+	.otg_control			= SMB347_OTG_CONTROL_SW,
+	.char_config_regs		= {
+						/* Reg  Value */
+						0x00, 0x46,
+						0x01, 0x65,
+						0x02, 0x87,
+						0x03, 0xED,
+						0x04, 0x38,
+						0x05, 0x05,
+						0x06, 0x06,
+						0x07, 0xA5,
+						0x09, 0x8F,
+						0x0A, 0x87,
+						0x0B, 0x95,
+						0x0C, 0xBF,
+						0x0D, 0xF4,
+						0x0E, 0xA0,
+						0x10, 0x66,
+						0x31, 0x01,
 						0xFF, 0xFF
 					},
 };
@@ -304,6 +377,8 @@ bool smb347_is_valid_batid(void)
 			|| (val > BYT_FFD8_PR1_BATID_LL
 			&& val < BYT_FFD8_PR1_BATID_UL))
 			is_valid = true;
+	} else {
+		pr_info("platform_smb347: unable to read batid");
 	}
 	iio_channel_release(indio_chan);
 	return is_valid;
@@ -391,8 +466,21 @@ static void platform_init_chrg_params(
 	pdata->num_throttle_states = ARRAY_SIZE(smb347_byt_throttle_states);
 	pdata->num_supplicants = ARRAY_SIZE(smb347_supplied_to);
 	pdata->supported_cables = POWER_SUPPLY_CHARGER_TYPE_USB;
-	pdata->chg_profile = (struct ps_batt_chg_prof *)
+	if (INTEL_MID_BOARD(1, TABLET, BYT))
+		pdata->chg_profile = (struct ps_batt_chg_prof *)
 			platform_get_batt_charge_profile(pdata);
+	else if (INTEL_MID_BOARD(1, TABLET, CHT)) {
+		if (!em_config_get_charge_profile(&batt_chg_profile))
+			ps_batt_chrg_prof.chrg_prof_type = CHRG_PROF_NONE;
+		else
+			ps_batt_chrg_prof.chrg_prof_type = PSE_MOD_CHRG_PROF;
+
+		ps_batt_chrg_prof.batt_prof = &batt_chg_profile;
+		battery_prop_changed(POWER_SUPPLY_BATTERY_INSERTED,
+					&ps_batt_chrg_prof);
+		pdata->chg_profile = (struct ps_batt_chg_prof *)
+					&ps_batt_chrg_prof;
+	}
 }
 #else
 static void platform_init_chrg_params(
@@ -434,6 +522,7 @@ static void *get_platform_data(void)
 		} else if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, 8PR1) ||
 			INTEL_MID_BOARD(3, TABLET, BYT, BLK, ENG, 8PR1)) {
 			byt_t_ffrd8_pr1_pdata.detect_chg = true;
+			byt_t_ffrd8_pr1_pdata.use_regulator = true;
 			byt_t_ffrd8_pr1_pdata.gpio_mux = 131; /* GPIO_SUS1*/
 			/* configure output */
 			lnw_gpio_set_alt(byt_t_ffrd8_pr1_pdata.gpio_mux, 0);
@@ -449,11 +538,23 @@ static void *get_platform_data(void)
 			platform_init_chrg_params(&byt_t_cr_crb_pdata);
 			return &byt_t_cr_crb_pdata;
 		}
+	} else if (INTEL_MID_BOARD(1, TABLET, CHT)) {
+		pr_info("%s: CHT charger ...", __func__);
+		cht_t_pdata.detect_chg = true;
+		cht_t_pdata.gpio_mux = -1;
+		cht_t_pdata.is_valid_battery = true;
+		platform_init_chrg_params(&cht_t_pdata);
+		return &cht_t_pdata;
 	}
 	return NULL;
 }
 
 void *smb347_platform_data(void *info)
 {
+#if defined(CONFIG_ME372CG_BATTERY_SMB345)
+	smb345_pdata.inok_gpio = 44;
+	return &smb345_pdata;
+#else
 	return get_platform_data();
+#endif
 }

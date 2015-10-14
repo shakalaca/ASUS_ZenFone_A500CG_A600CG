@@ -51,6 +51,7 @@ ccflags-y += -DOTM_HDMI_UNIT_TEST
 #enable HDCP
 ccflags-y += -DOTM_HDMI_HDCP_ENABLE
 ccflags-y += -DCONFIG_VIDEO_MRFLD_EC
+ccflags-y += -DCONFIG_SLICE_HEADER_PARSING
 
 ccflags-y += $(include_dirs)
 
@@ -68,15 +69,28 @@ $(DRIVER_NAME)-objs += $(FBDEVDIR)/drmlfb_displayclass.o \
 	$(DISPLAYDIR)/mdfld_csc.o \
 	$(DISPLAYDIR)/psb_pvr_glue.o \
 	$(DISPLAYDIR)/mdfld_dsi_dbi.o \
-	$(DISPLAYDIR)/mdfld_dsi_dpi.o \
 	$(DISPLAYDIR)/mdfld_dsi_output.o \
 	$(DISPLAYDIR)/mdfld_output.o \
+	$(DISPLAYDIR)/auo_sc1_vid.o \
+	$(DISPLAYDIR)/auo_sc1_cmd.o \
+	$(DISPLAYDIR)/gi_sony_vid.o \
+	$(DISPLAYDIR)/gi_sony_cmd.o \
+	$(DISPLAYDIR)/h8c7_vid.o \
 	$(DISPLAYDIR)/mdfld_dsi_pkg_sender.o \
 	$(DISPLAYDIR)/mdfld_dsi_esd.o \
 	$(DISPLAYDIR)/mdfld_dsi_dbi_dsr.o \
+	$(DISPLAYDIR)/tc35876x_vid.o \
+	$(DISPLAYDIR)/gi_renesas_cmd.o \
 	$(DISPLAYDIR)/mdfld_hdmi_audio.o \
-	$(DISPLAYDIR)/psb_umevents.o \
-	$(DISPLAYDIR)/psb_socket.o
+
+
+ifeq ($(CONFIG_SUPPORT_OTM8018B_MIPI_480X854_DISPLAY), y)
+$(DRIVER_NAME)-objs += $(DISPLAYDIR)/mdfld_dsi_dpi_pf450.o
+else ifeq ($(CONFIG_A500CG), y)
+$(DRIVER_NAME)-objs += $(DISPLAYDIR)/mdfld_dsi_dpi.a500cg.o
+else
+$(DRIVER_NAME)-objs += $(DISPLAYDIR)/mdfld_dsi_dpi.o
+endif
 
 ifeq ($(CONFIG_MDFD_VIDEO_DECODE), y)
 $(DRIVER_NAME)-objs += $(ENCODE_DIR)/pnw_topaz.o \
@@ -95,10 +109,13 @@ $(DRIVER_NAME)-objs += $(ENCODE_DIR)/pnw_topaz.o \
 	$(VIDEO_COMMON_DIR)/psb_ttm_placement_user.o
 endif
 
-ifeq ($(CONFIG_SUPPORT_HDMI), y)
+ifneq ($(CONFIG_SUPPORT_HDMI) & $(CONFIG_CTP_DPST),n)
 $(DRIVER_NAME)-objs += $(DISPLAYDIR)/psb_umevents.o \
-	$(DISPLAYDIR)/psb_socket.o \
-	$(OTM_HDMI_SRC)/pil/common/otm_hdmi.o \
+       	$(DISPLAYDIR)/psb_socket.o
+endif
+
+ifeq ($(CONFIG_SUPPORT_HDMI), y)
+$(DRIVER_NAME)-objs += $(OTM_HDMI_SRC)/pil/common/otm_hdmi.o \
 	$(OTM_HDMI_SRC)/pil/common/mode_info.o \
 	$(OTM_HDMI_SRC)/pil/common/hdcp.o \
 	$(OTM_HDMI_SRC)/pil/common/edid.o \
@@ -120,11 +137,12 @@ endif
 ifeq ($(CONFIG_CTP_DPST), y)
 $(DRIVER_NAME)-objs += $(DISPLAYDIR)/psb_dpst.o \
 	$(DISPLAYDIR)/psb_dpst_func.o \
-	$(DISPLAYDIR)/dispmgrnl.o \
-	$(DISPLAYDIR)/psb_umevents.o \
-	$(DISPLAYDIR)/psb_socket.o
+	$(DISPLAYDIR)/dispmgrnl.o
 endif
 
+ifeq ($(CONFIG_SUPPORT_OTM8018B_MIPI_480X854_DISPLAY), y)
+$(DRIVER_NAME)-objs += $(DISPLAYDIR)/pf450cl_vid.o
+endif
 ifeq ($(CONFIG_SUPPORT_TMD_MIPI_600X1024_DISPLAY), y)
 $(DRIVER_NAME)-objs += $(DISPLAYDIR)/tmd_6x10_vid.o
 endif
@@ -139,18 +157,6 @@ endif
 
 ifeq ($(CONFIG_SUPPORT_MIPI_ORISE1283A_DISPLAY), y)
 $(DRIVER_NAME)-objs += $(DISPLAYDIR)/orise1283a_vid.o
-endif
-
-ifeq ($(CONFIG_SUPPORT_MIPI_ORISE8018B_DISPLAY), y)
-$(DRIVER_NAME)-objs += $(DISPLAYDIR)/orise8018b_vid.o
-endif
-
-ifeq ($(CONFIG_SUPPORT_MIPI_ORISE9605A_DISPLAY), y)
-$(DRIVER_NAME)-objs += $(DISPLAYDIR)/orise9605a_vid.o
-endif
-
-ifeq ($(CONFIG_SUPPORT_MIPI_RM68191_DISPLAY), y)
-$(DRIVER_NAME)-objs += $(DISPLAYDIR)/rm68191_vid.o
 endif
 
 ifeq ($(CONFIG_SUPPORT_VB_MIPI_DISPLAY), y)

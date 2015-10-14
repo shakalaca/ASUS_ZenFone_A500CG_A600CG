@@ -30,9 +30,11 @@
 
 #include <linux/dmaengine.h>
 #include <linux/pm_runtime.h>
+#include <linux/firmware.h>
 #include <linux/intel_mid_dma.h>
 #include <linux/lnw_gpio.h>
 #include <asm/platform_sst.h>
+#include <sound/intel_sst_ioctl.h>
 
 #define SST_DRIVER_VERSION "3.0.8"
 
@@ -58,14 +60,16 @@
 #define MRFLD_FW_BSS_RESET_BIT 0
 extern struct intel_sst_drv *sst_drv_ctx;
 enum sst_states {
-	SST_FW_LOADED = 1,
+	SST_FW_LOADING = 1,
 	SST_FW_RUNNING,
-	SST_START_INIT,
-	SST_UN_INIT,
-	SST_ERROR,
-	SST_SUSPENDED,
-	SST_FW_CTXT_RESTORE,
-	SST_SHUTDOWN
+	SST_RESET,
+	SST_SHUTDOWN,
+	SST_RECOVERY,
+};
+
+enum sst_algo_ops {
+	SST_SET_ALGO = 0,
+	SST_GET_ALGO = 1,
 };
 
 #define SST_BLOCK_TIMEOUT	1000
@@ -88,12 +92,18 @@ enum sst_states {
 #define SST_IPCLPESC		0x70
 #define SST_CLKCTL		0x78
 #define SST_CSR2		0x80
+#define SST_TMRCTL		0xC0
+#define SST_TMRSTAT		0xC8
 
 #define SST_SHIM_BEGIN		SST_CSR
-#define SST_SHIM_END		SST_CSR2
-#define SST_SHIM_SIZE		0x88
+#define SST_SHIM_END		SST_TMRSTAT
+#define SST_SHIM_SIZE		0xD0
 
 #define FW_SIGNATURE_SIZE	4
+
+/* Its same for mofd, merr and CHT as of now */
+#define SST_LPE_STACK_OFFSET	0x27000
+#define SST_LPE_STACK_SIZE	4096
 
 /* stream states */
 enum sst_stream_states {
@@ -102,11 +112,14 @@ enum sst_stream_states {
 	STREAM_PAUSED	= 2,	/* Paused stream */
 	STREAM_DECODE	= 3,	/* stream is in decoding only state */
 	STREAM_INIT	= 4,	/* stream init, waiting for data */
+	STREAM_RESET	= 5,	/* force reset on recovery */
 };
 
 enum sst_ram_type {
 	SST_IRAM	= 1,
 	SST_DRAM	= 2,
+	SST_DDR	= 5,
+	SST_CUSTOM_INFO	= 7,	/* consists of FW binary information */
 };
 
 /* SST shim registers to structure mapping  */
@@ -296,7 +309,6 @@ struct fw_block_info {
 struct sst_ipc_msg_wq {
 	union ipc_header_mrfld mrfld_header;
 	struct ipc_dsp_hdr dsp_hdr;
-	char mailbox[SST_MAILBOX_SIZE];
 	struct work_struct	wq;
 	union ipc_header header;
 };
@@ -354,14 +366,13 @@ struct snd_sst_probe_bytes {
 	char bytes[0];
 };
 
+struct snd_sst_vtsv_path {
+	u16 len;
+	char bytes[SST_MAX_VTSV_PATH_LEN];
+};
+
 #define PCI_DMAC_CLV_ID 0x08F0
 #define PCI_DMAC_MRFLD_ID 0x119B
-
-struct sst_fw_context {
-	void *iram;
-	void *dram;
-	unsigned int saved;
-};
 
 struct sst_ram_buf {
 	u32 size;
@@ -423,6 +434,7 @@ struct sst_shim_regs64 {
 	u64 ipclpesc;
 	u64 clkctl;
 	u64 csr2;
+	u64 tmrctl;
 };
 
 struct sst_vtsv_cache {
@@ -430,6 +442,18 @@ struct sst_vtsv_cache {
 	u32 size1;
 	void *file2_in_mem;
 	u32 size2;
+};
+
+struct sst_shim_reg_table {
+	u32 offset;
+	char name[25];
+};
+
+struct sst_monitor_lpe {
+	u64 prev_match_val;
+	struct work_struct mwork;
+	struct timer_list sst_timer;
+	u32 interval;
 };
 
 /***
@@ -455,18 +479,19 @@ struct sst_vtsv_cache {
  * @streams : sst stream contexts
  * @list_lock : sst driver list lock (deprecated)
  * @ipc_spin_lock : spin lock to handle audio shim access and ipc queue
+ * @block_lock : spin lock to add block to block_list and assign pvt_id
  * @rx_msg_lock : spin lock to handle the rx messages from the DSP
  * @scard_ops : sst card ops
  * @pci : sst pci device struture
  * @dev : pointer to current device struct
  * @sst_lock : sst device lock
- * @stream_lock : sst stream lock
  * @pvt_id : sst private id
  * @stream_cnt : total sst active stream count
  * @pb_streams : total active pb streams
  * @cp_streams : total active cp streams
  * @audio_start : audio status
  * @qos		: PM Qos struct
+ * firmware_name : Firmware / Library name
  */
 struct intel_sst_drv {
 	int			sst_state;
@@ -478,6 +503,7 @@ struct intel_sst_drv {
 	void __iomem		*mailbox;
 	void __iomem		*iram;
 	void __iomem		*dram;
+	void __iomem            *ipc_mailbox;
 	unsigned int		mailbox_add;
 	unsigned int		iram_base;
 	unsigned int		dram_base;
@@ -487,6 +513,7 @@ struct intel_sst_drv {
 	unsigned int		ddr_end;
 	unsigned int		ddr_base;
 	unsigned int		mailbox_recv_offset;
+	unsigned int		mailbox_size;
 	atomic_t		pm_usage_count;
 	struct sst_shim_regs64	*shim_regs64;
 	struct list_head        block_list;
@@ -497,18 +524,18 @@ struct intel_sst_drv {
 	struct work_struct      ipc_post_msg_wq;
 	wait_queue_head_t	wait_queue;
 	struct workqueue_struct *mad_wq;
+	struct workqueue_struct *recovery_wq; /*to queue work once recovery is triggered*/
 	struct workqueue_struct *post_msg_wq;
 	unsigned int		tstamp;
 	struct stream_info	streams[MAX_NUM_STREAMS+1]; /*str_id 0 is not used*/
 	spinlock_t		ipc_spin_lock; /* lock for Shim reg access and ipc queue */
-	spinlock_t              block_lock; /* lock for adding block to block_list */
-	spinlock_t              pvt_id_lock; /* lock for allocating private id */
+	/* lock for adding block to block_list and assigning pvt_id */
+	spinlock_t              block_lock;
 	spinlock_t		rx_msg_lock;
 	struct pci_dev		*pci;
 	struct device		*dev;
 	unsigned int		pvt_id;
 	struct mutex            sst_lock;
-	struct mutex		stream_lock;
 	unsigned int		stream_cnt;
 	unsigned int		*fw_cntx;
 	unsigned int		fw_cntx_size;
@@ -517,7 +544,6 @@ struct intel_sst_drv {
 	void			*fw_in_mem;
 	struct sst_runtime_param runtime_param;
 	unsigned int		device_input_mixer;
-	struct mutex		mixer_ctrl_lock;
 	struct dma_async_tx_descriptor *desc;
 	struct sst_sg_list	fw_sg_list, library_list;
 	struct intel_sst_ops	*ops;
@@ -533,25 +559,29 @@ struct intel_sst_drv {
 	struct list_head	memcpy_list;
 	/* list used during LIB download in memcpy mode */
 	struct list_head	libmemcpy_list;
-	struct sst_fw_context	context;
 	/* holds the stucts of iram/dram local buffers for dump*/
 	struct sst_dump_buf	dump_buf;
-	/* Lock for CSR register change */
-	struct mutex		csr_lock;
 	/* byte control to set the probe stream */
 	struct snd_sst_probe_bytes *probe_bytes;
+	struct snd_sst_vtsv_path vtsv_path;
 	/* contains the ipc registers */
 	struct sst_ipc_reg	ipc_reg;
 	/* IMR region Library space memory manager */
 	struct sst_mem_mgr      lib_mem_mgr;
 	/* Contains the cached vtsv files*/
 	struct sst_vtsv_cache	vcache;
+	/* To store external lpe timer info and recovery timer info*/
+	struct sst_monitor_lpe monitor_lpe;
 	/* Pointer to device ID, now for same PCI_ID, HID will be
 	 * will be different for FDK and EDK2. This will be used
 	 * for devices where PCI or ACPI id is same but HID is
 	 * different
 	 */
 	const char *hid;
+	/* Holder for firmware name. Due to async call it needs to be
+	 * persistent till worker thread gets called
+	 */
+	char firmware_name[20];
 };
 
 extern struct intel_sst_drv *sst_drv_ctx;
@@ -632,6 +662,7 @@ int sst_load_fw(void);
 int sst_load_library(struct snd_sst_lib_download *lib, u8 ops);
 int sst_load_all_modules_elf(struct intel_sst_drv *ctx,
 		struct sst_module_info *mod_table, int mod_table_size);
+void sst_init_lib_mem_mgr(struct intel_sst_drv *ctx);
 int sst_get_next_lib_mem(struct sst_mem_mgr *mgr, int size,
 			unsigned long *lib_base);
 void sst_post_download_ctp(struct intel_sst_drv *ctx);
@@ -667,26 +698,45 @@ int sst_free_block(struct intel_sst_drv *ctx, struct sst_block *freed);
 int sst_wake_up_block(struct intel_sst_drv *ctx, int result,
 		u32 drv_id, u32 ipc, void *data, u32 size);
 int sst_alloc_drv_context(struct device *dev);
+int sst_request_firmware_async(struct intel_sst_drv *ctx);
 int sst_driver_ops(struct intel_sst_drv *sst);
 struct sst_platform_info *sst_get_acpi_driver_data(const char *hid);
 int sst_acpi_probe(struct platform_device *pdev);
 int sst_acpi_remove(struct platform_device *pdev);
 void sst_save_shim64(struct intel_sst_drv *ctx, void __iomem *shim,
 		     struct sst_shim_regs64 *shim_regs);
+void sst_firmware_load_cb(const struct firmware *fw, void *context);
 int sst_send_vtsv_data_to_fw(struct intel_sst_drv *ctx);
+int sst_cache_vtsv_libs(struct intel_sst_drv *ctx);
 
 void sst_do_recovery_mrfld(struct intel_sst_drv *sst);
+void sst_debug_dump(struct intel_sst_drv *sst);
 void sst_do_recovery(struct intel_sst_drv *sst);
+void sst_trigger_recovery(struct work_struct *work);
+void sst_update_timer(struct intel_sst_drv *sst_drv_ctx);
+long intel_sst_ioctl_dsp(unsigned int cmd,
+		struct snd_ppp_params *algo_params, unsigned long arg);
+
+void sst_dump_to_buffer(const void *from, size_t from_len, char *buf);
+char *sst_get_shim_buf(struct intel_sst_drv *sst_drv_ctx);
+int sst_recovery_init(struct intel_sst_drv *sst_drv_ctx);
+void sst_recovery_exit(struct intel_sst_drv *sst_drv_ctx);
+int sst_set_timer(struct sst_monitor_lpe *monitor_lpe, bool enable);
+void sst_timer_cb(unsigned long data);
+
+extern int intel_scu_ipc_simple_command(int, int);
 
 static inline int sst_pm_runtime_put(struct intel_sst_drv *sst_drv)
 {
 	int ret;
 
-	ret = pm_runtime_put(sst_drv->dev);
+	ret = pm_runtime_put_sync(sst_drv->dev);
 	if (ret < 0)
 		return ret;
 	atomic_dec(&sst_drv->pm_usage_count);
 
+	pr_debug("%s: count is %d now..\n", __func__,
+			atomic_read(&sst_drv->pm_usage_count));
 	return 0;
 }
 /*
@@ -745,12 +795,15 @@ static inline void sst_fill_header_dsp(struct ipc_dsp_hdr *dsp, int msg,
  */
 static inline unsigned int sst_assign_pvt_id(struct intel_sst_drv *sst_drv_ctx)
 {
-	spin_lock(&sst_drv_ctx->pvt_id_lock);
+	unsigned int local;
+
+	spin_lock(&sst_drv_ctx->block_lock);
 	sst_drv_ctx->pvt_id++;
 	if (sst_drv_ctx->pvt_id > MAX_BLOCKS)
 		sst_drv_ctx->pvt_id = 1;
-	spin_unlock(&sst_drv_ctx->pvt_id_lock);
-	return sst_drv_ctx->pvt_id;
+	local = sst_drv_ctx->pvt_id;
+	spin_unlock(&sst_drv_ctx->block_lock);
+	return local;
 }
 
 
@@ -870,7 +923,7 @@ static inline int get_stream_id_mrfld(u32 pipe_id)
 
 int register_sst(struct device *);
 int unregister_sst(struct device *);
-
+int sst_platform_cb(struct sst_platform_cb_params *cb_params);
 #ifdef CONFIG_DEBUG_FS
 void sst_debugfs_init(struct intel_sst_drv *sst);
 void sst_debugfs_exit(struct intel_sst_drv *sst);

@@ -30,18 +30,18 @@
 #define STATUS_PSH2IA(x)	(1 << ((x) + 6))
 #define FLAG_BIND		(1 << 0)
 
-#define IS_A_STEP		(ipc_ctrl.stepping == 0)
+#define IS_A_STEP		(ipc_ctrl.reg_map == 0)
 
 #define PIMR_A_STEP(x)		(ipc_ctrl.psh_regs->psh_regs_a_step.pimr##x)
 #define PIMR_B_STEP(x)		(ipc_ctrl.psh_regs->psh_regs_b_step.pimr##x)
 
-#define PIMR_ADDR(x)		((ipc_ctrl.stepping & 1) ?	\
+#define PIMR_ADDR(x)		((ipc_ctrl.reg_map & 1) ?	\
 				&PIMR_B_STEP(x) : &PIMR_A_STEP(x))
 
 #define PSH_REG_A_STEP(x)	(ipc_ctrl.psh_regs->psh_regs_a_step.x)
 #define PSH_REG_B_STEP(x)	(ipc_ctrl.psh_regs->psh_regs_b_step.x)
 
-#define PSH_REG_ADDR(x)		((ipc_ctrl.stepping & 1) ?	\
+#define PSH_REG_ADDR(x)		((ipc_ctrl.reg_map & 1) ?	\
 				&PSH_REG_B_STEP(x) : &PSH_REG_A_STEP(x))
 
 #define PSH_CH_HANDLE(x)	(ipc_ctrl.channel_handle[x])
@@ -50,7 +50,7 @@
 
 /* PSH registers */
 union psh_registers {
-	/* A stepping */
+	/* reg mem map A */
 	struct {
 		u32		csr;	/* 00h */
 		u32		res1;	/* padding */
@@ -73,7 +73,7 @@ union psh_registers {
 		u32		res4[3];
 		u32		scratchpad[2];/* A0 */
 	} __packed psh_regs_a_step;
-	/* B stepping */
+	/* reg mem map B */
 	struct {
 		u32		pimr0;		/* 00h */
 		u32		csr;		/* 04h */
@@ -99,7 +99,7 @@ union psh_registers {
 } __packed;
 
 static struct ipc_controller_t {
-	int			stepping;
+	int			reg_map;
 	int			initialized;
 	struct pci_dev		*pdev;
 	spinlock_t		lock;
@@ -454,8 +454,8 @@ static ssize_t psh_send_cmd_store(struct device *dev,
 	return size;
 }
 
-static DEVICE_ATTR(psh_msg, S_IRUGO | S_IWUSR, psh_msg_show, psh_msg_store);
-static DEVICE_ATTR(psh_ch, S_IRUGO | S_IWUSR, psh_ch_show, psh_ch_store);
+static DEVICE_ATTR(psh_msg, S_IRUSR | S_IWUSR, psh_msg_show, psh_msg_store);
+static DEVICE_ATTR(psh_ch, S_IRUSR | S_IWUSR, psh_ch_show, psh_ch_store);
 static DEVICE_ATTR(ia2psh_cmd, S_IWUSR, NULL, psh_send_cmd_store);
 
 static struct attribute *psh_attrs[] = {
@@ -559,13 +559,21 @@ static int psh_ipc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		goto err1;
 
-	ipc_ctrl.stepping = intel_mid_soc_stepping();
-	if (intel_mid_identify_cpu() == INTEL_MID_CPU_CHIP_ANNIEDALE)
-		ipc_ctrl.stepping = 1;
-
-	if (ipc_ctrl.stepping != 0x0 && ipc_ctrl.stepping != 0x1) {
+	switch (intel_mid_identify_cpu()) {
+	case INTEL_MID_CPU_CHIP_TANGIER:
+		if (intel_mid_soc_stepping() == 0)
+			ipc_ctrl.reg_map = 0;
+		else
+			ipc_ctrl.reg_map = 1;
+		break;
+	case INTEL_MID_CPU_CHIP_ANNIEDALE:
+		ipc_ctrl.reg_map = 1;
+		break;
+	default:
+		dev_err(&pdev->dev, "error register map\n");
 		ret = -EINVAL;
-		goto err1;
+		goto err2;
+		break;
 	}
 
 	ipc_ctrl.psh_regs = (union psh_registers *)ioremap_nocache(start, len);

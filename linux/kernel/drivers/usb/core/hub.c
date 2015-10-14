@@ -1688,7 +1688,7 @@ static int hub_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	 *   suspend timer for hub, also may decrease power consumption
 	 *   of USB bus.
 	 */
-	pm_runtime_set_autosuspend_delay(&hdev->dev, 50);
+	pm_runtime_set_autosuspend_delay(&hdev->dev, 0);
 
 	/* Hubs have proper suspend/resume support. */
 	usb_enable_autosuspend(hdev);

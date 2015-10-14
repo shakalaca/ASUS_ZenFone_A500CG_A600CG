@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2013 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -43,9 +43,7 @@
 #include "lwpmudrv_defines.h"
 #include "lwpmudrv.h"
 #include "lwpmudrv_types.h"
-#if defined(BUILD_CHIPSET)
 #include "lwpmudrv_chipset.h"
-#endif
 
 // large memory allocation will be used if the requested size (in bytes) is
 // above this threshold
@@ -115,6 +113,14 @@ struct CPU_STATE_NODE_S {
     PVOID       saved_ih;            // saved perfvector to restore
 #endif
 
+#if (defined(DRV_IA32) || defined(DRV_EM64T))
+    U64         last_mperf;          // previous value of MPERF, needed for calculating delta MPERF
+    U64         last_aperf;          // previous value of APERF, needed for calculating delta MPERF
+    DRV_BOOL    last_p_state_valid;  // are the previous values valid? (e.g., the first measurement does not have 
+                                     // a previous value for calculating the delta's.
+    DRV_BOOL    p_state_counting;    // Flag to mark PMI interrupt from fixed event
+#endif
+
     S64        *em_tables;           // holds the data that is saved/restored
                                      // during event multiplexing
 
@@ -130,14 +136,12 @@ struct CPU_STATE_NODE_S {
     U32         initial_mask;
     U32         accept_interrupt;
 
-#if defined(BUILD_CHIPSET)
     // Chipset counter stuff
     U32         chipset_count_init;  // flag to initialize the last MCH and ICH arrays below.
     U64         last_mch_count[8];
     U64         last_ich_count[8];
     U64         last_gmch_count[MAX_CHIPSET_COUNTERS];
     U64         last_mmio_count[32]; // it's only 9 now but the next generation may have 29.
-#endif
 
     U64        *pmu_state;           // holds PMU state (e.g., MSRs) that will be
                                      // saved before and restored after collection
@@ -147,6 +151,7 @@ struct CPU_STATE_NODE_S {
     U64         num_samples;
     U64         reset_mask;
     U64         group_swap;
+    U64         last_visa_count[16];
     U16         cpu_module_num;
     U16         cpu_module_master;
 };
@@ -180,8 +185,12 @@ struct CPU_STATE_NODE_S {
 #define CPU_STATE_num_samples(cpu)          (cpu)->num_samples
 #define CPU_STATE_reset_mask(cpu)           (cpu)->reset_mask
 #define CPU_STATE_group_swap(cpu)           (cpu)->group_swap
-#define  CPU_STATE_cpu_module_num(cpu)       (cpu)->cpu_module_num
-#define  CPU_STATE_cpu_module_master(cpu)    (cpu)->cpu_module_master
+#define CPU_STATE_last_mperf(cpu)           (cpu)->last_mperf
+#define CPU_STATE_last_aperf(cpu)           (cpu)->last_aperf
+#define CPU_STATE_last_p_state_valid(cpu)   (cpu)->last_p_state_valid
+#define CPU_STATE_cpu_module_num(cpu)       (cpu)->cpu_module_num
+#define CPU_STATE_cpu_module_master(cpu)    (cpu)->cpu_module_master
+#define CPU_STATE_p_state_counting(cpu)     (cpu)->p_state_counting
 
 /*
  * For storing data for --read/--write-msr command line options
@@ -241,8 +250,6 @@ extern   U32                  num_packages;
 extern   U64                 *restore_bl_bypass;
 extern   U32                 **restore_ha_direct2core;
 extern   U32                 **restore_qpi_direct2core;
-
-
 /****************************************************************************
  **  Handy Short cuts
  ***************************************************************************/

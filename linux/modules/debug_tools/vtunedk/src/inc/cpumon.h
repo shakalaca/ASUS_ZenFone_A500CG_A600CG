@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -40,12 +40,6 @@
 #define GATE_STRUCT    struct gate_struct
 #else
 #define GATE_STRUCT    struct gate_struct64
-#endif
-
-#if defined(DRV_IA64)
-//#define PERFMON_V1
-#define PERFMON_V2_ALT  /* Used for MTC only, per comments in vdk1 sources. */
-//#define PERFMON_V2
 #endif
 
 /**

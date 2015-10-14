@@ -231,11 +231,4 @@ config USB_ULPI_VIEWPORT
 	  Provides read/write operations to the ULPI phy register set for
 	  controllers with a viewport register (e.g. Chipidea/ARC controllers).
 
-config USB_OTG_SUPPLY_VOLT_CAP
-	bool "USE OTG function capability"
-	default y
-	help
-	 Say Y here if you want to use OTG function.
-	 If unsure, say N.
-
 endif # USB_PHY

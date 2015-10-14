@@ -336,7 +336,7 @@ static ssize_t mei_mm_dbgfs_pool_read(struct file *file,
 static const struct file_operations mei_mm_dbgfs_pool_ops = {
 	.read = mei_mm_dbgfs_pool_read,
 	.open = simple_open,
-	.llseek = generic_file_llseek,                                  \
+	.llseek = generic_file_llseek,
 };
 #endif /* CONFIG_DEBUG_FS */
 
@@ -437,8 +437,7 @@ void mei_mm_deinit(struct mei_mm_device *mdev)
 		return;
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
-	if (mdev->dbgfs)
-		debugfs_remove_recursive(mdev->dbgfs);
+	debugfs_remove_recursive(mdev->dbgfs);
 	mdev->dbgfs = NULL;
 #endif /* CONFIG_DEBUG_FS */
 

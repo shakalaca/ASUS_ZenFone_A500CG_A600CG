@@ -42,6 +42,8 @@
 
 #include "inv_mpu_iio.h"
 #include "inv_counters.h"
+#include <linux/HWVersion.h>
+extern int Read_PROJ_ID(void);
 //leon add for fix suspend too long ++
 #include <linux/earlysuspend.h>
 #include <linux/time.h>
@@ -2422,7 +2424,11 @@ static int inv_mpu_probe(struct i2c_client *client,
 	struct iio_dev *indio_dev;
 	int result;
 	struct mpu_platform_data *pdata;
-
+	// a500cg,a501cg unused MPU6500
+	if (Read_PROJ_ID() == PROJ_ID_A500CG || Read_PROJ_ID() == PROJ_ID_A501CG) {
+		printk("MPU6500 skip probe, PROJ ID = %d\n", Read_PROJ_ID());
+	    return -ENOMEM;
+	}
 	printk("alp : inv_mod_probe ++(%d)\n",client->addr);
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		result = -ENOSYS;

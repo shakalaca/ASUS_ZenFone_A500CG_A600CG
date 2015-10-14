@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -59,5 +59,7 @@ void vtss_apic_ack_eoi(void);
 int  vtss_apic_read_priority(void);
 void vtss_apic_init(void);
 void vtss_apic_fini(void);
+int vtss_apic_map(void);
+void vtss_apic_unmap(void);
 
 #endif /* _VTSS_APIC_H_ */

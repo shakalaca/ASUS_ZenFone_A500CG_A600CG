@@ -888,13 +888,9 @@ config TOUCHSCREEN_TPS6507X
 	  To compile this driver as a module, choose M here: the
 	  module will be called tps6507x_ts.
 
-config TOUCHSCREEN_HIMAX_HX85XX
-        bool "Himax HX85XX touchscreen"
-        depends on I2C
-
-config TOUCHSCREEN_HIMAX_HX85XX_A502CG
-        bool "Himax HX85XX touchscreen"
-        depends on I2C
+config TOUCHSCREEN_HIMAX_HX8528_ME372CL
+	bool "Himax HX8528 touchscreen"
+	depends on I2C && PF450CL
 
 config TOUCHSCREEN_SYNAPTICS_DSX_I2C
 	bool "I2C"

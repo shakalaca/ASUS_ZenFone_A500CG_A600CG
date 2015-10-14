@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -59,63 +59,5 @@ typedef struct __system_info {
 extern  U32   SYS_INFO_Build (void);
 extern  void  SYS_INFO_Transfer (PVOID out_buf, unsigned long out_buf_len);
 extern  void  SYS_INFO_Destroy (void);
-
-#if defined(DRV_IA64)
-//
-// from PAL spec for PAL_LOGICAL_TO_PHYSICAL
-//
-typedef struct __logical_overview {
-    union {
-        U64 value;
-        struct {
-            U16 num_log;    // total number of logical processors
-            U8  tpc;        // threads per core
-            U8  rv0;        // reserved
-            U8  cpp;        // cores per processor die
-            U8  rv1;        // reserved
-            U8  ppid;       // physical processor die ID
-            U8  rv2;        // reserved
-        };
-    };
-} LOGICAL_OVERVIEW, *PLOGICAL_OVERVIEW;
-
-typedef struct __proc_n_log_info1 {
-    union {
-        U64 value;
-        struct {
-            U16 tid;        // thread id
-            U16 rv0;        // reserved
-            U16 cid;        // core id
-            U16 rv1;        // reserved
-        };
-    };
-} PROC_N_LOG_INFO1, *PPROC_N_LOG_INFO1;
-
-typedef struct __proc_n_log_info2 {
-    union {
-        U64 value;
-        struct {
-            U16 la;         // logical address
-            U16 rv0;        // reserved
-            U32 rv1;        // reserved
-        };
-    };
-} PROC_N_LOG_INFO2, *PPROC_N_LOG_INFO2;
-
-#define DATA_UNIFIED_CACHE   2
-
-typedef struct __config_info_2 {
-    union {
-        struct {
-            U32 cache_size;
-            U8  alias_boundary;
-            U8  tag_ls_bit;
-            U8  tag_ms_bit;
-            U8  reserved;
-        };
-        U64 data;
-    };
-} CONFIG_INFO_2, *PCONFIG_INFO_2;
-#endif
 
 #endif  

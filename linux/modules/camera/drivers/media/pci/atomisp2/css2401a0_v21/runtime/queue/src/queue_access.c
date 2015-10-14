@@ -32,7 +32,7 @@ int ia_css_queue_load(
 		uint32_t ignore_desc_flags)
 {
 	if (rdesc == NULL || cb_desc == NULL)
-		return -1;
+		return EINVAL;
 
 	if (rdesc->location == IA_CSS_QUEUE_LOC_SP) {
 		assert(ignore_desc_flags <= QUEUE_IGNORE_DESC_FLAGS_MAX);
@@ -42,14 +42,14 @@ int ia_css_queue_load(
 				rdesc->desc.remote.cb_desc_addr
 				+ offsetof(ia_css_circbuf_desc_t, size));
 
-			if ( 0 == cb_desc->size ) {
+			if (0 == cb_desc->size) {
 				/* Adding back the workaround which was removed
 				   while refactoring queues. When reading size
 				   through sp_dmem_load_*, sometimes we get back
 				   the value as zero. This causes division by 0
 				   exception as the size is used in a modular
 				   division operation. */
-				return -4;
+				return EDOM;
 			}
 		}
 
@@ -75,7 +75,7 @@ int ia_css_queue_load(
 			sizeof(ia_css_circbuf_desc_t));
 	} else if (rdesc->location == IA_CSS_QUEUE_LOC_ISP) {
 		/* Not supported yet */
-		return -3;
+		return ENOTSUP;
 	}
 
 	return 0;
@@ -87,7 +87,7 @@ int ia_css_queue_store(
 		uint32_t ignore_desc_flags)
 {
 	if (rdesc == NULL || cb_desc == NULL)
-		return -1;
+		return EINVAL;
 
 	if (rdesc->location == IA_CSS_QUEUE_LOC_SP) {
 		assert(ignore_desc_flags <= QUEUE_IGNORE_DESC_FLAGS_MAX);
@@ -122,7 +122,7 @@ int ia_css_queue_store(
 			sizeof(ia_css_circbuf_desc_t));
 	} else if (rdesc->location == IA_CSS_QUEUE_LOC_ISP) {
 		/* Not supported yet */
-		return -3;
+		return ENOTSUP;
 	}
 
 	return 0;
@@ -134,7 +134,7 @@ int ia_css_queue_item_load(
 		ia_css_circbuf_elem_t *item)
 {
 	if (rdesc == NULL || item == NULL)
-		return -1;
+		return EINVAL;
 
 	if (rdesc->location == IA_CSS_QUEUE_LOC_SP) {
 		sp_dmem_load(rdesc->proc_id,
@@ -149,7 +149,7 @@ int ia_css_queue_item_load(
 			sizeof(ia_css_circbuf_elem_t));
 	} else if (rdesc->location == IA_CSS_QUEUE_LOC_ISP) {
 		/* Not supported yet */
-		return -3;
+		return ENOTSUP;
 	}
 
 	return 0;
@@ -161,7 +161,7 @@ int ia_css_queue_item_store(
 		ia_css_circbuf_elem_t *item)
 {
 	if (rdesc == NULL || item == NULL)
-		return -1;
+		return EINVAL;
 
 	if (rdesc->location == IA_CSS_QUEUE_LOC_SP) {
 		sp_dmem_store(rdesc->proc_id,
@@ -176,7 +176,7 @@ int ia_css_queue_item_store(
 			sizeof(ia_css_circbuf_elem_t));
 	} else if (rdesc->location == IA_CSS_QUEUE_LOC_ISP) {
 		/* Not supported yet */
-		return -3;
+		return ENOTSUP;
 	}
 
 	return 0;

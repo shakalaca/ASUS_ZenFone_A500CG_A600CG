@@ -58,6 +58,10 @@ static int i915_sync_pt_has_signaled(struct sync_pt *sync_pt)
 		/* It hasn't yet been assigned a sequence number which means
 		* it can't have finished */
 		return 0;
+	else if (pt->pvt.cycle != obj->pvt.cycle) {
+		/* The seqno has wrapped so complete this point */
+		return 1;
+	}
 	else
 		/* This shouldn't require locking as it is synchronous
 		* with the timeline signal function which is the only updater
@@ -92,7 +96,7 @@ static int i915_sync_fill_driver_data(struct sync_pt *sync_pt,
 }
 
 static
-struct sync_pt *i915_sync_pt_create(struct i915_sync_timeline *obj, u32 value)
+struct sync_pt *i915_sync_pt_create(struct i915_sync_timeline *obj, u32 value, u32 cycle)
 {
 	struct i915_sync_pt *pt;
 	struct intel_ring_buffer *ring;
@@ -108,9 +112,10 @@ struct sync_pt *i915_sync_pt_create(struct i915_sync_timeline *obj, u32 value)
 	pt = (struct i915_sync_pt *)
 		sync_pt_create(&obj->obj, sizeof(struct i915_sync_pt));
 
-	if (pt)
+	if (pt) {
 		pt->pvt.value = value;
-	else
+		pt->pvt.cycle = cycle;
+	} else
 		ring->irq_put(ring);
 
 	return (struct sync_pt *)pt;
@@ -119,10 +124,14 @@ struct sync_pt *i915_sync_pt_create(struct i915_sync_timeline *obj, u32 value)
 static struct sync_pt *i915_sync_pt_dup(struct sync_pt *sync_pt)
 {
 	struct i915_sync_pt *pt = (struct i915_sync_pt *) sync_pt;
+	struct sync_pt *new_pt;
 	struct i915_sync_timeline *obj =
 		(struct i915_sync_timeline *)sync_pt->parent;
 
-	return (struct sync_pt *) i915_sync_pt_create(obj, pt->pvt.value);
+
+	new_pt = (struct sync_pt *)i915_sync_pt_create(obj, pt->pvt.value, pt->pvt.cycle);
+
+	return new_pt;
 }
 
 static void i915_sync_pt_free(struct sync_pt *sync_pt)
@@ -197,7 +206,11 @@ void i915_sync_reset_timelines(struct drm_i915_private *dev_priv)
 	for (i = 0; i < I915_NUM_RINGS; i++) {
 		struct intel_ring_buffer *sync_ring =
 			&dev_priv->ring[i];
-		i915_sync_timeline_signal(sync_ring->timeline, 0, 0);
+
+		if (sync_ring && sync_ring->timeline)
+			sync_ring->timeline->pvt.cycle++;
+
+		i915_sync_timeline_signal(sync_ring->timeline, 0, 1);
 	}
 }
 
@@ -242,7 +255,7 @@ void *i915_sync_prepare_request(struct drm_i915_gem_execbuffer2 *args,
 	/* Caller has requested a sync fence.
 	 * User interrupts will be enabled to make sure that
 	 * the timeline is signalled on completion. */
-	pt = i915_sync_pt_create(ring->timeline, seqno);
+	pt = i915_sync_pt_create(ring->timeline, seqno, ring->timeline->pvt.cycle);
 	if (!pt)
 		DRM_DEBUG_DRIVER("Failed to create sync point for %d/%u\n",
 					ring->id, seqno);
@@ -292,7 +305,6 @@ err_fd:
 	put_unused_fd(fd);
 	fd = err;
 err:
-	sync_pt_free(pt);
 	args->rsvd2 = (__u64)fd;
 
 	return err;

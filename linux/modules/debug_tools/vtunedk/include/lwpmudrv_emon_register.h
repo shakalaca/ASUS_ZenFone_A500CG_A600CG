@@ -5,7 +5,7 @@
  *  agreement or nondisclosure agreement with Intel Corporation and may not
  *  be copied or disclosed except in accordance with the terms of that
  *  agreement.
- *        Copyright (c) 2009-2012 Intel Corporation.  All Rights Reserved.
+ *        Copyright (C) 2009-2014 Intel Corporation.  All Rights Reserved.
  * -------------------------------------------------------------------------
 **COPYRIGHT*/
 
@@ -16,8 +16,9 @@
 using namespace std;
 
 typedef struct EMON_REGISTER_INFO_S     EMON_REGISTER_INFO_NODE;
-typedef vector<EMON_REGISTER_INFO_NODE> EMON_REGISTER_INFO; //a vector (i.e. array) of registers 
-                                                            //to read or write in the vector order
+typedef vector<EMON_REGISTER_INFO_NODE> EMON_REGISTER_INFO;
+//a vector (i.e. array) of registers to read or write in the vector order
+
 struct EMON_REGISTER_INFO_S
 {
     U32     mode;               //read (0) or write (1)

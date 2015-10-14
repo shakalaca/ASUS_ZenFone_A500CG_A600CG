@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -126,6 +126,11 @@ static void vf_p6_freeze_read(cpuevent_t* this)
     long long interval = (this->frozen_count > 0) ? this->frozen_count : (long long)this->interval;
     int shift = 64 - pmu_counter_width;
     int fixed_shift = 64 - pmu_fixed_counter_width;
+    unsigned long long mask = (((1ULL << pmu_fixed_counter_no) - 1) << 32) | ((1ULL << pmu_counter_no) - 1);
+    unsigned long long ovf;
+
+    rdmsrl(IA32_PERF_GLOBAL_STATUS, ovf);
+    ovf &= mask;
 
     wrmsrl(this->selmsr, 0ULL);
     rdmsrl(this->cntmsr, this->frozen_count);
@@ -176,7 +181,7 @@ static void vf_p6_freeze_read(cpuevent_t* this)
     }
     /// separately preserve counts of overflowed counters, and
     /// uncomment to always save fixed counters (to show performance impact of synchronization on call tree)
-    if (this->frozen_count >= 0 && this->frozen_count >= this->slave_interval /*|| this->selmsr == IA32_FIXED_CTR_CTRL*/) {
+    if ((this->frozen_count >= 0 && this->frozen_count >= this->slave_interval) || (this->selmsr == IA32_FIXED_CTR_CTRL && ovf)) {
         this->count = this->sampled_count;
     }
 #if 0

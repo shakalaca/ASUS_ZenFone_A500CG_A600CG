@@ -22,11 +22,7 @@
 #ifndef __DEBUG_GLOBAL_H_INCLUDED__
 #define __DEBUG_GLOBAL_H_INCLUDED__
 
-#ifdef __KERNEL__
-#include <linux/types.h>
-#else
-#include <stdint.h>
-#endif
+#include <type_support.h>
 
 #define DEBUG_BUF_SIZE	1024
 #define DEBUG_BUF_MASK	(DEBUG_BUF_SIZE - 1)
@@ -45,10 +41,13 @@
 
 #define DEBUG_BUFFER_ISP_DMEM_ADDR       0x0
 
-/* Enable HAS_WATCHDOG_SP_THREAD_DEBUG for additional SP thread and
-   pipe information on watchdog output */
-//#define HAS_WATCHDOG_SP_THREAD_DEBUG
-#undef HAS_WATCHDOG_SP_THREAD_DEBUG
+/*
+ * Enable HAS_WATCHDOG_SP_THREAD_DEBUG for additional SP thread and
+ * pipe information on watchdog output
+ * #undef HAS_WATCHDOG_SP_THREAD_DEBUG
+ * #define HAS_WATCHDOG_SP_THREAD_DEBUG
+ */
+
 
 /*
  * The linear buffer mode will accept data until the first

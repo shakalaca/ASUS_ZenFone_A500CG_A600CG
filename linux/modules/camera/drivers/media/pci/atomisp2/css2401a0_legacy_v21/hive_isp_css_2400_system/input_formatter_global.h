@@ -25,15 +25,12 @@
 #define IS_INPUT_FORMATTER_VERSION2
 #define IS_INPUT_SWITCH_VERSION2
 
-#ifdef __KERNEL__
-#include <linux/types.h>
-#else
-#include <stdint.h>
-#endif
-
+#include <type_support.h>
+#include <system_types.h>
 #include "if_defs.h"
 #include "str2mem_defs.h"
 #include "input_switch_2400_defs.h"
+
 #define _HIVE_INPUT_SWITCH_GET_FSYNC_REG_LSB(ch_id)        ((ch_id) * 3)
 
 #define HIVE_SWITCH_N_CHANNELS				4
@@ -116,6 +113,22 @@ struct input_formatter_cfg_s {
 	uint32_t	is_yuv420_format;
 	uint32_t	block_no_reqs;
 };
+
+#define DEFAULT_IF_CONFIG \
+{ \
+	0,          /* start_line */\
+	0,          /* start_column */\
+	0,          /* left_padding */\
+	0,          /* cropped_height */\
+	0,          /* cropped_width */\
+	0,          /* deinterleaving */\
+	0,          /*.buf_vecs */\
+	0,          /* buf_start_index */\
+	0,          /* buf_increment */\
+	0,          /* buf_eol_offset */\
+	false,      /* is_yuv420_format */\
+	false       /* block_no_reqs */\
+}
 
 extern const hrt_address HIVE_IF_SRST_ADDRESS[N_INPUT_FORMATTER_ID];
 extern const hrt_data HIVE_IF_SRST_MASK[N_INPUT_FORMATTER_ID];

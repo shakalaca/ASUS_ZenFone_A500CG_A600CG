@@ -25,7 +25,6 @@
 
 #include "mei_dev.h"
 #include "hbm.h"
-#include "hw-me.h"
 #include "client.h"
 
 static const u8 mei_start_wd_params[] = { 0x02, 0x12, 0x13, 0x10 };
@@ -85,17 +84,20 @@ int mei_wd_host_init(struct mei_device *dev)
 		return -ENOENT;
 	}
 
-	cl->state = MEI_FILE_CONNECTING;
+	ret = mei_cl_connect(cl, NULL);
 
-	if (mei_hbm_cl_connect_req(dev, cl)) {
-		dev_err(&dev->pdev->dev, "wd: failed to connect to the client\n");
-		cl->state = MEI_FILE_DISCONNECTED;
-		cl->host_client_id = 0;
-		return -EIO;
+	if (ret) {
+		dev_err(&dev->pdev->dev, "wd: failed to connect = %d\n", ret);
+		mei_cl_unlink(cl);
+		return ret;
 	}
-	cl->timer_count = MEI_CONNECT_TIMEOUT;
 
-	return 0;
+	ret = mei_watchdog_register(dev);
+	if (ret) {
+		mei_cl_disconnect(cl);
+		mei_cl_unlink(cl);
+	}
+	return ret;
 }
 
 /**
@@ -364,17 +366,25 @@ static struct watchdog_device amt_wd_dev = {
 };
 
 
-void mei_watchdog_register(struct mei_device *dev)
+int mei_watchdog_register(struct mei_device *dev)
 {
-	if (watchdog_register_device(&amt_wd_dev)) {
-		dev_err(&dev->pdev->dev,
-			"wd: unable to register watchdog device.\n");
-		return;
+
+	int ret;
+
+	/* unlock to perserve correct locking order */
+	mutex_unlock(&dev->device_lock);
+	ret = watchdog_register_device(&amt_wd_dev);
+	mutex_lock(&dev->device_lock);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "wd: unable to register watchdog device = %d.\n",
+			ret);
+		return ret;
 	}
 
 	dev_dbg(&dev->pdev->dev,
 		"wd: successfully register watchdog interface.\n");
 	watchdog_set_drvdata(&amt_wd_dev, dev);
+	return 0;
 }
 
 void mei_watchdog_unregister(struct mei_device *dev)

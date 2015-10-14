@@ -53,7 +53,7 @@ MODULE_PARM_DESC(debug, "Debug level (0-1)");
 
 //Add for ATD read camera status+++
 static unsigned int ATD_gc2155_status = 0;  //Add for ATD read camera status
-static unsigned int WhoAmI = 2155;
+// static unsigned int WhoAmI = 2155;				// leong++		 error: 'WhoAmI' defined but not used
 static struct i2c_client *g_client;
 static u16 g_by_file = 0x0;
 
@@ -193,65 +193,7 @@ again:
 
 	return num_msg;
 }
-static struct i2c_client* client_local;
-static struct class* gc2155_userCtrl_class;
-static struct device* gc2155_register_ctrl_dev;
-static int stream_of_off_flag;
 
-static ssize_t gc2155_write_reg_show(struct device *dev,
-        struct device_attribute *attr, char *buf){
-
-    return 0;
-}
-
-
-static ssize_t gc2155_write_reg_store(struct device *dev,
-        struct device_attribute *attr,
-        const char *buf, size_t count){
-
-    int ret;
-    int reg_store;
-    u8 reg_addr, reg_val;
-    reg_store = -1;
-    sscanf(buf, "%x", &reg_store);
-    reg_val = reg_store&0xFF;
-    reg_addr = (reg_store &0xFF00)>>8;
-    gc2155_write_reg(client_local, GC2155_8BIT, reg_addr, reg_val);
-    ret = sprintf(buf, "Regisetr address in gc2155: 0x%x, register value: 0x%x\n", reg_addr, reg_val);
-    printk("Write regisetr address in gc2155: 0x%x, register value: 0x%x\n", reg_addr, reg_val);
-    return count;
-}
-
-
-DEVICE_ATTR(write_reg, 0660, gc2155_write_reg_show, gc2155_write_reg_store);
-static int ctrl_read_reg_addr ;
-static ssize_t gc2155_read_reg_show(struct device *dev,
-        struct device_attribute *attr, char *buf){
-
-    int ret;
-    u8 reg_val;
-    gc2155_read_reg(client_local, GC2155_8BIT, ctrl_read_reg_addr, &reg_val);
-    ret = sprintf(buf, "Regisetr address in gc2155: 0x%x, register value: 0x%x\n", ctrl_read_reg_addr, reg_val);
-    return ret;
-}
-
-
-static ssize_t gc2155_read_reg_store(struct device *dev,
-        struct device_attribute *attr,
-        const char *buf, size_t count){
-
-    int ret;
-    u8 reg_val = 0;
-
-    sscanf(buf, "%x", &ctrl_read_reg_addr);
-    printk("Read Register address: 0x%x\n", ctrl_read_reg_addr) ;
-
-    gc2155_read_reg(client_local, GC2155_8BIT, ctrl_read_reg_addr, &reg_val);
-    printk("Read Regisetr address in gc2155: 0x%x, register value: 0x%x\n", ctrl_read_reg_addr, reg_val);
-
-    return count;
-}
-DEVICE_ATTR(read_reg, 0660, gc2155_read_reg_show, gc2155_read_reg_store);
 /*
  * gc2155_write_reg_array - Initializes a list of gc2155 registers
  * @client: i2c driver client structure
@@ -332,7 +274,7 @@ static int gc2155_init_common(struct v4l2_subdev *sd)
 {
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret = 0;
-    client_local = client;
+
 	pr_info("%s()++\n", __func__);
 
 	ret = gc2155_write_reg_array(client, gc2155_common);
@@ -1996,7 +1938,7 @@ static const struct file_operations dbg_set_gc2155_reg_fops = {
 	.write		= dbg_set_gc2155_reg_write,
 };
 
-static int gc2155_dbgfs_init()
+static int gc2155_dbgfs_init( void )  // leong++ 	error: function declaration isn't a prototype
 {
 	struct dentry *debugfs_dir;
 	debugfs_dir = debugfs_create_dir("camera0", NULL);
@@ -2081,10 +2023,7 @@ static int gc2155_probe(struct i2c_client *client,
 	/* dbgfs for ATD */
 	g_client = client;
 	gc2155_dbgfs_init(); //for second source
-    gc2155_userCtrl_class = class_create(THIS_MODULE, "gc2155_dev");
-    gc2155_register_ctrl_dev = device_create(gc2155_userCtrl_class, NULL, 0, "%s", "register");
-    device_create_file(gc2155_register_ctrl_dev, &dev_attr_write_reg);
-    device_create_file(gc2155_register_ctrl_dev, &dev_attr_read_reg);
+
 	pr_info("%s()--\n", __func__);
 	return 0;
 }

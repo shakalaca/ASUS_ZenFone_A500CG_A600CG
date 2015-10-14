@@ -23,8 +23,8 @@
 #define __IA_CSS_SPCTRL_H__
 
 #include <system_global.h>
+#include <ia_css_err.h>
 #include "ia_css_spctrl_comm.h"
-#include "ia_css.h"
 
 
 typedef struct {
@@ -46,7 +46,6 @@ typedef struct {
 */
 enum ia_css_err ia_css_spctrl_load_fw(sp_ID_t sp_id,
 			ia_css_spctrl_cfg *spctrl_cfg);
-
 
 /*!  Unload/release any memory allocated to hold the firmware
 */

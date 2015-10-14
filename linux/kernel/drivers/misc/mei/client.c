@@ -73,6 +73,24 @@ int mei_me_cl_by_id(struct mei_device *dev, u8 client_id)
 	return i;
 }
 
+/**
+ * mei_io_list_free - removes list entry belonging to cl and frees cb.
+ *
+ * @list: an instance of our list structure
+ * @cl:   host client
+ */
+void mei_io_list_free(struct mei_cl_cb *list, struct mei_cl *cl)
+{
+	struct mei_cl_cb *cb;
+	struct mei_cl_cb *next;
+
+	list_for_each_entry_safe(cb, next, &list->list, list) {
+		if (cb->cl && mei_cl_cmp_id(cl, cb->cl)) {
+			list_del(&cb->list);
+			mei_io_cb_free(cb);
+		}
+	}
+}
 
 /**
  * mei_io_list_flush - removes list entry belonging to cl.
@@ -101,6 +119,8 @@ void mei_io_cb_free(struct mei_cl_cb *cb)
 	if (cb == NULL)
 		return;
 
+	if (cb->fop_type == MEI_FOP_WRITE)
+		cb->cl->dev->write_mem_limit += cb->request_buffer.size;
 	kfree(cb->request_buffer.data);
 	kfree(cb->response_buffer.data);
 	kfree(cb);
@@ -139,6 +159,7 @@ struct mei_cl_cb *mei_io_cb_init(struct mei_cl *cl, struct file *fp)
  * returns 0 on success
  *         -EINVAL if cb is NULL
  *         -ENOMEM if allocation failed
+ *         -EBUSY  if write memory limit reached
  */
 int mei_io_cb_alloc_req_buf(struct mei_cl_cb *cb, size_t length)
 {
@@ -148,10 +169,16 @@ int mei_io_cb_alloc_req_buf(struct mei_cl_cb *cb, size_t length)
 	if (length == 0)
 		return 0;
 
+	if (length > cb->cl->dev->write_mem_limit)
+		return -EBUSY;
+
 	cb->request_buffer.data = kmalloc(length, GFP_KERNEL);
 	if (!cb->request_buffer.data)
 		return -ENOMEM;
 	cb->request_buffer.size = length;
+
+	/* register that we use length memory in this call */
+	cb->cl->dev->write_mem_limit -= length;
 	return 0;
 }
 /**
@@ -197,8 +224,8 @@ int mei_cl_flush_queues(struct mei_cl *cl)
 
 	cl_dbg(dev, cl, "remove list entry belonging to cl\n");
 	mei_io_list_flush(&cl->dev->read_list, cl);
-	mei_io_list_flush(&cl->dev->write_list, cl);
-	mei_io_list_flush(&cl->dev->write_waiting_list, cl);
+	mei_io_list_free(&cl->dev->write_list, cl);
+	mei_io_list_free(&cl->dev->write_waiting_list, cl);
 	mei_io_list_flush(&cl->dev->ctrl_wr_list, cl);
 	mei_io_list_flush(&cl->dev->ctrl_rd_list, cl);
 	mei_io_list_flush(&cl->dev->amthif_cmd_list, cl);
@@ -371,6 +398,7 @@ void mei_host_client_init(struct work_struct *work)
 	}
 
 	dev->dev_state = MEI_DEV_ENABLED;
+	dev->reset_count = 0;
 
 	mutex_unlock(&dev->device_lock);
 
@@ -550,6 +578,7 @@ int mei_cl_connect(struct mei_cl *cl, struct file *file)
 	cb->fop_type = MEI_FOP_IOCTL;
 
 	if (!mei_cl_is_other_connecting(cl) && mei_hbuf_acquire(dev)) {
+		cl->state = MEI_FILE_CONNECTING;
 		if (mei_hbm_cl_connect_req(dev, cl)) {
 			rets = -ENODEV;
 			goto out;
@@ -557,22 +586,25 @@ int mei_cl_connect(struct mei_cl *cl, struct file *file)
 		cl->timer_count = MEI_CONNECT_TIMEOUT;
 		list_add_tail(&cb->list, &dev->ctrl_rd_list.list);
 	} else {
+		cl->state = MEI_FILE_INITIALIZING;
 		list_add_tail(&cb->list, &dev->ctrl_wr_list.list);
 	}
 
 	mutex_unlock(&dev->device_lock);
-	rets = wait_event_timeout(dev->wait_recvd_msg,
-				 (cl->state == MEI_FILE_CONNECTED ||
-				  cl->state == MEI_FILE_DISCONNECTED),
-				 mei_secs_to_jiffies(MEI_CL_CONNECT_TIMEOUT));
+	wait_event_timeout(dev->wait_recvd_msg,
+			(cl->state == MEI_FILE_CONNECTED ||
+			 cl->state == MEI_FILE_DISCONNECTED),
+			mei_secs_to_jiffies(MEI_CL_CONNECT_TIMEOUT));
 	mutex_lock(&dev->device_lock);
 
 	if (cl->state != MEI_FILE_CONNECTED) {
-		rets = -EFAULT;
+		cl->state = MEI_FILE_DISCONNECTED;
+		/* something went really wrong */
+		if (!cl->status)
+			cl->status = -EFAULT;
 
 		mei_io_list_flush(&dev->ctrl_rd_list, cl);
 		mei_io_list_flush(&dev->ctrl_wr_list, cl);
-		goto out;
 	}
 
 	rets = cl->status;
@@ -726,7 +758,6 @@ int mei_cl_read_start(struct mei_cl *cl, size_t length)
 		goto out;
 
 	cb->fop_type = MEI_FOP_READ;
-	cl->read_cb = cb;
 
 
 	if (mei_hbuf_acquire(dev)) {
@@ -740,6 +771,7 @@ int mei_cl_read_start(struct mei_cl *cl, size_t length)
 		list_add_tail(&cb->list, &dev->ctrl_wr_list.list);
 	}
 
+	cl->read_cb = cb;
 out:
 	cl_dbg(dev, cl, "rpm: autosuspend\n");
 	pm_runtime_mark_last_busy(&dev->pdev->dev);
@@ -1003,7 +1035,6 @@ void mei_cl_all_disconnect(struct mei_device *dev)
 	list_for_each_entry_safe(cl, next, &dev->file_list, link) {
 		cl->state = MEI_FILE_DISCONNECTED;
 		cl->mei_flow_ctrl_creds = 0;
-		cl->read_cb = NULL;
 		cl->timer_count = 0;
 	}
 }
@@ -1038,6 +1069,11 @@ void mei_cl_all_write_clear(struct mei_device *dev)
 	struct mei_cl_cb *cb, *next;
 
 	list_for_each_entry_safe(cb, next, &dev->write_list.list, list) {
+		list_del(&cb->list);
+		mei_io_cb_free(cb);
+	}
+
+	list_for_each_entry_safe(cb, next, &dev->write_waiting_list.list, list) {
 		list_del(&cb->list);
 		mei_io_cb_free(cb);
 	}

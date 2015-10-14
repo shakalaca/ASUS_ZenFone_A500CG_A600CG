@@ -1,5 +1,5 @@
 /*
-    Copyright 2009-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2009-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  

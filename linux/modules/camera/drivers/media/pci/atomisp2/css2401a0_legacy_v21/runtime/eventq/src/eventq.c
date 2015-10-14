@@ -28,27 +28,27 @@
 				*/
 #include "platform_support.h" /* hrt_sleep() */
 
-enum ia_css_err ia_css_eventq_recv(
+int ia_css_eventq_recv(
 		ia_css_queue_t *eventq_handle,
 		uint8_t *payload)
 {
-	enum ia_css_err status;
 	uint32_t sp_event;
+	int error;
 
 	/* dequeue the IRQ event */
-	status = ia_css_queue_dequeue(eventq_handle, &sp_event);
+	error = ia_css_queue_dequeue(eventq_handle, &sp_event);
 
 	/* check whether the IRQ event is available or not */
-	if (IA_CSS_SUCCESS == status)
+	if (!error)
 		ia_css_event_decode(sp_event, payload);
-	return status;
+	return error;
 }
 
 /**
  * @brief The Host sends the event to the SP.
  * Refer to "sh_css_sp.h" for details.
  */
-enum ia_css_err ia_css_eventq_send(
+int ia_css_eventq_send(
 			ia_css_queue_t *eventq_handle,
 			uint8_t evt_id,
 			uint8_t evt_payload_0,
@@ -57,7 +57,8 @@ enum ia_css_err ia_css_eventq_send(
 {
 	uint8_t tmp[4];
 	uint32_t sw_event;
-	enum ia_css_err status;
+	int error = ENOSYS;
+
 	/*
 	 * Encode the queue type, the thread ID and
 	 * the queue ID into the event.
@@ -69,16 +70,16 @@ enum ia_css_err ia_css_eventq_send(
 	ia_css_event_encode(tmp, 4, &sw_event);
 
 	/* queue the software event (busy-waiting) */
-	do {
-		status = ia_css_queue_enqueue(eventq_handle, sw_event);
-		if (IA_CSS_ERR_QUEUE_IS_FULL != status ) {
+	for ( ; ; ) {
+		error = ia_css_queue_enqueue(eventq_handle, sw_event);
+		if (ENOBUFS != error) {
 			/* We were able to successfully send the event
 			   or had a real failure. return the status*/
-			return status;
+			break;
 		}
 		/* Wait for the queue to be not full and try again*/
 		hrt_sleep();
-	} while(1);
+	}
 
-	return IA_CSS_ERR_INTERNAL_ERROR;
+	return error;
 }

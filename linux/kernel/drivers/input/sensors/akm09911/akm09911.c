@@ -32,6 +32,11 @@
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
 
+#include <linux/uaccess.h>
+#include <linux/fs.h>
+#include <linux/HWVersion.h>
+extern int Read_PROJ_ID(void);
+
 #define AKM_DEBUG_IF			0
 #define AKM_HAS_RESET			1
 #define AKM_INPUT_DEVICE_NAME	"compass"
@@ -182,7 +187,7 @@ static int AKECS_Set_CNTL(
 			akm->is_busy = 1;
 			atomic_set(&akm->drdy, 0);
 			/* wait at least 100us after changing mode */
-			udelay(100);
+			//udelay(100);
 		}
 	}
 
@@ -211,7 +216,7 @@ static int AKECS_Set_PowerDown(
 	} else {
 		dev_dbg(&akm->i2c->dev, "Powerdown mode is set.");
 		/* wait at least 100us after changing mode */
-		udelay(100);
+		//udelay(100);
 	}
 	/* Clear status */
 	akm->is_busy = 0;
@@ -252,8 +257,8 @@ static int AKECS_Reset(
 			dev_dbg(&akm->i2c->dev, "Soft reset is done.");
 		}
 	}
-	/* Device will be accessible 100 us after */
-	udelay(100);
+	/* Device will be accessible 100 us after, 300 us reference MTK */
+	udelay(300);
 	/* Clear status */
 	akm->is_busy = 0;
 	atomic_set(&akm->drdy, 0);
@@ -289,7 +294,8 @@ static int AKECS_SetMode(
 			"%s: Unknown mode(%d).", __func__, mode);
 		return -EINVAL;
 	}
-
+    /* wait at least 100us after changing mode */
+	udelay(100);
 	return err;
 }
 
@@ -314,37 +320,44 @@ static void AKECS_SetYPR(
 		dev_dbg(&akm->i2c->dev, "Don't waste a time.");
 		return;
 	}
+	/* Modify for only to impact A600cg */
+    if (Read_PROJ_ID() == PROJ_ID_A600CG) {
+	    input_report_abs(akm->input, ABS_RX, rbuf[5]);
+	    input_report_abs(akm->input, ABS_RY, rbuf[6]);
+	    input_report_abs(akm->input, ABS_RZ, rbuf[7]);
+	    input_report_abs(akm->input, ABS_RUDDER, rbuf[8]);
+    } else {
+		mutex_lock(&akm->val_mutex);
+		ready = (akm->enable_flag & (uint32_t)rbuf[0]);
+		mutex_unlock(&akm->val_mutex);
 
-	mutex_lock(&akm->val_mutex);
-	ready = (akm->enable_flag & (uint32_t)rbuf[0]);
-	mutex_unlock(&akm->val_mutex);
-
-	/* Report acceleration sensor information */
-	if (ready & ACC_DATA_READY) {
-		input_report_abs(akm->input, ABS_X, rbuf[1]);
-		input_report_abs(akm->input, ABS_Y, rbuf[2]);
-		input_report_abs(akm->input, ABS_Z, rbuf[3]);
-		input_report_abs(akm->input, ABS_RX, rbuf[4]);
-	}
-	/* Report magnetic vector information */
-	if (ready & MAG_DATA_READY) {
-		input_report_abs(akm->input, ABS_RY, rbuf[5]);
-		input_report_abs(akm->input, ABS_RZ, rbuf[6]);
-		input_report_abs(akm->input, ABS_THROTTLE, rbuf[7]);
-		input_report_abs(akm->input, ABS_RUDDER, rbuf[8]);
-	}
-	/* Report fusion sensor information */
-	if (ready & FUSION_DATA_READY) {
-		/* Orientation */
-		input_report_abs(akm->input, ABS_HAT0Y, rbuf[9]);
-		input_report_abs(akm->input, ABS_HAT1X, rbuf[10]);
-		input_report_abs(akm->input, ABS_HAT1Y, rbuf[11]);
-		/* Rotation Vector */
-		input_report_abs(akm->input, ABS_TILT_X, rbuf[12]);
-		input_report_abs(akm->input, ABS_TILT_Y, rbuf[13]);
-		input_report_abs(akm->input, ABS_TOOL_WIDTH, rbuf[14]);
-		input_report_abs(akm->input, ABS_VOLUME, rbuf[15]);
-	}
+		/* Report acceleration sensor information */
+		if (ready & ACC_DATA_READY) {
+			input_report_abs(akm->input, ABS_X, rbuf[1]);
+			input_report_abs(akm->input, ABS_Y, rbuf[2]);
+			input_report_abs(akm->input, ABS_Z, rbuf[3]);
+			input_report_abs(akm->input, ABS_RX, rbuf[4]);
+		}
+		/* Report magnetic vector information */
+		if (ready & MAG_DATA_READY) {
+			input_report_abs(akm->input, ABS_RY, rbuf[5]);
+			input_report_abs(akm->input, ABS_RZ, rbuf[6]);
+			input_report_abs(akm->input, ABS_THROTTLE, rbuf[7]);
+			input_report_abs(akm->input, ABS_RUDDER, rbuf[8]);
+		}
+		/* Report fusion sensor information */
+		if (ready & FUSION_DATA_READY) {
+			/* Orientation */
+			input_report_abs(akm->input, ABS_HAT0Y, rbuf[9]);
+			input_report_abs(akm->input, ABS_HAT1X, rbuf[10]);
+			input_report_abs(akm->input, ABS_HAT1Y, rbuf[11]);
+			/* Rotation Vector */
+			input_report_abs(akm->input, ABS_TILT_X, rbuf[12]);
+			input_report_abs(akm->input, ABS_TILT_Y, rbuf[13]);
+			input_report_abs(akm->input, ABS_TOOL_WIDTH, rbuf[14]);
+			input_report_abs(akm->input, ABS_VOLUME, rbuf[15]);
+		}
+    }
 
 	input_sync(akm->input);
 	//if(AKM_DEBUG_MESSAGE) printk("alp : AKECS_SetYPR -\n");
@@ -1235,42 +1248,56 @@ static int akm_compass_input_init(
 
 	/* Setup input device */
 	set_bit(EV_ABS, (*input)->evbit);
-	/* Accelerometer (720 x 16G)*/
-	input_set_abs_params(*input, ABS_X,
-			-11520, 11520, 0, 0);
-	input_set_abs_params(*input, ABS_Y,
-			-11520, 11520, 0, 0);
-	input_set_abs_params(*input, ABS_Z,
-			-11520, 11520, 0, 0);
-	input_set_abs_params(*input, ABS_RX,
-			0, 3, 0, 0);
-	/* Magnetic field (limited to 16bit) */
-	input_set_abs_params(*input, ABS_RY,
-			-32768, 32767, 0, 0);
-	input_set_abs_params(*input, ABS_RZ,
-			-32768, 32767, 0, 0);
-	input_set_abs_params(*input, ABS_THROTTLE,
-			-32768, 32767, 0, 0);
-	input_set_abs_params(*input, ABS_RUDDER,
-			0, 3, 0, 0);
+	/* Modify for only to impact A600cg */
+    if (Read_PROJ_ID() == PROJ_ID_A600CG) {
+		/* Magnetic field -> limited to 16bit*/
+		input_set_abs_params(*input, ABS_RX,
+				-32768, 32767, 0, 0);
+		input_set_abs_params(*input, ABS_RY,
+				-32768, 32767, 0, 0);
+		input_set_abs_params(*input, ABS_RZ,
+				-32768, 32767, 0, 0);
+		input_set_abs_params(*input, ABS_RUDDER,
+				0, 3, 0, 0);
 
-	/* Orientation (degree in Q6 format) */
-	/*  yaw[0,360) pitch[-180,180) roll[-90,90) */
-	input_set_abs_params(*input, ABS_HAT0Y,
-			0, 23040, 0, 0);
-	input_set_abs_params(*input, ABS_HAT1X,
-			-11520, 11520, 0, 0);
-	input_set_abs_params(*input, ABS_HAT1Y,
-			-5760, 5760, 0, 0);
-	/* Rotation Vector [-1,+1] in Q14 format */
-	input_set_abs_params(*input, ABS_TILT_X,
-			-16384, 16384, 0, 0);
-	input_set_abs_params(*input, ABS_TILT_Y,
-			-16384, 16384, 0, 0);
-	input_set_abs_params(*input, ABS_TOOL_WIDTH,
-			-16384, 16384, 0, 0);
-	input_set_abs_params(*input, ABS_VOLUME,
-			-16384, 16384, 0, 0);
+    } else {
+		/* Accelerometer (720 x 16G)*/
+		input_set_abs_params(*input, ABS_X,
+				-11520, 11520, 0, 0);
+		input_set_abs_params(*input, ABS_Y,
+				-11520, 11520, 0, 0);
+		input_set_abs_params(*input, ABS_Z,
+				-11520, 11520, 0, 0);
+		input_set_abs_params(*input, ABS_RX,
+				0, 3, 0, 0);
+		/* Magnetic field (limited to 16bit) */
+		input_set_abs_params(*input, ABS_RY,
+				-32768, 32767, 0, 0);
+		input_set_abs_params(*input, ABS_RZ,
+				-32768, 32767, 0, 0);
+		input_set_abs_params(*input, ABS_THROTTLE,
+				-32768, 32767, 0, 0);
+		input_set_abs_params(*input, ABS_RUDDER,
+				0, 3, 0, 0);
+
+		/* Orientation (degree in Q6 format) */
+		/*  yaw[0,360) pitch[-180,180) roll[-90,90) */
+		input_set_abs_params(*input, ABS_HAT0Y,
+				0, 23040, 0, 0);
+		input_set_abs_params(*input, ABS_HAT1X,
+				-11520, 11520, 0, 0);
+		input_set_abs_params(*input, ABS_HAT1Y,
+				-5760, 5760, 0, 0);
+		/* Rotation Vector [-1,+1] in Q14 format */
+		input_set_abs_params(*input, ABS_TILT_X,
+				-16384, 16384, 0, 0);
+		input_set_abs_params(*input, ABS_TILT_Y,
+				-16384, 16384, 0, 0);
+		input_set_abs_params(*input, ABS_TOOL_WIDTH,
+				-16384, 16384, 0, 0);
+		input_set_abs_params(*input, ABS_VOLUME,
+				-16384, 16384, 0, 0);
+    }
 
 	/* Set name */
 	(*input)->name = AKM_INPUT_DEVICE_NAME;
@@ -1691,4 +1718,3 @@ module_exit(akm_compass_exit);
 MODULE_AUTHOR("viral wang <viral_wang@htc.com>");
 MODULE_DESCRIPTION("AKM compass driver");
 MODULE_LICENSE("GPL");
-

@@ -486,7 +486,8 @@ static inline void hsi_msg_complete(struct intel_controller *intel_hsi,
 	}
 
 done:
-	msg->complete(msg);
+	if (msg->complete)
+		msg->complete(msg);
 }
 
 /**

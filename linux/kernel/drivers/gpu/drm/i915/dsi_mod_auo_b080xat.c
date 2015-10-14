@@ -56,13 +56,12 @@ static void b080xat_get_panel_info(int pipe, struct drm_connector *connector)
 bool b080xat_init(struct intel_dsi_device *dsi)
 {
 	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
-
 	DRM_DEBUG_KMS("\n");
 
 	intel_dsi->hs = true;
 	intel_dsi->channel = 0;
 	intel_dsi->lane_count = 4;
-	intel_dsi->eot_disable = 1;
+	intel_dsi->eotp_pkt = 0;
 	intel_dsi->port_bits = 0;
 	intel_dsi->dsi_clock_freq = 513;
 	intel_dsi->video_mode_type = DSI_VIDEO_BURST;
@@ -79,7 +78,8 @@ bool b080xat_init(struct intel_dsi_device *dsi)
 	intel_dsi->clk_hs_to_lp_count = 0x0F;
 	intel_dsi->video_frmt_cfg_bits = DISABLE_VIDEO_BTA;
 	intel_dsi->dphy_reg = 0x3F10430D;
-
+	intel_dsi->port = 0; /* PORT_A by default */
+	intel_dsi->burst_mode_ratio = 100;
 	intel_dsi->backlight_off_delay = 20;
 	intel_dsi->send_shutdown = true;
 	intel_dsi->shutdown_pkt_delay = 20;
@@ -170,6 +170,7 @@ bool b080xat_get_hw_state(struct intel_dsi_device *dev)
 struct drm_display_mode *b080xat_get_modes(struct intel_dsi_device *dsi)
 {
 	struct drm_display_mode *mode;
+	struct intel_dsi *intel_dsi = container_of(dsi, struct intel_dsi, dev);
 
 	mode = kzalloc(sizeof(*mode), GFP_KERNEL);
 	if (!mode)
@@ -189,6 +190,8 @@ struct drm_display_mode *b080xat_get_modes(struct intel_dsi_device *dsi)
 
 	mode->clock =  mode->vrefresh * mode->vtotal *
 		mode->htotal / 1000;
+	intel_dsi->pclk = mode->clock;
+	DRM_DEBUG_KMS("pclk : %d\n", intel_dsi->pclk);
 
 	drm_mode_set_name(mode);
 	drm_mode_set_crtcinfo(mode, 0);

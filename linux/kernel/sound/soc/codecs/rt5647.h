@@ -2274,14 +2274,13 @@ struct rt5647_priv {
 	bool dsp_rec_pass;
 
 	int jack_type;
-
 	unsigned int adb_reg_addr[0x100];
 	unsigned int adb_reg_value[0x100];
 	unsigned char adb_reg_num;
 };
 void rt5647_i2s2_func_switch(struct snd_soc_codec *codec, bool enable);
-void rt5647_get_stream_usecase(struct snd_soc_codec *codec, bool enable);
-void rt5647_set_a2dp_to_spk_delay(struct snd_soc_codec *codec, bool enable);
+void audio_drc_ctrl(bool enable);
+void set_spk_unmute_delay_time(int delay_time);
 int rt5647_headset_detect(struct snd_soc_codec *codec, int jack_insert);
 int rt5647_button_detect(struct snd_soc_codec *codec);
 void rt5647_enable_push_button_irq(struct snd_soc_codec *codec);

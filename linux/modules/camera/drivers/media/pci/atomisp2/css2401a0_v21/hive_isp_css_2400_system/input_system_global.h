@@ -24,20 +24,16 @@
 
 #define IS_INPUT_SYSTEM_VERSION_2
 
+#include <type_support.h>
+
 //CSI reveiver has 3 ports.
-#define		N_CSI_PORTS (3) 
+#define		N_CSI_PORTS (3)
 //AM: Use previous define for this.
- 
+
 //MIPI allows upto 4 channels.
 #define		N_CHANNELS  (4) 
 // 12KB = 256bit x 384 words
-#define		IB_CAPACITY_IN_WORDS (384)  
-
-#ifdef __KERNEL__
-#include <linux/types.h>
-#else
-#include <stdint.h>
-#endif
+#define		IB_CAPACITY_IN_WORDS (384)
 
 typedef enum {
 	MIPI_0LANE_CFG = 0,

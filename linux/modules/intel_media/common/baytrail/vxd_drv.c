@@ -178,10 +178,7 @@ struct psb_fpriv *psb_fpriv(struct drm_file *file_priv)
 struct drm_psb_private *psb_priv(struct drm_device *dev)
 {
 	struct drm_i915_private *i915_dev_priv = dev->dev_private;
-	if (i915_dev_priv)
-		return i915_dev_priv->vxd_priv;
-	else
-		return NULL;
+	return i915_dev_priv->vxd_priv;
 }
 
 int vxd_release(struct inode *inode, struct file *filp)
@@ -191,6 +188,7 @@ int vxd_release(struct inode *inode, struct file *filp)
 	struct psb_fpriv *psb_fp;
 	struct drm_psb_private *dev_priv;
 	struct msvdx_private *msvdx_priv;
+	int i;
 
 	file_priv = (struct drm_file *)filp->private_data;
 	i915_file_priv = file_priv->driver_priv;
@@ -209,7 +207,15 @@ int vxd_release(struct inode *inode, struct file *filp)
 		       MAX_DECODE_BUFFERS);
 	}
 #endif
-
+#ifdef CONFIG_VIDEO_MRFLD_EC
+	for (i = 0; i < PSB_MAX_EC_INSTANCE; i++) {
+		if (msvdx_priv->msvdx_ec_ctx[i]->tfile == psb_fp->tfile) {
+			msvdx_priv->msvdx_ec_ctx[i]->tfile = NULL;
+			msvdx_priv->msvdx_ec_ctx[i]->context_id = 0;
+			msvdx_priv->msvdx_ec_ctx[i]->fence = PSB_MSVDX_INVALID_FENCE;
+		}
+	}
+#endif
 	ttm_object_file_release(&psb_fp->tfile);
 	kfree(psb_fp);
 
@@ -351,11 +357,17 @@ void intel_mid_msgbus_write32_vxd(u8 port, u32 addr, u32 data)
 
 static int __init vxd_driver_load()
 {
-	struct drm_i915_private *i915_dev_priv = i915_drm_dev->dev_private;
+	struct drm_i915_private *i915_dev_priv;
 	struct drm_psb_private *dev_priv;
 	struct ttm_bo_device *bdev;
 	int ret = -ENOMEM;
 	uint32_t pwr_sts;
+
+	/* Check if DRM device is loaded first */
+	if (!i915_drm_dev)
+		return -ENODEV;
+
+	i915_dev_priv = i915_drm_dev->dev_private;
 
 	dev_priv = kzalloc(sizeof(*dev_priv), GFP_KERNEL);
 	if (dev_priv == NULL)
@@ -419,7 +431,7 @@ static int __init vxd_driver_load()
 	ret = ttm_bo_device_init(bdev,
 				 dev_priv->bo_global_ref.ref.object,
 				 &psb_ttm_bo_driver,
-				 DRM_PSB_FILE_PAGE_OFFSET, false);
+				 DRM_PSB_FILE_PAGE_OFFSET, true);
 	if (unlikely(ret != 0))
 		goto out_err;
 	dev_priv->has_bo_device = 1;
@@ -659,7 +671,7 @@ long vxd_ioctl(struct file *filp,
 			mutex_unlock(&drm_global_mutex);
 		}
 
-		if (cmd & IOC_OUT) {
+		if ((cmd & IOC_OUT) && kdata) {
 			if (copy_to_user((void __user *)arg, kdata,
 					 usize) != 0)
 				retcode = -EFAULT;

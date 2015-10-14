@@ -35,6 +35,7 @@
 #include <asm/platform_byt_audio.h>
 #include <asm/platform_sst.h>
 #include <acpi/acpi_bus.h>
+#include <asm/spid.h>
 #include <sound/intel_sst_ioctl.h>
 #include "../sst_platform.h"
 #include "../platform_ipc_v2.h"
@@ -107,6 +108,35 @@ static const struct sst_board_config_data sst_byt_ffrd8_bdata = {
 	},
 };
 
+static const struct sst_board_config_data sst_byt_crv2_bdata = {
+	.active_ssp_ports = 1,
+	.platform_id = 3,
+	.board_id = 1,
+	.ihf_num_chan = 1,
+	.osc_clk_freq = 25000000,
+	.ssp_platform_data = {
+		[0] = {
+			.ssp_cfg_sst = 1,
+			.port_number = 0,
+			.is_master = 1,
+			.pack_mode = 1,
+			.num_slots_per_frame = 2,
+			.num_bits_per_slot = 24,
+			.active_tx_map = 3,
+			.active_rx_map = 3,
+			.ssp_frame_format = 3,
+			.frame_polarity = 1,
+			.serial_bitrate_clk_mode = 0,
+			.frame_sync_width = 24,
+			.dma_handshake_interface_tx = 1,
+			.dma_handshake_interface_rx = 0,
+			.network_mode = 0,
+			.start_delay = 1,
+			.ssp_base_add = SST_BYT_SSP0_PHY_ADDR,
+		},
+	},
+};
+
 static const struct sst_info byt_fwparse_info = {
 	.use_elf	= true,
 	.max_streams	= 4,
@@ -155,14 +185,21 @@ static const struct sst_lib_dnld_info  byt_lib_dnld_info = {
 	.mod_end            = SST_BYT_IMR_VIRT_END,
 	.mod_table_offset   = BYT_FW_MOD_TABLE_OFFSET,
 	.mod_table_size     = BYT_FW_MOD_TABLE_SIZE,
+	.mod_offset	    = BYT_FW_MOD_OFFSET,
 	.mod_ddr_dnld       = true,
 };
 
 static const struct sst_ipc_info cht_ipc_info = {
 	.use_32bit_ops = false,
 	.ipc_offset = 0,
-	.mbox_recv_off = 0x400,
+	.mbox_recv_off = 0x1000,
 };
+
+static struct sst_platform_debugfs_data byt_debugfs_data = {
+	.checkpoint_offset = 0xc00,
+	.checkpoint_size = 256,
+};
+
 
 struct sst_platform_info cht_platform_data = {
 	.probe_data = &cht_fwparse_info,
@@ -171,6 +208,7 @@ struct sst_platform_info cht_platform_data = {
 	.pdata = NULL,
 	.ipc_info = &cht_ipc_info,
 	.lib_info = NULL,
+	.start_recovery_timer = false,
 };
 
 struct sst_platform_info byt_rvp_platform_data = {
@@ -180,6 +218,7 @@ struct sst_platform_info byt_rvp_platform_data = {
 	.pdata = &sst_byt_pdata,
 	.ipc_info = &byt_ipc_info,
 	.lib_info = &byt_lib_dnld_info,
+	.start_recovery_timer = false,
 };
 
 struct sst_platform_info byt_ffrd8_platform_data = {
@@ -189,6 +228,8 @@ struct sst_platform_info byt_ffrd8_platform_data = {
 	.pdata = &sst_byt_pdata,
 	.ipc_info = &byt_ipc_info,
 	.lib_info = &byt_lib_dnld_info,
+	.start_recovery_timer = false,
+	.debugfs_data = &byt_debugfs_data,
 };
 
 int sst_workqueue_init(struct intel_sst_drv *ctx)
@@ -217,14 +258,10 @@ err_wq:
 
 void sst_init_locks(struct intel_sst_drv *ctx)
 {
-	mutex_init(&ctx->stream_lock);
 	mutex_init(&ctx->sst_lock);
-	mutex_init(&ctx->mixer_ctrl_lock);
-	mutex_init(&ctx->csr_lock);
 	spin_lock_init(&sst_drv_ctx->rx_msg_lock);
 	spin_lock_init(&ctx->ipc_spin_lock);
 	spin_lock_init(&ctx->block_lock);
-	spin_lock_init(&ctx->pvt_id_lock);
 }
 
 int sst_destroy_workqueue(struct intel_sst_drv *ctx)
@@ -234,6 +271,8 @@ int sst_destroy_workqueue(struct intel_sst_drv *ctx)
 		destroy_workqueue(ctx->mad_wq);
 	if (ctx->post_msg_wq)
 		destroy_workqueue(ctx->post_msg_wq);
+	if (ctx->recovery_wq)
+		destroy_workqueue(ctx->recovery_wq);
 	return 0;
 }
 
@@ -503,15 +542,33 @@ int sst_acpi_probe(struct platform_device *pdev)
 	ctx->use_dma = 1;
 	ctx->use_lli = 1;
 
-	if (sst_workqueue_init(ctx))
+	if (sst_workqueue_init(ctx)) {
+		ret = -EINVAL;
 		goto do_free_wq;
+	}
 
 	ctx->pdata = sst_get_acpi_driver_data(hid);
 	if (!ctx->pdata)
 		return -EINVAL;
+	if (INTEL_MID_BOARD(3, TABLET, BYT, BLK, PRO, CRV2)) {
+		/* BYT-CR V2 has only mono speaker, while
+		 * byt has stereo speaker, for both
+		 * HID is same, so platform data also is
+		 * same, hence overriding bdata based on spid
+		 */
+		ctx->pdata->bdata = &sst_byt_crv2_bdata;
+		pr_info("Overriding bdata for byt-crv2\n");
+	}
 
 	ctx->use_32bit_ops = ctx->pdata->ipc_info->use_32bit_ops;
 	ctx->mailbox_recv_offset = ctx->pdata->ipc_info->mbox_recv_off;
+	if (ctx->pci_id == SST_CHT_PCI_ID) {
+		ctx->mailbox_size = SST_MAILBOX_SIZE_MOFD;
+		ctx->ipc_mailbox = ctx->ddr + SST_DDR_MAILBOX_BASE;
+	} else {
+		ctx->mailbox_size = SST_MAILBOX_SIZE;
+		ctx->ipc_mailbox = ctx->mailbox;
+	}
 
 	memcpy(&ctx->info, ctx->pdata->probe_data, sizeof(ctx->info));
 
@@ -523,6 +580,12 @@ int sst_acpi_probe(struct platform_device *pdev)
 	for (i = 1; i <= ctx->info.max_streams; i++) {
 		struct stream_info *stream = &ctx->streams[i];
 		mutex_init(&stream->lock);
+	}
+	sst_init_lib_mem_mgr(ctx);
+	ret = sst_request_firmware_async(ctx);
+	if (ret) {
+		pr_err("Firmware download failed:%d\n", ret);
+		goto do_free_wq;
 	}
 
 	ret = devm_request_threaded_irq(ctx->dev, ctx->irq_num, ctx->ops->interrupt,
@@ -554,10 +617,20 @@ int sst_acpi_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, ctx);
+	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
 	register_sst(dev);
 	sst_debugfs_init(ctx);
-	sst_set_fw_state_locked(ctx, SST_UN_INIT);
+
+	if (ctx->pdata->start_recovery_timer) {
+		ret = sst_recovery_init(ctx);
+		if (ret) {
+			pr_err("%s:sst recovery intialization failed", __func__);
+			goto do_free_misc;
+		}
+	}
+
+	sst_set_fw_state_locked(ctx, SST_RESET);
 	sst_save_shim64(ctx, ctx->shim, ctx->shim_regs64);
 	pr_info("%s successfully done!\n", __func__);
 	return ret;
@@ -586,11 +659,12 @@ int sst_acpi_remove(struct platform_device *pdev)
 	struct intel_sst_drv *ctx;
 
 	ctx = platform_get_drvdata(pdev);
+	sst_recovery_exit(ctx);
 	sst_debugfs_exit(ctx);
 	pm_runtime_get_noresume(ctx->dev);
 	pm_runtime_disable(ctx->dev);
 	unregister_sst(ctx->dev);
-	sst_set_fw_state_locked(ctx, SST_UN_INIT);
+	sst_set_fw_state_locked(ctx, SST_SHUTDOWN);
 	misc_deregister(&lpe_ctrl);
 	kfree(ctx->runtime_param.param.addr);
 	flush_scheduled_work();

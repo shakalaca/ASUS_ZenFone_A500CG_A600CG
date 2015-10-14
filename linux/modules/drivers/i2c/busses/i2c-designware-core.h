@@ -188,6 +188,13 @@
 #define VLV2_FS_P_SCLK_HCNT 0x1b
 #define VLV2_FS_P_SCLK_LCNT 0x3a
 
+#define CHV_SS_SCLK_HCNT 0x28f
+#define CHV_SS_SCLK_LCNT 0x2ba
+#define CHV_FS_SCLK_HCNT 0x71
+#define CHV_FS_SCLK_LCNT 0xce
+#define CHV_FS_P_SCLK_HCNT 0x24
+#define CHV_FS_P_SCLK_LCNT 0x53
+
 #define DW_STD_SPEED	100000
 #define DW_FAST_SPEED	400000
 #define DW_HIGH_SPEED	3400000
@@ -218,6 +225,7 @@ struct dw_controller;
  * @adapter: i2c subsystem adapter node
  * @tx_fifo_depth: depth of the hardware tx fifo
  * @rx_fifo_depth: depth of the hardware rx fifo
+ * @shared_host: if this host is shared by other units on the SoC
  */
 struct dw_i2c_dev {
 	struct device		*dev;
@@ -232,6 +240,9 @@ struct dw_i2c_dev {
 	struct dw_controller 	*controller;
 	int			enable_stop;
 	int			share_irq;
+	int			shared_host;
+	int			(*acquire_ownership) (void);
+	int			(*release_ownership) (void);
 	int			cmd_err;
 	struct i2c_msg		*msgs;
 	int			msgs_num;
@@ -309,14 +320,14 @@ enum dw_ctl_id_t {
 	valleyview_6,
 	valleyview_7,
 
-	cherryview_0 = valleyview_0,
-	cherryview_1 = valleyview_1,
-	cherryview_2 = valleyview_2,
-	cherryview_3 = valleyview_3,
-	cherryview_4 = valleyview_4,
-	cherryview_5 = valleyview_5,
-	cherryview_6 = valleyview_6,
-	cherryview_7 = valleyview_7,
+	cherryview_0,
+	cherryview_1,
+	cherryview_2,
+	cherryview_3,
+	cherryview_4,
+	cherryview_5,
+	cherryview_6,
+	cherryview_7,
 };
 
 extern int intel_mid_dw_i2c_abort(int busnum);
@@ -326,4 +337,5 @@ struct dw_i2c_dev *i2c_dw_setup(struct device *pdev, int bus_idx,
 void i2c_dw_free(struct device *pdev, struct dw_i2c_dev *dev);
 int i2c_dw_suspend(struct dw_i2c_dev *dev, bool runtime);
 int i2c_dw_resume(struct dw_i2c_dev *dev, bool runtime);
-void i2c_acpi_devices_setup(struct device *pdev, struct dw_i2c_dev *dev);
+extern int intel_mid_dw_i2c_acquire_ownership(void);
+extern int intel_mid_dw_i2c_release_ownership(void);

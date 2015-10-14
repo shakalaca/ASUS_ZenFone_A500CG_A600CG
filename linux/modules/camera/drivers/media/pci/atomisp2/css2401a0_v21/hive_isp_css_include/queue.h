@@ -28,7 +28,7 @@
  * System and cell specific interfaces and inline code are included
  * conditionally through Makefile path settings.
  *
- *  - .        system and cell agnostic interfaces, constants and identifiers
+ *  - system and cell agnostic interfaces, constants and identifiers
  *	- public:  cell specific interfaces
  *	- private: cell specific inline implementations
  *	- global:  inter cell constants and identifiers
@@ -36,7 +36,7 @@
  *
  */
 
-#include "storage_class.h"
+#include <storage_class.h>
 
 #include "queue_local.h"
 

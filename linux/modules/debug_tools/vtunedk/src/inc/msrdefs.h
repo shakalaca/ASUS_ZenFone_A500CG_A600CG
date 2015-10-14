@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2011-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2011-2014 Intel Corporation.  All Rights Reserved.
  
     This file is part of SEP Development Kit
  
@@ -59,6 +59,7 @@
 #define IA32_DEBUG_CTRL             0x1D9
 #undef  IA32_LBR_FILTER_SELECT
 #define IA32_LBR_FILTER_SELECT      0x1c8
+#define IA32_PEBS_FRONTEND          0x3F7
 
 #define COMPOUND_CTR_CTL            0x306
 #define COMPOUND_PERF_CTR           0x307

@@ -26,7 +26,6 @@
 #include <linux/mei_cl_bus.h>
 
 #include "mei_dev.h"
-#include "hw-me.h"
 #include "client.h"
 
 #define to_mei_cl_driver(d) container_of(d, struct mei_cl_driver, driver)
@@ -425,8 +424,6 @@ int mei_cl_enable_device(struct mei_cl_device *device)
 	dev = cl->dev;
 
 	mutex_lock(&dev->device_lock);
-
-	cl->state = MEI_FILE_CONNECTING;
 
 	err = mei_cl_connect(cl, NULL);
 	if (err < 0) {

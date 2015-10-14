@@ -22,7 +22,7 @@
 #ifndef __IA_CSS_VF_HOST_H
 #define __IA_CSS_VF_HOST_H
 
-#include "ia_css.h"
+#include "ia_css_frame_public.h"
 #include "ia_css_binary.h"
 
 #include "ia_css_vf_types.h"
@@ -41,7 +41,8 @@ sh_css_vf_downscale_log2(
 void
 ia_css_vf_config(
 	struct sh_css_isp_vf_isp_config *to,
-	const struct ia_css_vf_configuration  *from);
+	const struct ia_css_vf_configuration *from,
+	unsigned size);
 
 enum ia_css_err
 ia_css_vf_configure(

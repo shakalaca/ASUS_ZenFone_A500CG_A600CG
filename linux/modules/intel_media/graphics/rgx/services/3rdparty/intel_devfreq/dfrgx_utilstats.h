@@ -34,8 +34,7 @@
  /*****************************************************************************
  * Error values
  *****************************************************************************/
-typedef enum _DFRGX_HWPERF_ERROR_
-{
+typedef enum _DFRGX_HWPERF_ERROR_ {
 	DFRGX_HWPERF_OK,
 	DFRGX_HWPERF_OBJ_NOT_CREATED,
 	DFRGX_HWPERF_ALREADY_INITIAIZED,
@@ -53,7 +52,7 @@ unsigned int gpu_rgx_utilstats_init_obj(void);
 
 unsigned int gpu_rgx_utilstats_deinit_obj(void);
 
-unsigned int gpu_rgx_get_util_stats(void* pvData);
+unsigned int gpu_rgx_get_util_stats(void *pvData);
 
 
 #endif	/* _DF_RGXHWPERF_H_*/

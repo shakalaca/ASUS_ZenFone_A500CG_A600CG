@@ -43,10 +43,19 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/pm.h>
 #include <linux/mmc/sdhci.h>
+#include <linux/mmc/slot-gpio.h>
 
 #include <asm/spid.h>
+#include <asm/cpu_device_id.h>
 
 #include "sdhci.h"
+
+#define INTEL_CHT_GPIO_SOUTHEAST	0xfed98000
+#define INTEL_CHT_GPIO_LEN		0x2000
+#define INTEL_CHV_RCOMP_CTRL	0x1180
+#define INTEL_CHV_RCOMP_CONF	0x1194
+#define INTEL_CHV_RCOMP_VAL	0x118c
+#define INTEL_CHV_RCOMP_SET	0x1190
 
 enum {
 	SDHCI_ACPI_SD_CD	= BIT(0),
@@ -79,8 +88,29 @@ struct sdhci_acpi_host {
 	const struct sdhci_acpi_slot	*slot;
 	struct platform_device		*pdev;
 	bool				use_runtime_pm;
+	unsigned int			autosuspend_delay;
 	int				cd_gpio;
 };
+
+#define INTEL_VLV_CPU	0x37
+#define INTEL_CHV_CPU	0x4c
+static const struct x86_cpu_id intel_cpus[] = {
+	{ X86_VENDOR_INTEL, 6, INTEL_VLV_CPU, X86_FEATURE_ANY, 0 },
+	{ X86_VENDOR_INTEL, 6, INTEL_CHV_CPU, X86_FEATURE_ANY, 0 },
+	{}
+};
+
+static bool sdhci_intel_host(unsigned int *cpu)
+{
+	const struct x86_cpu_id *id;
+	if (!cpu)
+		return false;
+	id = x86_match_cpu(intel_cpus);
+	if (!id)
+		return false;
+	*cpu = id->model;
+	return true;
+}
 
 static inline bool sdhci_acpi_flag(struct sdhci_acpi_host *c, unsigned int flag)
 {
@@ -139,28 +169,6 @@ static int sdhci_acpi_power_up_host(struct sdhci_host *host)
 	return 0;
 }
 
-static int sdhci_acpi_get_cd(struct sdhci_host *host)
-{
-	bool present;
-	struct sdhci_acpi_host *c = sdhci_priv(host);
-
-	if (host->quirks2 & SDHCI_QUIRK2_BAD_SD_CD) {
-		/* present doesn't work */
-		if (gpio_is_valid(c->cd_gpio))
-			return gpio_get_value(c->cd_gpio) ? 0 : 1;
-	}
-
-	/* If nonremovable or polling, assume that the card is always present */
-	if ((host->mmc->caps & MMC_CAP_NONREMOVABLE) ||
-			(host->quirks & SDHCI_QUIRK_BROKEN_CARD_DETECTION))
-		present = true;
-	else
-		present = sdhci_readl(host, SDHCI_PRESENT_STATE) &
-			SDHCI_CARD_PRESENT;
-
-	return present;
-}
-
 static int sdhci_acpi_get_tuning_count(struct sdhci_host *host)
 {
 	struct sdhci_acpi_host *c = sdhci_priv(host);
@@ -186,27 +194,65 @@ static int sdhci_acpi_get_tuning_count(struct sdhci_host *host)
 	if (!strcmp(hid, "80860F14") && !strcmp(uid, "1"))
 		tuning_count = 8;
 
+	if (info)
+		ACPI_FREE(info);
+
 	return tuning_count;
 }
 
-static void  sdhci_acpi_platform_reset_exit(struct sdhci_host *host, u8 mask)
+/* CHT A0 workaround */
+static int sdhci_intel_chv_set_io_vol(struct sdhci_host *host, bool to_1p8)
 {
-	if (host->quirks2 & SDHCI_QUIRK2_POWER_PIN_GPIO_MODE) {
-		if (mask & SDHCI_RESET_ALL) {
-			/* reset back to 3.3v signaling */
-			gpio_set_value(host->gpio_1p8_en, 0);
-			/* disable the VDD power */
-			gpio_set_value(host->gpio_pwr_en, 1);
-		}
-	}
+	void __iomem *ioaddr = host->gpiobase;
+	u32 value, config = 0;
+	u8 slew;
+	u8 pstrength, nstrength;
+
+	if (!ioaddr)
+		return 0;
+
+	/* read RCOMP control to set bit31 */
+	value = readl(ioaddr + INTEL_CHV_RCOMP_CTRL);
+	value |= 0x80000000;
+	writel(value, ioaddr + INTEL_CHV_RCOMP_CTRL);
+
+	/* set RCOMP family config reg 1p8_enable */
+	value = readl(ioaddr + INTEL_CHV_RCOMP_CONF);
+	if (to_1p8)
+		value |= 0x200000;
+	else
+		value &= ~0x200000;
+	writel(value, ioaddr + INTEL_CHV_RCOMP_CONF);
+	udelay(100);
+
+	/* read RCOMP value */
+	value = readl(ioaddr + INTEL_CHV_RCOMP_VAL);
+	slew = (value >> 16) & 0xff;
+	pstrength = (value >> 8) & 0xff;
+	nstrength = value & 0xff;
+
+	/* read family config value */
+	config |= slew | (nstrength << 16) | (pstrength << 24) | 0x300;
+	writel(config, ioaddr + INTEL_CHV_RCOMP_SET);
+
+	return 0;
+}
+
+static int sdhci_acpi_set_io_vol(struct sdhci_host *host, bool to_1p8)
+{
+	unsigned int cpu;
+
+	if (sdhci_intel_host(&cpu) && (cpu == INTEL_CHV_CPU))
+		return sdhci_intel_chv_set_io_vol(host, to_1p8);
+
+	return 0;
 }
 
 static const struct sdhci_ops sdhci_acpi_ops_dflt = {
 	.enable_dma = sdhci_acpi_enable_dma,
 	.power_up_host	= sdhci_acpi_power_up_host,
-	.get_cd		= sdhci_acpi_get_cd,
 	.get_tuning_count = sdhci_acpi_get_tuning_count,
-	.platform_reset_exit = sdhci_acpi_platform_reset_exit,
+	.set_io_voltage	= sdhci_acpi_set_io_vol,
 };
 
 static const struct sdhci_ops sdhci_acpi_ops_int = {
@@ -222,6 +268,7 @@ static int sdhci_acpi_emmc_probe_slot(struct platform_device *pdev)
 {
 	struct sdhci_acpi_host *c = platform_get_drvdata(pdev);
 	struct sdhci_host *host;
+	unsigned int cpu;
 
 	if (!c || !c->host)
 		return 0;
@@ -231,6 +278,58 @@ static int sdhci_acpi_emmc_probe_slot(struct platform_device *pdev)
 	if (!INTEL_MID_BOARDV2(TABLET, BYT, BLB, PRO) &&
 			!INTEL_MID_BOARDV2(TABLET, BYT, BLB, ENG))
 		sdhci_alloc_panic_host(host);
+
+	host->mmc->caps2 |= MMC_CAP2_CACHE_CTRL;
+	/* Enable Packed Command */
+	host->mmc->caps2 |= MMC_CAP2_PACKED_CMD;
+
+	if (!sdhci_intel_host(&cpu))
+		return 0;
+
+	switch (cpu) {
+	case INTEL_VLV_CPU:
+		host->mmc->qos = kzalloc(sizeof(struct pm_qos_request),
+				GFP_KERNEL);
+		pm_qos_add_request(host->mmc->qos, PM_QOS_CPU_DMA_LATENCY,
+				PM_QOS_DEFAULT_VALUE);
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+
+static int sdhci_acpi_sdio_probe_slot(struct platform_device *pdev)
+{
+	struct sdhci_acpi_host *c = platform_get_drvdata(pdev);
+	struct sdhci_host *host;
+	unsigned int cpu;
+
+	if (!c || !c->host)
+		return 0;
+
+	host = c->host;
+
+	if (!sdhci_intel_host(&cpu))
+		return 0;
+
+	switch (cpu) {
+	case INTEL_VLV_CPU:
+		/* increase the auto suspend delay for SDIO to be 500ms */
+		c->autosuspend_delay = 500;
+		host->mmc->qos = kzalloc(sizeof(struct pm_qos_request),
+				GFP_KERNEL);
+		pm_qos_add_request(host->mmc->qos, PM_QOS_CPU_DMA_LATENCY,
+				PM_QOS_DEFAULT_VALUE);
+		break;
+	case INTEL_CHV_CPU:
+		host->quirks2 |= SDHCI_QUIRK2_SDR104_BROKEN;
+		break;
+	default:
+		break;
+	}
 
 	return 0;
 }
@@ -254,15 +353,14 @@ static const struct sdhci_acpi_slot sdhci_acpi_slot_int_sdio = {
 	.flags   = SDHCI_ACPI_RUNTIME_PM,
 	.pm_caps = MMC_PM_KEEP_POWER | MMC_PM_WAKE_SDIO_IRQ |
 		MMC_PM_WAKE_SDIO_IRQ,
+	.probe_slot	= sdhci_acpi_sdio_probe_slot,
 };
 
-#define BYT_SD_1P8_EN	40
-#define BYT_SD_PWR_EN	41
 static int sdhci_acpi_sd_probe_slot(struct platform_device *pdev)
 {
 	struct sdhci_acpi_host *c = platform_get_drvdata(pdev);
 	struct sdhci_host *host;
-	int err;
+	unsigned int cpu;
 
 	if (!c || !c->host || !c->slot)
 		return 0;
@@ -276,35 +374,6 @@ static int sdhci_acpi_sd_probe_slot(struct platform_device *pdev)
 
 	c->cd_gpio = acpi_get_gpio_by_index(&pdev->dev, 0, NULL);
 
-	if (INTEL_MID_BOARDV1(PHONE, BYT) ||
-			 INTEL_MID_BOARDV1(TABLET, BYT))
-		host->quirks2 |= SDHCI_QUIRK2_POWER_PIN_GPIO_MODE;
-
-	/* change the GPIO pin to GPIO mode */
-	if (host->quirks2 & SDHCI_QUIRK2_POWER_PIN_GPIO_MODE) {
-		/* change to GPIO mode */
-		lnw_gpio_set_alt(BYT_SD_PWR_EN, 0);
-		err = gpio_request(BYT_SD_PWR_EN, "sd_pwr_en");
-		if (err)
-			return -ENODEV;
-		host->gpio_pwr_en = BYT_SD_PWR_EN;
-		/* disable the power by default */
-		gpio_direction_output(host->gpio_pwr_en, 0);
-		gpio_set_value(host->gpio_pwr_en, 1);
-
-		/* change to GPIO mode */
-		lnw_gpio_set_alt(BYT_SD_1P8_EN, 0);
-		err = gpio_request(BYT_SD_1P8_EN, "sd_1p8_en");
-		if (err) {
-			gpio_free(host->gpio_pwr_en);
-			return -ENODEV;
-		}
-		host->gpio_1p8_en = BYT_SD_1P8_EN;
-		/* 3.3v signaling by default */
-		gpio_direction_output(host->gpio_1p8_en, 0);
-		gpio_set_value(host->gpio_1p8_en, 0);
-	}
-
 	host->mmc->caps2 |= MMC_CAP2_PWCTRL_POWER;
 
 	/* Bayley Bay board */
@@ -312,11 +381,29 @@ static int sdhci_acpi_sd_probe_slot(struct platform_device *pdev)
 			INTEL_MID_BOARD(2, TABLET, BYT, BLB, ENG))
 		host->quirks2 |= SDHCI_QUIRK2_NO_1_8_V;
 
+	/*
+	 * CHT A0 workaround
+	 */
+	if (!sdhci_intel_host(&cpu))
+		return 0;
+
+	if (cpu == INTEL_CHV_CPU) {
+		host->gpiobase = ioremap_nocache(INTEL_CHT_GPIO_SOUTHEAST,
+				INTEL_CHT_GPIO_LEN);
+		host->quirks2 |= SDHCI_QUIRK2_CARD_CD_DELAY;
+	} else if (cpu == INTEL_VLV_CPU) {
+		host->mmc->qos = kzalloc(sizeof(struct pm_qos_request),
+				GFP_KERNEL);
+		pm_qos_add_request(host->mmc->qos, PM_QOS_CPU_DMA_LATENCY,
+				PM_QOS_DEFAULT_VALUE);
+	}
+
 	return 0;
 }
 
 static const struct sdhci_acpi_slot sdhci_acpi_slot_int_sd = {
-	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
+	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
+		SDHCI_QUIRK2_SDR104_BROKEN,
 	.caps2   = MMC_CAP2_FIXED_NCRC,
 	.flags   = SDHCI_ACPI_SD_CD | SDHCI_ACPI_RUNTIME_PM,
 	.probe_slot	= sdhci_acpi_sd_probe_slot,
@@ -381,59 +468,6 @@ static const struct sdhci_acpi_slot *sdhci_acpi_get_slot(acpi_handle handle,
 	return slot;
 }
 
-#ifdef CONFIG_PM_RUNTIME
-
-static irqreturn_t sdhci_acpi_sd_cd(int irq, void *dev_id)
-{
-	mmc_detect_change(dev_id, msecs_to_jiffies(200));
-	return IRQ_HANDLED;
-}
-
-static int sdhci_acpi_add_own_cd(struct device *dev, int gpio,
-				 struct mmc_host *mmc)
-{
-	unsigned long flags;
-	int err, irq;
-
-	if (gpio < 0) {
-		err = gpio;
-		goto out;
-	}
-
-	err = devm_gpio_request_one(dev, gpio, GPIOF_DIR_IN, "sd_cd");
-	if (err)
-		goto out;
-
-	irq = gpio_to_irq(gpio);
-	if (irq < 0) {
-		err = irq;
-		goto out_free;
-	}
-
-	flags = IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
-	err = devm_request_irq(dev, irq, sdhci_acpi_sd_cd, flags, "sd_cd", mmc);
-	if (err)
-		goto out_free;
-
-	return 0;
-
-out_free:
-	devm_gpio_free(dev, gpio);
-out:
-	dev_warn(dev, "failed to setup card detect wake up\n");
-	return err;
-}
-
-#else
-
-static int sdhci_acpi_add_own_cd(struct device *dev, int gpio,
-				 struct mmc_host *mmc)
-{
-	return 0;
-}
-
-#endif
-
 static int sdhci_acpi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -475,6 +509,7 @@ static int sdhci_acpi_probe(struct platform_device *pdev)
 	c->pdev = pdev;
 	c->use_runtime_pm = sdhci_acpi_flag(c, SDHCI_ACPI_RUNTIME_PM);
 	c->cd_gpio = -ENODEV;
+	c->autosuspend_delay = 0;
 
 	platform_set_drvdata(pdev, c);
 
@@ -532,14 +567,22 @@ static int sdhci_acpi_probe(struct platform_device *pdev)
 
 	if (sdhci_acpi_flag(c, SDHCI_ACPI_SD_CD) &&
 			c->cd_gpio != -ENODEV) {
-		if (sdhci_acpi_add_own_cd(dev, c->cd_gpio, host->mmc))
+		/*
+		 * WORKAROUND, can be removed when GPIO_CD
+		 * set to GPIO mode by default
+		 */
+		lnw_gpio_set_alt(c->cd_gpio, 0);
+		if (mmc_gpio_request_cd(host->mmc, c->cd_gpio))
 			c->use_runtime_pm = false;
 	}
 
 	if (c->use_runtime_pm) {
 		pm_runtime_set_active(dev);
 		pm_suspend_ignore_children(dev, 1);
-		pm_runtime_set_autosuspend_delay(dev, 50);
+		if (c->autosuspend_delay)
+			pm_runtime_set_autosuspend_delay(dev, c->autosuspend_delay);
+		else
+			pm_runtime_set_autosuspend_delay(dev, 50);
 		pm_runtime_use_autosuspend(dev);
 		pm_runtime_enable(dev);
 	}

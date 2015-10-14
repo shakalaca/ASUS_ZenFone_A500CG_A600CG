@@ -45,30 +45,51 @@ static struct charger_cable cable_list[] = {
 	{
 	 .psy_cable_type = POWER_SUPPLY_CHARGER_TYPE_USB_SDP,
 	 .extcon_cable_type = EXTCON_SDP,
+	 .cable_props = {
+			.cable_stat = EXTCON_CHRGR_CABLE_DISCONNECTED,
+		},
 	 },
 	{
 	 .psy_cable_type = POWER_SUPPLY_CHARGER_TYPE_USB_CDP,
 	 .extcon_cable_type = EXTCON_CDP,
+	 .cable_props = {
+			.cable_stat = EXTCON_CHRGR_CABLE_DISCONNECTED,
+		},
 	 },
 	{
 	 .psy_cable_type = POWER_SUPPLY_CHARGER_TYPE_USB_DCP,
 	 .extcon_cable_type = EXTCON_DCP,
+	 .cable_props = {
+			.cable_stat = EXTCON_CHRGR_CABLE_DISCONNECTED,
+		},
 	 },
 	{
 	 .psy_cable_type = POWER_SUPPLY_CHARGER_TYPE_USB_ACA,
 	 .extcon_cable_type = EXTCON_ACA,
+	 .cable_props = {
+			.cable_stat = EXTCON_CHRGR_CABLE_DISCONNECTED,
+		},
 	 },
 	{
 	 .psy_cable_type = POWER_SUPPLY_CHARGER_TYPE_ACA_DOCK,
 	 .extcon_cable_type = EXTCON_ACA,
+	 .cable_props = {
+			.cable_stat = EXTCON_CHRGR_CABLE_DISCONNECTED,
+		},
 	 },
 	{
 	 .psy_cable_type = POWER_SUPPLY_CHARGER_TYPE_SE1,
 	 .extcon_cable_type = EXTCON_TA,
+	 .cable_props = {
+			.cable_stat = EXTCON_CHRGR_CABLE_DISCONNECTED,
+		},
 	 },
 	{
 	 .psy_cable_type = POWER_SUPPLY_CHARGER_TYPE_AC,
 	 .extcon_cable_type = EXTCON_AC,
+	 .cable_props = {
+			.cable_stat = EXTCON_CHRGR_CABLE_DISCONNECTED,
+		},
 	 },
 };
 
@@ -248,6 +269,22 @@ static void init_charger_cables(struct charger_cable *cable_lst, int count)
 
 }
 
+static inline int is_charging_can_be_enabled(struct power_supply *psy)
+{
+	int health;
+
+	health = HEALTH(psy);
+	if (IS_BATTERY(psy)) {
+		return (health == POWER_SUPPLY_HEALTH_GOOD) ||
+				(health == POWER_SUPPLY_HEALTH_DEAD);
+	} else {
+		return
+	((CURRENT_THROTTLE_ACTION(psy) != PSY_THROTTLE_DISABLE_CHARGER) &&
+	(CURRENT_THROTTLE_ACTION(psy) != PSY_THROTTLE_DISABLE_CHARGING) &&
+	(INLMT(psy) >= 100) && (health == POWER_SUPPLY_HEALTH_GOOD));
+	}
+}
+
 static inline void get_cur_chrgr_prop(struct power_supply *psy,
 				      struct charger_props *chrgr_prop)
 {
@@ -357,7 +394,7 @@ static void cache_successive_samples(long *sample_array, long new_sample)
 	*(sample_array + i) = new_sample;
 }
 
-static inline void cache_bat_prop(struct batt_props *bat_prop_new)
+static inline void cache_bat_prop(struct batt_props *bat_prop_new, bool force)
 {
 
 	struct batt_props *bat_cache;
@@ -381,7 +418,7 @@ static inline void cache_bat_prop(struct batt_props *bat_prop_new)
 
 update_props:
 	if (time_after(bat_prop_new->tstamp,
-		(bat_cache->tstamp + DEF_CUR_VOLT_SAMPLE_JIFF)) ||
+		(bat_cache->tstamp + DEF_CUR_VOLT_SAMPLE_JIFF)) || force ||
 						bat_cache->tstamp == 0) {
 		cache_successive_samples(bat_cache->voltage_now_cache,
 						bat_prop_new->voltage_now);
@@ -447,7 +484,7 @@ static inline bool is_batt_prop_changed(struct power_supply *psy)
 	 */
 	get_cur_bat_prop(psy, &bat_prop);
 	if (get_bat_prop_cache(psy, &bat_prop_cache)) {
-		cache_bat_prop(&bat_prop);
+		cache_bat_prop(&bat_prop, false);
 		return true;
 	}
 
@@ -457,7 +494,7 @@ static inline bool is_batt_prop_changed(struct power_supply *psy)
 	if (!IS_BAT_PROP_CHANGED(bat_prop, bat_prop_cache))
 		return false;
 
-	cache_bat_prop(&bat_prop);
+	cache_bat_prop(&bat_prop, false);
 	return true;
 }
 
@@ -572,8 +609,10 @@ static int get_battery_status(struct power_supply *psy)
 	while (cnt--) {
 		if (IS_PRESENT(chrgr_lst[cnt]))
 			status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		else
+			continue;
 
-		if (IS_CHARGING_CAN_BE_ENABLED(chrgr_lst[cnt]) &&
+		if (is_charging_can_be_enabled(chrgr_lst[cnt]) &&
 				(IS_HEALTH_GOOD(chrgr_lst[cnt]))) {
 			health = HEALTH(psy);
 			if ((health == POWER_SUPPLY_HEALTH_GOOD) ||
@@ -590,6 +629,7 @@ static int get_battery_status(struct power_supply *psy)
 		}
 	}
 	pr_devel("%s: Set status=%d for %s\n", __func__, status, psy->name);
+	pr_err("%s: Set status=%d for %s\n", __func__, status, psy->name);
 
 	return status;
 }
@@ -602,6 +642,17 @@ static void update_charger_online(struct power_supply *psy)
 		set_charger_online(psy, 0);
 }
 
+static inline void cache_cur_batt_prop_force(struct power_supply *psb)
+{
+	struct batt_props bat_prop;
+
+	if (!IS_BATTERY(psb))
+		return;
+
+	get_cur_bat_prop(psb, &bat_prop);
+	cache_bat_prop(&bat_prop, true);
+}
+
 static void update_sysfs(struct power_supply *psy)
 {
 	int i, cnt;
@@ -609,31 +660,35 @@ static void update_sysfs(struct power_supply *psy)
 	struct power_supply *chrgr_lst[MAX_CHARGER_COUNT];
 
 	if (IS_BATTERY(psy)) {
-		/* set battery status */
-		set_battery_status(psy, get_battery_status(psy));
-
 		/* set charger online */
 		cnt = get_supplied_by_list(psy, chrgr_lst);
 		while (cnt--) {
 			if (!IS_PRESENT(chrgr_lst[cnt]))
 				continue;
 
-			update_charger_online(psy);
+			update_charger_online(chrgr_lst[cnt]);
 		}
+		/* set battery status */
+		if (set_battery_status(psy, get_battery_status(psy)))
+			/* forcefully cache the battery properties */
+			cache_cur_batt_prop_force(psy);
 	} else {
+		/*set charger online */
+		update_charger_online(psy);
 		/*set battery status */
 		for (i = 0; i < psy->num_supplicants; i++) {
 			psb =
 			    power_supply_get_by_name(psy->
 						     supplied_to[i]);
 			if (psb && IS_BATTERY(psb) && IS_PRESENT(psb))
-				set_battery_status(psb,
-					get_battery_status(psb));
+				if (set_battery_status(psb,
+					get_battery_status(psb)))
+					/*
+					 * forcefully cache the battery
+					 * properties
+					 */
+					cache_cur_batt_prop_force(psb);
 		}
-
-		/*set charger online */
-		update_charger_online(psy);
-
 	}
 }
 
@@ -668,7 +723,7 @@ static int trigger_algo(struct power_supply *psy)
 
 	pr_info("%s:Algo_status:%d\n", __func__, bat_prop.algo_stat);
 
-	cache_bat_prop(&bat_prop);
+	cache_bat_prop(&bat_prop, false);
 
 	if (!cc || !cv)
 		return -ENODATA;
@@ -691,6 +746,10 @@ static int trigger_algo(struct power_supply *psy)
 		set_cc(chrgr_lst[cnt], cc_min);
 		set_cv(chrgr_lst[cnt], cv);
 	}
+
+	if ((bat_prop.algo_stat == PSY_ALGO_STAT_NOT_CHARGE) ||
+		(bat_prop.algo_stat == PSY_ALGO_STAT_FULL))
+		return -EOPNOTSUPP;
 
 	return 0;
 }
@@ -718,7 +777,8 @@ static inline void enable_supplied_by_charging
 	while (cnt--) {
 		if (!IS_PRESENT(chrgr_lst[cnt]))
 			continue;
-		if (is_enable && IS_CHARGING_CAN_BE_ENABLED(chrgr_lst[cnt])) {
+		if (is_enable && is_charging_can_be_enabled(chrgr_lst[cnt]) &&
+				is_charging_can_be_enabled(psy)) {
 			enable_charging(chrgr_lst[cnt]);
 			wait_for_charging_enabled(chrgr_lst[cnt]);
 		} else
@@ -740,7 +800,6 @@ static void __power_supply_trigger_charging_handler(struct power_supply *psy)
 				enable_supplied_by_charging(psy, false);
 			else
 				enable_supplied_by_charging(psy, true);
-
 		} else if (IS_CHARGER(psy)) {
 			for (i = 0; i < psy->num_supplicants; i++) {
 				psb =
@@ -751,7 +810,7 @@ static void __power_supply_trigger_charging_handler(struct power_supply *psy)
 					if (trigger_algo(psb)) {
 						disable_charging(psy);
 						break;
-					} else if (IS_CHARGING_CAN_BE_ENABLED
+					} else if (is_charging_can_be_enabled
 								(psy)) {
 						enable_charging(psy);
 						wait_for_charging_enabled(psy);
@@ -793,6 +852,12 @@ static bool is_cable_connected(void)
 	}
 	return false;
 }
+
+bool power_supply_is_cable_connected(void)
+{
+	return is_cable_connected();
+}
+EXPORT_SYMBOL(power_supply_is_cable_connected);
 
 void power_supply_trigger_charging_handler(struct power_supply *psy)
 {
@@ -842,8 +907,7 @@ static int select_chrgr_cable(struct device *dev, void *data)
 	struct power_supply *psy = dev_get_drvdata(dev);
 	struct charger_cable *cable, *max_ma_cable = NULL;
 	struct charger_cable *cable_lst = (struct charger_cable *)data;
-	int max_ma = -1;
-	int i;
+	int max_ma = -1, i;
 
 	if (!IS_CHARGER(psy))
 		return 0;
@@ -865,7 +929,6 @@ static int select_chrgr_cable(struct device *dev, void *data)
 
 	/* no cable connected. disable charging */
 	if (!max_ma_cable) {
-
 		if ((IS_CHARGER_ENABLED(psy) || IS_CHARGING_ENABLED(psy))) {
 			disable_charging(psy);
 			disable_charger(psy);
@@ -879,6 +942,9 @@ static int select_chrgr_cable(struct device *dev, void *data)
 		update_charger_online(psy);
 
 		switch_cable(psy, POWER_SUPPLY_CHARGER_TYPE_NONE);
+
+		/* update battery properties */
+		update_sysfs(psy);
 
 		mutex_unlock(&psy_chrgr.evt_lock);
 		power_supply_changed(psy);
@@ -901,9 +967,15 @@ static int select_chrgr_cable(struct device *dev, void *data)
 
 		update_charger_online(psy);
 
-		set_inlmt(psy, max_ma_cable->cable_props.ma);
+		if (CURRENT_THROTTLE_ACTION(psy) == PSY_THROTTLE_INPUT_LIMIT)
+			set_inlmt(psy, min(max_ma_cable->cable_props.ma,
+					THROTTLE_VALUE(psy, CURRENT_THROTTLE_STATE(psy))));
+		else
+			set_inlmt(psy, max_ma_cable->cable_props.ma);
+
 		if (!get_battery_thresholds(psy, &bat_thresh)) {
-			SET_ITERM(psy, bat_thresh.iterm);
+			if (!ITERM(psy))
+				SET_ITERM(psy, bat_thresh.iterm);
 			SET_MIN_TEMP(psy, bat_thresh.temp_min);
 			SET_MAX_TEMP(psy, bat_thresh.temp_max);
 		}
@@ -966,17 +1038,13 @@ int psy_charger_throttle_charger(struct power_supply *psy,
 {
 	int ret = 0;
 
-	if (!IS_PRESENT(psy))
-		return 0;
-
-	if (state < 0 || state > MAX_THROTTLE_STATE(psy))
+	if (state < 0 || state >= MAX_THROTTLE_STATE(psy))
 		return -EINVAL;
 
 	mutex_lock(&psy_chrgr.evt_lock);
 
 	switch THROTTLE_ACTION(psy, state)
 	{
-
 		case PSY_THROTTLE_DISABLE_CHARGER:
 			SET_MAX_CC(psy, 0);
 			disable_charger(psy);
@@ -986,10 +1054,13 @@ int psy_charger_throttle_charger(struct power_supply *psy,
 			disable_charging(psy);
 			break;
 		case PSY_THROTTLE_CC_LIMIT:
-			SET_MAX_CC(psy, THROTTLE_CC_VALUE(psy, state));
+			SET_MAX_CC(psy, THROTTLE_VALUE(psy, state));
 			break;
 		case PSY_THROTTLE_INPUT_LIMIT:
-			set_inlmt(psy, THROTTLE_CC_VALUE(psy, state));
+			/*
+			 * input limit throtling is handling in
+			 * configure_chrgr_source().
+			 */
 			break;
 		default:
 			pr_err("%s:Invalid throttle action for %s\n",
@@ -1000,7 +1071,7 @@ int psy_charger_throttle_charger(struct power_supply *psy,
 	mutex_unlock(&psy_chrgr.evt_lock);
 
 	/* Configure the driver based on new state */
-	if (!ret)
+	if (!ret && IS_PRESENT(psy))
 		configure_chrgr_source(cable_list);
 	return ret;
 }
@@ -1019,6 +1090,9 @@ int power_supply_register_charger(struct power_supply *psy)
 		INIT_WORK(&psy_chrgr.algo_trigger_work, trigger_algo_psy_class);
 		psy_chrgr.is_cable_evt_reg = true;
 	}
+
+	SET_MAX_THROTTLE_STATE(psy);
+
 	return ret;
 }
 EXPORT_SYMBOL(power_supply_register_charger);

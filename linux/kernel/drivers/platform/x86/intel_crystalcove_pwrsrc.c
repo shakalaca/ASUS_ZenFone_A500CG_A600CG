@@ -246,10 +246,17 @@ static int pwrsrc_extcon_dev_reg_callback(struct notifier_block *nb,
 					unsigned long event, void *data)
 {
 	struct pwrsrc_info *info = container_of(nb, struct pwrsrc_info, nb);
+	int mask = 0;
 
 	/* check if there is other extcon cables */
 	if (extcon_num_of_cable_devs(EXTCON_CABLE_SDP)) {
 		dev_info(&info->pdev->dev, "unregistering otg device\n");
+		/* Send VBUS disconnect as another cable detection
+		 * driver registered to extcon framework and notifies
+		 * OTG on cable connect */
+		if (info->otg)
+			atomic_notifier_call_chain(&info->otg->notifier,
+				USB_EVENT_VBUS, &mask);
 		/* Set VBUS supply mode to SW control mode */
 		intel_mid_pmic_writeb(CRYSTALCOVE_VBUSCNTL_REG, 0x02);
 		if (info->nb.notifier_call) {
@@ -348,7 +355,8 @@ static int crystalcove_pwrsrc_probe(struct platform_device *pdev)
 		handle_pwrsrc_event(info, pwrsrcirq);
 
 	ret = request_threaded_irq(info->irq, NULL, crystalcove_pwrsrc_isr,
-				IRQF_ONESHOT, PWRSRC_DRV_NAME, info);
+				IRQF_ONESHOT | IRQF_NO_SUSPEND,
+				PWRSRC_DRV_NAME, info);
 	if (ret) {
 		dev_err(&pdev->dev, "unable to register irq %d\n", info->irq);
 		goto intr_teg_failed;
@@ -420,7 +428,7 @@ static int __init crystalcove_pwrsrc_init(void)
 {
 	return platform_driver_register(&crystalcove_pwrsrc_driver);
 }
-fs_initcall(crystalcove_pwrsrc_init);
+device_initcall(crystalcove_pwrsrc_init);
 
 static void __exit crystalcove_pwrsrc_exit(void)
 {

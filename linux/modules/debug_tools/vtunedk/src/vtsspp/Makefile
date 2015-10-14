@@ -55,7 +55,7 @@ ifneq ($(KERNELRELEASE),)
 obj-m := $(DRIVER_NAME).o
 $(DRIVER_NAME)-objs := module.o collector.o procfs.o transport.o record.o \
                        task_map.o globals.o cpuevents.o user_vm.o stack.o \
-                       apic.o dsa.o bts.o pebs.o lbr.o
+                       apic.o dsa.o bts.o pebs.o lbr.o nmiwd.o
 ifeq ($(MARCH),i386)
 EXTRA_CFLAGS += -DVTSS_ARCH_32
 $(DRIVER_NAME)-objs += sys32.o
@@ -103,9 +103,9 @@ CHECK_BUILD    := $(CC) $(KBUILD_CPPFLAGS) $(CPPFLAGS) $(LINUXINCLUDE) \
                   $(_KBUILD_CFLAGS) $(CFLAGS_KERNEL) $(EXTRA_CFLAGS) $(CFLAGS) \
                   -DKBUILD_BASENAME=\"$(DRIVER_NAME)\" -Werror -S -o /dev/null -xc > /dev/null 2>&1
 autoconf-srcs := $(sort $(wildcard $(KBUILD_SRC)/$(M)/autoconf/*.c))
-$(addprefix $(obj)/,$($(DRIVER_NAME)-objs)): $(obj)/vtss_autoconf.h
+$(addprefix $(obj)/,$($(DRIVER_NAME)-objs)): $(KBUILD_SRC)/$(M)/vtss_autoconf.h
 
-$(obj)/vtss_autoconf.h: $(autoconf-srcs) $(KBUILD_SRC)/$(M)/Makefile
+$(KBUILD_SRC)/$(M)/vtss_autoconf.h: $(autoconf-srcs) $(KBUILD_SRC)/$(M)/Makefile
 ifeq ($(VERSION).$(PATCHLEVEL),2.6)
 	@$(if $(CHECK_SUBLEVEL),$(error Linux kernels prior to 2.6.$(REQUIRED_SUBLEVEL) are unsupported.))
 else
@@ -142,7 +142,7 @@ endif
 	@echo "" >> $@
 	@$(foreach f, $(autoconf-srcs), if $(CHECK_BUILD) $(f); then (echo -n "#define "; echo -n VTSS_AUTOCONF_$(notdir $(f:.c=)) | tr '\-a-z' '_A-Z'; echo " 1") >> $@; fi;)
 	@echo "" >> $@
-	@if [ -f $(obj)/vtss_version.h ]; then \
+	@if [ -f $(KBUILD_SRC)/$(M)/vtss_version.h ]; then \
 		echo "#include \"vtss_version.h\""; \
 		echo ""; \
 	fi >> $@

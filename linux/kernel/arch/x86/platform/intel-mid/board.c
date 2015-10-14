@@ -61,6 +61,7 @@
 #include "device_libs/platform_soc_thermal.h"
 #include "device_libs/platform_msic_adc.h"
 #include "device_libs/platform_bcove_adc.h"
+#include "device_libs/platform_scale_adc.h"
 #include <asm/platform_mrfld_audio.h>
 #include <asm/platform_ctp_audio.h>
 #include "device_libs/platform_mrfl_thermal.h"
@@ -83,16 +84,18 @@
 #include "device_libs/platform_bq24261.h"
 #include "device_libs/platform_r69001.h"
 #include "device_libs/platform_pn544.h"
+#include "device_libs/platform_fdp.h"
 #include "device_libs/platform_l3g4200d.h"
 #include "device_libs/platform_lis3dh.h"
 #include "device_libs/platform_lsm303.h"
 #include "device_libs/platform_apds990x.h"
 #include "device_libs/platform_a1026.h"
 #include "device_libs/platform_cm3628.h"
+#include "device_libs/platform_pca9574.h"
+#include "device_libs/platform_hx8528_me372cl.h"
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_I2C
 #include "device_libs/platform_synaptics_dsx.h"
 #endif
-
 
 /* SW devices */
 #include "device_libs/platform_panel.h"
@@ -105,39 +108,53 @@
 #include "device_libs/platform_mt9d113.h"
 #include "device_libs/platform_mt9m114.h"
 #include "device_libs/platform_lm3554.h"
+#include "device_libs/platform_lm3642.h"
 #include "device_libs/platform_mt9v113.h"
 #include "device_libs/platform_ov5640.h"
+#include "device_libs/platform_imx208.h"
 #include "device_libs/platform_imx175.h"
 #include "device_libs/platform_imx135.h"
 #include "device_libs/platform_imx134.h"
 #include "device_libs/platform_imx132.h"
-#include "device_libs/platform_hm2056.h"
-#include "device_libs/platform_gc2155.h"
-#include "device_libs/platform_gc0339.h"
-#include "device_libs/platform_gc0310.h" 
+
 #include "device_libs/platform_imx111.h"
-#include "device_libs/platform_imx219.h"
-#include "device_libs/platform_mn34130.h"
-#include "device_libs/platform_t4k37.h"
 #include "device_libs/platform_t4k35.h"
 #include "device_libs/platform_t4k35_180.h"
+
+#include "device_libs/platform_t4k37.h"
+#include "device_libs/platform_mn34130.h"
+
+#include "device_libs/platform_gc2155.h"
+#include "device_libs/platform_imx219.h"
+#include "device_libs/platform_hm2056.h"
 #include "device_libs/platform_s5k8aay.h"
+#include "device_libs/platform_s5k6b2yx.h"
 #include "device_libs/platform_ov9724.h"
 #include "device_libs/platform_ov2722.h"
+#include "device_libs/platform_gc2235.h"
 #include "device_libs/platform_lm3559.h"
 #include "device_libs/platform_ov8830.h"
+#include "device_libs/platform_ov8858.h"
 #include "device_libs/platform_ov5693.h"
 #include "device_libs/platform_wm5102.h"
 #include "device_libs/platform_ap1302.h"
+#include "device_libs/platform_ov680.h"
+#include "device_libs/platform_csi_xactor.h"
+#include "device_libs/platform_m10mo.h"
+#include "device_libs/platform_pixter.h"
+#include "device_libs/platform_ar0543_raw.h"
+#include "device_libs/platform_hm2056_raw.h"
+
 /* Chih-Hsuan add Battery driver */
 #ifdef CONFIG_A500CG_BATTERY_SMB347
-	#include "device_libs/platform_a500cg_smb347.h"
+#include "device_libs/platform_a500cg_smb347.h"
 #endif
 /*
  * SPI devices
  */
 #include "device_libs/platform_max3111.h"
 #include "device_libs/platform_max17042.h"
+#include "device_libs/platform_xmm2230.h"
 
 /* HSI devices */
 #include "device_libs/platform_hsi_modem.h"
@@ -156,10 +173,21 @@
 /* Flash IC devices*/
 #include "device_libs/platform_rt8515.h"
 
-/* SENSOR devices  20131106 ASUS-Eve_Wen*/
+/* SENSOR devices  */
 #include "device_libs/platform_akm09911.h"
 #include "device_libs/platform_accel.h"
 
+/* Flash IC devices*/
+#include "device_libs/platform_rt8515.h"
+
+/* UART devices */
+#include "device_libs/platform_gps.h"
+#ifdef CONFIG_ME372CG_BATTERY_SMB345
+#include "device_libs/platform_me372cg_smb345.h"
+#include "device_libs/platform_bq27520.h"
+#endif
+/* USB devices */
+#include "device_libs/pci/platform_usb_otg.h"
 
 static void __init *no_platform_data(void *info)
 {
@@ -167,6 +195,13 @@ static void __init *no_platform_data(void *info)
 }
 
 struct devs_id __initconst device_ids[] = {
+	/* UART devices */
+	{"bcm4752", SFI_DEV_TYPE_UART, 0, &intel_mid_gps_device_init, NULL},
+	{"bcm47521", SFI_DEV_TYPE_UART, 0, &intel_mid_gps_device_init, NULL},
+	{"bcm47531", SFI_DEV_TYPE_UART, 0, &intel_mid_gps_device_init, NULL},
+	{"cg2000", SFI_DEV_TYPE_UART, 0, &intel_mid_gps_device_init, NULL},
+	{"csrg05t", SFI_DEV_TYPE_UART, 0, &intel_mid_gps_device_init, NULL},
+
 	/* SD devices */
 	{"wl12xx_clk_vmmc", SFI_DEV_TYPE_SD, 0, &wl12xx_platform_data, NULL},
 	{"bcm43xx_clk_vmmc", SFI_DEV_TYPE_SD, 0, &wifi_platform_data, NULL},
@@ -181,6 +216,7 @@ struct devs_id __initconst device_ids[] = {
 	{"pmic_gpio", SFI_DEV_TYPE_IPC, 1, &pmic_gpio_platform_data,
 					&ipc_device_handler},
 	{"spi_max3111", SFI_DEV_TYPE_SPI, 0, &max3111_platform_data, NULL},
+	{"spi_xmm2230", SFI_DEV_TYPE_SPI, 0, &xmm2230_platform_data, NULL},
 	{"i2c_max7315", SFI_DEV_TYPE_I2C, 1, &max7315_platform_data, NULL},
 	{"i2c_max7315_2", SFI_DEV_TYPE_I2C, 1, &max7315_platform_data, NULL},
 	{"tca6416", SFI_DEV_TYPE_I2C, 1, &tca6416_platform_data, NULL},
@@ -203,6 +239,7 @@ struct devs_id __initconst device_ids[] = {
 	{"bq24192", SFI_DEV_TYPE_I2C, 1, &bq24192_platform_data},
 	{"bq24261_charger", SFI_DEV_TYPE_I2C, 1, &bq24261_platform_data, NULL},
 	{"pn544", SFI_DEV_TYPE_I2C, 0, &pn544_platform_data, NULL},
+	{"fdp", SFI_DEV_TYPE_I2C, 0, &fdp_platform_data, NULL},
 	{"l3gd20", SFI_DEV_TYPE_I2C, 0, &l3g4200d_platform_data, NULL},
 	{"l3g4200d", SFI_DEV_TYPE_I2C, 0, &l3g4200d_platform_data},
 	{"lps331ap", SFI_DEV_TYPE_I2C, 0, &no_platform_data},
@@ -210,6 +247,27 @@ struct devs_id __initconst device_ids[] = {
 	{"lsm303dl", SFI_DEV_TYPE_I2C, 0, &lsm303dlhc_accel_platform_data},
 	{"lsm303cmp", SFI_DEV_TYPE_I2C, 0, &no_platform_data, NULL},
 	{"apds990x", SFI_DEV_TYPE_I2C, 0, &apds990x_platform_data},
+	{"MNZX8000", SFI_DEV_TYPE_I2C, 0, &no_platform_data, NULL},
+	{"pca953x", SFI_DEV_TYPE_I2C, 0, &nxp_pca9574_platform_data, NULL},
+	{"hx8528", SFI_DEV_TYPE_I2C, 0, &hx8528_platform_data},
+
+#ifdef CONFIG_ME372CG_BATTERY_SMB345
+#if defined(CONFIG_PF450CL)
+	{"smb358", SFI_DEV_TYPE_I2C, 0, &smb345_platform_data},
+#else
+	{"smb345", SFI_DEV_TYPE_I2C, 0, &smb345_platform_data},
+#endif
+#endif
+
+#ifdef CONFIG_ME372CG_BATTERY_BQ27520
+	{"bq27520", SFI_DEV_TYPE_I2C, 0, &bq27520_platform_data},
+#endif
+
+
+#ifdef CONFIG_PF450CL_BATTERY_BQ27520
+	{"bq27520", SFI_DEV_TYPE_I2C, 0, &bq27520_platform_data, NULL},
+	{"bq27520f", SFI_DEV_TYPE_I2C, 0, &no_platform_data, NULL},
+#endif
 
 	/* MSIC subdevices */
 	{"msic_adc", SFI_DEV_TYPE_IPC, 1, &msic_adc_platform_data,
@@ -237,6 +295,8 @@ struct devs_id __initconst device_ids[] = {
 					&ipc_device_handler},
 	{"bcove_adc", SFI_DEV_TYPE_IPC, 1, &bcove_adc_platform_data,
 					&ipc_device_handler},
+	{"scale_adc", SFI_DEV_TYPE_IPC, 1, &scale_adc_platform_data,
+					&ipc_device_handler},
 	{"bcove_thrm", SFI_DEV_TYPE_IPC, 1, &mrfl_thermal_platform_data,
 					&ipc_device_handler},
 	{"scove_thrm", SFI_DEV_TYPE_IPC, 1, &moor_thermal_platform_data,
@@ -251,11 +311,8 @@ struct devs_id __initconst device_ids[] = {
 		&panel_handler},
 	{"PANEL_JDI_CMD", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
 		&panel_handler},
-		
+
 	/* Touch */
-#ifdef CONFIG_TOUCHSCREEN_HIMAX_HX85XX
-	{"himax-ts", SFI_DEV_TYPE_I2C, 0, &no_platform_data, NULL},
-#endif
 #ifdef CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_I2C
 	{"synaptics_dsx_i2c", SFI_DEV_TYPE_I2C, 0, &get_dsx_platformdata, NULL},
 #endif
@@ -271,26 +328,35 @@ struct devs_id __initconst device_ids[] = {
 		&panel_handler},
 	{"PNC_SHARP_10x19", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
 		&panel_handler},
+	{"PNV_SHARP_10x19", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
+		&panel_handler},
+	{"PNCD_SHARP_10x19", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
+		&panel_handler},
 	{"PNV_SHARP_25x16", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
 		&panel_handler},
 	{"PNC_SHARP_25x16", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
 		&panel_handler},
-	{"JDI_25x16_VID", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
+	{"PNV_JDI_25x16", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
+		&panel_handler},
+	{"PNC_JDI_25x16", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
+		&panel_handler},
+	{"PNC_SDC_16x25", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
+		&panel_handler},
+	{"PNC_SDC_25x16", SFI_DEV_TYPE_MDM, 0, &no_platform_data,
 		&panel_handler},
 
 	{"ctp_lt_wm8994", SFI_DEV_TYPE_IPC, 1, &ctp_audio_platform_data,
 						&ipc_device_handler},
-    {"ctp_vb_cs42l73", SFI_DEV_TYPE_IPC, 1, &ctp_audio_platform_data,
-						&ipc_device_handler},
-	{"ctp_audio", SFI_DEV_TYPE_IPC, 1, &ctp_audio_platform_data,
-						&ipc_device_handler},
+
 	/* I2C devices for camera image subsystem */
 /* Chih-Hsuan add Battery driver */
 #ifdef CONFIG_A500CG_BATTERY_SMB347
 	{"smb345", SFI_DEV_TYPE_I2C, 0, &smb347_platform_data},
 #endif
-#if 0
+#if 0  
 	{"lm3554", SFI_DEV_TYPE_I2C, 0, &lm3554_platform_data_func,
+					&intel_register_i2c_camera_device},
+	{"lm3642", SFI_DEV_TYPE_I2C, 0, &lm3642_platform_data_func,
 					&intel_register_i2c_camera_device},
 	{"mt9e013", SFI_DEV_TYPE_I2C, 0, &mt9e013_platform_data,
 					&intel_register_i2c_camera_device},
@@ -302,9 +368,13 @@ struct devs_id __initconst device_ids[] = {
 					&intel_register_i2c_camera_device},
 	{"ov8830", SFI_DEV_TYPE_I2C, 0, &ov8830_platform_data,
 					&intel_register_i2c_camera_device},
+	{"ov8858", SFI_DEV_TYPE_I2C, 0, &ov8858_platform_data,
+					&intel_register_i2c_camera_device},
 	{"ov5693", SFI_DEV_TYPE_I2C, 0, &ov5693_platform_data,
 					&intel_register_i2c_camera_device},
 	{"ov5640", SFI_DEV_TYPE_I2C, 0, &ov5640_platform_data,
+					&intel_register_i2c_camera_device},
+	{"imx208", SFI_DEV_TYPE_I2C, 0, &imx208_platform_data,
 					&intel_register_i2c_camera_device},
 	{"imx175", SFI_DEV_TYPE_I2C, 0, &imx175_platform_data,
 					&intel_register_i2c_camera_device},
@@ -318,40 +388,68 @@ struct devs_id __initconst device_ids[] = {
 					&intel_register_i2c_camera_device},
 	{"s5k8aay", SFI_DEV_TYPE_I2C, 0, &s5k8aay_platform_data,
 					&intel_register_i2c_camera_device},
+	{"s5k6b2yx", SFI_DEV_TYPE_I2C, 0, &s5k6b2yx_platform_data,
+					&intel_register_i2c_camera_device},
 	{"ov9724", SFI_DEV_TYPE_I2C, 0, &ov9724_platform_data,
 					&intel_register_i2c_camera_device},
 	{"ov2722", SFI_DEV_TYPE_I2C, 0, &ov2722_platform_data,
 					&intel_register_i2c_camera_device},
+	{"gc2235", SFI_DEV_TYPE_I2C, 0, &gc2235_platform_data,
+					&intel_register_i2c_camera_device},
 	{"lm3559", SFI_DEV_TYPE_I2C, 0, &lm3559_platform_data_func,
 					&intel_register_i2c_camera_device},
-#endif
-    {"hm2056", SFI_DEV_TYPE_I2C, 0, &hm2056_platform_data,
-                    &intel_register_i2c_camera_device},
-	{"gc2155", SFI_DEV_TYPE_I2C, 0, &gc2155_platform_data,
-                    &intel_register_i2c_camera_device},
-	{"gc0339", SFI_DEV_TYPE_I2C, 0, &gc0339_platform_data,
-                    &intel_register_i2c_camera_device},
-    {"gc0310", SFI_DEV_TYPE_I2C, 0, &gc0310_platform_data,
-                    &intel_register_i2c_camera_device},
-    {"cm3628", SFI_DEV_TYPE_I2C, 0, &accel_cm3628_platform_data, NULL},
 	{"lm3560", SFI_DEV_TYPE_I2C, 0, &lm3559_platform_data_func,
 					&intel_register_i2c_camera_device},
 	{"ap1302", SFI_DEV_TYPE_I2C, 0, &ap1302_platform_data,
 					&intel_register_i2c_camera_device},
+	{"ov680", SFI_DEV_TYPE_I2C, 0, &ov680_platform_data,
+					&intel_register_i2c_camera_device},
+#endif
+	{"m10mo", SFI_DEV_TYPE_I2C, 0, &m10mo_platform_data,
+					&intel_register_i2c_camera_device},
+	{"ar0543_raw", SFI_DEV_TYPE_I2C, 0, &ar0543_raw_platform_data,
+					&intel_register_i2c_camera_device},
+    {"cm3628", SFI_DEV_TYPE_I2C, 0, &accel_cm3628_platform_data, NULL},
 	{"imx111", SFI_DEV_TYPE_I2C, 0, &imx111_platform_data,
 					&intel_register_i2c_camera_device},
 	{"imx219", SFI_DEV_TYPE_I2C, 0, &imx219_platform_data,
-					&intel_register_i2c_camera_device},
-	{"mn34130", SFI_DEV_TYPE_I2C, 0, &mn34130_platform_data,
-					&intel_register_i2c_camera_device},
-	{"t4k37", SFI_DEV_TYPE_I2C, 0, &t4k37_platform_data,
 					&intel_register_i2c_camera_device},
 	{"t4k35", SFI_DEV_TYPE_I2C, 0, &t4k35_platform_data,
 					&intel_register_i2c_camera_device},
 	{"t4k35_180", SFI_DEV_TYPE_I2C, 0, &t4k35_180_platform_data,
 					&intel_register_i2c_camera_device},
-//ChungYi
+	
+	{"mn34130", SFI_DEV_TYPE_I2C, 0, &mn34130_platform_data,
+					&intel_register_i2c_camera_device},
+	{"t4k37", SFI_DEV_TYPE_I2C, 0, &t4k37_platform_data,
+					&intel_register_i2c_camera_device},
+					
+	{"hm2056", SFI_DEV_TYPE_I2C, 0, &hm2056_platform_data,
+					&intel_register_i2c_camera_device},
+	{"hm2056_raw", SFI_DEV_TYPE_I2C, 0, &hm2056_raw_platform_data,
+					&intel_register_i2c_camera_device},
+	{"gc2155", SFI_DEV_TYPE_I2C, 0, &gc2155_platform_data,
+                    &intel_register_i2c_camera_device},
+	{"imx219", SFI_DEV_TYPE_I2C, 0, &imx219_platform_data,
+					&intel_register_i2c_camera_device},
+	{"hm2056", SFI_DEV_TYPE_I2C, 0, &hm2056_platform_data,
+						&intel_register_i2c_camera_device},
 	{"rt8515", SFI_DEV_TYPE_I2C, 1, &rt8515_platform_data_func,
+					&intel_register_i2c_camera_device},					// Flash IC devices
+
+#if defined(CONFIG_VIDEO_CSI_XACTOR_MODULE) || defined(CONFIG_VIDEO_CSI_XACTOR)
+	{"xactor_a", SFI_DEV_TYPE_I2C, 0, &csi_xactor_a_platform_data,
+					&intel_register_i2c_camera_device},
+	{"xactor_b", SFI_DEV_TYPE_I2C, 0, &csi_xactor_b_platform_data,
+					&intel_register_i2c_camera_device},
+	{"xactor_c", SFI_DEV_TYPE_I2C, 0, &csi_xactor_c_platform_data,
+					&intel_register_i2c_camera_device},
+#endif
+	{"pixter_0", SFI_DEV_TYPE_I2C, 0, &pixter_0_platform_data,
+					&intel_register_i2c_camera_device},
+	{"pixter_1", SFI_DEV_TYPE_I2C, 0, &pixter_1_platform_data,
+					&intel_register_i2c_camera_device},
+	{"pixter_2", SFI_DEV_TYPE_I2C, 0, &pixter_2_platform_data,
 					&intel_register_i2c_camera_device},
 	{"audience_es305", SFI_DEV_TYPE_I2C, 0, &audience_platform_data,
 						NULL},
@@ -365,6 +463,10 @@ struct devs_id __initconst device_ids[] = {
 						&ipc_device_handler},
 
 	/* IPC devices */
+	{"ctp_rt5671", SFI_DEV_TYPE_IPC, 1, &ctp_audio_platform_data,
+						&ipc_device_handler},
+	{"ctp_audio", SFI_DEV_TYPE_IPC, 1, &ctp_audio_platform_data,
+						&ipc_device_handler},
 	{"ctp_rhb_cs42l73", SFI_DEV_TYPE_IPC, 1, &ctp_audio_platform_data,
 						&ipc_device_handler},
 	{"ctp_vb_cs42l73", SFI_DEV_TYPE_IPC, 1, &ctp_audio_platform_data,
@@ -384,6 +486,7 @@ struct devs_id __initconst device_ids[] = {
 	{"kxtj9", SFI_DEV_TYPE_I2C, 0, &accel_platform_data, NULL},
 	{"mpu6500", SFI_DEV_TYPE_I2C, 0, &mpu6500_platform_data, NULL},
 	{"cs42l73", SFI_DEV_TYPE_I2C, 1, &cs42l73_platform_data, NULL},
+	{"rt5671", SFI_DEV_TYPE_I2C, 1, &no_platform_data, NULL},
 #ifdef CONFIG_HSI
 	{"hsi_ifx_modem", SFI_DEV_TYPE_HSI, 0, &hsi_modem_platform_data, NULL},
 	{"hsi_ffl_modem", SFI_DEV_TYPE_HSI, 0, &ffl_modem_platform_data, NULL},
@@ -419,6 +522,13 @@ struct devs_id __initconst device_ids[] = {
 	{"RMC_PEGASUS", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
 		&sfi_handle_mdm},
 	/* scalability V2 configurations */
+	/* for 6360 modem*/
+	{"XMM6360_CONF_1", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
+		&sfi_handle_mdm},
+	{"XMM6360_CONF_2", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
+		&sfi_handle_mdm},
+	{"XMM6360_CONF_3", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
+		&sfi_handle_mdm},
 	/* for 7160 modem*/
 	{"XMM7160_CONF_1", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
 		&sfi_handle_mdm},
@@ -447,5 +557,26 @@ struct devs_id __initconst device_ids[] = {
 		&sfi_handle_mdm},
 	{"XMM7260_CONF_7", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
 		&sfi_handle_mdm},
+	{"XMM7260_CONF_8", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
+		&sfi_handle_mdm},
+	{"XMM7260_CONF_9", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
+		&sfi_handle_mdm},
+	{"XMM7260_CONF_10", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
+		&sfi_handle_mdm},
+	{"XMM7260_CONF_11", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
+		&sfi_handle_mdm},
+	{"XMM7260_CONF_12", SFI_DEV_TYPE_MDM, 0, &modem_platform_data,
+		&sfi_handle_mdm},
+#ifdef CONFIG_USB_DWC3_OTG
+	/* USB */
+	{"ULPICAL_7F", SFI_DEV_TYPE_USB, 0, &no_platform_data,
+		&sfi_handle_usb},
+	{"ULPICAL_7D", SFI_DEV_TYPE_USB, 0, &no_platform_data,
+		&sfi_handle_usb},
+	{"UTMICAL_PEDE3TX0", SFI_DEV_TYPE_USB, 0, &no_platform_data,
+		&sfi_handle_usb},
+	{"UTMICAL_PEDE6TX7", SFI_DEV_TYPE_USB, 0, &no_platform_data,
+		&sfi_handle_usb},
+#endif
 	{},
 };

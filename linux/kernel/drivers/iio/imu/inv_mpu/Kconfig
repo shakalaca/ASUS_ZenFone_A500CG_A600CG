@@ -27,6 +27,6 @@ config INV_IIO_MPU3050_ACCEL_SLAVE_BMA250
 config SENSORS_MPU6500
         bool "MPU6500 Gyro Sensor"
         depends on I2C
-       	default n
+        default n
         
 # leon_feng add for MPU6500 drivers --

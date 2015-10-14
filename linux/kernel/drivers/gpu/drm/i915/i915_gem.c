@@ -40,6 +40,10 @@ static void i915_gem_object_flush_gtt_write_domain(struct drm_i915_gem_object *o
 static void i915_gem_object_flush_cpu_write_domain(struct drm_i915_gem_object *obj,
 						   bool force);
 static __must_check int
+i915_gem_object_wait_rendering(struct drm_i915_gem_object *obj,
+				bool readonly);
+
+static __must_check int
 i915_gem_object_bind_to_vm(struct drm_i915_gem_object *obj,
 			   struct i915_address_space *vm,
 			   unsigned alignment,
@@ -168,7 +172,7 @@ i915_gem_object_vmap(struct drm_i915_gem_object *obj)
 		i++;
 	}
 
-	addr = vmap(pages, i, VM_MAP, pgprot_writecombine(PAGE_KERNEL));
+	addr = vmap(pages, i, VM_MAP, PAGE_KERNEL);
 	if (addr == NULL) {
 		DRM_ERROR("Failed to vmap pages\n");
 		goto finish;
@@ -360,6 +364,42 @@ __copy_from_user_swizzled(char *gpu_vaddr, int gpu_offset,
 	return 0;
 }
 
+/*
+ * Pins the specified object's pages and synchronizes the object with
+ * GPU accesses. Sets needs_clflush to non-zero if the caller should
+ * flush the object from the CPU cache.
+ */
+int i915_gem_obj_prepare_shmem_read(struct drm_i915_gem_object *obj,
+				    int *needs_clflush)
+{
+	int ret;
+
+	*needs_clflush = 0;
+
+	if (!obj || !obj->base.filp)
+		return -EINVAL;
+
+	if (!(obj->base.read_domains & I915_GEM_DOMAIN_CPU)) {
+		/* If we're not in the cpu read domain, set ourself into the gtt
+		 * read domain and manually flush cachelines (if required). This
+		 * optimizes for the case when the gpu will dirty the data
+		 * anyway again before the next pread happens. */
+		*needs_clflush = !cpu_cache_is_coherent(obj->base.dev,
+							obj->cache_level);
+		ret = i915_gem_object_wait_rendering(obj, true);
+		if (ret)
+			return ret;
+	}
+
+	ret = i915_gem_object_get_pages(obj);
+	if (ret)
+		return ret;
+
+	i915_gem_object_pin_pages(obj);
+
+	return ret;
+}
+
 /* Per-page copy function for the shmem pread fastpath.
  * Flushes invalid cachelines before reading the target if
  * needs_clflush is set. */
@@ -457,24 +497,9 @@ i915_gem_shmem_pread(struct drm_device *dev,
 
 	obj_do_bit17_swizzling = i915_gem_object_needs_bit17_swizzle(obj);
 
-	if (!(obj->base.read_domains & I915_GEM_DOMAIN_CPU)) {
-		/* If we're not in the cpu read domain, set ourself into the gtt
-		 * read domain and manually flush cachelines (if required). This
-		 * optimizes for the case when the gpu will dirty the data
-		 * anyway again before the next pread happens. */
-		needs_clflush = !cpu_cache_is_coherent(dev, obj->cache_level);
-		if (i915_gem_obj_bound_any(obj)) {
-			ret = i915_gem_object_set_to_gtt_domain(obj, false);
-			if (ret)
-				return ret;
-		}
-	}
-
-	ret = i915_gem_object_get_pages(obj);
+	ret = i915_gem_obj_prepare_shmem_read(obj, &needs_clflush);
 	if (ret)
 		return ret;
-
-	i915_gem_object_pin_pages(obj);
 
 	offset = args->offset;
 
@@ -1392,6 +1417,9 @@ int i915_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	unsigned long pfn;
 	int ret = 0, err = 0;
 	bool write = !!(vmf->flags & FAULT_FLAG_WRITE);
+	struct intel_ring_buffer *ring = NULL;
+	unsigned int reset_counter;
+	u32 seqno;
 
 	i915_rpm_get_callback(dev);
 	/* We don't use vmf->pgoff since that has the fake offset */
@@ -1401,6 +1429,36 @@ int i915_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	ret = i915_mutex_lock_interruptible(dev);
 	if (ret)
 		goto out;
+
+	ring = obj->ring;
+	seqno = !write ? obj->last_write_seqno : obj->last_read_seqno;
+	reset_counter = atomic_read(&dev_priv->gpu_error.reset_counter);
+
+	mutex_unlock(&dev->struct_mutex);
+
+	/* wait for GPU to finish first without acquiring struct_mutex.
+	   This will offload the mutex contention as subsequent wait for GPU
+	   while holding mutex in this routine will be as good as NOOP
+	*/
+	if (seqno != 0) {
+		ret = __wait_seqno(ring, seqno,
+				reset_counter, true, NULL);
+
+		if (ret)
+			goto out;
+	}
+
+	i915_gem_object_shmem_preallocate(obj);
+
+	ret = i915_mutex_lock_interruptible(dev);
+	if (ret)
+		goto out;
+
+	/* keep the check under struct_mutex to avoid sync problem */
+	if (dev_priv->pm.shutdown_in_progress) {
+		ret = -EINVAL;
+		goto unlock;
+	}
 
 	trace_i915_gem_object_fault(obj, page_offset, true, write);
 
@@ -1426,14 +1484,26 @@ int i915_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	if (ret)
 		goto unpin;
 
-	obj->fault_mappable = true;
-
+	/* Finally, remap it using the new GTT offset */
 	pfn = dev_priv->gtt.mappable_base + i915_gem_obj_ggtt_offset(obj);
 	pfn >>= PAGE_SHIFT;
-	pfn += page_offset;
 
-	/* Finally, remap it using the new GTT offset */
-	ret = vm_insert_pfn(vma, (unsigned long)vmf->virtual_address, pfn);
+	if (!obj->fault_mappable) {
+		int i;
+		for (i = 0; i < obj->base.size >> PAGE_SHIFT; i++) {
+			ret = vm_insert_pfn_with_pgprot(vma,
+							(unsigned long)vma->vm_start + i * PAGE_SIZE,
+							pfn + i,
+							vma->vm_page_prot);
+			if (ret)
+				break;
+		}
+		obj->fault_mappable = true;
+	} else
+		ret = vm_insert_pfn_with_pgprot(vma,
+						(unsigned long)vmf->virtual_address,
+						pfn + page_offset,
+						vma->vm_page_prot);
 unpin:
 	i915_gem_object_unpin(obj);
 unlock:
@@ -1768,6 +1838,17 @@ i915_gem_object_put_pages(struct drm_i915_gem_object *obj)
 	 * lists early. */
 	list_del(&obj->global_list);
 
+	/*
+	 * If so far the object was backed up by a scratch page, then remove
+	 * that association & make it reusable as a normal Gem object
+	 */
+	if ((unsigned long)obj->pages == (unsigned long)(obj)) {
+		obj->pages = NULL;
+		obj->base.read_domains = obj->base.write_domain =
+							I915_GEM_DOMAIN_CPU;
+		return 0;
+	}
+
 	ops->put_pages(obj);
 	obj->pages = NULL;
 
@@ -1865,6 +1946,93 @@ i915_gem_shrink_all(struct drm_i915_private *dev_priv)
 	list_for_each_entry_safe(obj, next, &dev_priv->mm.unbound_list,
 				 global_list)
 		i915_gem_object_put_pages(obj);
+}
+
+void
+i915_gem_object_shmem_preallocate(struct drm_i915_gem_object *obj)
+{
+	int page_count, i;
+	struct address_space *mapping;
+	struct page *page;
+	gfp_t gfp;
+
+	if (obj->pages)
+		return;
+
+	if (obj->madv != I915_MADV_WILLNEED) {
+		DRM_ERROR("Attempt to preallocate a purgeable object\n");
+		return;
+	}
+
+	if (obj->base.filp) {
+		int ret;
+		struct inode *inode = file_inode(obj->base.filp);
+		struct shmem_inode_info *info = SHMEM_I(inode);
+		if (!inode)
+			return;
+		/* The alloced field stores how many data pages are allocated
+		 * to the file. If already shmem space has been allocated for
+		 * the object, then we can simply return */
+		spin_lock(&info->lock);
+		ret = info->alloced;
+		spin_unlock(&info->lock);
+		if (ret > 0) {
+			DRM_DEBUG_DRIVER("Already shmem space alloced for obj %p, %d pages\n",
+					obj, ret);
+			return;
+		}
+	} else {
+		DRM_DEBUG_DRIVER("Attempt to preallocate a non-shmem backed obj %p, size=%x, user_fb=%d, stolen=%p, vmap=%d\n",
+				obj, (unsigned int)obj->base.size, obj->user_fb, obj->stolen,
+				i915_gem_is_userptr_object(obj));
+		return;
+	}
+
+	BUG_ON(obj->pages_pin_count);
+
+	/* Assert that the object is not currently in any GPU domain. As it
+	 * wasn't in the GTT, there shouldn't be any way it could have been in
+	 * a GPU cache
+	 */
+	BUG_ON(obj->base.read_domains & I915_GEM_GPU_DOMAINS);
+	BUG_ON(obj->base.write_domain & I915_GEM_GPU_DOMAINS);
+
+	trace_i915_gem_obj_prealloc_start(obj, obj->base.size, obj->user_fb);
+
+	page_count = obj->base.size / PAGE_SIZE;
+
+	/* Get the list of pages out of our struct file
+	 * Fail silently without starting the shrinker
+	 */
+	mapping = file_inode(obj->base.filp)->i_mapping;
+	gfp = mapping_gfp_mask(mapping);
+	gfp |= __GFP_NORETRY | __GFP_NOWARN | __GFP_NO_KSWAPD;
+	gfp &= ~(__GFP_IO | __GFP_WAIT);
+	for (i = 0; i < page_count; i++) {
+		page = shmem_read_mapping_page_gfp(mapping, i, gfp);
+		if (IS_ERR(page)) {
+			DRM_DEBUG_DRIVER("Failure for obj(%p) size(%x) at page(%d)\n",
+					obj, (unsigned int)obj->base.size, i);
+			return;
+		}
+		/* Flush the cpu cache for the page now itself */
+		drm_clflush_pages(&page, 1);
+		/* Decrement the extra ref count on the returned page,
+		   otherwise when 'get_pages_gtt' will be called later on
+		   in the regular path, it will also increment the ref count,
+		   which will disturb the ref count management */
+		page_cache_release(page);
+	}
+
+	/*
+	 * Reset the CPU domain now itself, so as to avoid the cache
+	 * flush later (under 'struct_mutex' lock), as the all pages
+	 * have been cache flushed.
+	 * Hope this is safe enough to be done here.
+	 */
+	obj->base.write_domain = 0;
+
+	trace_i915_gem_obj_prealloc_end(obj);
 }
 
 static int
@@ -2007,9 +2175,10 @@ i915_gem_object_move_to_active(struct drm_i915_gem_object *obj,
 {
 	struct drm_device *dev = obj->base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	u32 seqno = intel_ring_get_seqno(ring);
+	u32 seqno;
 
 	BUG_ON(ring == NULL);
+	seqno = intel_ring_get_seqno(ring);
 	if (obj->ring != ring && obj->last_write_seqno) {
 		/* Keep the seqno relative to the current ring */
 		obj->last_write_seqno = seqno;
@@ -2661,7 +2830,7 @@ i915_gem_wait_ioctl(struct drm_device *dev, void *data, struct drm_file *file)
 		goto out;
 
 	if (obj->active) {
-		seqno = obj->last_read_seqno;
+		seqno = (args->flags & I915_WAIT_WRITES) ? obj->last_write_seqno : obj->last_read_seqno;
 		ring = obj->ring;
 	}
 
@@ -2697,7 +2866,8 @@ out:
  * @obj: object which may be in use on another ring.
  * @to: ring we wish to use the object on. May be NULL.
  * @add_request: do we need to add a request to track operations
- *    submitted on ring with sync_to function
+ *    submitted on ring with sync_to function.
+ * @readonly: do we wait prior to performing a read-only operation.
  *
  * This code is meant to abstract object synchronization with the GPU.
  * Calling with NULL implies synchronizing the object with the CPU
@@ -2707,7 +2877,7 @@ out:
  */
 int
 i915_gem_object_sync(struct drm_i915_gem_object *obj,
-		     struct intel_ring_buffer *to, bool add_request)
+		     struct intel_ring_buffer *to, bool add_request, bool readonly)
 {
 	struct intel_ring_buffer *from = obj->ring;
 	u32 seqno;
@@ -2717,7 +2887,7 @@ i915_gem_object_sync(struct drm_i915_gem_object *obj,
 		return 0;
 
 	if (to == NULL || !i915_semaphore_is_enabled(obj->base.dev))
-		return i915_gem_object_wait_rendering(obj, false);
+		return i915_gem_object_wait_rendering(obj, readonly);
 
 	idx = intel_ring_sync_index(from, to);
 
@@ -2838,6 +3008,7 @@ i915_gem_object_ggtt_unbind(struct drm_i915_gem_object *obj)
 {
 	struct drm_i915_private *dev_priv = obj->base.dev->dev_private;
 	struct i915_address_space *ggtt = &dev_priv->gtt.base;
+	struct i915_vma *vma_tmp;
 
 	if (!i915_gem_obj_ggtt_bound(obj))
 		return 0;
@@ -2847,7 +3018,18 @@ i915_gem_object_ggtt_unbind(struct drm_i915_gem_object *obj)
 
 	BUG_ON(obj->pages == NULL);
 
-	return i915_vma_unbind(i915_gem_obj_to_vma(obj, ggtt));
+	vma_tmp = i915_gem_obj_to_vma(obj, ggtt);
+	/*
+	 * Added this NULL check on the returned vma pointer
+	 * to avoid klocwork warning, otherwise it is not
+	 * really needed, as we already have an indirect check
+	 * for it through the i915_gem_obj_bound function
+	 */
+	WARN_ON(vma_tmp == NULL);
+	if (vma_tmp == NULL)
+		return 0;
+
+	return i915_vma_unbind(vma_tmp);
 }
 
 int i915_gpu_idle(struct drm_device *dev)
@@ -3718,7 +3900,7 @@ i915_gem_object_pin_to_display_plane(struct drm_i915_gem_object *obj,
 	int ret;
 
 	if (pipelined != obj->ring) {
-		ret = i915_gem_object_sync(obj, pipelined, true);
+		ret = i915_gem_object_sync(obj, pipelined, true, true);
 		if (ret)
 			return ret;
 	}
@@ -3750,7 +3932,12 @@ i915_gem_object_pin_to_display_plane(struct drm_i915_gem_object *obj,
 	if (ret)
 		goto err_unpin_display;
 
-	i915_gem_object_flush_cpu_write_domain(obj, true);
+	/*
+	 * Check if object is backed up by a scratch page, in that case CPU
+	 * cache flush is not required, thus skip it.
+	 */
+	if ((unsigned long)(obj->pages) != (unsigned long)obj)
+		i915_gem_object_flush_cpu_write_domain(obj, true);
 
 	old_write_domain = obj->base.write_domain;
 	old_read_domains = obj->base.read_domains;
@@ -3927,21 +4114,6 @@ i915_gem_object_pin(struct drm_i915_gem_object *obj,
 			ret = i915_vma_unbind(vma);
 			if (ret)
 				return ret;
-		}
-	}
-
-	if (obj->user_fb == 1) {
-		if (obj->pages == NULL) {
-			if (obj->tiling_mode == I915_TILING_X) {
-				/* Tiled(X) Scanout buffers are more suitable
-				   for allocation from stolen area, as its very
-				   unlikely that they will be accessed directly
-				   from the CPU side and any allocation from
-				   stolen area is not directly CPU accessible,
-				   only through the aperture space it can be
-				   accessed */
-				i915_gem_object_move_to_stolen(obj);
-			}
 		}
 	}
 
@@ -4195,7 +4367,7 @@ struct drm_i915_gem_object *i915_gem_alloc_object(struct drm_device *dev,
 	}
 
 	mask = GFP_HIGHUSER | __GFP_RECLAIMABLE;
-	if (IS_CRESTLINE(dev) || IS_BROADWATER(dev)) {
+	if (IS_CRESTLINE(dev) || IS_BROADWATER(dev) || IS_VALLEYVIEW(dev)) {
 		/* 965gm cannot relocate objects above 4GiB. */
 		mask &= ~__GFP_HIGHMEM;
 		mask |= __GFP_DMA32;
@@ -4352,6 +4524,11 @@ i915_gem_idle(struct drm_device *dev)
 
 	/* Cancel the retire work handler, which should be idle now. */
 	cancel_delayed_work_sync(&dev_priv->mm.retire_work);
+
+	/* make sure we do a put_ring, as canceling the retire work
+	 * might cause mismatch between get/put
+	 */
+	i915_rpm_put_ring(dev);
 
 	return 0;
 }

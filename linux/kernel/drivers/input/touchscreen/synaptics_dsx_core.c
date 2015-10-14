@@ -73,6 +73,7 @@
 #define F11_STD_CTRL_LEN 10
 #define F11_STD_DATA_LEN 12
 #define F34_FLASH_CTRL00 0x0A
+#define F54_ANALOG_CMD00 0x139
 
 #define STATUS_NO_ERROR 0x00
 #define STATUS_RESET_OCCURRED 0x01
@@ -657,17 +658,20 @@ static ssize_t synaptics_rmi4_proj_tp_show(struct device *dev,
 	{
 		return snprintf(buf, PAGE_SIZE, "A600CG Ofilm\n");
 	}
-#ifdef A500CG_3rd_Touch_TP_YFO
-	else if (Read_TP_ID() == 3)	//A500 YFO:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+	//+++ add A500 & A600 touch driver ID selection
+	else if (Read_TP_ID() == 3 && (
+	Read_PROJ_ID() == 0 || Read_PROJ_ID() == 1 ||
+	Read_PROJ_ID() == 2 || Read_PROJ_ID() == 3 ||
+	Read_PROJ_ID() == 4))	//A500 YFO:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
 	{
 		return snprintf(buf, PAGE_SIZE, "A500CG YFO\n");
 	}
-#else
-	else if (Read_TP_ID() == 3)	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+	else if (Read_TP_ID() == 3 && (
+	Read_PROJ_ID() == 5 || Read_PROJ_ID() == 7))	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
 	{
 		return snprintf(buf, PAGE_SIZE, "A600CG JTouch\n");
 	}
-#endif
+	//---
 	else
 	{
 		return snprintf(buf, PAGE_SIZE, "Error\n"); 
@@ -690,7 +694,7 @@ static ssize_t synaptics_rmi4_glove_mode_store(struct device *dev,
 	unsigned int input;
 	int retval;
 //<ASUS_GPS+>
-	unsigned char wakeup_threshold;
+	unsigned char wakeup_threshold = 20;
 //<ASUS_GPS->
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
 	struct synaptics_rmi4_f12_ctrl_23 ctrl_23;
@@ -754,29 +758,55 @@ static ssize_t synaptics_rmi4_glove_mode_store(struct device *dev,
 		return -EINVAL;
 
 	if (rmi4_data->glove_mode == 1) {
-		if (Read_TP_ID() == 2)		//A600 Ofilm:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,0)
+		if (Read_TP_ID() == 0)				//A500 LCE:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (0,0)
 		{
 			wakeup_threshold = 10;
 		}
-		#ifdef A500CG_3rd_Touch_TP_YFO
-		#else
-		else if (Read_TP_ID() == 3)	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+		else if (Read_TP_ID() == 1)			//A500 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (0,1)
 		{
 			wakeup_threshold = 10;
 		}
-		#endif
+		else if (Read_TP_ID() == 2)			//A600 Ofilm:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,0)
+		{
+			wakeup_threshold = 10;
+		}
+		else if (Read_TP_ID() == 3 && (
+		Read_PROJ_ID() == 0 || Read_PROJ_ID() == 1 ||
+		Read_PROJ_ID() == 2 || Read_PROJ_ID() == 3 ||
+		Read_PROJ_ID() == 4))				//A500 YFO:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+		{
+			wakeup_threshold = 10;
+		}
+		else if (Read_TP_ID() == 3 && (
+		Read_PROJ_ID() == 5 || Read_PROJ_ID() == 7))	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+		{
+			wakeup_threshold = 10;
+		}
 	} else {
-		if (Read_TP_ID() == 2)		//A600 Ofilm:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,0)
-		{
-			wakeup_threshold = 18;
-		}
-		#ifdef A500CG_3rd_Touch_TP_YFO
-		#else
-		else if (Read_TP_ID() == 3)	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+		if (Read_TP_ID() == 0)				//A500 LCE:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (0,0)
 		{
 			wakeup_threshold = 20;
 		}
-		#endif
+		else if (Read_TP_ID() == 1)			//A500 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (0,1)
+		{
+			wakeup_threshold = 20;
+		}
+		else if (Read_TP_ID() == 2)			//A600 Ofilm:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,0)
+		{
+			wakeup_threshold = 18;
+		}
+		else if (Read_TP_ID() == 3 && (
+		Read_PROJ_ID() == 0 || Read_PROJ_ID() == 1 ||
+		Read_PROJ_ID() == 2 || Read_PROJ_ID() == 3 ||
+		Read_PROJ_ID() == 4))				//A500 YFO:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+		{
+			wakeup_threshold = 20;
+		}
+		else if (Read_TP_ID() == 3 && (
+		Read_PROJ_ID() == 5 || Read_PROJ_ID() == 7))	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+		{
+			wakeup_threshold = 20;
+		}
 	}
 
 	retval = synaptics_rmi4_reg_write(rmi4_data,
@@ -1161,7 +1191,7 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			input_sync(rmi4_data->input_dev);
 			return 0;
 		}
-	} else {
+	} else if (touch_proximity_at_phone == 0) {
 		retval = synaptics_rmi4_reg_read(rmi4_data,
 				rmi4_data->f12_ctrl20_base_addr,
 				ctrl_20.data,
@@ -3028,8 +3058,10 @@ static ssize_t virtual_keys_show(struct kobject *kobj,
 			"\n" __stringify(EV_KEY) ":" __stringify(KEY_MENU) ":603:1333:130:60"  
 			"\n");
 	}
-#ifdef A500CG_3rd_Touch_TP_YFO
-	else if (Read_TP_ID() == 3)	//A500 YFO:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+	else if (Read_TP_ID() == 3 && (
+	 Read_PROJ_ID() == 0 || Read_PROJ_ID() == 1 ||
+	 Read_PROJ_ID() == 2 || Read_PROJ_ID() == 3 ||
+	 Read_PROJ_ID() == 4))	//A500 YFO:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
 	{
 		return sprintf(buf,  
 			__stringify(EV_KEY) ":" __stringify(KEY_BACK) ":108:1345:130:104"  
@@ -3037,8 +3069,8 @@ static ssize_t virtual_keys_show(struct kobject *kobj,
 			"\n" __stringify(EV_KEY) ":" __stringify(KEY_MENU) ":622:1345:130:104"  
 			"\n");
 	}
-#else
-	else if (Read_TP_ID() == 3)	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+	else if (Read_TP_ID() == 3 && (
+	Read_PROJ_ID() == 5 || Read_PROJ_ID() == 7))	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
 	{
 		return sprintf(buf,  
 			__stringify(EV_KEY) ":" __stringify(KEY_BACK) ":119:1333:130:60"  
@@ -3046,7 +3078,6 @@ static ssize_t virtual_keys_show(struct kobject *kobj,
 			"\n" __stringify(EV_KEY) ":" __stringify(KEY_MENU) ":603:1333:130:60"  
 			"\n");
 	}
-#endif
 	else							//Others
 	{
 		return sprintf(buf,  
@@ -3772,6 +3803,7 @@ static void synaptics_rmi4_late_resume(struct early_suspend *h)
 	struct synaptics_rmi4_data *rmi4_data =
 			container_of(h, struct synaptics_rmi4_data,
 			early_suspend);
+	unsigned char command = 0x02;
 
 //<ASUS_DTP+>
 #ifdef ASUS_TOUCH_DTP_WAKEUP
@@ -3803,6 +3835,12 @@ static void synaptics_rmi4_late_resume(struct early_suspend *h)
 //		mutex_unlock(&exp_data.mutex);
 
 		wake_unlock(&rmi4_data->wake_lock);
+
+		//ForceCal
+		retval = synaptics_rmi4_reg_write(rmi4_data,
+				F54_ANALOG_CMD00,
+				&command,
+				sizeof(command));
 
 		return;
 	} else {

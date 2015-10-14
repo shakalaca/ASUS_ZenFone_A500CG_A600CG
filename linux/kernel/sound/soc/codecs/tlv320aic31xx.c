@@ -131,7 +131,6 @@ static SOC_ENUM_SINGLE_DECL(asilin_enum, AIC31XX_DACSETUP, 4, asilin_text);
 /*ASI right*/
 static SOC_ENUM_SINGLE_DECL(asirin_enum, AIC31XX_DACSETUP, 2, asirin_text);
 
-
 static const DECLARE_TLV_DB_SCALE(dac_vol_tlv, -6350, 50, 0);
 static const DECLARE_TLV_DB_SCALE(adc_fgain_tlv, 0, 10, 0);
 static const DECLARE_TLV_DB_SCALE(adc_cgain_tlv, -2000, 50, 0);
@@ -151,7 +150,7 @@ static const struct snd_kcontrol_new aic31xx_snd_controls[] = {
 	/* DAC Volume soft stepping control */
 	/* HP driver mute control */
 	SOC_DOUBLE_R("HP driver mute", AIC31XX_HPLGAIN,
-			AIC31XX_HPRGAIN, 2, 2, 0),
+			AIC31XX_HPRGAIN, 2, 1, 0),
 
 
 	/* ADC FINE GAIN */
@@ -181,29 +180,32 @@ static const struct snd_kcontrol_new aic31xx_snd_controls[] = {
 	/* HP Analog Gain Volume Control */
 	SOC_DOUBLE_R_TLV("HP Analog Gain", AIC31XX_LANALOGHPL,
 			AIC31XX_RANALOGHPR, 0, 0x7F, 1, hp_vol_tlv),
+	/* ADC MUTE */
+	SOC_SINGLE("ADC mute", AIC31XX_ADCFGA,
+			 7, 2, 0),
 };
 
 static const struct snd_kcontrol_new aic311x_snd_controls[] = {
 	/* SP Class-D driver output stage gain Control */
 	SOC_DOUBLE_R_TLV("SP Driver Gain", AIC31XX_SPLGAIN,
-			AIC31XX_SPRGAIN, 3, 0x04, 0, class_D_drv_tlv),
+			AIC31XX_SPRGAIN, 3, 0x03, 0, class_D_drv_tlv),
 	/* SP Analog Gain Volume Control */
 	SOC_DOUBLE_R_TLV("Analog Channel Gain", AIC31XX_LANALOGSPL,
 			AIC31XX_RANALOGSPR, 0, 0x7F, 1, sp_vol_tlv),
 	/* SP driver mute control */
 	SOC_DOUBLE_R("SP driver mute", AIC31XX_SPLGAIN,
-			AIC31XX_SPRGAIN, 2, 2, 0),
+			AIC31XX_SPRGAIN, 2, 1, 0),
 };
 
 static const struct snd_kcontrol_new aic310x_snd_controls[] = {
 	/* SP Class-D driver output stage gain Control */
 	SOC_SINGLE_TLV("SP Driver Gain", AIC31XX_SPLGAIN,
-			3, 0x04, 0, class_D_drv_tlv),
+			3, 0x03, 0, class_D_drv_tlv),
 	/* SP Analog Gain Volume Control */
 	SOC_SINGLE_TLV("Left Analog Channel Gain", AIC31XX_LANALOGSPL,
 			0, 0x7F, 1, sp_vol_tlv),
 	SOC_SINGLE("SP driver mute", AIC31XX_SPLGAIN,
-			 2, 2, 0),
+			 2, 1, 0),
 };
 
 static const struct snd_kcontrol_new asilin_control =
@@ -217,19 +219,19 @@ int aic31xx_wait_bits(struct aic31xx_priv *aic31xx, unsigned int reg,
 			unsigned int mask, unsigned char val, int sleep,
 			int counter)
 {
-	unsigned int status;
+	unsigned int value;
 	int timeout = sleep * counter;
-	int ret;
-	status = regmap_read(aic31xx->regmap, reg, &mask);
-	while (((status & mask) != val) && counter) {
+
+	value = snd_soc_read(aic31xx->codec, reg);
+	while (((value & mask) != val) && counter) {
 		usleep_range(sleep, sleep + 100);
-		ret = regmap_read(aic31xx->regmap, reg, &mask);
+		value = snd_soc_read(aic31xx->codec, reg);
 		counter--;
 	};
 	if (!counter)
 		dev_err(aic31xx->dev,
 			"wait_bits timedout (%d millisecs). lastval 0x%x\n",
-			timeout, status);
+			timeout, value);
 	return counter;
 }
 
@@ -335,7 +337,6 @@ static int aic31xx_hp_power_up_event(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_codec *codec = w->codec;
 	struct aic31xx_priv *aic31xx = snd_soc_codec_get_drvdata(codec);
-	int reg_mask = 0;
 	int ret_wbits = 0;
 	/* TODO: Already checked with TI, why same thing is getting
 		 done for powerup and poweron both
@@ -344,8 +345,8 @@ static int aic31xx_hp_power_up_event(struct snd_soc_dapm_widget *w,
 
 		if (!(strcmp(w->name, "HPL Driver"))) {
 			ret_wbits = aic31xx_wait_bits(aic31xx,
-					AIC31XX_DACFLAG1, reg_mask,
-					0x0, AIC31XX_TIME_DELAY,
+					AIC31XX_DACFLAG1, AIC31XX_HPL_MASK,
+					AIC31XX_HPL_MASK, AIC31XX_TIME_DELAY,
 					AIC31XX_DELAY_COUNTER);
 			if (!ret_wbits)
 				dev_dbg(codec->dev, "HPL Power Timedout\n");
@@ -353,8 +354,8 @@ static int aic31xx_hp_power_up_event(struct snd_soc_dapm_widget *w,
 		}
 		if (!(strcmp(w->name, "HPR Driver"))) {
 			ret_wbits = aic31xx_wait_bits(aic31xx,
-					AIC31XX_DACFLAG1, reg_mask,
-					0x0, AIC31XX_TIME_DELAY,
+					AIC31XX_DACFLAG1, AIC31XX_HPR_MASK,
+					AIC31XX_HPR_MASK, AIC31XX_TIME_DELAY,
 					AIC31XX_DELAY_COUNTER);
 			if (!ret_wbits)
 				dev_dbg(codec->dev, "HPR Power Timedout\n");
@@ -365,7 +366,7 @@ static int aic31xx_hp_power_up_event(struct snd_soc_dapm_widget *w,
 
 		if (!(strcmp(w->name, "HPL Driver"))) {
 			ret_wbits = aic31xx_wait_bits(aic31xx,
-					AIC31XX_DACFLAG1, reg_mask,
+					AIC31XX_DACFLAG1, AIC31XX_HPL_MASK,
 					0x0, AIC31XX_TIME_DELAY,
 					AIC31XX_DELAY_COUNTER);
 			if (!ret_wbits)
@@ -374,7 +375,7 @@ static int aic31xx_hp_power_up_event(struct snd_soc_dapm_widget *w,
 		}
 		if (!(strcmp(w->name, "HPR Driver"))) {
 			ret_wbits = aic31xx_wait_bits(aic31xx,
-					AIC31XX_DACFLAG1, reg_mask,
+					AIC31XX_DACFLAG1, AIC31XX_HPR_MASK,
 					0x0, AIC31XX_TIME_DELAY,
 					AIC31XX_DELAY_COUNTER);
 			if (!ret_wbits)
@@ -391,15 +392,14 @@ static int aic31xx_sp_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_codec *codec = w->codec;
 	struct aic31xx_priv *aic31xx = snd_soc_codec_get_drvdata(codec);
 	int ret_wbits = 0;
-	unsigned int reg_mask = 0;
 	if (SND_SOC_DAPM_EVENT_ON(event)) {
 		/* Check for the DAC FLAG register to know if the SPL & SPR are
 		 * really powered up
 		 */
 		if (w->shift == 7) {
 			ret_wbits = aic31xx_wait_bits(aic31xx,
-						AIC31XX_DACFLAG1, reg_mask,
-						0x0, AIC31XX_TIME_DELAY,
+						AIC31XX_DACFLAG1,  AIC31XX_SPL_MASK,
+						 AIC31XX_SPL_MASK, AIC31XX_TIME_DELAY,
 						AIC31XX_DELAY_COUNTER);
 			if (!ret_wbits)
 				dev_dbg(codec->dev, "SPL power timedout\n");
@@ -408,8 +408,8 @@ static int aic31xx_sp_event(struct snd_soc_dapm_widget *w,
 
 		if (w->shift == 6) {
 			ret_wbits = aic31xx_wait_bits(aic31xx,
-						AIC31XX_DACFLAG1, reg_mask,
-						0x0, AIC31XX_TIME_DELAY,
+						AIC31XX_DACFLAG1,  AIC31XX_SPR_MASK,
+						 AIC31XX_SPR_MASK, AIC31XX_TIME_DELAY,
 						AIC31XX_DELAY_COUNTER);
 			if (!ret_wbits)
 				dev_dbg(codec->dev, "SPR power timedout\n");
@@ -423,7 +423,7 @@ static int aic31xx_sp_event(struct snd_soc_dapm_widget *w,
 		 */
 		if (w->shift == 7) {
 			ret_wbits = aic31xx_wait_bits(aic31xx,
-						AIC31XX_DACFLAG1, reg_mask,
+						AIC31XX_DACFLAG1,  AIC31XX_SPL_MASK,
 						0x0, AIC31XX_TIME_DELAY,
 						AIC31XX_DELAY_COUNTER);
 			if (!ret_wbits)
@@ -431,7 +431,7 @@ static int aic31xx_sp_event(struct snd_soc_dapm_widget *w,
 			}
 		if (w->shift == 6) {
 			ret_wbits = aic31xx_wait_bits(aic31xx,
-						AIC31XX_DACFLAG1, reg_mask,
+						AIC31XX_DACFLAG1,  AIC31XX_SPR_MASK,
 						0x0, AIC31XX_TIME_DELAY,
 						AIC31XX_DELAY_COUNTER);
 			if (!ret_wbits)
@@ -506,7 +506,7 @@ static int micbias_power_on_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_codec *codec = w->codec;
 
 	if (SND_SOC_DAPM_EVENT_ON(event))
-		snd_soc_update_bits(codec, AIC31XX_MICBIAS, 0x03, (0x03));
+		snd_soc_update_bits(codec, AIC31XX_MICBIAS, 0x03, (0x02));
 	else if (SND_SOC_DAPM_EVENT_OFF(event))
 		snd_soc_update_bits(codec, AIC31XX_MICBIAS, 0x03, (0x0));
 
@@ -551,10 +551,10 @@ static const struct snd_soc_dapm_widget aic31xx_dapm_widgets[] = {
 	/* Output drivers */
 	SND_SOC_DAPM_OUT_DRV_E("HPL Driver", AIC31XX_HPDRIVER, 7, 0,
 			NULL, 0, aic31xx_hp_power_up_event,
-			SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
+			SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_OUT_DRV_E("HPR Driver", AIC31XX_HPDRIVER, 6, 0,
 			NULL, 0, aic31xx_hp_power_up_event,
-			SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
+			SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
 
 	/* ADC */
 	SND_SOC_DAPM_ADC_E("ADC", "Capture", AIC31XX_ADCSETUP, 7, 0,
@@ -668,7 +668,6 @@ aic31xx_audio_map[] = {
 	{"Left Output Mixer", "From MIC1LP", "MIC1LP"},
 	{"Left Output Mixer", "From MIC1RP", "MIC1RP"},
 	{"MIC1LP", NULL, "micbias"},
-	{"MIC1RP", NULL, "micbias"},
 
 	/* Right Output */
 	{"Right Output Mixer", "From DAC_R", "Right DAC"},
@@ -762,23 +761,23 @@ static int aic31xx_add_widgets(struct snd_soc_codec *codec)
 		ret = snd_soc_dapm_new_controls(dapm, aic311x_dapm_widgets,
 					ARRAY_SIZE(aic311x_dapm_widgets));
 		if (!ret)
-			dev_dbg(codec->dev, "#Completed adding dapm widgets size = %d\n",
+			dev_dbg(codec->dev, "#Completed adding dapm widgets size = %ld\n",
 					ARRAY_SIZE(aic311x_dapm_widgets));
 		ret = snd_soc_dapm_add_routes(dapm, aic311x_audio_map,
 					ARRAY_SIZE(aic311x_audio_map));
 		if (!ret)
-			dev_dbg(codec->dev, "#Completed adding DAPM routes = %d\n",
+			dev_dbg(codec->dev, "#Completed adding DAPM routes = %ld\n",
 					ARRAY_SIZE(aic311x_audio_map));
 	} else if (aic31xx->pdata.codec_type == AIC310X) {
 		ret = snd_soc_dapm_new_controls(dapm, aic310x_dapm_widgets,
 					ARRAY_SIZE(aic310x_dapm_widgets));
 		if (!ret)
-			dev_dbg(codec->dev, "#Completed adding dapm widgets size = %d\n",
+			dev_dbg(codec->dev, "#Completed adding dapm widgets size = %ld\n",
 					ARRAY_SIZE(aic310x_dapm_widgets));
 		ret = snd_soc_dapm_add_routes(dapm, aic310x_audio_map,
 					ARRAY_SIZE(aic310x_audio_map));
 		if (!ret)
-			dev_dbg(codec->dev, "#Completed adding DAPM routes = %d\n",
+			dev_dbg(codec->dev, "#Completed adding DAPM routes = %ld\n",
 					ARRAY_SIZE(aic310x_audio_map));
 	}
 
@@ -793,8 +792,7 @@ static int aic31xx_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params,
 				struct snd_soc_dai *tmp)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = tmp->codec;
 	u8 data;
 	dev_dbg(codec->dev, "%s\n", __func__);
 
@@ -1014,9 +1012,29 @@ static int aic31xx_set_dai_pll(struct snd_soc_dai *dai,
 static int aic31xx_set_sysclk(struct snd_soc_codec *codec,
 		int clk_id, int source, unsigned int freq, int dir)
 {
+	/* Frequency required by jack detection logic when
+	 * on external clock
+	 */
+	int divider = 1;
 	if (clk_id == AIC31XX_MCLK) {
 		snd_soc_update_bits(codec, AIC31XX_TIMERCLOCK,
 			 AIC31XX_CLKSEL_MASK, AIC31XX_CLKSEL_MASK);
+
+		divider = freq / AIC31XX_REQ_TIMER_FREQ;
+		/* Added +1 to divider if divider is not exact.
+		 * This will make sure divider is always == ||
+		 * > required divider. So frequency will
+		 * round off to lower than ~1MHz
+		 */
+		if (freq % AIC31XX_REQ_TIMER_FREQ)
+			divider++;
+
+		snd_soc_update_bits(codec, AIC31XX_TIMERCLOCK,
+			 AIC31XX_DIVIDER_MASK, divider);
+
+		dev_dbg(codec->dev, "%s: input freq = %d divider = %d",
+		__func__, freq, divider);
+
 	} else if (clk_id == AIC31XX_INTERNALCLOCK) {
 		snd_soc_update_bits(codec, AIC31XX_TIMERCLOCK,
 			AIC31XX_CLKSEL_MASK, 0x0);
@@ -1097,6 +1115,7 @@ static int aic31xx_resume(struct snd_soc_codec *codec)
 void aic31xx_btn_press_intr_enable(struct snd_soc_codec *codec,
 		int enable)
 {
+	dev_dbg(codec->dev, "%s: %s\n", __func__, enable ? "enable" : "disable");
 	if (enable)
 		snd_soc_update_bits(codec, AIC31XX_INT1CTRL,
 				AIC31XX_BUTTONPRESSDET_MASK,
@@ -1195,7 +1214,7 @@ int aic31xx_query_jack_status(struct snd_soc_codec *codec)
 	default:
 		break;
 	}
-	dev_dbg(codec->dev, "Jack Status returned is %x\n", state);
+	dev_dbg(codec->dev, "AIC31XX_HSDETECT=0x%X, Jack Status returned is %x\n", status, state);
 	return state;
 }
 EXPORT_SYMBOL_GPL(aic31xx_query_jack_status);
@@ -1205,9 +1224,11 @@ int aic31xx_query_btn_press(struct snd_soc_codec *codec)
 	int state = 0, status;
 
 	status = snd_soc_read(codec, AIC31XX_INTRFLAG);
-	if (status & AIC31XX_BTNPRESS_STATUS_MASK)
+	dev_dbg(codec->dev, "Status(P0/46): %x\n", status);
+	/** when HS is plugging out, BTN interrupts may be triggered
+	*  It is fake BTN press, should not be reported */
+	if ((status & AIC31XX_BTN_HS_STATUS_MASK) == AIC31XX_BTN_HS_STATUS_MASK)
 		return state | SND_JACK_BTN_0;
-	dev_dbg(codec->dev, "BTN Status returned is %x\n", state);
 	return state;
 
 }
@@ -1308,9 +1329,23 @@ static int aic31xx_codec_probe(struct snd_soc_codec *codec)
 	snd_soc_update_bits(codec, AIC31XX_INT1CTRL,
 			AIC31XX_BUTTONPRESSDET_MASK,
 			AIC31XX_BUTTONPRESSDET_MASK);
+	/* Program codec to use internal clock */
+	snd_soc_update_bits(codec, AIC31XX_TIMERCLOCK,
+			AIC31XX_CLKSEL_MASK, 0x0);
+
+	/* Debounce time depends on input clock. Set
+	 * debounce time for internal clock, since at
+	 * start we will be working with internal clock
+	 */
+	snd_soc_update_bits(codec, AIC31XX_HSDETECT,
+			AIC31XX_JACK_DEBOUCE_MASK, 0x4<<2); /* 0x4 - 256ms debounce */
+
+	/* set debounce time for button */
+	snd_soc_update_bits(codec, AIC31XX_HSDETECT,
+			AIC31XX_BTN_DEBOUCE_MASK, 0x03);
 
 	/*Reconfiguring CM to band gap mode*/
-	snd_soc_update_bits(codec, AIC31XX_HPPOP, 0xff, 0xAE);
+	snd_soc_update_bits(codec, AIC31XX_HPPOP, 0xff, 0xA8);
 
 	/*disable soft stepping of DAC volume */
 	snd_soc_update_bits(codec, AIC31XX_DACSETUP, AIC31XX_SOFTSTEP_MASK, 0x02);
@@ -1478,6 +1513,7 @@ static int aic31xx_get_acpi_data(struct aic31xx_priv *aic31xx)
 	dev_dbg(aic31xx->dev, "element 9 %llx\n", element->integer.value);
 
 end:
+	ACPI_FREE(pdata_buffer.pointer);
 	return ret;
 
 }
@@ -1534,9 +1570,8 @@ static int aic31xx_i2c_remove(struct i2c_client *i2c)
 {
 
 	struct aic31xx_priv *aic31xx = dev_get_drvdata(&i2c->dev);
-
+	snd_soc_unregister_codec(aic31xx->dev);
 	aic31xx_device_exit(aic31xx);
-	kfree(aic31xx);
 	return 0;
 }
 

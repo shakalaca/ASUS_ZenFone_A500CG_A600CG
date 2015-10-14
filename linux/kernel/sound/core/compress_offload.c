@@ -134,7 +134,7 @@ static int snd_compr_open(struct inode *inode, struct file *f)
 		kfree(data);
 	}
 	snd_card_unref(compr->card);
-	return 0;
+	return ret;
 }
 
 static int snd_compr_free(struct inode *inode, struct file *f)
@@ -418,6 +418,7 @@ static unsigned int snd_compr_poll(struct file *f, poll_table *wait)
 			retval = snd_compr_get_poll(stream);
 		break;
 	default:
+		pr_err("poll returns err!...\n");
 		if (stream->direction == SND_COMPRESS_PLAYBACK)
 			retval = POLLOUT | POLLWRNORM | POLLERR;
 		else
@@ -486,7 +487,7 @@ static int snd_compr_allocate_buffer(struct snd_compr_stream *stream,
 		 * the data from core
 		 */
 	} else {
-		buffer = kmalloc(buffer_size, GFP_KERNEL);
+		buffer = kmalloc(buffer_size, GFP_KERNEL | GFP_DMA);
 		if (!buffer)
 			return -ENOMEM;
 	}
@@ -509,9 +510,6 @@ static int snd_compress_check_input(struct snd_compr_params *params)
 		return -EINVAL;
 
 	if (params->codec.ch_in == 0 || params->codec.ch_out == 0)
-		return -EINVAL;
-
-	if (!(params->codec.sample_rate & SNDRV_PCM_RATE_8000_192000))
 		return -EINVAL;
 
 	return 0;
@@ -683,11 +681,11 @@ static int snd_compr_start(struct snd_compr_stream *stream)
 	return retval;
 }
 
-static int snd_compr_stop(struct snd_compr_stream *stream)
+int snd_compr_stop(struct snd_compr_stream *stream)
 {
 	int retval = 0;
 
-	if (stream->runtime->state == SNDRV_PCM_STATE_SETUP)
+	if (stream->runtime->state == SNDRV_PCM_STATE_OPEN)
 		return -EPERM;
 	if (stream->runtime->state != SNDRV_PCM_STATE_PREPARED)
 		retval = stream->ops->trigger(stream, SNDRV_PCM_TRIGGER_STOP);
@@ -700,6 +698,7 @@ static int snd_compr_stop(struct snd_compr_stream *stream)
 	}
 	return retval;
 }
+EXPORT_SYMBOL(snd_compr_stop);
 
 static int snd_compress_wait_for_drain(struct snd_compr_stream *stream)
 {

@@ -359,12 +359,11 @@ static ssize_t gpio_keys_wakeup_enable(struct device *dev,
 
 	for (i = 0; i < pdata->nbuttons; i++) {
 		struct gpio_keys_button *button = &pdata->buttons[i];
-        if ((int)code == button->code)
-        	button->wakeup = enable_wakeup;
-         
+		if ((int)code == button->code)
+			button->wakeup = enable_wakeup;
 		if (button->wakeup)
 			wakeup = button->wakeup;
-	}    
+	}
 
 	device_init_wakeup(dev, wakeup);
 
@@ -988,9 +987,8 @@ static struct platform_device_id gpio_keys_ids[] = {
 	{
 		.name = "gpio-keys",
 	}, {
-		.name = "gpio-lesskey-nrpt",
+		.name = "gpio-lesskey",
 	}, {
-		.name = "gpio-lesskey-rpt",
 	},
 };
 MODULE_DEVICE_TABLE(platform, gpio_keys_ids);

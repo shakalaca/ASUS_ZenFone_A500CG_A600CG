@@ -1128,6 +1128,7 @@ struct drm_intel_sprite_colorkey {
 	__u32 flags;
 };
 
+#define I915_WAIT_WRITES		(1<<0) /* if the flag is set wait for the last write (wait for the last read otherwise) */
 struct drm_i915_gem_wait {
 	/** Handle of BO we shall wait on */
 	__u32 bo_handle;
@@ -1194,6 +1195,10 @@ struct drm_i915_gem_userptr {
 #define DPST_MAX_FACTOR		10000
 /* Threshold that will generate interrupts when crossed */
 #define DEFAULT_GUARDBAND_VAL 30
+/* Default Interrupt delay */
+#define DEFAULT_INTERRUPT_DELAY_SHIFT (4 << 22)
+
+#define DPST_UPDATE 2
 
 struct dpst_ie {
 	enum dpst_diet_alg {

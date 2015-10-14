@@ -272,7 +272,7 @@ static int hwk_st_do_op(struct ablkcipher_request *req, struct page *src,
 		struct page *dst, bool enc)
 {
 	struct scatterlist src_sg, dst_sg;
-	struct hwk_st_op_result hr;
+	struct hwk_st_op_result hr = { .rc = 0 };
 	char iv[SEP_AES_IV_SIZE] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
 				     12, 13, 14, 15 };
 	int ret;

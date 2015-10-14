@@ -170,6 +170,44 @@ TRACE_EVENT(i915_gem_object_fault,
 		      __entry->write ? ", writable" : "")
 );
 
+TRACE_EVENT(i915_gem_obj_prealloc_start,
+	    TP_PROTO(struct drm_i915_gem_object *obj, u32 size, u32 userfb),
+	    TP_ARGS(obj, size, userfb),
+
+	    TP_STRUCT__entry(
+			     __field(struct drm_i915_gem_object *, obj)
+			     __field(u32, size)
+			     __field(u32, userfb)
+			     ),
+
+	    TP_fast_assign(
+			   __entry->obj = obj;
+			   __entry->size = size;
+			   __entry->userfb = userfb;
+			   ),
+
+	    TP_printk("obj=%p, size=%x, userfb=%d",
+		      __entry->obj,
+		      __entry->size,
+		      __entry->userfb)
+);
+
+TRACE_EVENT(i915_gem_obj_prealloc_end,
+	    TP_PROTO(struct drm_i915_gem_object *obj),
+	    TP_ARGS(obj),
+
+	    TP_STRUCT__entry(
+			     __field(struct drm_i915_gem_object *, obj)
+			     ),
+
+	    TP_fast_assign(
+			   __entry->obj = obj;
+			   ),
+
+	    TP_printk("obj=%p",
+		      __entry->obj)
+);
+
 DECLARE_EVENT_CLASS(i915_gem_object,
 	    TP_PROTO(struct drm_i915_gem_object *obj),
 	    TP_ARGS(obj),

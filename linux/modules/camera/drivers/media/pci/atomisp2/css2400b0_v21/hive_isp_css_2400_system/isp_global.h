@@ -22,11 +22,7 @@
 #ifndef __ISP_GLOBAL_H_INCLUDED__
 #define __ISP_GLOBAL_H_INCLUDED__
 
-#ifdef __KERNEL__
-#include <linux/types.h>
-#else
-#include <stdint.h>
-#endif
+#include <system_types.h>
 
 #if defined (HAS_ISP_2401_MAMOIADA)
 #define IS_ISP_2401_MAMOIADA
@@ -50,22 +46,23 @@
 #define ISP_VEC_BYTES			(ISP_VEC_NELEMS*sizeof(uint16_t))
 
 /* ISP SC Registers */
-#define ISP_SC_REG				0x00
-#define ISP_PC_REG				0x07
+#define ISP_SC_REG			0x00
+#define ISP_PC_REG			0x07
 #define ISP_IRQ_READY_REG		0x00
 #define ISP_IRQ_CLEAR_REG		0x00
 
 /* ISP SC Register bits */
-#define ISP_RST_BIT				0x00
+#define ISP_RST_BIT			0x00
 #define ISP_START_BIT			0x01
 #define ISP_BREAK_BIT			0x02
-#define ISP_RUN_BIT				0x03
+#define ISP_RUN_BIT			0x03
 #define ISP_BROKEN_BIT			0x04
 #define ISP_IDLE_BIT			0x05     /* READY */
+#define ISP_SLEEPING_BIT		0x06
 #define ISP_STALLING_BIT		0x07
 #define ISP_IRQ_CLEAR_BIT		0x08
 #define ISP_IRQ_READY_BIT		0x0A
-#define ISP_SLEEPING_BIT		0x0B     /* SLEEPING_IRQ_MASK */
+#define ISP_IRQ_SLEEPING_BIT		0x0B
 
 /* ISP Register bits */
 #define ISP_CTRL_SINK_BIT		0x00

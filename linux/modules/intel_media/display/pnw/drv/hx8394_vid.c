@@ -979,13 +979,11 @@ void hx8394_vid_init(struct drm_device *dev, struct panel_funcs *p_funcs)
 
 }
 
-extern int flag_shutdown;
 static int hx8394_vid_shutdown(struct platform_device *pdev)
 {
 	struct hx8394_vid_data *pdata = &gpio_settings_data;
 	printk("[DISP] %s\n", __func__);
 
-	flag_shutdown = 1;
 	mdfld_dsi_dpi_set_power(encoder_lcd, 0);
 //	intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0);
 //	hx8394_vid_set_brightness(hx8394_dsi_config, 0);

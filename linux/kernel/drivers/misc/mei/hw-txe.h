@@ -38,6 +38,15 @@ extern bool nopg;
 
 struct mei_txe_hw;
 
+/**
+ * struct mei_txe_hw - txe hardware specifics
+ *
+ * @mem_addr - BAR0 and BAR1
+ * @aliveness - aliveness (power gating) state of the hardware
+ * @wait_aliveness_resp  - aliveness wait queue
+ * @readiness_state - readiness state of the hardware
+ * @intr_cause - translated interrupt cause
+ */
 struct mei_txe_hw {
 	void __iomem *mem_addr[NUM_OF_MEM_BARS];
 	u32 aliveness;

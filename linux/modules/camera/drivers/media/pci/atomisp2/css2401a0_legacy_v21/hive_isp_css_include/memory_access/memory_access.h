@@ -51,12 +51,7 @@
  * a page table information mapping function
  */
 
-#ifdef __KERNEL__
-#include <linux/types.h>
-#else
-#include <stdint.h>
-#endif
-#include <stddef.h>
+#include <type_support.h>
 
 /*
  * User provided file that defines the (sub)system address types:
@@ -262,28 +257,6 @@ extern void mmgr_set(
 	hrt_vaddress			vaddr,
 	const uint8_t			data,
 	const size_t			size);
-
-/*! Translate CSS virtual address to host virtual address
-
- \param vaddr[in]			Address to an allocation
-
- \return ptr
-
- \Note: This function is deprecated and should not be used!
- */
-extern void * mmgr_hrt_vaddr_to_host_vaddr(
-	hrt_vaddress			vaddr);
-
-/*! Translate host virtual address to CSS virtual address
-
- \param ptr[in]				Address to an allocation
-
- \return vaddress
-
- \Note: This function is deprecated and should not be used!
- */
-extern hrt_vaddress mmgr_host_vaddr_to_hrt_vaddr(
-	const void			*ptr);
 
 /*! Read an array of bytes from a virtual memory address
 

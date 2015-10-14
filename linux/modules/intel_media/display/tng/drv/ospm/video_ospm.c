@@ -37,7 +37,10 @@
 static int pm_cmd_freq_get(u32 reg_freq);
 static int pm_cmd_freq_set(u32 reg_freq, u32 freq_code, u32 *p_freq_code_rlzd);
 static int pm_cmd_freq_wait(u32 reg_freq, u32 *freq_code_rlzd);
-static pm_cmd_power_set(int pm_reg, int pm_mask);
+#if 0
+static void pm_cmd_power_set(int pm_reg, int pm_mask);
+#endif
+static bool need_set_ved_freq = true;
 
 static void vsp_set_max_frequency(struct drm_device *dev);
 static void vsp_set_default_frequency(struct drm_device *dev);
@@ -54,8 +57,6 @@ extern struct drm_device *gpDrmDevice;
 static bool vsp_power_up(struct drm_device *dev,
 			struct ospm_power_island *p_island)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
-	struct vsp_private *vsp_priv = dev_priv->vsp_private;
 	bool ret = true;
 	int pm_ret = 0;
 
@@ -99,8 +100,6 @@ static bool vsp_power_up(struct drm_device *dev,
 static bool vsp_power_down(struct drm_device *dev,
 			struct ospm_power_island *p_island)
 {
-	struct drm_psb_private *dev_priv = dev->dev_private;
-	struct vsp_private *vsp_priv = dev_priv->vsp_private;
 	bool ret = true;
 	int pm_ret = 0;
 
@@ -161,7 +160,8 @@ static bool ved_power_up(struct drm_device *dev,
 {
 	bool ret = true;
 	int pm_ret = 0;
-	struct drm_psb_private *dev_priv = dev->dev_private;
+	unsigned int pci_device = dev->pci_device & 0xffff;
+	/* struct drm_psb_private *dev_priv = dev->dev_private; */
 
 	PSB_DEBUG_PM("powering up ved\n");
 #ifndef USE_GFX_INTERNAL_PM_FUNC
@@ -175,13 +175,14 @@ static bool ved_power_up(struct drm_device *dev,
 		return false;
 	}
 
-	iowrite32(0xffffffff, dev_priv->ved_wrapper_reg + 0);
+	/* iowrite32(0xffffffff, dev_priv->ved_wrapper_reg + 0); */
 
-	if (need_set_ved_freq) {
+	if (need_set_ved_freq && (pci_device != 0x1182)) {
 		if (!psb_msvdx_set_ved_freq(IP_FREQ_320_00))
 			PSB_DEBUG_PM("MSVDX: Set VED frequency to " \
 				"320MHZ after power up\n");
 	}
+
 	return ret;
 }
 
@@ -195,6 +196,7 @@ static bool ved_power_down(struct drm_device *dev,
 {
 	bool ret = true;
 	int pm_ret = 0;
+	unsigned int pci_device = dev->pci_device & 0xffff;
 
 	/* Need to implement force_off */
 	PSB_DEBUG_PM("powering down ved\n");
@@ -206,11 +208,13 @@ static bool ved_power_down(struct drm_device *dev,
 
 	psb_msvdx_save_context(dev);
 
-	if (need_set_ved_freq) {
+
+	if (need_set_ved_freq && (pci_device != 0x1182)) {
 		if (!psb_msvdx_set_ved_freq(IP_FREQ_200_00))
 			PSB_DEBUG_PM("MSVDX: Set VED frequency to " \
-				"200MHZ after power up\n");
+				"200MHZ before power down\n");
 	}
+
 
 #ifndef USE_GFX_INTERNAL_PM_FUNC
 	pm_ret = pmu_nc_set_power_state(PMU_DEC, OSPM_ISLAND_DOWN, VED_SS_PM0);
@@ -244,6 +248,27 @@ void ospm_ved_init(struct drm_device *dev,
 /***********************************************************
  * vec islands
  ***********************************************************/
+static u32 vec_get_max_freq(struct drm_device *dev)
+{
+	unsigned int pci_device = dev->pci_device & 0xffff;
+	u32 max_freq = IP_FREQ_320_00;
+
+	if ((pci_device == 0x1180) ||
+		(pci_device == 0x1181)) {
+		max_freq = IP_FREQ_400_00;
+		PSB_DEBUG_PM("vec 1180 1181 maximum freq is 400\n");
+	} else if (pci_device == 0x1182) {
+		max_freq = IP_FREQ_266_67;
+		PSB_DEBUG_PM("vec 1182 maximum freq is 400\n");
+	} else if (pci_device == 0x1480) {
+		max_freq = IP_FREQ_400_00;
+		PSB_DEBUG_PM("vec 1480 maximum freq is 400\n");
+	} else {
+		DRM_ERROR("invalid pci device id %x\n", pci_device);
+	}
+	return max_freq;
+}
+
 /**
  * vec_power_up
  *
@@ -253,7 +278,8 @@ static bool vec_power_up(struct drm_device *dev,
 			struct ospm_power_island *p_island)
 {
 	int pm_ret = 0;
-	int freq_code = 0;
+	u32 freq_code = 0;
+	u32 freq_max = 0;
 
 	PSB_DEBUG_PM("powering up vec\n");
 #ifndef USE_GFX_INTERNAL_PM_FUNC
@@ -267,20 +293,24 @@ static bool vec_power_up(struct drm_device *dev,
 		return false;
 	}
 
-	if (drm_vec_force_up_freq < 0)
-		drm_vec_force_up_freq = 0;
+	freq_max = vec_get_max_freq(dev);
 
-	if (!drm_vec_force_up_freq)
-		freq_code = IS_TNG_B0(dev)? IP_FREQ_400_00:IP_FREQ_320_00;
-	else
-		freq_code = drm_vec_force_up_freq;
+	if (drm_vec_force_up_freq < 0) {
+		drm_vec_force_up_freq = 0;
+		freq_code = freq_max;
+	} else {
+		if (freq_max < drm_vec_force_up_freq)
+			freq_code = drm_vec_force_up_freq;
+		else
+			freq_code = freq_max;
+	}
 
 	if(!tng_topaz_set_vec_freq(freq_code))
 		PSB_DEBUG_PM("TOPAZ: Set VEC freq by code %d\n", freq_code);
 	else {
 		PSB_DEBUG_PM("TOPAZ: Fail to set VEC freq by code %d!\n",
 			freq_code);
-		return false;
+		/*return false;*/
 	}
 
 	if (drm_topaz_cgpolicy != PSB_CGPOLICY_ON)
@@ -304,10 +334,6 @@ static bool vec_power_down(struct drm_device *dev,
 	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct tng_topaz_private *topaz_priv = dev_priv->topaz_private;
 
-	int d0i3_power_down = (drm_topaz_pmpolicy == PSB_PMPOLICY_NOPM ? 0 : 1);
-	/* Avoid handle the previous context's power down request */
-	int release_power_down = (topaz_priv->power_down_by_release \
-		== topaz_priv->cur_context ? 1 : 0);
 	topaz_priv->power_down_by_release = 0;
 
 	PSB_DEBUG_PM("TOPAZ: powering down vec\n");
@@ -327,7 +353,7 @@ static bool vec_power_down(struct drm_device *dev,
 	else {
 		PSB_DEBUG_PM("TOPAZ: Fail to set VEC freq by code %d!\n",
 			freq_code);
-		return false;
+		/*return false;*/
 	}
 
 #ifndef USE_GFX_INTERNAL_PM_FUNC
@@ -371,7 +397,7 @@ static int pm_cmd_freq_wait(u32 reg_freq, u32 *freq_code_rlzd)
 		freq_val = intel_mid_msgbus_read32(PUNIT_PORT, reg_freq);
 		if ((freq_val & IP_FREQ_VALID) == 0)
 			break;
-		if (tcount > 500) {
+		if (tcount > 1500) {
 			DRM_ERROR("P-Unit freq request wait timeout %x",
 				freq_val);
 			return -EBUSY;
@@ -443,8 +469,11 @@ static void vsp_set_max_frequency(struct drm_device *dev)
 		max_freq_code = IP_FREQ_400_00;
 		PSB_DEBUG_PM("vsp maximum freq is 400\n");
 	} else if (pci_device == 0x1480) {
-		PSB_DEBUG_PM("DFS is not enabled for ANN yet, just run on default clk rate\n");
-		return;
+		max_freq_code = IP_FREQ_400_00;
+		PSB_DEBUG_PM("vsp maximum freq for ANN A0 is 400\n");
+	} else if (pci_device == 0x1182) {
+		PSB_DEBUG_PM("Max freq is the default freq 200MHZ for SKU3 \n");
+		max_freq_code = IP_FREQ_200_00;
 	} else {
 		DRM_ERROR("invalid pci device id %x\n", pci_device);
 		return;
@@ -517,7 +546,8 @@ void psb_set_freq_control_switch(bool config_value)
 	need_set_ved_freq = config_value;
 }
 
-static pm_cmd_power_set(int pm_reg, int pm_mask)
+#if 0
+static void pm_cmd_power_set(int pm_reg, int pm_mask)
 {
 	intel_mid_msgbus_write32(0x04, pm_reg, pm_mask);
 	udelay(500);
@@ -530,3 +560,4 @@ static pm_cmd_power_set(int pm_reg, int pm_mask)
 	pm_mask = intel_mid_msgbus_read32(0x04, pm_reg);
 	PSB_DEBUG_PM("pwr_mask read: reg=0x%x pwr_mask=0x%x \n", pm_reg, pm_mask);
 }
+#endif

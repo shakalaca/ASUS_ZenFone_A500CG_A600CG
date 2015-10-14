@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -46,6 +46,7 @@
 #endif
 
 #define VTSS_FILENAME_SIZE 128
+#define VTSS_TASKNAME_SIZE TASK_COMM_LEN + 1
 
 struct pt_regs;
 
@@ -57,6 +58,7 @@ void vtss_syscall_enter(struct pt_regs *regs);
 void vtss_syscall_leave(struct pt_regs *regs);
 void vtss_kmap(struct task_struct* task, const char* name, unsigned long addr, unsigned long pgoff, unsigned long size);
 void vtss_mmap(struct file *file, unsigned long addr, unsigned long pgoff, unsigned long size);
+void vtss_mmap_reload(struct file *file, unsigned long addr);
 void vtss_sched_switch(struct task_struct *prev, struct task_struct *next, void* prev_bp, void* next_ip);
 
 int vtss_cmd_open(void);

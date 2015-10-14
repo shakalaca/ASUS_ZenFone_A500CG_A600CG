@@ -13,13 +13,14 @@
 #include <linux/gpio.h>
 #include <linux/delay.h>
 #include <linux/atomisp_platform.h>
+#include <linux/regulator/consumer.h>
 #include <asm/intel_scu_ipcutil.h>
 #include <asm/intel-mid.h>
 #include <media/v4l2-subdev.h>
 #include <linux/mfd/intel_mid_pmic.h>
 
-#ifdef CONFIG_VLV2_PLAT_CLK
-#include <linux/vlv2_plat_clock.h>
+#ifdef CONFIG_INTEL_SOC_PMC
+#include <asm/intel_soc_pmc.h>
 #endif
 
 #include "platform_camera.h"
@@ -27,17 +28,20 @@
 
 /* workround - pin defined for byt */
 #define CAMERA_0_RESET 126
+#define CAMERA_0_RESET_CHT  150
 #define CAMERA_0_RESET_CRV2 119
-#ifdef CONFIG_VLV2_PLAT_CLK
+#ifdef CONFIG_INTEL_SOC_PMC
 #define OSC_CAM0_CLK 0x0
 #define CLK_19P2MHz 0x1
+#define CLK_ON	0x1
+#define CLK_OFF	0x2
 #endif
+
 #ifdef CONFIG_CRYSTAL_COVE
-#define VPROG_2P8V 0x66
-#define VPROG_1P8V 0x5D
-#define VPROG_ENABLE 0x3
-#define VPROG_DISABLE 0x2
+static struct regulator *v1p8_reg;
+static struct regulator *v2p8_reg;
 #endif
+
 static int camera_reset;
 static int camera_power_down;
 static int camera_vprog1_on;
@@ -49,7 +53,7 @@ static int imx175_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 {
 	int ret;
 
-	if (!IS_BYT) {
+	if (!IS_BYT && !IS_CHT) {
 		if (camera_reset < 0) {
 			ret = camera_sensor_gpio(-1, GP_CAMERA_0_RESET,
 					GPIOF_DIR_OUT, 1);
@@ -66,6 +70,8 @@ static int imx175_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 		if (camera_reset < 0) {
 			if (spid.hardware_id == BYT_TABLET_BLK_CRV2)
 				camera_reset = CAMERA_0_RESET_CRV2;
+			else if (IS_CHT)
+				camera_reset = CAMERA_0_RESET_CHT;
 			else
 				camera_reset = CAMERA_0_RESET;
 			ret = gpio_request(camera_reset, "camera_reset");
@@ -103,16 +109,16 @@ static int imx175_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 
 static int imx175_flisclk_ctrl(struct v4l2_subdev *sd, int flag)
 {
-	static const unsigned int clock_khz = 19200;
-#ifdef CONFIG_VLV2_PLAT_CLK
+#ifdef CONFIG_INTEL_SOC_PMC
 	if (flag) {
 		int ret;
-		ret = vlv2_plat_set_clock_freq(OSC_CAM0_CLK, CLK_19P2MHz);
+		ret = pmc_pc_set_freq(OSC_CAM0_CLK, CLK_19P2MHz);
 		if (ret)
 			return ret;
 	}
-	return vlv2_plat_configure_clock(OSC_CAM0_CLK, flag);
+	return pmc_pc_configure(OSC_CAM0_CLK, flag ? CLK_ON : CLK_OFF);
 #elif defined(CONFIG_INTEL_SCU_IPC_UTIL)
+	static const unsigned int clock_khz = 19200;
 	return intel_scu_ipc_osc_clk(OSC_CLK_CAM0,
 			flag ? clock_khz : 0);
 #else
@@ -123,21 +129,71 @@ static int imx175_flisclk_ctrl(struct v4l2_subdev *sd, int flag)
 
 static int imx175_power_ctrl(struct v4l2_subdev *sd, int flag)
 {
+#ifdef CONFIG_CRYSTAL_COVE
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+#endif
 	int ret = 0;
 
+#ifdef CONFIG_CRYSTAL_COVE
+	if (!IS_CHT && (!v1p8_reg || !v2p8_reg)) {
+		dev_err(&client->dev,
+				"not avaiable regulator\n");
+		return -EINVAL;
+	}
+#endif
+
+	/*
+	 * FIXME: VRF has no implementation for CHT now,
+	 * remove pmic power control when VRF is ready.
+	 */
+#ifdef CONFIG_CRYSTAL_COVE
+	if (IS_CHT) {
+		if (flag) {
+			if (!camera_vprog1_on) {
+				ret = camera_set_pmic_power(CAMERA_2P8V, true);
+				if (ret) {
+					dev_err(&client->dev,
+						"Failed to enable pmic power v2p8\n");
+					return ret;
+				}
+
+				ret = camera_set_pmic_power(CAMERA_1P8V, true);
+				if (ret) {
+					camera_set_pmic_power(CAMERA_2P8V, false);
+					dev_err(&client->dev,
+						"Failed to enable pmic power v1p8\n");
+				}
+			}
+		} else {
+			if (camera_vprog1_on) {
+				ret = camera_set_pmic_power(CAMERA_2P8V, false);
+				if (ret)
+					dev_warn(&client->dev,
+						 "Failed to disable pmic power v2p8\n");
+				ret = camera_set_pmic_power(CAMERA_1P8V, false);
+				if (ret)
+					dev_warn(&client->dev,
+						 "Failed to disable pmic power v1p8\n");
+			}
+		}
+		return ret;
+	}
+#endif
 	if (flag) {
 		if (!camera_vprog1_on) {
 #ifdef CONFIG_CRYSTAL_COVE
-			/*
-			 * This should call VRF APIs.
-			 *
-			 * VRF not implemented for BTY, so call this
-			 * as WAs
-			 */
-			ret = camera_set_pmic_power(CAMERA_2P8V, true);
-			if (ret)
+			ret = regulator_enable(v2p8_reg);
+			if (ret) {
+				dev_err(&client->dev,
+						"Failed to enable regulator v2p8\n");
 				return ret;
-			ret = camera_set_pmic_power(CAMERA_1P8V, true);
+			}
+			ret = regulator_enable(v1p8_reg);
+			if (ret) {
+				regulator_disable(v2p8_reg);
+				dev_err(&client->dev,
+						"Failed to enable regulator v1p8\n");
+			}
 #elif defined(CONFIG_INTEL_SCU_IPC_UTIL)
 			ret = intel_scu_ipc_msic_vprog1(1);
 #else
@@ -153,10 +209,14 @@ static int imx175_power_ctrl(struct v4l2_subdev *sd, int flag)
 	} else {
 		if (camera_vprog1_on) {
 #ifdef CONFIG_CRYSTAL_COVE
-			ret = camera_set_pmic_power(CAMERA_2P8V, false);
+			ret = regulator_disable(v2p8_reg);
 			if (ret)
-				return ret;
-			ret = camera_set_pmic_power(CAMERA_1P8V, false);
+				dev_warn(&client->dev,
+						"Failed to disable regulator v2p8\n");
+			ret = regulator_disable(v1p8_reg);
+			if (ret)
+				dev_warn(&client->dev,
+						"Failed to disable regulator v1p8\n");
 #elif defined(CONFIG_INTEL_SCU_IPC_UTIL)
 			ret = intel_scu_ipc_msic_vprog1(0);
 #else
@@ -177,11 +237,46 @@ static int imx175_csi_configure(struct v4l2_subdev *sd, int flag)
 		ATOMISP_INPUT_FORMAT_RAW_10, atomisp_bayer_order_rggb, flag);
 }
 
+#ifdef CONFIG_CRYSTAL_COVE
+static int imx175_platform_init(struct i2c_client *client)
+{
+	if (IS_CHT)
+		return 0;
+	v1p8_reg = regulator_get(&client->dev, "v1p8sx");
+	if (IS_ERR(v1p8_reg)) {
+		dev_err(&client->dev, "v1p8s regulator_get failed\n");
+		return PTR_ERR(v1p8_reg);
+	}
+
+	v2p8_reg = regulator_get(&client->dev, "v2p85sx");
+	if (IS_ERR(v2p8_reg)) {
+		regulator_put(v1p8_reg);
+		dev_err(&client->dev, "v2p85sx regulator_get failed\n");
+		return PTR_ERR(v2p8_reg);
+	}
+
+	return 0;
+}
+
+static int imx175_platform_deinit(void)
+{
+	if (IS_CHT)
+		return 0;
+	regulator_put(v1p8_reg);
+	regulator_put(v2p8_reg);
+
+	return 0;
+}
+#endif
 static struct camera_sensor_platform_data imx175_sensor_platform_data = {
 	.gpio_ctrl      = imx175_gpio_ctrl,
 	.flisclk_ctrl   = imx175_flisclk_ctrl,
 	.power_ctrl     = imx175_power_ctrl,
 	.csi_cfg        = imx175_csi_configure,
+#ifdef CONFIG_CRYSTAL_COVE
+	.platform_init = imx175_platform_init,
+	.platform_deinit = imx175_platform_deinit,
+#endif
 };
 
 void *imx175_platform_data(void *info)

@@ -28,6 +28,7 @@
 #define __INLINE_VAMEM__
 #endif
 #include "vamem.h"
+#include "ia_css_gc_types.h"
 
 #if defined(IS_VAMEM_VERSION_1)
 #define SH_CSS_ISP_GAMMA_TABLE_SIZE_LOG2 IA_CSS_VAMEM_1_GAMMA_TABLE_SIZE_LOG2
@@ -43,6 +44,9 @@
 /* For pipe generation, the size is not relevant */
 #define SH_CSS_ISP_GC_TABLE_SIZE 0
 #endif
+
+#define GAMMA_OUTPUT_BITS		8
+#define GAMMA_OUTPUT_MAX_VAL		((1<<GAMMA_OUTPUT_BITS)-1)
 
 /* GC (Gamma Correction) */
 struct sh_css_isp_gc_params {

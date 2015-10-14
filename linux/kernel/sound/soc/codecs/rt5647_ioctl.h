@@ -24,18 +24,19 @@ enum {
 };
 
 enum {
-	EQ_CH_DACL = 0,
-	EQ_CH_DACR,
+	EQ_CH_DAC = 0,
 	EQ_CH_ADC,
 	EQ_CH_NUM,
 };
 
+struct rt5647_eq_parameter {
+	u8 reg;
+	u16 val;
+};
 
-
-#define EQ_REG_NUM 28
+#define EQ_REG_NUM 56
 typedef struct  hweq_s {
-	unsigned int reg[EQ_REG_NUM];
-	unsigned int value[EQ_REG_NUM];
+	struct rt5647_eq_parameter par[EQ_REG_NUM];
 	unsigned int ctrl;
 } hweq_t;
 

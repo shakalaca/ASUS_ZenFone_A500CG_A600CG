@@ -32,43 +32,6 @@
 #include "mdfld_csc.h"
 #include "psb_irq.h"
 #include "dispmgrnl.h"
-#include <asm/intel_scu_pmic.h>
-#include <linux/HWVersion.h>
-
-extern int Read_LCD_ID(void);
-extern int entry_mode;
-
-
-#define BKL_EN_WKAD 1
-#define PANEL_RESET_WKAD 1
-
-#ifdef PANEL_RESET_WKAD
-static int reset_panel = 1;
-void mdfld_reset_dpi_panel1(struct drm_psb_private *dev_priv);
-#endif
-int flag_shutdown = 0;
-
-#ifdef BKL_EN_WKAD
-struct delayed_work vsync_delay_work;
-struct workqueue_struct *vsync_delay_wq;
-#define PMIC_GPIO_BACKLIGHT_EN	0x7E
-
-void mdfld_vsync_delay_work(struct work_struct *work)
-{
-	intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0x01);
-
-	if (Read_LCD_ID() == LCD_ID_HSD)
-		queue_delayed_work(vsync_delay_wq, &vsync_delay_work, msecs_to_jiffies(3000));
-}
-#endif
-
-struct mdfld_dsi_config *panel_reset_dsi_config;
-struct drm_encoder *encoder_lcd = NULL;
-
-extern ospm_suspend_display(struct pci_dev *pdev);
-extern ospm_resume_display(struct pci_dev *pdev);
-static int __dpi_exit_ulps_locked(struct mdfld_dsi_config *dsi_config);
-static int __dpi_enter_ulps_locked(struct mdfld_dsi_config *dsi_config);
 
 static
 u16 mdfld_dsi_dpi_to_byte_clock_count(int pixel_clock_count,
@@ -163,70 +126,6 @@ void mdfld_dsi_dpi_set_color_mode(struct mdfld_dsi_config *dsi_config , bool on)
 	return;
 }
 
-static int intel_dc_dsi_check_latch_out(struct mdfld_dsi_config *dsi_config)
-{
-	struct mdfld_dsi_hw_registers *regs = NULL;
-	struct drm_device *dev = NULL;
-	int retry = 10, ret = -1;
-
-	if (!dsi_config)
-		goto exit;
-
-	dev = dsi_config->dev;
-	regs = &dsi_config->regs;
-
-	if (!dev)
-		goto exit;
-
-	while (retry) {
-		if ((REG_READ(regs->mipi_reg) & BIT17)) {
-			DRM_DEBUG("%s: reg 61190 = 0x%08x - lp11 in %d retries\n",
-					__func__, REG_READ(regs->mipi_reg), 10-retry);
-		} else {
-			DRM_DEBUG("%s: reg 61190 = 0x%08x - lp00 in %d retries\n",
-					__func__, REG_READ(regs->mipi_reg), 10-retry);
-		}
-
-		udelay(10);
-		retry--;
-	}
-
-exit:
-	return ret;
-}
-
-static int intel_dc_dsi_wait_for_lp00(struct mdfld_dsi_config *dsi_config)
-{
-	struct mdfld_dsi_hw_registers *regs = NULL;
-	struct drm_device *dev = NULL;
-	int retry = 1000, ret = -1;
-
-	if (!dsi_config)
-		goto exit;
-
-	dev = dsi_config->dev;
-	regs = &dsi_config->regs;
-
-	if (!dev)
-		goto exit;
-
-	while (retry) {
-		if ((REG_READ(regs->mipi_reg) & BIT17)) {
-			udelay(10);
-			retry--;
-		} else {
-			ret = 0;
-			break;
-		}
-	}
-
-	DRM_INFO("%s: retry %d times\n", __func__, 1000 - retry);
-
-exit:
-	return ret;
-}
-
-
 static int __dpi_enter_ulps_locked(struct mdfld_dsi_config *dsi_config)
 {
 	struct mdfld_dsi_hw_registers *regs = &dsi_config->regs;
@@ -234,12 +133,6 @@ static int __dpi_enter_ulps_locked(struct mdfld_dsi_config *dsi_config)
 	struct drm_device *dev = dsi_config->dev;
 	struct mdfld_dsi_pkg_sender *sender
 			= mdfld_dsi_get_pkg_sender(dsi_config);
-	u32 mipi_val = 0;
-	int retry = 5;
-
-ulps_recovery:
-
-	PSB_DEBUG_ENTRY("\n");
 
 	ctx->device_ready = REG_READ(regs->device_ready_reg);
 
@@ -253,36 +146,12 @@ ulps_recovery:
 		return -EINVAL;
 	}
 
-	/* check latch out, expected to be lp11 */
-	intel_dc_dsi_check_latch_out(dsi_config);
-
 	/*wait for all FIFOs empty*/
 	mdfld_dsi_wait_for_fifos_empty(sender);
 
 	/*inform DSI host is to be put on ULPS*/
-	ctx->device_ready |= (DSI_POWER_STATE_ULPS_ENTER | DSI_DEVICE_READY);
+	ctx->device_ready |= DSI_POWER_STATE_ULPS_ENTER;
 	REG_WRITE(regs->device_ready_reg, ctx->device_ready);
-	mdelay(1);
-
-	/* check latch out, expected to be lp00 */
-	intel_dc_dsi_check_latch_out(dsi_config);
-
-	if (intel_dc_dsi_wait_for_lp00(dsi_config)) {
-		DRM_ERROR("faild to wait for lp00 status\n");
-		DRM_ERROR("reg[0x%x] = 0x%x\n", regs->mipi_reg, REG_READ(regs->mipi_reg));
-
-		if(retry--){
-		    DRM_INFO("%s: retry enter ulps (times=%d)\n", __func__, 5-retry);
-		    if (__dpi_exit_ulps_locked(dsi_config)) {
-			 DRM_ERROR("Failed to exit ULPS\n");
-		    }
-		    goto ulps_recovery;
-		}
-	}
-
-	/* set AFE hold value */
-	mipi_val = REG_READ(regs->mipi_reg);
-	REG_WRITE(regs->mipi_reg, (mipi_val & (~PASS_FROM_SPHY_TO_AFE)));
 
 	DRM_INFO("%s: entered ULPS state\n", __func__);
 	return 0;
@@ -296,18 +165,9 @@ static int __dpi_exit_ulps_locked(struct mdfld_dsi_config *dsi_config)
 
 	ctx->device_ready = REG_READ(regs->device_ready_reg);
 
-	/*inform DSI host is to be put on ULPS*/
-	ctx->device_ready = (DSI_POWER_STATE_ULPS_ENTER | DSI_DEVICE_READY);
-	REG_WRITE(regs->device_ready_reg, ctx->device_ready);
-
-	mdelay(1);
-	/* clear AFE hold value*/
-	REG_WRITE(regs->mipi_reg, PASS_FROM_SPHY_TO_AFE);
-	mdelay(1);
-
 	/*enter ULPS EXIT state*/
 	ctx->device_ready &= ~DSI_POWER_STATE_ULPS_MASK;
-	ctx->device_ready |= (DSI_POWER_STATE_ULPS_EXIT | DSI_DEVICE_READY);
+	ctx->device_ready |= DSI_POWER_STATE_ULPS_EXIT;
 	REG_WRITE(regs->device_ready_reg, ctx->device_ready);
 
 	/*wait for 1ms as spec suggests*/
@@ -315,12 +175,7 @@ static int __dpi_exit_ulps_locked(struct mdfld_dsi_config *dsi_config)
 
 	/*clear ULPS state*/
 	ctx->device_ready &= ~DSI_POWER_STATE_ULPS_MASK;
-	ctx->device_ready |= DSI_DEVICE_READY;
 	REG_WRITE(regs->device_ready_reg, ctx->device_ready);
-
-	mdelay(1);
-
-	PSB_DEBUG_ENTRY("%s: exited ULPS state\n", __func__);
 	return 0;
 }
 
@@ -363,17 +218,17 @@ reset_recovery:
 			uint32_t dpll = 0;
 
 			REG_WRITE(regs->dpll_reg, dpll);
-			if(ctx->cck_div) {
+			if(ctx->cck_div)
 				dpll = dpll | BIT11;
-				REG_WRITE(regs->dpll_reg, dpll);
-				udelay(1);
-			}
+			REG_WRITE(regs->dpll_reg, dpll);
+			udelay(2);
 			dpll = dpll | BIT12;
 			REG_WRITE(regs->dpll_reg, dpll);
-			mdelay(1);
+			udelay(2);
 			dpll = dpll | BIT13;
 			REG_WRITE(regs->dpll_reg, dpll);
-			mdelay(1);
+			dpll = dpll | BIT31;
+			REG_WRITE(regs->dpll_reg, dpll);
 		} else {
 			REG_WRITE(regs->dpll_reg, 0x0);
 			REG_WRITE(regs->fp_reg, 0x0);
@@ -396,24 +251,6 @@ reset_recovery:
 		}
 	}
 
-	REG_WRITE(regs->eot_disable_reg, (REG_READ(regs->eot_disable_reg) & ~BIT1));
-	REG_WRITE(regs->device_ready_reg, ~BIT0);
-	REG_WRITE(regs->device_ready_reg, BIT0);
-	mdelay(1);
-
-	/*exit ULPS*/
-	if (__dpi_exit_ulps_locked(dsi_config)) {
-		DRM_ERROR("Failed to exit ULPS\n");
-		goto power_on_err;
-	}
-
-	/*update MIPI port config*/
-	REG_WRITE(regs->mipi_reg, (ctx->mipi | REG_READ(regs->mipi_reg)));
-
-	/*unready dsi adapter for re-programming*/
-	REG_WRITE(regs->device_ready_reg,
-			REG_READ(regs->device_ready_reg) & ~(DSI_DEVICE_READY));
-
 	/*D-PHY parameter*/
 	REG_WRITE(regs->dphy_param_reg, ctx->dphy_param);
 
@@ -433,14 +270,7 @@ reset_recovery:
 	REG_WRITE(regs->lp_byteclk_reg, ctx->lp_byteclk);
 	REG_WRITE(regs->clk_lane_switch_time_cnt_reg,
 		ctx->clk_lane_switch_time_cnt);
-
-	if (ctx->pll_bypass_mode) {
-		//Force using non-burst pulse event mode here
-		REG_WRITE(regs->video_mode_format_reg, 0x1);
-	} else{
-		REG_WRITE(regs->video_mode_format_reg, ctx->video_mode_format);
-	}
-
+	REG_WRITE(regs->video_mode_format_reg, ctx->video_mode_format);
 	REG_WRITE(regs->dsi_func_prg_reg, ctx->dsi_func_prg);
 
 	/*DSI timing*/
@@ -466,10 +296,7 @@ reset_recovery:
 	REG_WRITE(regs->dspstride_reg, ctx->dspstride);
 
 	/*Setup plane*/
-	if ((ctx->dspsurf == 0) && (entry_mode==1))
-		REG_WRITE(regs->dspsize_reg, 0);
-	else
-		REG_WRITE(regs->dspsize_reg, ctx->dspsize);
+	REG_WRITE(regs->dspsize_reg, ctx->dspsize);
 	REG_WRITE(regs->dspsurf_reg, ctx->dspsurf);
 	REG_WRITE(regs->dsplinoff_reg, ctx->dsplinoff);
 	REG_WRITE(regs->vgacntr_reg, ctx->vgacntr);
@@ -483,11 +310,6 @@ reset_recovery:
 	for (i = 0; i < 256; i++)
 		REG_WRITE(regs->palette_reg + (i<<2), ctx->palette[i]);
 
-	/* restore gamma correction max (RGB) */
-	REG_WRITE(regs->gamma_red_max_reg, ctx->gamma_red_max);
-	REG_WRITE(regs->gamma_green_max_reg, ctx->gamma_green_max);
-	REG_WRITE(regs->gamma_blue_max_reg, ctx->gamma_blue_max);
-
 #ifdef CONFIG_CTP_DPST
 	/* restore dpst setting */
 	if (dev_priv->psb_dpst_state) {
@@ -495,8 +317,15 @@ reset_recovery:
 		psb_enable_pipestat(dev_priv, 0, PIPE_DPST_EVENT_ENABLE);
 	}
 #endif
+
+	/*exit ULPS state*/
+	__dpi_exit_ulps_locked(dsi_config);
+
 	/*Enable DSI Controller*/
-	REG_WRITE(regs->device_ready_reg, (REG_READ(regs->device_ready_reg) | BIT0));
+	REG_WRITE(regs->device_ready_reg, ctx->device_ready | BIT0);
+
+	/*set low power output hold*/
+	REG_WRITE(regs->mipi_reg, (ctx->mipi | BIT16));
 
 	/**
 	 * Different panel may have different ways to have
@@ -505,7 +334,8 @@ reset_recovery:
 	if (p_funcs && p_funcs->drv_ic_init) {
 		if (p_funcs->drv_ic_init(dsi_config)) {
 			if (!reset_count) {
-				goto reset_err_bypass;
+				err = -EAGAIN;
+				goto power_on_err;
 			}
 			pmu_nc_set_power_state(OSPM_MIPI_ISLAND,
 					OSPM_ISLAND_DOWN, OSPM_REG_TYPE);
@@ -518,40 +348,6 @@ reset_recovery:
 		}
 	}
 
-reset_err_bypass:
-
-	if(ctx->pll_bypass_mode){
-		/*Reprogram to use pll clock*/
-		REG_WRITE(regs->dpll_reg, 0x0);
-		REG_WRITE(regs->fp_reg, 0x0);
-		REG_WRITE(regs->fp_reg, ctx->fp);
-		REG_WRITE(regs->dpll_reg, ((ctx->dpll) & ~BIT30));
-
-		udelay(2);
-		REG_WRITE(regs->dpll_reg, 0x2 << 17 );
-		mdelay(1);
-		REG_WRITE(regs->dpll_reg, (0x2 << 17 | BIT31));
-
-		/*wait for PLL lock on pipe*/
-		retry = 10000;
-		while (--retry && !(REG_READ(PIPEACONF) & BIT29))
-			udelay(3);
-		if (!retry) {
-			DRM_ERROR("PLL failed to lock on pipe\n");
-			err = -EAGAIN;
-			goto power_on_err;
-		}
-
-		/*Switch back to burst mode*/
-		REG_WRITE(regs->video_mode_format_reg, ctx->video_mode_format);
-
-		/*Clear device ready reg*/
-		REG_WRITE(regs->device_ready_reg,REG_READ(regs->device_ready_reg) & ~DSI_DEVICE_READY);
-		msleep(1);
-		/*Enable DSI Controller*/
-		REG_WRITE(regs->device_ready_reg,REG_READ(regs->device_ready_reg) | DSI_DEVICE_READY);
-		msleep(1);
-	}
 	/**
 	 * Different panel may have different ways to have
 	 * panel turned on. Support it!
@@ -562,9 +358,6 @@ reset_err_bypass:
 			err = -EAGAIN;
 			goto power_on_err;
 		}
-#ifdef BKL_EN_WKAD
-	queue_delayed_work(vsync_delay_wq, &vsync_delay_work, msecs_to_jiffies(17*15));
-#endif
 
 	/*Enable MIPI Port*/
 	REG_WRITE(regs->mipi_reg, (ctx->mipi | BIT31));
@@ -644,32 +437,23 @@ static int __dpi_panel_power_off(struct mdfld_dsi_config *dsi_config,
 	dev = dsi_config->dev;
 	dev_priv = dev->dev_private;
 
-#ifdef PANEL_RESET_WKAD
-	//reset dsi contorller
-	if (reset_panel == 1 && flag_shutdown == 0) {
-		mdfld_reset_dpi_panel1(dev_priv);
-		reset_panel = 0;
-	}
-#endif
-
 	if (!ospm_power_using_hw_begin(OSPM_DISPLAY_ISLAND,
 					OSPM_UHB_FORCE_POWER_ON))
 		return -EAGAIN;
 
 	ctx->lastbrightnesslevel = psb_brightness;
-	if (p_funcs && p_funcs->set_brightness) {
-		intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0);
+	if (p_funcs && p_funcs->set_brightness)
 		if (p_funcs->set_brightness(dsi_config, 0))
 			DRM_ERROR("Failed to set panel brightness\n");
-	}
 
 	/*Notify PVR module that screen is off*/
 	if (dev_priv->pvr_screen_event_handler)
 		dev_priv->pvr_screen_event_handler(dev, 0);
 
 	/*save the plane informaton, for it will updated*/
-	ctx->dspsurf = dev_priv->init_screen_start;
-	ctx->dsplinoff = dev_priv->init_screen_offset;
+	ctx->dspsurf = REG_READ(regs->dspsurf_reg);
+	ctx->dsplinoff = REG_READ(regs->dsplinoff_reg);
+	ctx->dspsize = REG_READ(regs->dspsize_reg);
 	ctx->pipestat = REG_READ(regs->pipestat_reg);
 	ctx->dspcntr = REG_READ(regs->dspcntr_reg);
 	ctx->dspstride= REG_READ(regs->dspstride_reg);
@@ -684,161 +468,6 @@ static int __dpi_panel_power_off(struct mdfld_dsi_config *dsi_config,
 	/* save palette (gamma) */
 	for (i = 0; i < 256; i++)
 		ctx->palette[i] = REG_READ(regs->palette_reg + (i<<2));
-
-	/* save gamma correction max (RGB) */
-	ctx->gamma_red_max = REG_READ(regs->gamma_red_max_reg);
-	ctx->gamma_green_max = REG_READ(regs->gamma_green_max_reg);
-	ctx->gamma_blue_max = REG_READ(regs->gamma_blue_max_reg);
-
-	/*
-	 * Couldn't disable the pipe until DRM_WAIT_ON signaled by last
-	 * vblank event when playing video, otherwise the last vblank event
-	 * will lost when pipe disabled before vblank interrupt coming sometimes.
-	 */
-
-	/*Disable panel*/
-	val = ctx->dspcntr;
-	val &= ~(PIPEACONF_COLOR_MATRIX_ENABLE | PIPEACONF_GAMMA);
-	REG_WRITE(regs->dspcntr_reg, (val & ~BIT31));
-	/*Disable overlay & cursor panel assigned to this pipe*/
-	REG_WRITE(regs->pipeconf_reg, (tmp | (0x000c0000)));
-
-	/*Disable pipe*/
-	val = REG_READ(regs->pipeconf_reg);
-	ctx->pipeconf = val;
-	REG_WRITE(regs->pipeconf_reg, (val & ~BIT31));
-
-	/*wait for pipe disabling,
-	pipe synchronization plus , only avaiable when
-	timer generator is working*/
-	if (REG_READ(regs->mipi_reg) & BIT31) {
-		retry = 100000;
-		while (--retry && (REG_READ(regs->pipeconf_reg) & BIT30))
-			udelay(5);
-
-		if (!retry) {
-			DRM_ERROR("Failed to disable pipe\n");
-			err = -EAGAIN;
-			goto power_off_err;
-		}
-	}
-	/*Disable MIPI port*/
-	REG_WRITE(regs->mipi_reg, (REG_READ(regs->mipi_reg) & ~BIT31));
-
-	/**
-	 * Different panel may have different ways to have
-	 * panel turned off. Support it!
-	 */
-
-	if (p_funcs && p_funcs->power_off) {
-		if (p_funcs->power_off(dsi_config)) {
-			DRM_ERROR("Failed to power off panel\n");
-			err = -EAGAIN;
-			goto power_off_err;
-		}
-	}
-
-#ifdef BKL_EN_WKAD
-	cancel_delayed_work_sync(&vsync_delay_work);
-#endif
-
-	/* check latch out, expected to be lp00 */
-	intel_dc_dsi_check_latch_out(dsi_config);
-
-	/*Set clock stopping*/
-	REG_WRITE(regs->eot_disable_reg, (REG_READ(regs->eot_disable_reg) | BIT1));
-
-	/* clear device ready and reset device ready
-	 * to make clock stopping setting take effects.
-	 */
-	REG_WRITE(regs->device_ready_reg, (REG_READ(regs->device_ready_reg) & ~BIT0));
-	REG_WRITE(regs->device_ready_reg, (REG_READ(regs->device_ready_reg) | BIT0));
-
-	/* check latch out, expected to be lp11 */
-	intel_dc_dsi_check_latch_out(dsi_config);
-
-	if (__dpi_enter_ulps_locked(dsi_config)) {
-		DRM_ERROR("Faild to enter ULPS\n");
-		goto power_off_err;
-	}
-
-	/*Disable DSI PLL*/
-	pipe0_enabled = (REG_READ(PIPEACONF) & BIT31) ? 1 : 0;
-	pipe2_enabled = (REG_READ(PIPECCONF) & BIT31) ? 1 : 0;
-
-	if (!pipe0_enabled && !pipe2_enabled) {
-		REG_WRITE(regs->dpll_reg , 0x0);
-		/*power gate pll*/
-		REG_WRITE(regs->dpll_reg, BIT30);
-	}
-
-power_off_err:
-	ospm_power_using_hw_end(OSPM_DISPLAY_ISLAND);
-	return err;
-}
-
-#ifdef PANEL_RESET_WKAD
-static int __dpi_panel_power_off1(struct mdfld_dsi_config *dsi_config,
-			struct panel_funcs *p_funcs)
-{
-	u32 val = 0;
-	u32 tmp = 0;
-	struct mdfld_dsi_hw_registers *regs;
-	struct mdfld_dsi_hw_context *ctx;
-	struct drm_device *dev;
-	struct drm_psb_private *dev_priv;
-	int retry;
-	int i;
-	int pipe0_enabled;
-	int pipe2_enabled;
-	int err = 0;
-	if (!dsi_config)
-		return -EINVAL;
-
-	regs = &dsi_config->regs;
-	ctx = &dsi_config->dsi_hw_context;
-	dev = dsi_config->dev;
-	dev_priv = dev->dev_private;
-
-	printk("[DEBUG] %s\n", __func__);
-
-	if (!ospm_power_using_hw_begin(OSPM_DISPLAY_ISLAND,
-					OSPM_UHB_FORCE_POWER_ON))
-		return -EAGAIN;
-
-	ctx->lastbrightnesslevel = psb_brightness;
-	if (p_funcs && p_funcs->set_brightness) {
-		intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0);
-		if (p_funcs->set_brightness(dsi_config, 0))
-			DRM_ERROR("Failed to set panel brightness\n");
-	}
-
-	/*Notify PVR module that screen is off*/
-	if (dev_priv->pvr_screen_event_handler)
-		dev_priv->pvr_screen_event_handler(dev, 0);
-
-	/*save the plane informaton, for it will updated*/
-	ctx->dspsurf = dev_priv->init_screen_start;
-	ctx->dsplinoff = dev_priv->init_screen_offset;
-	ctx->pipestat = REG_READ(regs->pipestat_reg);
-	ctx->dspcntr = REG_READ(regs->dspcntr_reg);
-	ctx->dspstride= REG_READ(regs->dspstride_reg);
-
-	tmp = REG_READ(regs->pipeconf_reg);
-
-	/*save color_coef (chrome) */
-	for (i = 0; i < 6; i++) {
-		ctx->color_coef[i] = REG_READ(regs->color_coef_reg + (i<<2));
-	}
-
-	/* save palette (gamma) */
-	for (i = 0; i < 256; i++)
-		ctx->palette[i] = REG_READ(regs->palette_reg + (i<<2));
-
-	/* save gamma correction max (RGB) */
-	ctx->gamma_red_max = REG_READ(regs->gamma_red_max_reg);
-	ctx->gamma_green_max = REG_READ(regs->gamma_green_max_reg);
-	ctx->gamma_blue_max = REG_READ(regs->gamma_blue_max_reg);
 
 	/*
 	 * Couldn't disable the pipe until DRM_WAIT_ON signaled by last
@@ -886,29 +515,15 @@ static int __dpi_panel_power_off1(struct mdfld_dsi_config *dsi_config,
 			goto power_off_err;
 		}
 	}
-#ifdef BKL_EN_WKAD
-	cancel_delayed_work_sync(&vsync_delay_work);
-#endif
 
-	/* check latch out, expected to be lp00 */
-	intel_dc_dsi_check_latch_out(dsi_config);
+	/*clear Low power output hold*/
+	REG_WRITE(regs->mipi_reg, (REG_READ(regs->mipi_reg) & ~BIT16));
 
-	/*Set clock stopping*/
-	REG_WRITE(regs->eot_disable_reg, (REG_READ(regs->eot_disable_reg) | BIT1));
+	/*Disable DSI controller*/
+	REG_WRITE(regs->device_ready_reg, (ctx->device_ready & ~BIT0));
 
-	/* clear device ready and reset device ready
-	 * to make clock stopping setting take effects.
-	 */
-	REG_WRITE(regs->device_ready_reg, (REG_READ(regs->device_ready_reg) & ~BIT0));
-	REG_WRITE(regs->device_ready_reg, (REG_READ(regs->device_ready_reg) | BIT0));
-
-	/* check latch out, expected to be lp11 */
-	intel_dc_dsi_check_latch_out(dsi_config);
-
-	if (__dpi_enter_ulps_locked(dsi_config)) {
-		DRM_ERROR("Faild to enter ULPS\n");
-		goto power_off_err;
-	}
+	/*enter ULPS*/
+	__dpi_enter_ulps_locked(dsi_config);
 
 	/*Disable DSI PLL*/
 	pipe0_enabled = (REG_READ(PIPEACONF) & BIT31) ? 1 : 0;
@@ -924,7 +539,6 @@ power_off_err:
 	ospm_power_using_hw_end(OSPM_DISPLAY_ISLAND);
 	return err;
 }
-#endif
 
 /**
  * Send TURN_ON package to dpi panel to turn it on
@@ -1443,129 +1057,7 @@ struct mdfld_dsi_encoder *mdfld_dsi_dpi_init(struct drm_device *dev,
 	dev_priv->b_dsr_enable_config = true;
 #endif /*CONFIG_MDFLD_DSI_DSR*/
 
-#ifdef BKL_EN_WKAD
-	INIT_DELAYED_WORK(&vsync_delay_work, mdfld_vsync_delay_work);
-	vsync_delay_wq = create_workqueue("vsync_delay_timer");
-	if (unlikely(!vsync_delay_wq)) {
-		printk("%s : unable to create Vsync delay workqueue\n", __func__);
-	}
-#endif
-	panel_reset_dsi_config = dsi_config;
-	encoder_lcd = encoder;
-
 	PSB_DEBUG_ENTRY("successfully\n");
 
 	return &dpi_output->base;
-}
-
-#ifdef PANEL_RESET_WKAD
-void mdfld_reset_dpi_panel1(struct drm_psb_private *dev_priv)
-{
-	struct mdfld_dsi_config *dsi_config = dev_priv->dsi_configs[0];
-	struct mdfld_dsi_dpi_output *dpi_output = dev_priv->dpi_output;
-	struct panel_funcs *p_funcs;
-	struct drm_device *dev;
-
-	printk("[DEBUG] %s\n", __func__);
-
-	if (!dsi_config || !dpi_output)
-		return;
-
-	dev = dsi_config->dev;
-
-	PSB_DEBUG_ENTRY("\n");
-
-	p_funcs = dpi_output->p_funcs;
-	if (!p_funcs) {
-		DRM_ERROR("%s: invalid panel function table\n", __func__);
-		return;
-	}
-
-//	mutex_lock(&dsi_config->context_lock);
-
-	if (dev_priv->pvr_screen_event_handler)
-		dev_priv->pvr_screen_event_handler(dev, 0);
-
-	if (__dpi_panel_power_off1(dsi_config, p_funcs)) {
-//		mutex_unlock(&dsi_config->context_lock);
-//		return;
-	}
-
-	acquire_ospm_lock();
-//	ospm_power_island_down(OSPM_DISPLAY_ISLAND);
-//	ospm_power_island_up(OSPM_DISPLAY_ISLAND);
-	ospm_suspend_display(dev);
-	ospm_resume_display(dev->pdev);
-
-	release_ospm_lock();
-
-	if (__dpi_panel_power_on(dsi_config, p_funcs)) {
-		psb_enable_vblank(dev, 0);
-//		mutex_unlock(&dsi_config->context_lock);
-		return;
-	}
-
-	if (dev_priv->pvr_screen_event_handler)
-		dev_priv->pvr_screen_event_handler(dev, 1);
-
-//	mutex_unlock(&dsi_config->context_lock);
-	printk("[DEBUG] %s: End panel reset\n", __func__);
-}
-#endif
-
-void mdfld_reset_dpi_panel(struct drm_psb_private *dev_priv)
-{
-	struct mdfld_dsi_config *dsi_config = dev_priv->dsi_configs[0];
-	struct mdfld_dsi_dpi_output *dpi_output = dev_priv->dpi_output;
-	struct panel_funcs *p_funcs;
-	struct drm_device *dev;
-
-	printk("[DEBUG] %s\n", __func__);
-
-	if (!dsi_config || !dpi_output)
-		return;
-
-	dev = dsi_config->dev;
-
-	/*disable ESD when HDMI connected*/
-	if (hdmi_state)
-		return;
-
-	PSB_DEBUG_ENTRY("\n");
-
-	p_funcs = dpi_output->p_funcs;
-	if (!p_funcs) {
-		DRM_ERROR("%s: invalid panel function table\n", __func__);
-		return;
-	}
-
-	mutex_lock(&dsi_config->context_lock);
-
-	if (dev_priv->pvr_screen_event_handler)
-		dev_priv->pvr_screen_event_handler(dev, 0);
-
-	if (__dpi_panel_power_off(dsi_config, p_funcs)) {
-//		mutex_unlock(&dsi_config->context_lock);
-//		return;
-	}
-
-	acquire_ospm_lock();
-//	ospm_power_island_down(OSPM_DISPLAY_ISLAND);
-//	ospm_power_island_up(OSPM_DISPLAY_ISLAND);
-	ospm_suspend_display(dev);
-	ospm_resume_display(dev->pdev);
-
-	release_ospm_lock();
-
-	if (__dpi_panel_power_on(dsi_config, p_funcs)) {
-		psb_enable_vblank(dev, 0);
-		mutex_unlock(&dsi_config->context_lock);
-		return;
-	}
-
-	if (dev_priv->pvr_screen_event_handler)
-		dev_priv->pvr_screen_event_handler(dev, 1);
-
-	mutex_unlock(&dsi_config->context_lock);
-	printk("[DEBUG] %s: End panel reset\n", __func__);
 }

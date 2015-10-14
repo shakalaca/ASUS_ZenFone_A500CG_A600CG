@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2011-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2011-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -49,13 +49,15 @@ extern EVENT_CONFIG   global_ec;
 extern U64           *read_counter_info;
 extern LBR            lbr;
 extern DRV_CONFIG     pcfg;
+extern U64           *interrupt_counts;
 
 #define ADD_ERRATA_FIX_FOR_FIXED_CTR0
+#define MSR_ENERGY_MULTIPLIER         0x606        // Energy Multiplier MSR
 
 #if defined(DRV_IA32)
 #define ENABLE_IA32_PERFEVTSEL0_CTR 0x00400000
 #define ENABLE_FIXED_CTR0           0x00000003
-#elif defined(DRV_EM64T) || defined(DRV_IA64)
+#elif defined(DRV_EM64T)
 #define ENABLE_IA32_PERFEVTSEL0_CTR 0x0000000000400000
 #define ENABLE_FIXED_CTR0           0x0000000000000003
 #else
@@ -103,7 +105,7 @@ silvermont_Write_PMU (
                 } END_FOR_EACH_DATA_GP_REG;
             }
             /* Reset the current group to the very first one. */
-            CPU_STATE_current_group(pcpu) = 0;
+            CPU_STATE_current_group(pcpu) = this_cpu % EVENT_CONFIG_num_groups(global_ec);
         }
     }
 
@@ -133,12 +135,13 @@ silvermont_Write_PMU (
         {
             U64 val = SYS_Read_MSR(ECB_entries_reg_id(pecb,i));
             SEP_PRINT_DEBUG("Write reg 0x%x --- value 0x%llx -- read 0x%llx\n",
-                            ECB_entries_reg_id(pecb,i), ECB_entries_reg_value(pecb,i), val);
+                            ECB_entries_reg_id(pecb,i),
+                            ECB_entries_reg_value(pecb,i),
+                            val);
         }
 #endif
     } END_FOR_EACH_REG_ENTRY;
 
-#if defined ADD_ERRATA_FIX_FOR_FIXED_CTR0
     {
         U64 fixed_ctr0 = SYS_Read_MSR(IA32_FIXED_CTRL);
         fixed_ctr0 = (fixed_ctr0 & (ENABLE_FIXED_CTR0));
@@ -148,7 +151,6 @@ silvermont_Write_PMU (
             SYS_Write_MSR(IA32_PERFEVTSEL0, val);
         }
     }
-#endif
     return;
 }
 
@@ -203,6 +205,10 @@ silvermont_Enable_PMU (
     CPU_STATE   pcpu     = &pcb[this_cpu];
     ECB         pecb     = PMU_register_data[CPU_STATE_current_group(pcpu)];
 
+    if (!pecb) {
+        return;
+    }
+
     if (GLOBAL_STATE_current_phase(driver_state) == DRV_STATE_RUNNING) {
         APIC_Enable_Pmi();
         if (CPU_STATE_reset_mask(pcpu)) {
@@ -222,7 +228,8 @@ silvermont_Enable_PMU (
                 U64 val;
                 val = SYS_Read_MSR(IA32_PERF_GLOBAL_CTRL);
                 SEP_PRINT_DEBUG("Write reg 0x%x--- read 0x%llx\n",
-                        ECB_entries_reg_id(pecb,0), SYS_Read_MSR(IA32_PERF_GLOBAL_CTRL));
+                                ECB_entries_reg_id(pecb,0),
+                                SYS_Read_MSR(IA32_PERF_GLOBAL_CTRL));
             }
 #endif
         }
@@ -260,15 +267,25 @@ silvermont_Read_PMU_Data (
     pcpu      = &pcb[this_cpu];
     pecb      = PMU_register_data[CPU_STATE_current_group(pcpu)];
 
+    if (!pecb) {
+        return;
+    }
+
     start_index = ECB_num_events(pecb) * this_cpu;
-    SEP_PRINT_DEBUG("PMU control_data 0x%p, buffer 0x%p, j = %d\n", PMU_register_data, buffer, j);
+    SEP_PRINT_DEBUG("PMU control_data 0x%p, buffer 0x%p, j = %d\n",
+                    PMU_register_data,
+                    buffer,
+                    j);
     FOR_EACH_DATA_REG(pecb,i) {
         j = start_index + ECB_entries_event_id_index(pecb,i);
         if (ECB_entries_is_compound_ctr_sub_bit_set(pecb, i)) {
              continue;
         }
         buffer[j] = SYS_Read_MSR(ECB_entries_reg_id(pecb,i));
-        SEP_PRINT_DEBUG("this_cpu %d, event_id %d, value 0x%llx\n", this_cpu, i, buffer[j]);
+        SEP_PRINT_DEBUG("this_cpu %d, event_id %d, value 0x%llx\n",
+                        this_cpu,
+                        i,
+                        buffer[j]);
     } END_FOR_EACH_DATA_REG;
 
     return;
@@ -299,7 +316,11 @@ silvermont_Check_Overflow (
     U64              overflow_status_clr = 0;
     DRV_EVENT_MASK_NODE event_flag;
 
-    // initialize masks 
+    if (!pecb) {
+        return;
+    }
+
+    // initialize masks
     DRV_MASKS_masks_num(masks) = 0;
 
     overflow_status = SYS_Read_MSR(IA32_PERF_GLOBAL_STATUS);
@@ -335,7 +356,17 @@ silvermont_Check_Overflow (
                             SYS_Read_MSR(ECB_entries_reg_id(pecb,i)));
             SYS_Write_MSR(ECB_entries_reg_id(pecb,i), ECB_entries_reg_value(pecb,i));
 
+            if (DRV_CONFIG_enable_cp_mode(pcfg)) {
+                /* Increment the interrupt count. */
+                if (interrupt_counts) {
+                    interrupt_counts[this_cpu * DRV_CONFIG_num_events(pcfg) + ECB_entries_event_id_index(pecb,i)] += 1;
+                }
+            }
+
             DRV_EVENT_MASK_bitFields1(&event_flag) = (U8) 0;
+            if (ECB_entries_fixed_reg_get(pecb, i)) {
+                CPU_STATE_p_state_counting(pcpu) = 1;
+            }
             if (ECB_entries_precise_get(pecb, i)) {
                 DRV_EVENT_MASK_precise(&event_flag) = 1;
             }
@@ -350,7 +381,7 @@ silvermont_Check_Overflow (
                 DRV_EVENT_MASK_bitFields1(DRV_MASKS_eventmasks(masks) + DRV_MASKS_masks_num(masks)) = DRV_EVENT_MASK_bitFields1(&event_flag);
                 DRV_EVENT_MASK_event_idx(DRV_MASKS_eventmasks(masks) + DRV_MASKS_masks_num(masks)) = ECB_entries_event_id_index(pecb, i);
                 DRV_MASKS_masks_num(masks)++;
-            } 
+            }
             else {
                 SEP_PRINT_ERROR("The array for event masks is full.\n");
             }
@@ -563,7 +594,7 @@ silvermont_Destroy (
     SEP_PRINT_DEBUG("    msr_val(IA32_DEBUG_CTRL)=0x%llx \n", CPU_STATE_pmu_state(pcpu)[0]);
     SEP_PRINT_DEBUG("    msr_val(IA32_PERF_GLOBAL_CTRL)=0x%llx \n", CPU_STATE_pmu_state(pcpu)[1]);
 
-    // restore the previously saved PMU state 
+    // restore the previously saved PMU state
     // (NOTE: assumes this is only called ONCE per collection)
     SYS_Write_MSR(IA32_DEBUG_CTRL, CPU_STATE_pmu_state(pcpu)[0]);
     SYS_Write_MSR(IA32_PERF_GLOBAL_CTRL, CPU_STATE_pmu_state(pcpu)[1]);
@@ -582,21 +613,35 @@ silvermont_Destroy (
  * @brief   Read all the LBR registers into the buffer provided and return
  *
  */
-static VOID
+static U64
 silvermont_Read_LBRs (
     VOID   *buffer
 )
 {
-    U32  i;
+    U32  i, count = 0;
     U64 *lbr_buf = (U64 *)buffer;
+    U64 tos_ip_addr = 0;
+    U64 tos_ptr = 0;
 
     SEP_PRINT_DEBUG("Inside silvermont_Read_LBRs\n");
     for (i = 0; i < LBR_num_entries(lbr); i++) {
         *lbr_buf = SYS_Read_MSR(LBR_entries_reg_id(lbr,i));
+        SEP_PRINT_DEBUG("silvermont_Read_LBRs %u, 0x%llx\n", i, *lbr_buf);
+        if (i == 0) {
+            tos_ptr = *lbr_buf;
+        } else {
+            if (LBR_entries_etype(lbr, i) == 1) {
+                if (tos_ptr == count) {
+                    tos_ip_addr = *lbr_buf;
+                    SEP_PRINT_DEBUG("tos_ip_addr %llu, 0x%llx\n", tos_ptr, *lbr_buf);
+                }
+                count++;
+            }
+        }
         lbr_buf++;
     }
 
-    return;
+    return tos_ip_addr;
 }
 
 static VOID
@@ -624,7 +669,7 @@ silvermont_Clean_Up (
  * @return   None     No return needed
  *
  * @brief    Read CPU event based counts data and store into the buffer param;
- *           For the case of the trigger event, store the SAV value. 
+ *           For the case of the trigger event, store the SAV value.
  */
 static VOID
 silvermont_Read_Counts (
@@ -633,30 +678,35 @@ silvermont_Read_Counts (
 )
 {
     U64            *data;
-    int             data_index;
-    U32             this_cpu            = CONTROL_THIS_CPU();
-    CPU_STATE       pcpu                = &pcb[this_cpu];
-    U32             event_id            = 0;
+    U32             this_cpu     = CONTROL_THIS_CPU();
+    CPU_STATE       pcpu         = &pcb[this_cpu];
+    U32             event_id     = 0;
 
-    data       = (U64 *)param;
-    data_index = 0;
-
-    // Write GroupID
-    data[data_index] = CPU_STATE_current_group(pcpu) + 1;
-    // Increment the data index as the event id starts from zero
-    data_index++;
+    if (DRV_CONFIG_ebc_group_id_offset(pcfg)) {
+        // Write GroupID
+        data  = (U64 *)((S8*)param + DRV_CONFIG_ebc_group_id_offset(pcfg));
+        *data = CPU_STATE_current_group(pcpu) + 1;
+    }
 
     FOR_EACH_DATA_REG(pecb,i) {
+        if (ECB_entries_counter_event_offset(pecb,i) == 0) {
+            continue;
+        }
+        data = (U64 *)((S8*)param + ECB_entries_counter_event_offset(pecb,i));
         event_id = ECB_entries_event_id_index(pecb,i);
         if (event_id == id) {
-            data[data_index + event_id] = ~(ECB_entries_reg_value(pecb,i) - 1) & 
-                                           ECB_entries_max_bits(pecb,i);;
+            *data = ~(ECB_entries_reg_value(pecb,i) - 1) &
+                                           ECB_entries_max_bits(pecb,i);
         }
         else {
-            data[data_index + event_id] = SYS_Read_MSR(ECB_entries_reg_id(pecb,i));
+            *data = SYS_Read_MSR(ECB_entries_reg_id(pecb,i));
             SYS_Write_MSR(ECB_entries_reg_id(pecb,i), 0LL);
         }
     } END_FOR_EACH_DATA_REG;
+
+    if (DRV_CONFIG_enable_p_state(pcfg)) {
+        CPU_STATE_p_state_counting(pcpu) = 0;
+    }
 
     return;
 }
@@ -676,34 +726,37 @@ silvermont_Read_Counts (
  */
 static void
 silvermont_Platform_Info (
-    PVOID  data
+    PVOID data
 )
 {
     U64                    index         = 0;
     DRV_PLATFORM_INFO      platform_data = (DRV_PLATFORM_INFO)data;
     U64                    value         = 0;
     U64                    clock_value   = 0;
- 
+
     if (!platform_data) {
         return;
     }
- 
+
 #define IA32_MSR_PLATFORM_INFO 0xCE
     value = SYS_Read_MSR(IA32_MSR_PLATFORM_INFO);
- 
+
 #define IA32_MSR_PSB_CLOCK_STS  0xCD
 #define FREQ_MASK_BITS          0x03
- 
+
     clock_value = SYS_Read_MSR(IA32_MSR_PSB_CLOCK_STS);
     index = clock_value & FREQ_MASK_BITS;
     DRV_PLATFORM_INFO_info(platform_data)           = value;
     DRV_PLATFORM_INFO_ddr_freq_index(platform_data) = index;
- 
+
 #undef IA32_MSR_PLATFORM_INFO
 #undef IA32_MSR_PSB_CLOCK_STS
 #undef FREQ_MASK_BITS
+    SEP_PRINT_DEBUG ("silvermont_Platform_Info: Read from MSR_ENERGY_MULTIPLIER reg is %d\n", SYS_Read_MSR(MSR_ENERGY_MULTIPLIER));
+    DRV_PLATFORM_INFO_energy_multiplier(platform_data) = (U32) (SYS_Read_MSR(MSR_ENERGY_MULTIPLIER) & 0x00001F00) >> 8;
 
     return;
+
 }
 
 
@@ -728,5 +781,7 @@ DISPATCH_NODE  silvermont_dispatch =
     silvermont_Read_Counts,
     NULL,
     NULL,                        // read_ro
-    silvermont_Platform_Info     // platform_info
+    silvermont_Platform_Info,    // platform_info
+    NULL,
+    NULL                         // scan for uncore
 };

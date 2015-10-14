@@ -69,6 +69,7 @@
 #define MIPIA_VIDEO_MODE_FORMAT_REG			0xb058
 #define MIPIA_EOT_DISABLE_REG				0xb05c
 #define CLOCK_STOP					(0x1 << 1)
+#define DSI_EOT_DISABLE_MASK                            (0xff)
 
 #define MIPIA_LP_BYTECLK_REG				0xb060
 #define MIPIA_LP_GEN_DATA_REG				0xb064
@@ -238,6 +239,15 @@ struct mdfld_dsi_hw_context {
 	u32 sprite_dspstride;
 	u32 sprite_dsplinoff;
 
+	/*Drain Latency*/
+	u32 ddl1;
+	u32 ddl2;
+	u32 ddl3;
+	u32 ddl4;
+
+	u32 dsparb;
+	u32 dsparb2;
+
 	/*overlay*/
 	u32 ovaadd;
 	u32 ovcadd;
@@ -245,6 +255,9 @@ struct mdfld_dsi_hw_context {
 	/* gamma and csc */
 	u32 palette[256];
 	u32 color_coef[6];
+	u32 gamma_red_max;
+	u32 gamma_green_max;
+	u32 gamma_blue_max;
 
 	/*pipe regs*/
 	u32 htotal;
@@ -334,6 +347,12 @@ struct mdfld_dsi_hw_registers {
 	u32 dsplinoff_reg;
 	u32 dsppos_reg;
 	u32 dspstride_reg;
+
+	/*Drain Latency*/
+	u32 ddl1_reg;
+	u32 ddl2_reg;
+	u32 ddl3_reg;
+	u32 ddl4_reg;
 
 	/*overlay*/
 	u32 ovaadd_reg;
@@ -437,6 +456,7 @@ struct mdfld_dsi_config {
 	struct mutex context_lock;
 	struct mdfld_dsi_hw_context dsi_hw_context;
 
+	u8 cabc_mode;
 	int pipe;
 	int changed;
 
@@ -463,6 +483,10 @@ struct mdfld_dsi_config {
 
 #define MDFLD_DSI_ENCODER(encoder) \
 	(container_of(encoder, struct mdfld_dsi_encoder, base))
+
+#define MDFLD_DSI_ENCODER_WITH_DRM_ENABLE(encoder) \
+		(container_of((struct drm_encoder *) encoder, \
+		struct mdfld_dsi_encoder, base))
 
 static inline struct mdfld_dsi_config *
 mdfld_dsi_get_config(struct mdfld_dsi_connector *connector)
@@ -558,5 +582,18 @@ extern int mdfld_dsi_get_power_mode(struct mdfld_dsi_config *dsi_config,
 		u8 transmission);
 
 extern mdfld_dsi_encoder_t is_panel_vid_or_cmd(struct drm_device *dev);
+extern mdfld_dsi_encoder_t get_mipi_panel_type(struct drm_device *dev);
+extern const char *panel_mode_string(struct drm_device *dev);
+
+extern void mdfld_dsi_set_drain_latency(struct drm_encoder *encoder,
+		struct drm_display_mode *mode);
+
+extern int mdfld_dsi_set_cabc_mode(struct drm_device *dev,
+	struct mdfld_dsi_config *dsi_config, u8 cabc_mode);
+extern int mdfld_dsi_get_cabc_mode(struct drm_device *dev,
+	struct mdfld_dsi_config *dsi_config);
+
+extern int display_cmn_set_cabc_mode(struct mdfld_dsi_config *dsi_config, u8 cabc_mode);
+extern int display_cmn_get_cabc_mode(struct mdfld_dsi_config *dsi_config);
 
 #endif /*__MDFLD_DSI_OUTPUT_H__*/

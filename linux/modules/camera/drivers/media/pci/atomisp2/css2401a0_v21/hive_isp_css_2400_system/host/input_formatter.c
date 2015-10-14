@@ -19,15 +19,12 @@
  *
  */
 
-#ifdef __KERNEL__
-#include <linux/types.h>
-#else
-#include <stddef.h>		/* NULL */
-#include <stdbool.h>
-#include <stdint.h>
-#endif
+#include "system_global.h"
+
+#ifdef USE_INPUT_SYSTEM_VERSION_2
 
 #include "input_formatter.h"
+#include <type_support.h>
 #include "gp_device.h"
 
 #include "assert_support.h"
@@ -69,8 +66,13 @@ void input_formatter_rst(
 	addr = HIVE_IF_SRST_ADDRESS[ID];
 	rst = HIVE_IF_SRST_MASK[ID];
 
-	input_formatter_reg_store(ID,
-		 addr, rst);
+	/* TEMPORARY HACK: THIS RESET BREAKS THE METADATA FEATURE
+	 * WICH USES THE STREAM2MEMRY BLOCK.
+	 * MUST BE FIXED PROPERLY
+	 */
+	if (!HIVE_IF_BIN_COPY[ID]) {
+		input_formatter_reg_store(ID, addr, rst);
+	}
 
 	return;
 }
@@ -209,8 +211,15 @@ void input_formatter_bin_get_state(
 	assert(ID < N_INPUT_FORMATTER_ID);
 	assert(state != NULL);
 
+#ifdef HRT_CSIM
+	/* The compiled simulator mode of the input formatter
+	 * does not support reading from the write-only reset
+	 * register. */
+	state->reset = 0;
+#else
 	state->reset = input_formatter_reg_load(ID,
 		HIVE_STR2MEM_SOFT_RESET_REG_ADDRESS);
+#endif
 	state->input_endianness = input_formatter_reg_load(ID,
 		HIVE_STR2MEM_INPUT_ENDIANNESS_REG_ADDRESS);
 	state->output_endianness = input_formatter_reg_load(ID,
@@ -229,3 +238,4 @@ void input_formatter_bin_get_state(
 		HIVE_STR2MEM_EN_STAT_UPDATE_ADDRESS);
 	return;
 }
+#endif

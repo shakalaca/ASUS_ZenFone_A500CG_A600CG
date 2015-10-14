@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -58,6 +58,7 @@ int vtss_init_stack(stack_control_t * stk)
     stk->trylock  = trylock_stack;
     stk->unlock   = unlock_stack;
     stk->kernel_callchain_size =VTSS_DYNSIZE_STACKS;
+    stk->acc = vtss_user_vm_accessor_init(1, vtss_time_limit);
     return realloc_stack(stk);
 }
 
@@ -96,6 +97,14 @@ static int realloc_stack(stack_control_t* stk)
 /// destroy the stack control object
 static void destroy_stack(stack_control_t* stk)
 {
+    trylock_stack(stk);
+    if (stk->acc)
+    {
+        vtss_user_vm_accessor_fini(stk->acc);
+        stk->acc = NULL;
+    }
+    stk->acc = NULL;
+    unlock_stack(stk);
     if(stk->buffer)
     {
         free_pages((unsigned long)stk->buffer, get_order(stk->size));
@@ -140,6 +149,9 @@ static int unwind_stack_fwd(stack_control_t* stk)
     int stride = wow64 ? 4 : sizeof(void*);
 
     size_t tmp = stk->user_sp.szt;
+    size_t val_idx = VTSS_STACK_CACHE_SIZE;
+    char* vals = stk->value_cache;
+    size_t val_size = 0;
 
     /* check for bad args */
 
@@ -194,7 +206,7 @@ static int unwind_stack_fwd(stack_control_t* stk)
     }
 
     /* search the stack and the stack map to detect the changed/unchanged regions */
-
+    value.szt = 0;
     if(find_changed_region)
     {
         /// TODO: enable the try-except block in case of numerous 'empty' stack records
@@ -210,8 +222,7 @@ static int unwind_stack_fwd(stack_control_t* stk)
                     continue;
                 }
                 /// read in the actual stack contents
-                value.szt = 0;
-                if (stk->acc->read(stk->acc, stkmap_curr->sp.szp, &value.szt, stride) != stride) {
+                if (stk->acc->read(stk->acc, stkmap_curr->sp.szp, &vals[0], stride) != stride) {
                     TRACE("SP=0x%p: break search, [0x%p - 0x%p], ip=0x%p", stkmap_curr->sp.szp, stk->user_sp.vdp, stk->bp.vdp, stk->user_ip.vdp);
                     /// clear the stack map
                     stkmap_common = stkmap_end = stkmap_start;
@@ -219,6 +230,8 @@ static int unwind_stack_fwd(stack_control_t* stk)
                     search_border.chp = bp - stride;
                     goto end_of_search;
                 }
+                value.szt = 0;
+                value.szt = wow64 ? *(u32*)(&vals[0]) : *(u64*)(&vals[0]);
                 //value.szt = (size_t)(wow64 ? *stkmap_curr->sp.uip : *stkmap_curr->sp.szp);
                 /// check if the current element has changed
                 if(stkmap_curr->value.szt != value.szt)
@@ -272,17 +285,29 @@ static int unwind_stack_fwd(stack_control_t* stk)
                             }
                             //stk->value = value;
                             /// search for IPs from the same module
-                            for(search_sp.chp = stkmap_curr->sp.chp + stride; search_sp.chp < search_border.chp; search_sp.chp += stride)
+                            val_size = 0;
+                            for(search_sp.chp = stkmap_curr->sp.chp + stride; search_sp.chp < search_border.chp; search_sp.chp += stride, val_idx += stride)
                             {
                                 value.szt = 0;
-                                if (stk->acc->read(stk->acc, search_sp.szp, &value.szt, stride) != stride) {
+                                if (val_idx >= val_size)
+                                {
+                                val_idx = 0;
+                                val_size = min(PAGE_SIZE-(unsigned long)(search_sp.szt&(~PAGE_MASK)), (unsigned long)(search_border.chp-search_sp.chp+stride));
+                                val_size = min((size_t)IP_SEARCH_RANGE * stride, val_size);
+                                if (stk->acc->read(stk->acc, search_sp.szp, &vals[val_idx], val_size) != val_size) {
                                     TRACE("SP=0x%p: break search, [0x%p - 0x%p], ip=0x%p", search_sp.szp, stk->user_sp.vdp, stk->bp.vdp, stk->user_ip.vdp);
+                                    //printk("failed to read 0!!! SP=0x%p: break search, [0x%p - 0x%p], ip=0x%p\n", search_sp.szp, stk->user_sp.vdp, stk->bp.vdp, stk->user_ip.vdp);
                                     /// clear the stack map
                                     stkmap_common = stkmap_end = stkmap_start;
                                     /// search the entire stack, the map is emptied
                                     search_border.chp = bp - stride;
+                                    val_idx = VTSS_STACK_CACHE_SIZE;
+                                    val_size = 0;
                                     goto end_of_search;
                                 }
+                                }
+                                value.szt = wow64 ? *(u32*)(&vals[val_idx]) : *(u64*)(&vals[val_idx]);
+//                                value.szt = ((stkptr_t*)&vals[val_idx])->szt;
                                 //stk->value.szt = value.szt = (size_t)(wow64 ? *search_sp.uip : *search_sp.szp);
                                 /// this is a relaxed IP search condition (to increase the performance)
                                 if(stk->acc->validate(stk->acc, (unsigned long)value.szt))
@@ -328,23 +353,29 @@ end_of_search:
     stkmap_commsize = (int)((stkmap_end - stkmap_common) * sizeof(stkmap_t));
     /// correct the free size of stack map
     stkmap_size -= stkmap_commsize;
+    val_idx = VTSS_STACK_CACHE_SIZE;
 
     /* search the stack for IPs and FPs and update the stack map */
-
-    for(search_sp.chp = sp, stkmap_curr = stkmap_start; search_sp.chp <= search_border.chp; search_sp.chp += stride)
+    val_size = 0;
+    for(search_sp.chp = sp, stkmap_curr = stkmap_start; search_sp.chp <= search_border.chp; search_sp.chp += stride, val_idx +=stride)
     {
+//    static int vtss_debug = 0;
         if((char*)stkmap_curr - (char*)stkmap_start >= stkmap_size)
         {
             /// the map is full
             return VTSS_ERR_NOMEMORY;
         }
-        /// TODO: enable the try-except block in case of numerous 'empty' stack records
-        ///__try
-        ///{
+        if (val_idx >= val_size)
+        {
             /// read a value from the stack
+            val_size = min(PAGE_SIZE-(unsigned long)(search_sp.szt&(~PAGE_MASK)), (unsigned long)(search_border.chp-search_sp.chp+stride));
+            val_size = min((size_t)VTSS_STACK_CACHE_SIZE, val_size);
+//            size_t val_size = min((unsigned long)VTSS_STACK_CACHE_SIZE, (unsigned long)(search_border.chp-search_sp.chp));
+            val_idx = 0;
             value.szt = 0;
-            if (stk->acc->read(stk->acc, search_sp.szp, &value.szt, stride) != stride) {
+            if (stk->acc->read(stk->acc, search_sp.szp, &vals[val_idx], val_size) != val_size) {
                 TRACE("SP=0x%p: skip page, [0x%p - 0x%p], ip=0x%p", search_sp.szp, stk->user_sp.vdp, stk->bp.vdp, stk->user_ip.vdp);
+//                printk("read failed!!! SP=0x%p: skip page, [0x%p - 0x%p], ip=0x%p\n", search_sp.szp, stk->user_sp.vdp, stk->bp.vdp, stk->user_ip.vdp);
 #ifdef VTSS_MEM_FAULT_BREAK
                 break;
 #else
@@ -352,19 +383,34 @@ end_of_search:
                     search_sp.chp += PAGE_SIZE;
                     search_sp.szt &= PAGE_MASK;
                     search_sp.chp -= stride;
+                    val_idx = VTSS_STACK_CACHE_SIZE;
+                    val_size = 0;
                     continue;
                 } else {
                     break;
                 }
 #endif
             }
+        }
+/*        if (vtss_debug <=10){
+            stkptr_t vvv;
+            value.szt = wow64 ? *(u32*)(&vals[val_idx]) : *(u64*)(&vals[val_idx]);
+            if (stk->acc->read(stk->acc, search_sp.szp, &vvv.szt, stride) != stride) {
+                printk("failed to read \n");
+            } else {
+                printk("sizeof(size_t)=%d, vals[%d].szt=%lx, vals[%d].chp=%p, vals[%d].uip=%p, str = (%#2x %#2x %#2x %#2x %#2x %#2x %#2x %#2x), vvv = [%lx, %p], value = [%lx, %p]\n",
+                 (int)sizeof(size_t), (int)val_idx, ((stkptr_t*)&vals[val_idx])->szt, (int)val_idx, ((stkptr_t*)&vals[val_idx])->chp, (int)val_idx,((stkptr_t*)&vals[val_idx])->uip,vals[val_idx],vals[val_idx+1],vals[val_idx+2],vals[val_idx+3],
+                 vals[val_idx+4], vals[val_idx+5],vals[val_idx+6],vals[val_idx+7],vvv.szt, vvv.chp, value.szt, value.chp);
+            }
+            vtss_debug++;
+        }*/
+
+            value.szt = wow64 ? *(u32*)(&vals[val_idx]) : *(u64*)(&vals[val_idx]);
             /// validate the value
             if(value.chp < search_sp.chp || value.chp >= bp)
             {
                 /// it's not FP, check for IP
-                unsigned long sa = (unsigned long)value.szt;
-//                if (!(0x1000 <= sa && sa < ~0xFFFUL)) continue;
-                if(!stk->acc->validate(stk->acc, sa))
+                if( !stk->acc->validate(stk->acc, (unsigned long)value.szt) )
                 {
                     /// not IP
                     continue;
@@ -382,11 +428,6 @@ end_of_search:
             stkmap_curr->sp = search_sp;
             stkmap_curr->value = value;
             stkmap_curr++;
-        ///}
-        ///__except(EXCEPTION_EXECUTE_HANDLER)
-        ///{
-        ///    continue;
-        ///}
     }
     if(stkmap_common != stkmap_end)
     {
@@ -400,7 +441,6 @@ end_of_search:
     stk->stkmap_start = stkmap_start;
     stk->stkmap_end = (stkmap_t*)((char*)stkmap_curr + stkmap_commsize);
     stk->stkmap_common = stkmap_curr;
-
     return 0;
 }
 
@@ -587,6 +627,7 @@ static void lock_stack(stack_control_t* stk)
 
 static int trylock_stack(stack_control_t* stk)
 {
+    if (!stk->acc) return 0;
     return spin_trylock(&stk->spin_lock);
 }
 

@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -56,6 +56,18 @@ typedef struct user_vm_accessor
 #ifdef VTSS_VMA_CACHE
     char                   m_buffer[PAGE_SIZE];
 #endif
+
+    int mmap_reg_callcnt;
+
+    struct vm_area_struct* m_vma_cache;
+
+    unsigned long mmap_vdso_start;
+    unsigned long mmap_vdso_end;
+    unsigned long mmap_mms_start;
+    unsigned long mmap_mms_end;
+    unsigned long mmap_stack_start;
+    unsigned long mmap_stack_end;
+
 } user_vm_accessor_t;
 
 user_vm_accessor_t* vtss_user_vm_accessor_init(int in_irq, cycles_t limit);

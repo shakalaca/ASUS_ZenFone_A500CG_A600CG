@@ -20,8 +20,11 @@
  */
 
 #include "ia_css_memory_access.h"
-#include "memory_access.h"
-#include "assert_support.h"
+#include <type_support.h>
+#include <system_types.h>
+#include <assert_support.h>
+#include <memory_access.h>
+#include <ia_css_env.h>
 
 const hrt_vaddress mmgr_NULL = (hrt_vaddress)0;
 const hrt_vaddress mmgr_EXCEPTION = (hrt_vaddress)-1;
@@ -78,18 +81,6 @@ void
 mmgr_clear(hrt_vaddress vaddr, const size_t size)
 {
 	my_env.set(vaddr, 0, size);
-}
-
-void * 
-mmgr_hrt_vaddr_to_host_vaddr(hrt_vaddress vaddr)
-{
-	return my_env.hrt_vaddr_to_host_vaddr(vaddr);
-}
-
-hrt_vaddress 
-mmgr_host_vaddr_to_hrt_vaddr(const void * ptr)
-{
-	return my_env.host_vaddr_to_hrt_vaddr(ptr);
 }
 
 void

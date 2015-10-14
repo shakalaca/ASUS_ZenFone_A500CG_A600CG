@@ -22,7 +22,6 @@
 #include "ia_css_types.h"
 #include "sh_css_defs.h"
 #include "ia_css_debug.h"
-#include "assert_support.h"
 
 #include "ia_css_cnr2.host.h"
 
@@ -38,9 +37,12 @@ const struct ia_css_cnr_config default_cnr_config = {
 };
 
 void
-ia_css_cnr_encode(struct sh_css_isp_cnr_params *to,
-		  const struct ia_css_cnr_config *from)
+ia_css_cnr_encode(
+	struct sh_css_isp_cnr_params *to,
+	const struct ia_css_cnr_config *from,
+	unsigned size)
 {
+	(void)size;
 	to->coring_u = from->coring_u;
 	to->coring_v = from->coring_v;
 	to->sense_gain_vy = from->sense_gain_vy;
@@ -52,10 +54,14 @@ ia_css_cnr_encode(struct sh_css_isp_cnr_params *to,
 }
 
 void
-ia_css_cnr_dump(const struct sh_css_isp_cnr_params *cnr, unsigned level);
+ia_css_cnr_dump(
+	const struct sh_css_isp_cnr_params *cnr,
+	unsigned level);
 
 void
-ia_css_cnr_debug_dtrace(const struct ia_css_cnr_config *config, unsigned level)
+ia_css_cnr_debug_dtrace(
+	const struct ia_css_cnr_config *config,
+	unsigned level)
 {
 	ia_css_debug_dtrace(level,
 		"config.coring_u=%d, config.coring_v=%d, "
@@ -66,4 +72,12 @@ ia_css_cnr_debug_dtrace(const struct ia_css_cnr_config *config, unsigned level)
 		config->sense_gain_vy, config->sense_gain_hy,
 		config->sense_gain_vu, config->sense_gain_hu,
 		config->sense_gain_vv, config->sense_gain_hv);
+}
+
+void
+ia_css_init_cnr2_state(
+	void/*struct sh_css_isp_cnr_vmem_state*/ *state,
+	size_t size)
+{
+	memset(state, 0, size);
 }

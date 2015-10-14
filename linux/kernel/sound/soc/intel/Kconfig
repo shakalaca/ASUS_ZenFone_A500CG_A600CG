@@ -70,10 +70,18 @@ config SND_MOOR_MACHINE
 	select MFD_CORE
 	select MFD_WM8994
 	select REGULATOR_WM8994
+	select SND_SOC_FLORIDA
+	select SND_SOC_WM_ADSP
+	select SND_SOC_ARIZONA
+	select MFD_ARIZONA
+	select MFD_FLORIDA
+	select REGULATOR_ARIZONA
+	select GPIO_ARIZONA
 	select SND_SST_PLATFORM
 	select SND_SST_MACHINE
 	select SND_INTEL_SST
 	select SND_EFFECTS_OFFLOAD
+	select ARCH_HAS_OPP
 	default n
 	help
 	  This adds support for ASoC machine driver for Intel(R) MID Moorefield platform
@@ -101,6 +109,7 @@ config SND_BYT_MACHINE
 config SND_CHT_MACHINE
 	tristate "SOC Machine Audio driver for Intel Cherrytrail MID platform"
 	select SND_SOC_RT5672
+	select SND_SOC_TLV320AIC31XX
 	select SND_SST_PLATFORM
 	select SND_SST_MACHINE
 	select SND_INTEL_SST
@@ -130,18 +139,18 @@ config SND_CTP_MACHINE
           Say Y if you have such a device
           If unsure select "N".
 
-config SND_CTP_MACHINE_5647
-	tristate "SOC Machine Audio driver for Intel Cloverview MID platform with ALC5647 codec"
+config SND_CTP_MACHINE_5671
+	tristate "SOC Machine Audio driver for Intel Cloverview MID platform with ALC5671 codec"
 	depends on INTEL_SCU_IPC_UTIL && X86 && GPIO_LANGWELL
-	select SND_SOC_RT5647
+	select SND_SOC_RT5671
 	select MFD_CORE
-	select MFD_WM8994
 	select SND_SST_PLATFORM
 	select SND_SST_MACHINE
 	select SND_INTEL_SST
 	select SND_COMPRESS_SST
 	select SND_COMPRESS_OFFLOAD
 	select SND_SOC_COMMS_SSP
+	depends on PF450CL
 	default n
 	help
           This adds support for ASoC machine driver for Intel(R) MID Cloverview platform
@@ -149,6 +158,24 @@ config SND_CTP_MACHINE_5647
           Say Y if you have such a device
           If unsure select "N".
 
+config SND_CTP_MACHINE_5647
+	tristate "SOC Machine Audio driver for Intel Cloverview MID platform with ALC5647 codec"
+	depends on INTEL_SCU_IPC_UTIL && X86 && GPIO_LANGWELL
+	select SND_SOC_RT5647
+	select SND_SST_PLATFORM
+	select SND_SST_MACHINE
+	select SND_INTEL_SST
+	select SND_COMPRESS_SST
+	select SND_COMPRESS_OFFLOAD
+	select SND_SOC_COMMS_SSP
+	select A500CG_AUDIO_SETTING
+	depends on A500CG
+	default n
+	help
+          This adds support for ASoC machine driver for Intel(R) MID Cloverview platform
+	  used as alsa device in audio substem in Intel(R) MID devices
+          Say Y if you have such a device
+          If unsure select "N".
 
 config SND_INTEL_SST
        tristate
@@ -157,7 +184,13 @@ config SND_SST_PLATFORM
 	tristate
 
 config SND_SOC_COMMS_SSP
-	tristate "Use ASOC framework to drive AudioComms SSP0 and SSP1"
+	depends on SND_INTEL_MID_I2S
+	tristate "Use ASOC framework to drive AudioComms SSP BT and Modem"
+	help
+	  Sound SOC cards usually used for BT VOIP and MODEM MIXING use cases.
+	  This will add devices for these uses cases in the list of alsa cards.
+	  Say Y if you need these sound cards (BT chipset or Modem present).
+	  Requires to enable the INTEL_MID_I2S low level SSP I2S driver.
 
 config SND_MFLD_MONO_SPEAKER_SUPPORT
 	tristate "Mono Speaker support for Medfield based devices"
@@ -171,12 +204,17 @@ config SND_MFLD_MONO_SPEAKER_SUPPORT
 config PRH_TEMP_WA_FOR_SPID
 	tristate "Workaround for PRh since SPID is unavailable"
 
-config SST_MRFLD_DPCM
-	bool "Use DPCM based Merrifield Machine Audio driver"
+config SST_DPCM
+	bool "Use DPCM based Machine Audio driver"
 	default n
 	help
-	  This adds an option to enable the DPCM based MRFLD machine driver
+	  This adds an option to enable the DPCM based machine driver
 
 config SND_SST_MACHINE
 	tristate
 
+config A500CG_AUDIO_SETTING
+	tristate
+	default n
+	help
+	  This adds support for A500/A600CG specific hardware configuration

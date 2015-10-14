@@ -5,7 +5,7 @@
  *  agreement or nondisclosure agreement with Intel Corporation and may not
  *  be copied or disclosed except in accordance with the terms of that
  *  agreement.
- *        Copyright (c) 2009-2012 Intel Corporation.  All Rights Reserved.
+ *        Copyright (C) 2009-2014 Intel Corporation.  All Rights Reserved.
  * -------------------------------------------------------------------------
 **COPYRIGHT*/
 
@@ -81,7 +81,7 @@
 #define PAX_IOCTL_RESERVE_ALL    PAX_CTL_READ_CODE(3)
 #define PAX_IOCTL_UNRESERVE      PAX_CTL_READ_CODE(4)
 
-#elif defined(DRV_OS_LINUX) || defined (DRV_OS_ANDROID)
+#elif defined(DRV_OS_LINUX) || defined (DRV_OS_ANDROID) || defined (DRV_OS_SOLARIS)
 
 #define PAX_DEVICE_NAME          "/dev/" PAX_NAME
 

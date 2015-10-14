@@ -52,6 +52,13 @@ bool nopg;
 module_param_named(nopg, nopg, bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(nopg, "don't enable power gating (default = false)");
 
+#ifdef CONFIG_PM_RUNTIME
+static inline void mei_txe_set_pm_domain(struct mei_device *dev);
+static inline void mei_txe_unset_pm_domain(struct mei_device *dev);
+#else
+static inline void mei_txe_set_pm_domain(struct mei_device *dev) {}
+static inline void mei_txe_unset_pm_domain(struct mei_device *dev) {}
+#endif /* CONFIG_PM_RUNTIME */
 
 static char dmapool[32] = "4M";
 module_param_string(dmapool, dmapool, 32, S_IRUGO | S_IWUSR);
@@ -311,16 +318,20 @@ static int mei_txe_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (IS_ERR_OR_NULL(hw->mdev))
 		goto deregister_mei;
 
-	/* This is w/a for BIOS not anbling waking up the device */
-	device_set_run_wake(&pdev->dev, true);
-
 	pm_runtime_set_autosuspend_delay(&pdev->dev, MEI_TXI_RPM_TIMEOUT);
 	pm_runtime_use_autosuspend(&pdev->dev);
 
 	pm_runtime_mark_last_busy(&pdev->dev);
 
-	if (pci_dev_run_wake(pdev))
-		pm_runtime_put_noidle(&pdev->dev);
+	/*
+	* For not wake-able HW runtime pm framework
+	* can't be used on pci device level.
+	* Use domain runtime pm callbacks instead.
+	*/
+	if (!pci_dev_run_wake(pdev))
+		mei_txe_set_pm_domain(dev);
+
+	pm_runtime_put_noidle(&pdev->dev);
 
 	if (!nopg)
 		pm_runtime_allow(&pdev->dev);
@@ -374,12 +385,14 @@ static void mei_txe_remove(struct pci_dev *pdev)
 		return;
 	}
 
-	if (pci_dev_run_wake(pdev))
-		pm_runtime_get_noresume(&pdev->dev);
+	pm_runtime_get_noresume(&pdev->dev);
 
 	hw = to_txe_hw(dev);
 
 	mei_stop(dev);
+
+	if (!pci_dev_run_wake(pdev))
+		mei_txe_unset_pm_domain(dev);
 
 	/* disable interrupts */
 	mei_disable_interrupts(dev);
@@ -429,6 +442,7 @@ static int mei_txe_pci_resume(struct device *device)
 {
 	struct pci_dev *pdev = to_pci_dev(device);
 	struct mei_device *dev;
+	struct mei_txe_hw *hw;
 	int err;
 
 	dev = pci_get_drvdata(pdev);
@@ -456,11 +470,13 @@ static int mei_txe_pci_resume(struct device *device)
 		return err;
 	}
 
-	mutex_lock(&dev->device_lock);
+	hw = to_txe_hw(dev);
+	err = mei_txe_setup_satt2(dev,
+		dma_to_phys(&dev->pdev->dev, hw->pool_paddr), hw->pool_size);
+	if (err)
+		return err;
 
-	dev->dev_state = MEI_DEV_POWER_UP;
-	mei_reset(dev, true);
-	mutex_unlock(&dev->device_lock);
+	err = mei_restart(dev);
 
 	return err;
 }
@@ -477,7 +493,7 @@ static int mei_txe_pm_runtime_idle(struct device *device)
 	if (!dev)
 		return -ENODEV;
 	if (mei_write_is_idle(dev))
-		pm_schedule_suspend(device, MEI_TXI_RPM_TIMEOUT * 2);
+		pm_runtime_autosuspend(device);
 
 	return -EBUSY;
 }
@@ -502,11 +518,11 @@ static int mei_txe_pm_runtime_suspend(struct device *device)
 
 	/*
 	 * If everything is okay we're about to enter PCI low
-	 * power state there fore we need to save and disable
+	 * power state therefor we need to save and disable
 	 * the interrupts towards host.
-	 * However If D3 is disabled by platform we cannot do that
+	 * However if device is not wakeable we cannot do that
 	 */
-	 if (!ret && (pdev->dev_flags & PCI_DEV_FLAGS_NO_D3) == 0)
+	 if (!ret && pci_dev_run_wake(pdev))
 		mei_txe_intr_save(dev);
 
 	dev_dbg(&pdev->dev, "rpm: txe: runtime suspend ret=%d\n", ret);
@@ -538,6 +554,37 @@ static int mei_txe_pm_runtime_resume(struct device *device)
 	dev_dbg(&pdev->dev, "rpm: txe: runtime resume ret = %d\n", ret);
 
 	return ret;
+}
+
+/**
+ * mei_txe_set_pm_domain - fill and set pm domian stucture for device
+ *
+ * @dev: mei_device
+ */
+static inline void mei_txe_set_pm_domain(struct mei_device *dev)
+{
+	struct pci_dev *pdev  = dev->pdev;
+
+	if (pdev->dev.bus && pdev->dev.bus->pm) {
+		dev->pg_domain.ops = *pdev->dev.bus->pm;
+
+		dev->pg_domain.ops.runtime_suspend = mei_txe_pm_runtime_suspend;
+		dev->pg_domain.ops.runtime_resume = mei_txe_pm_runtime_resume;
+		dev->pg_domain.ops.runtime_idle = mei_txe_pm_runtime_idle;
+
+		pdev->dev.pm_domain = &dev->pg_domain;
+	}
+}
+
+/**
+ * mei_txe_unset_pm_domain - clean pm domian stucture for device
+ *
+ * @pdev: PCI device structure
+ */
+static inline void mei_txe_unset_pm_domain(struct mei_device *dev)
+{
+	/* stop using pm callbacks if any */
+	dev->pdev->dev.pm_domain = NULL;
 }
 #endif /* CONFIG_PM_RUNTIME */
 

@@ -1,5 +1,5 @@
 /*COPYRIGHT**
-    Copyright (C) 2005-2012 Intel Corporation.  All Rights Reserved.
+    Copyright (C) 2005-2014 Intel Corporation.  All Rights Reserved.
 
     This file is part of SEP Development Kit
 
@@ -54,9 +54,6 @@ MSR_DATA           msr_data      = NULL;
 MEM_TRACKER        mem_tr_head   = NULL;   // start of the mem tracker list
 MEM_TRACKER        mem_tr_tail   = NULL;   // end of mem tracker list
 spinlock_t         mem_tr_lock;            // spinlock for mem tracker list
-U64                *restore_bl_bypass        = NULL;
-U32                **restore_ha_direct2core  = NULL;
-U32                **restore_qpi_direct2core = NULL;
 
 /* ------------------------------------------------------------------------- */
 /*!
@@ -393,7 +390,12 @@ CONTROL_Memory_Tracker_Free (
                                              MEM_TRACKER_max_size(mem_tr_head)-1,
                                              MEM_TRACKER_mem_address(mem_tr_head,i),
                                              MEM_TRACKER_mem_size(mem_tr_head,i));
-                free_pages((unsigned long)MEM_TRACKER_mem_address(mem_tr_head,i), get_order(MEM_TRACKER_mem_size(mem_tr_head,i)));
+                if (MEM_TRACKER_mem_vmalloc(mem_tr_head,i)) {
+                    vfree(MEM_TRACKER_mem_address(mem_tr_head,i));
+                }
+                else {
+                    free_pages((unsigned long)MEM_TRACKER_mem_address(mem_tr_head,i), get_order(MEM_TRACKER_mem_size(mem_tr_head,i)));
+                }
                 MEM_TRACKER_mem_address(mem_tr_head,i) = NULL;
                 MEM_TRACKER_mem_size(mem_tr_head,i)    = 0;
                 MEM_TRACKER_mem_vmalloc(mem_tr_head,i) = FALSE;

@@ -1139,7 +1139,7 @@ intel_alloc_mchbar_resource(struct drm_device *dev)
 {
 	drm_i915_private_t *dev_priv = dev->dev_private;
 	int reg = INTEL_INFO(dev)->gen >= 4 ? MCHBAR_I965 : MCHBAR_I915;
-	u32 temp_lo, temp_hi = 0;
+	u32 temp_lo = 0, temp_hi = 0;
 	u64 mchbar_addr;
 	int ret;
 
@@ -1185,7 +1185,7 @@ intel_setup_mchbar(struct drm_device *dev)
 {
 	drm_i915_private_t *dev_priv = dev->dev_private;
 	int mchbar_reg = INTEL_INFO(dev)->gen >= 4 ? MCHBAR_I965 : MCHBAR_I915;
-	u32 temp;
+	u32 temp = 0;
 	bool enabled;
 
 	dev_priv->mchbar_need_disable = false;
@@ -1222,7 +1222,7 @@ intel_teardown_mchbar(struct drm_device *dev)
 {
 	drm_i915_private_t *dev_priv = dev->dev_private;
 	int mchbar_reg = INTEL_INFO(dev)->gen >= 4 ? MCHBAR_I965 : MCHBAR_I915;
-	u32 temp;
+	u32 temp = 0;
 
 	if (dev_priv->mchbar_need_disable) {
 		if (IS_I915G(dev) || IS_I915GM(dev)) {
@@ -1501,6 +1501,27 @@ i915_batch_pool_cleanup(drm_i915_private_t *dev_priv)
 	}
 }
 
+void cal_fwlogo_param(struct drm_i915_private *dev_priv)
+{
+	unsigned int fw_hactive, fw_vactive;
+	/* Set the bytes per pixel to max of 4 */
+	int bpp = 4;
+
+	/* If Primary PLANE is disable return */
+	if (!(I915_READ(DSPCNTR(0)) & DISPLAY_PLANE_ENABLE))
+		return;
+
+	/* Get the framebuffer size from HTotal and VTotal registers */
+	fw_hactive =  ((I915_READ(HTOTAL(0)) & PANEL_A_ACTIVE_MASK)) + 1;
+	fw_vactive =  ((I915_READ(VTOTAL(0)) & PANEL_A_ACTIVE_MASK)) + 1;
+
+	dev_priv->fwlogo_size = (fw_hactive * fw_vactive * bpp);
+
+	dev_priv->fwlogo_offset = (I915_READ(DSPSURF(0)) & DISP_BASEADDR_MASK);
+	DRM_DEBUG_DRIVER("FW logo Size: %d && FW Display Panel A Offset: %d\n",
+				dev_priv->fwlogo_size, dev_priv->fwlogo_offset);
+}
+
 /**
  * i915_driver_load - setup chip and create an initial config
  * @dev: DRM device
@@ -1548,6 +1569,7 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 	spin_lock_init(&dev_priv->mm.object_stat_lock);
 	mutex_init(&dev_priv->dpio_lock);
 	mutex_init(&dev_priv->new_dpio_lock);
+	mutex_init(&dev_priv->exec_lock);
 	mutex_init(&dev_priv->rps.hw_lock);
 	mutex_init(&dev_priv->modeset_restore_lock);
 
@@ -1613,6 +1635,9 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 		DRM_INFO("Found %zuMB of eLLC\n", dev_priv->ellc_size);
 	}
 
+	/* Calculate Bootloader logo size */
+	cal_fwlogo_param(dev_priv);
+
 	ret = i915_gem_gtt_init(dev);
 	if (ret)
 		goto put_bridge;
@@ -1634,7 +1659,7 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 	 * behaviour if any general state is accessed within a page above 4GB,
 	 * which also needs to be handled carefully.
 	 */
-	if (IS_BROADWATER(dev) || IS_CRESTLINE(dev))
+	if (IS_BROADWATER(dev) || IS_CRESTLINE(dev) || IS_VALLEYVIEW(dev))
 		dma_set_coherent_mask(&dev->pdev->dev, DMA_BIT_MASK(32));
 
 	aperture_size = dev_priv->gtt.mappable_end;
@@ -1789,6 +1814,8 @@ int i915_driver_load(struct drm_device *dev, unsigned long flags)
 	}
 
 	i915_setup_sysfs(dev);
+
+	dev_priv->is_first_modeset = true;
 
 	if (INTEL_INFO(dev)->num_pipes) {
 		/* Must be done after probing outputs */
@@ -2007,7 +2034,8 @@ void i915_driver_lastclose(struct drm_device * dev)
 #endif
 
 	if (drm_core_check_feature(dev, DRIVER_MODESET)) {
-		intel_fb_restore_mode(dev);
+		if (!dev_priv->fwlogo_size)
+			intel_fb_restore_mode(dev);
 		vga_switcheroo_process_delayed_switch();
 		return;
 	}

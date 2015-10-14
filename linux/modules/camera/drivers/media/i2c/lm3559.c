@@ -86,9 +86,9 @@ struct lm3559_ctrl_id {
 #define LM3559_CONFIG_REG_1		0xe0
 #define LM3559_CONFIG_REG_2		0xf0
 
-#define LM3559_CONFIG_REG_1_INIT_SETTING	0xec
+#define LM3559_CONFIG_REG_1_INIT_SETTING	0x6c
 #define LM3559_CONFIG_REG_2_INIT_SETTING	0x01
-#define LM3559_CONFIG_REG_2_INIT_SETTING_LM3560	0x11
+#define LM3559_CONFIG_REG_2_INIT_SETTING_LM3560	0x01
 #define LM3559_GPIO_REG_INIT_SETTING		0x00
 
 #define LM3559_ENVM_TX2_SHIFT		0
@@ -517,6 +517,22 @@ static int lm3559_g_flash_status(struct v4l2_subdev *sd, s32 *val)
 	return 0;
 }
 
+#ifndef CSS15
+static int lm3559_g_flash_status_register(struct v4l2_subdev *sd, s32 *val)
+{
+	struct lm3559 *flash = to_lm3559(sd);
+	int ret;
+
+	ret = lm3559_read(flash, LM3559_FLAGS_REG);
+
+	if (ret < 0)
+		return ret;
+
+	*val = ret;
+	return 0;
+}
+#endif
+
 static const struct lm3559_ctrl_id lm3559_ctrls[] = {
 	s_ctrl_id_entry_integer(V4L2_CID_FLASH_TIMEOUT,
 				"Flash Timeout",
@@ -578,6 +594,17 @@ static const struct lm3559_ctrl_id lm3559_ctrls[] = {
 				0,
 				NULL,
 				lm3559_g_flash_status),
+#ifndef CSS15
+	s_ctrl_id_entry_integer(V4L2_CID_FLASH_STATUS_REGISTER,
+				"Flash Status Register",
+				0,   /* don't assume any enum ID is first */
+				100, /* enum value, may get extended */
+				1,
+				0,
+				0,
+				NULL,
+				lm3559_g_flash_status_register),
+#endif
 };
 
 static const struct lm3559_ctrl_id *find_ctrl_id(unsigned int id)
@@ -695,6 +722,11 @@ static int __lm3559_s_power(struct lm3559 *flash, int power)
 	if (ret < 0)
 		return ret;
 
+	ret = gpio_direction_output(pdata->gpio_reset, power);
+	if (ret < 0) {
+		gpio_free(pdata->gpio_reset);
+		return ret;
+	}
 	gpio_set_value(pdata->gpio_reset, power);
 	gpio_free(pdata->gpio_reset);
 	usleep_range(100, 100);
@@ -849,18 +881,8 @@ static int lm3559_gpio_init(struct i2c_client *client)
 	if (ret < 0)
 		goto err_gpio_flash;
 
-	ret = gpio_request(pdata->gpio_torch, "torch");
-	if (ret < 0)
-		goto err_gpio_flash;
-
-	ret = gpio_direction_output(pdata->gpio_torch, 0);
-	if (ret < 0)
-		goto err_gpio_torch;
-
 	return 0;
 
-err_gpio_torch:
-	gpio_free(pdata->gpio_torch);
 err_gpio_flash:
 	gpio_free(pdata->gpio_strobe);
 	return ret;
@@ -873,15 +895,9 @@ static int lm3559_gpio_uninit(struct i2c_client *client)
 	struct lm3559_platform_data *pdata = flash->pdata;
 	int ret;
 
-	ret = gpio_direction_output(pdata->gpio_torch, 0);
-	if (ret < 0)
-		return ret;
-
 	ret = gpio_direction_output(pdata->gpio_strobe, 0);
 	if (ret < 0)
 		return ret;
-
-	gpio_free(pdata->gpio_torch);
 
 	gpio_free(pdata->gpio_strobe);
 

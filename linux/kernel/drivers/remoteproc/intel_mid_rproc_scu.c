@@ -165,6 +165,7 @@ static int scu_ipc_fw_logging_command(void *tx_buf)
 
 	switch (tx_msg->cmd) {
 	case RP_GET_HOBADDR:
+	case RP_SCULOG_TRACE:
 		ret = scu_ipc_command(tx_buf);
 		break;
 	case RP_CLEAR_FABERROR:

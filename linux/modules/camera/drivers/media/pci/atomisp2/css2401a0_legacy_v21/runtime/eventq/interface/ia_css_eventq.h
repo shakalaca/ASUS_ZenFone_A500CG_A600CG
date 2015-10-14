@@ -24,12 +24,21 @@
 
 #include "ia_css_queue.h"	/* queue APIs */
 
-
-enum ia_css_err ia_css_eventq_recv(
+/**
+ * @brief HOST receives event from SP.
+ *
+ * @param[in]	eventq_handle	eventq_handle.
+ * @param[in]	payload		The event payload.
+ * @return	0		- Successfully dequeue.
+ * @return	EINVAL		- Invalid argument.
+ * @return	ENODATA		- Queue is empty.
+ */
+int ia_css_eventq_recv(
 		ia_css_queue_t *eventq_handle,
 		uint8_t *payload);
+
 /**
- * @brief The Host sends the event to the SP.
+ * @brief The Host sends the event to SP.
  * The caller of this API will be blocked until the event
  * is sent.
  *
@@ -38,8 +47,11 @@ enum ia_css_err ia_css_eventq_recv(
  * @param[in]	evt_payload_0	The event payload.
  * @param[in]	evt_payload_1	The event payload.
  * @param[in]	evt_payload_2	The event payload.
+ * @return	0		- Successfully enqueue.
+ * @return	EINVAL		- Invalid argument.
+ * @return	ENOBUFS		- Queue is full.
  */
-enum ia_css_err ia_css_eventq_send(
+int ia_css_eventq_send(
 		ia_css_queue_t *eventq_handle,
 		uint8_t evt_id,
 		uint8_t evt_payload_0,

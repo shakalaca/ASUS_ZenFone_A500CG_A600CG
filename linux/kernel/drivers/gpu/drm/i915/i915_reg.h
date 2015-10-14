@@ -144,6 +144,8 @@
 #define GAB_CTL				0x24000
 #define   GAB_CTL_CONT_AFTER_PAGEFAULT	(1<<8)
 
+#define PHYSICAL_ADDR_MASK		0xFFFFF000
+
 /* VGA stuff */
 
 #define VGA_ST01_MDA 0x3ba
@@ -344,6 +346,8 @@
 #define   PIPE_CONTROL_DEPTH_CACHE_FLUSH		(1<<0)
 #define   PIPE_CONTROL_GLOBAL_GTT (1<<2) /* in addr dword */
 
+#define GCI_CONTROL	(dev_priv->info->display_mmio_offset + 0x650C)
+
 /*
  * Commands used only by the command parser
  */
@@ -398,8 +402,8 @@
  */
 #define PMC_WA_FORICLK5_REG		0xB4
 #define PMC_WA_HNDSHK			(1<<0)
-#define PMC_WA_ICLK5_BIT16_BND		(1<<1)
-#define PMC_WA_ICLK5_BIT17_SPRD		(1<<2)
+#define PMC_WA_ICLK5_BIT16_BND	(1<<1)
+#define PMC_WA_ICLK5_BIT17_SPRD	(1<<2)
 
 /*
  * IOSF sideband
@@ -504,7 +508,7 @@
 
 #define _DPIO_TX3_SWING_CTL4_A		0x690
 #define _DPIO_TX3_SWING_CTL4_B		0x2a90
-#define DPIO_TX3_SWING_CTL4(pipe) _PIPE(pipe, _DPIO_TX_SWING_CTL4_A, \
+#define DPIO_TX3_SWING_CTL4(pipe) _PIPE(pipe, _DPIO_TX3_SWING_CTL4_A, \
 					_DPIO_TX3_SWING_CTL4_B)
 
 /*
@@ -1021,41 +1025,24 @@
 
 /* These are all the "old" interrupts */
 #define ILK_BSD_USER_INTERRUPT				(1<<5)
-#define I915_PM_INTERRUPT				(1<<31)
-#define I915_ISP_INTERRUPT				(1<<22)
-#define I915_MIPIB_INTERRUPT				(1<<19)
-#define I915_MIPIA_INTERRUPT				(1<<18)
 #define I915_PIPE_CONTROL_NOTIFY_INTERRUPT		(1<<18)
 #define I915_DISPLAY_PORT_INTERRUPT			(1<<17)
-#define I915_DISPLAY_PIPE_C_HBLANK_INTERRUPT		(1<<16)
-#define I915_MASTER_ERROR_INTERRUPT			(1<<15)
 #define I915_RENDER_COMMAND_PARSER_ERROR_INTERRUPT	(1<<15)
-#define I915_DISPLAY_PIPE_B_HBLANK_INTERRUPT		(1<<14)
 #define I915_GMCH_THERMAL_SENSOR_EVENT_INTERRUPT	(1<<14) /* p-state */
-#define I915_DISPLAY_PIPE_A_HBLANK_INTERRUPT		(1<<13)
 #define I915_HWB_OOM_INTERRUPT				(1<<13)
-#define I915_LPE_PIPE_C_INTERRUPT			(1<<12)
 #define I915_SYNC_STATUS_INTERRUPT			(1<<12)
-#define I915_MISC_INTERRUPT				(1<<11)
 #define I915_DISPLAY_PLANE_A_FLIP_PENDING_INTERRUPT	(1<<11)
-#define I915_DISPLAY_PIPE_C_VBLANK_INTERRUPT		(1<<10)
 #define I915_DISPLAY_PLANE_B_FLIP_PENDING_INTERRUPT	(1<<10)
-#define I915_DISPLAY_PIPE_C_EVENT_INTERRUPT		(1<<9)
 #define I915_OVERLAY_PLANE_FLIP_PENDING_INTERRUPT	(1<<9)
-#define I915_DISPLAY_PIPE_C_DPBM_INTERRUPT		(1<<8)
 #define I915_DISPLAY_PLANE_C_FLIP_PENDING_INTERRUPT	(1<<8)
 #define I915_DISPLAY_PIPE_A_VBLANK_INTERRUPT		(1<<7)
 #define I915_DISPLAY_PIPE_A_EVENT_INTERRUPT		(1<<6)
 #define I915_DISPLAY_PIPE_B_VBLANK_INTERRUPT		(1<<5)
 #define I915_DISPLAY_PIPE_B_EVENT_INTERRUPT		(1<<4)
-#define I915_DISPLAY_PIPE_A_DPBM_INTERRUPT		(1<<3)
-#define I915_DISPLAY_PIPE_B_DPBM_INTERRUPT		(1<<2)
 #define I915_DEBUG_INTERRUPT				(1<<2)
-#define I915_WINVALID_INTERRUPT				(1<<1)
 #define I915_USER_INTERRUPT				(1<<1)
 #define I915_ASLE_INTERRUPT				(1<<0)
-#define I915_BSD_USER_INTERRUPT				(1<<25)
-
+#define I915_BSD_USER_INTERRUPT				(1 << 25)
 /* Added for HDMI Audio */
 /* HDMI AUDIO INTERRUPT TYPE */
 #define I915_LPE_AUDIO_HDMI_STATUS_A	(dev_priv->info->display_mmio_offset + 0x65064)
@@ -1314,6 +1301,7 @@
 #define   DPLL_LOCK_VLV			(1<<15)
 #define   DPLL_INTEGRATED_CRI_CLK_VLV	(1<<14)
 #define   DPLL_INTEGRATED_CLOCK_VLV	(1<<13)
+#define   DPLL_RESERVED_BIT             (1<<11)
 #define   DPLL_PORTC_READY_MASK		(0xf << 4)
 #define   DPLL_PORTB_READY_MASK		(0xf)
 
@@ -1960,6 +1948,8 @@
 #define BCLRPAT(pipe) _PIPE(pipe, _BCLRPAT_A, _BCLRPAT_B)
 #define VSYNCSHIFT(trans) _TRANSCODER(trans, _VSYNCSHIFT_A, _VSYNCSHIFT_B)
 
+#define VERTICAL_ACTIVE_DISPLAY_MASK		(0xfff)
+
 /* HSW eDP PSR registers */
 #define EDP_PSR_CTL				0x64800
 #define   EDP_PSR_ENABLE			(1<<31)
@@ -2192,6 +2182,8 @@ EDP_PSR_SW_TIMER
 						 PORTB_HOTPLUG_INT_STATUS | \
 						 PORTC_HOTPLUG_INT_STATUS | \
 						 PORTD_HOTPLUG_INT_STATUS)
+
+#define HPD_SHORT_PULSE	(1<<17)
 
 /* SDVO and HDMI port control.
  * The same register may be used for SDVO or HDMI */
@@ -2426,8 +2418,11 @@ EDP_PSR_SW_TIMER
 #define   PFIT_SCALING_PROGRAMMED (1 << 26)
 #define   PFIT_SCALING_PILLAR	(2 << 26)
 #define   PFIT_SCALING_LETTER	(3 << 26)
+#define	  MASK_PFIT_SCALING_MODE (0xe3ffffff)
 #define PFIT_PGM_RATIOS	(dev_priv->info->display_mmio_offset + 0x61234)
 #define	PFIT_SIZE_LIMIT		2000
+#define SCALING_SRCSIZE_SHIFT	16
+#define	SCALING_SRCSIZE_MASK	0xffff
 /* Pre-965 */
 #define		PFIT_VERT_SCALE_SHIFT		20
 #define		PFIT_VERT_SCALE_MASK		0xfff00000
@@ -2490,7 +2485,7 @@ EDP_PSR_SW_TIMER
 /* DPST related registers */
 #define BLC_HIST_CTL	(dev_priv->info->display_mmio_offset + 0x61260)
 #define IE_HISTOGRAM_ENABLE             (1<<31)
-#define IE_MOD_TABLE_ENABLE             (1<<27)
+#define IE_MOD_TABLE_ENABLE             (1<<30)
 #define HSV_INTENSITY_MODE              (1<<24)
 #define ENHANCEMENT_MODE_MULT           (2<<13)
 #define BIN_REG_FUNCTION_SELECT_IE      (1<<11)
@@ -3215,6 +3210,8 @@ EDP_PSR_SW_TIMER
 #define   PIPECONF_INTERLACE_MASK_HSW	(3 << 21)
 #define   PIPECONF_DISP_OVERLAY_OFF     (1 << 19)
 #define   PIPECONF_CURSOR_OFF           (1 << 18)
+
+#define   PANEL_A_ACTIVE_MASK  0x00000fff
 /* Note that pre-gen3 does not support interlaced display directly. Panel
  * fitting must be disabled on pre-ilk for interlaced. */
 #define   PIPECONF_PROGRESSIVE			(0 << 21)
@@ -3230,12 +3227,16 @@ EDP_PSR_SW_TIMER
 #define   PIPECONF_INTERLACED_DBL_ILK		(4 << 21) /* ilk/snb only */
 #define   PIPECONF_PFIT_PF_INTERLACED_DBL_ILK	(5 << 21) /* ilk/snb only */
 #define   PIPECONF_INTERLACE_MODE_MASK		(7 << 21)
+#define   PIPECONF_EDP_RR_MODE_SWITCH		(1 << 20)
+#define   PIPECONF_EDP_RR_MODE_SWITCH_VLV	(1 << 14)
 #define   PIPECONF_CXSR_DOWNCLOCK	(1<<16)
 #define   PIPECONF_COLOR_RANGE_SELECT	(1 << 13)
 #define   PIPECONF_BPC_MASK	(0x7 << 5)
 #define   PIPECONF_8BPC		(0<<5)
 #define   PIPECONF_10BPC	(1<<5)
 #define   PIPECONF_6BPC		(2<<5)
+#define   DISPLAY_8BPC         8
+#define   DISPLAY_6BPC         6
 #define   PIPECONF_12BPC	(3<<5)
 #define   PIPECONF_DITHER_EN	(1<<4)
 #define   PIPECONF_DITHER_TYPE_MASK (0x0000000c)
@@ -3297,19 +3298,12 @@ EDP_PSR_SW_TIMER
 #define   SPRITED_FLIPDONE_INT_EN		(1<<26)
 #define   SPRITEC_FLIPDONE_INT_EN		(1<<25)
 #define   PLANEB_FLIPDONE_INT_EN		(1<<24)
-#define   PIPE_PSR_INT_EN			(1<<22)
 #define   PIPEA_LINE_COMPARE_INT_EN		(1<<21)
 #define   PIPEA_HLINE_INT_EN			(1<<20)
 #define   PIPEA_VBLANK_INT_EN			(1<<19)
 #define   SPRITEB_FLIPDONE_INT_EN		(1<<18)
 #define   SPRITEA_FLIPDONE_INT_EN		(1<<17)
 #define   PLANEA_FLIPDONE_INT_EN		(1<<16)
-#define   PIPEC_LINE_COMPARE_INT_EN		(1<<13)
-#define   PIPEC_HLINE_INT_EN			(1<<12)
-#define   PIPEC_VBLANK_INT_EN			(1<<11)
-#define   SPRITEF_FLIPDONE_INT_EN		(1<<10)
-#define   SPRITEE_FLIPDONE_INT_EN		(1<<9)
-#define   PLANEC_FLIPDONE_INT_EN		(1<<8)
 
 #define DPINVGTT				(VLV_DISPLAY_BASE + 0x7002c) /* VLV only */
 #define   CURSORB_INVALID_GTT_INT_EN		(1<<23)
@@ -3321,7 +3315,6 @@ EDP_PSR_SW_TIMER
 #define   SPRITEA_INVALID_GTT_INT_EN		(1<<17)
 #define   PLANEA_INVALID_GTT_INT_EN		(1<<16)
 #define   DPINVGTT_EN_MASK			0xff0000
-#define   DPINVGTT_EN_MASK_CHV			0xfff0000
 #define   CURSORB_INVALID_GTT_STATUS		(1<<7)
 #define   CURSORA_INVALID_GTT_STATUS		(1<<6)
 #define   SPRITED_INVALID_GTT_STATUS		(1<<5)
@@ -3331,9 +3324,9 @@ EDP_PSR_SW_TIMER
 #define   SPRITEA_INVALID_GTT_STATUS		(1<<1)
 #define   PLANEA_INVALID_GTT_STATUS		(1<<0)
 #define   DPINVGTT_STATUS_MASK			0xff
-#define   DPINVGTT_STATUS_MASK_CHV		0xfff
 
-#define DSPARB			0x70030
+#define DSPARB			(dev_priv->info->display_mmio_offset + 0x70030)
+#define DSPARB_VLV_DEFAULT	0xc080c080
 #define   DSPARB_CSTART_MASK	(0x7f << 7)
 #define   DSPARB_CSTART_SHIFT	7
 #define   DSPARB_BSTART_MASK	(0x7f)
@@ -3422,6 +3415,8 @@ EDP_PSR_SW_TIMER
 #define DDL_SPRITEB_SHIFT		16
 #define DDL_PLANEB_PRECISION_64		(1<<7)
 #define DDL_PLANEB_PRECISION_32		(0<<7)
+#define DDL_PLANE_PRECISION_64		(1<<7)
+#define DDL_PLANE_PRECISION_32		(0<<7)
 
 /* FIFO watermark sizes etc */
 #define G4X_FIFO_LINE_SIZE	64
@@ -3735,10 +3730,10 @@ EDP_PSR_SW_TIMER
 #define SPRITED_CB_REG		(dev_priv->info->display_mmio_offset + 0x724d0)
 
 /* Sprite Hue and Saturation Registers */
-#define SPRITEA_HS_REG         0x721d4
-#define SPRITEB_HS_REG         0x721d4
-#define SPRITEC_HS_REG         0x723d4
-#define SPRITED_HS_REG         0x724d4
+#define SPRITEA_HS_REG         (dev_priv->info->display_mmio_offset + 0x721d4)
+#define SPRITEB_HS_REG         (dev_priv->info->display_mmio_offset + 0x722d4)
+#define SPRITEC_HS_REG         (dev_priv->info->display_mmio_offset + 0x723d4)
+#define SPRITED_HS_REG         (dev_priv->info->display_mmio_offset + 0x724d4)
 
 /* Sprite A control */
 #define _DVSACNTR		0x72180
@@ -4149,73 +4144,6 @@ EDP_PSR_SW_TIMER
 #define GTIMR   0x44014
 #define GTIIR   0x44018
 #define GTIER   0x4401c
-
-#define  GEN8_MASTER_IRQ		0x44200
-#define  GEN8_PCU_IRQ			(1<<30)
-#define  GEN8_DE_PCH_IRQ		(1<<23)
-#define  GEN8_DE_MISC_IRQ		(1<<22)
-#define  GEN8_DE_PORT_IRQ		(1<<20)
-#define  GEN8_DE_PIPE_C_IRQ		(1<<18)
-#define  GEN8_DE_PIPE_B_IRQ		(1<<17)
-#define  GEN8_DE_PIPE_A_IRQ		(1<<16)
-#define  GEN8_GT_VECS_IRQ		(1<<6)
-#define  GEN8_GT_VCS2_IRQ		(1<<3)
-#define  GEN8_GT_VCS1_IRQ		(1<<2)
-#define  GEN8_GT_BCS_IRQ		(1<<1)
-#define  GEN8_GT_RCS_IRQ		(1<<0)
-/* Lazy definition */
-#define  GEN8_GT_IRQS			0x000000ff
-#define  GEN8_DE_IRQS			0x01ff0000
-#define  GEN8_RSVD_IRQS			0xB700ff00
-
-#define GEN8_GT_ISR(which) (0x44300 + (0x10 * (which)))
-#define GEN8_GT_IMR(which) (0x44304 + (0x10 * (which)))
-#define GEN8_GT_IIR(which) (0x44308 + (0x10 * (which)))
-#define GEN8_GT_IER(which) (0x4430c + (0x10 * (which)))
-#define GEN8_GT_CONTEXT_SWITCH_INTERRUPT	(1<<8)
-#define GEN8_GT_DW_NOTIFY_INTERRUPT		(1<<4)
-
-
-#define GEN8_BCS_IRQ_SHIFT 16
-#define GEN8_RCS_IRQ_SHIFT 0
-#define GEN8_VCS2_IRQ_SHIFT 16
-#define GEN8_VCS1_IRQ_SHIFT 0
-#define GEN8_VECS_IRQ_SHIFT 0
-
-#define GEN8_DE_PIPE_ISR(pipe) (0x44400 + (0x10 * (pipe)))
-#define GEN8_DE_PIPE_IMR(pipe) (0x44404 + (0x10 * (pipe)))
-#define GEN8_DE_PIPE_IIR(pipe) (0x44408 + (0x10 * (pipe)))
-#define GEN8_DE_PIPE_IER(pipe) (0x4440c + (0x10 * (pipe)))
-#define  _PIPE_UNDERRUN			(1 << 31)
-#define  _PIPE_CDCLK_CRC_ERROR		(1 << 29)
-#define  _PIPE_CURSOR_FAULT		(1 << 10)
-#define  _PIPE_SPRITE_FAULT		(1 << 9)
-#define  _PIPE_PRIMARY_FAULT		(1 << 8)
-#define  _PIPE_SPRITE_FLIP_DONE		(1 << 5)
-#define  _PIPE_FLIP_DONE		(1 << 4)
-#define  _PIPE_SCAN_LINE_EVENT		(1 << 3)
-#define  _PIPE_VBLANK			(1 << 0)
-#define GEN8_DE_PIPE_IRQ_ERRORS	 (_PIPE_UNDERRUN | _PIPE_CDCLK_CRC_ERROR | \
-				  _PIPE_CURSOR_FAULT | _PIPE_SPRITE_FAULT | \
-				  _PIPE_PRIMARY_FAULT)
-
-#define GEN8_DE_PORT_ISR 0x44440
-#define GEN8_DE_PORT_IMR 0x44444
-#define GEN8_DE_PORT_IIR 0x44448
-#define GEN8_DE_PORT_IER 0x4444c
-#define  _PORT_DP_A_HOTPLUG		(1 << 3)
-
-#define GEN8_DE_MISC_ISR 0x44460
-#define GEN8_DE_MISC_IMR 0x44464
-#define GEN8_DE_MISC_IIR 0x44468
-#define GEN8_DE_MISC_IER 0x4446c
-#define  GEN8_DE_MISC_GSE		(1 << 27)
-
-#define GEN8_PCU_ISR 0x444e0
-#define GEN8_PCU_IMR 0x444e4
-#define GEN8_PCU_IIR 0x444e8
-#define GEN8_PCU_IER 0x444ec
-
 
 #define ILK_DISPLAY_CHICKEN2	0x42004
 /* Required on all Ironlake and Sandybridge according to the B-Spec. */
@@ -5013,18 +4941,29 @@ EDP_PSR_SW_TIMER
 #define  HSW_EDRAM_PRESENT			0x120010
 
 #define GEN6_UCGCTL1				0x9400
-# define GEN6_BLBUNIT_CLOCK_GATE_DISABLE		(1 << 5)
-# define GEN6_CSUNIT_CLOCK_GATE_DISABLE			(1 << 7)
+#define GEN6_BLBUNIT_CLOCK_GATE_DISABLE		(1 << 5)
+#define GEN6_CSUNIT_CLOCK_GATE_DISABLE			(1 << 7)
 
 #define GEN6_UCGCTL2				0x9404
-# define GEN7_VDSUNIT_CLOCK_GATE_DISABLE		(1 << 30)
-# define GEN7_TDLUNIT_CLOCK_GATE_DISABLE		(1 << 22)
-# define GEN6_RCZUNIT_CLOCK_GATE_DISABLE		(1 << 13)
-# define GEN6_RCPBUNIT_CLOCK_GATE_DISABLE		(1 << 12)
-# define GEN6_RCCUNIT_CLOCK_GATE_DISABLE		(1 << 11)
+#define GEN7_VDSUNIT_CLOCK_GATE_DISABLE		(1 << 30)
+#define GEN7_TDLUNIT_CLOCK_GATE_DISABLE		(1 << 22)
+#define GEN6_RCZUNIT_CLOCK_GATE_DISABLE		(1 << 13)
+#define GEN6_RCPBUNIT_CLOCK_GATE_DISABLE	(1 << 12)
+#define GEN6_RCCUNIT_CLOCK_GATE_DISABLE		(1 << 11)
+
+
+#define GEN7_UCGCTL3				0x9408
+#define  GEN7_ENABLE_UCGCTL_MASK		0x00000000
 
 #define GEN7_UCGCTL4				0x940c
 #define  GEN7_L3BANK2X_CLOCK_GATE_DISABLE	(1<<25)
+#define GEN7_L3BANK2X_CLOCK_GATE_DISABLE_MASK	0x02000000
+
+#define GEN7_UCGCTL5				0x9410
+#define GEN7_GAMunit_CLOCK_GATE_DISABLE_MASK	0x00000100
+
+#define GEN7_UCGCTL6				0x9414
+#define GEN7_UCGCTL7				0x9418
 
 #define GEN6_RPNSWREQ				0xA008
 #define   GEN6_TURBO_DISABLE			(1<<31)
@@ -5153,18 +5092,26 @@ EDP_PSR_SW_TIMER
 #define OPCODE_REG_READ				6
 #define OPCODE_REG_WRITE			7
 
-#define CCU_iCLK5_REG				0x0114
-#define   iCLK5_BENDCLKEN_SHIFT			16
-#define   iCLK5_DISPBENDCLKEN			(1<<16)
-#define   iCLK5_DISPBENDCLKREQ			(1<<0)
-#define CCU_iCLK1_REG				0x0104
-#define   iCLK1_BENDTIME_SHIFT			20
-#define   iCLK1_BENDUPDOWN_SHIFT		28
-#define   iCLK1_BENDTIMETOSW			(0xFF<<20)
-#define   iCLK1_BENDUPDOWN			(1<<28)
-#define CCU_iCLK0_REG				0x0100
-#define   iCLK0_STEPSIZE_SHIFT			9
-#define   iCLK0_BENDSTEPSIZE			(0xF<<9)
+#define CCU_ICLK_GATE_CTRL_REG		(0x24)
+#define ICLKGTCTRL_SSON				(1<<4)
+#define ICLKGTCTRL_SSOFF			(1<<5)
+#define ICLKGTCTRL_BNDON			(1<<6)
+#define ICLKGTCTRL_BNDOFF			(1<<7)
+
+#define CCU_ICLK5_REG				0x0114
+#define   ICLK5_BENDCLKEN_SHIFT		16
+#define   ICLK5_DISPBENDCLKEN		(1<<16)
+#define   ICLK5_DISPBENDCLKREQ		(1<<0)
+#define   ICLK5_DISPSSCLK_SSEN		(1<<17)
+#define   ICLK5_DISPSSCLKREQ		(1<<1)
+#define CCU_ICLK1_REG				0x0104
+#define   ICLK1_BENDTIME_SHIFT		20
+#define   ICLK1_BENDUPDOWN_SHIFT	28
+#define   ICLK1_BENDTIMETOSW		(0xFF<<20)
+#define   ICLK1_BENDUPDOWN			(1<<28)
+#define CCU_ICLK0_REG				0x0100
+#define   ICLK0_STEPSIZE_SHIFT		9
+#define   ICLK0_BENDSTEPSIZE		(0xF<<9)
 
 #define GEN6_GT_CORE_STATUS		0x138060
 #define   GEN6_CORE_CPD_STATE_MASK	(7<<4)
@@ -5599,6 +5546,7 @@ EDP_PSR_SW_TIMER
 #define  DPI_ENABLE					(1 << 31) /* A + B */
 #define  MIPIA_MIPI4DPHY_DELAY_COUNT_SHIFT		27
 #define  MIPIA_MIPI4DPHY_DELAY_COUNT_MASK		(0xf << 27)
+#define  DUAL_LINK_MODE_SHIFT				26
 #define  DUAL_LINK_MODE_MASK				(1 << 26)
 #define  DUAL_LINK_MODE_FRONT_BACK			(0 << 26)
 #define  DUAL_LINK_MODE_PIXEL_ALTERNATIVE		(1 << 26)
@@ -6017,6 +5965,14 @@ EDP_PSR_SW_TIMER
 #define VLV_PWRGT_DPIO_CMN_LANES_MASK  0x00000C00
 #define VLV_PWRGT_DPIO_RX_TX_LANES_MASK        0x00FFF000
 
+#define VLV_CHICKEN_3		0x7040C
+#define PIXEL_OVERLAP_CNT_MASK		(3 << 30)
+#define PIXEL_OVERLAP_CNT_SHIFT		30
+
+#define PUNIT_GVD_SPARE1	0xD6
+#define PUNIT_CLKS_OFF		0x1
+#define PUNIT_CLKS_ON		0x0
+
 /* GUnit registers for save/restore during s0ix */
 #define GUNIT_CONTROL		(VLV_DISPLAY_BASE + 0x02030)
 #define GUNIT_CONTROL1		(VLV_DISPLAY_BASE + 0x02034)
@@ -6028,6 +5984,9 @@ EDP_PSR_SW_TIMER
 #define VHDMI_ON		0x03
 #define VHDMI_OFF		0x02
 
-
+/*
+ * This rail is valid only for FFRD8 Baytrail.
+ */
+#define FFRD8_PR1_DISP_BKLGHT_REGULATOR	"v3p3sx"
 
 #endif /* _I915_REG_H_ */

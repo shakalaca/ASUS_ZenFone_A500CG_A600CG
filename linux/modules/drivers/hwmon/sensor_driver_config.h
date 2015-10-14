@@ -1,8 +1,9 @@
-/*
-*  Sensor Driver Configure Interface
-*/
 #ifndef SENSOR_DRIVER_CONFIG_H
 #define SENSOR_DRIVER_CONFIG_H
+/*
+* Sensor Driver Configure Interface between HAL and Driver
+* If any update in Driver, then update in HAL too and vice versa
+*/
 
 /*
 * Actions specified by developer
@@ -23,24 +24,26 @@ enum sensor_action {
 * global i2c register buf, index of private data
 * output of before operation
 */
-struct operand {
-	enum operand_type {
-		OPT_IMM = 0, OPT_REG,
-		OPT_REG_BUF, OPT_INDEX,
-		OPT_BEFORE,
-		OPT_RESERVE,
-	} type;
+enum operand_type {
+	OPT_IMM = 0, OPT_REG,
+	OPT_REG_BUF, OPT_INDEX,
+	OPT_BEFORE,
+	OPT_RESERVE,
+};
 
+struct operand {
+	__u8 type;
 	union {
-		int immediate;
-		int index;
+		__s32 immediate;
+		__s32 index;
 		struct operand_register {
-			u8 addr;
-			u8 len;
-			u8 flag;
+			__u8 addr;
+			__u8 len;
+			__u8 flag;
+			__u8 pad;
 		} reg;
 	} data;
-};
+}__attribute__ ((packed));
 
 /* Data Operation
 *i2c register and variable& access: =,
@@ -78,18 +81,19 @@ enum data_op {
 *
 * operand type:
 * immediate; register addr, len; index of private data; data of before operation
+* size: 11B
 */
 struct data_action {
-	 enum data_op  op;
+	 __u8 op;
 	 struct operand operand1;
 	 struct operand operand2;
-};
+}__attribute__ ((packed));
 
 /*
 * sleep_action of lowlevel_action
 */
 struct sleep_action {
-	int ms;
+	__s32 ms;
 };
 
 /*
@@ -97,45 +101,45 @@ struct sleep_action {
 * action nums for condition, if and else
 */
 struct ifelse_action {
-	int num_con;
-	int num_if;
-	int num_else;
-};
+	__s16 num_con;
+	__s16 num_if;
+	__s16 num_else;
+}__attribute__ ((packed));
 
 /*
-* switch_action of lowlevel_action
-* todo
+* extern_c_action of lowlevel_action
 */
-struct switch_action {
-
+struct externc_action {
+	__u32 index;
 };
 
 /* General Lowlevel Action
 *   used to descript sensor_action by developer
 *   extend new type of lowlevel action here
 */
-struct lowlevel_action {
-	enum action_lowlevel {
-		DATA = 0, SLEEP, IFELSE,
-		RETURN, SWITCH, ACTION_RESERVE
-	} type;
+enum action_lowlevel {
+	DATA = 0, SLEEP, IFELSE,
+	RETURN, SWITCH, EXTERNC, ACTION_RESERVE
+};
 
+struct lowlevel_action {
+	__u8 type;
 	union {
 		struct data_action data;
 		struct sleep_action sleep;
 		struct ifelse_action ifelse;
-		struct switch_action cases;
+		struct externc_action externc;
 	} action;
-};
+}__attribute__ ((packed));
 
 /*
 * lowlevel action index info in sensor_config
 */
-struct lowlevel_action_index {
 #define MAX_LL_ACTION_NUM	0xff
-	u8 index;
-	u8 num;
-};
+struct lowlevel_action_index {
+	__u16 index;
+	__u16 num;
+}__attribute__ ((packed));
 
 /*
 * odr table setting provided by developer for each sensor
@@ -143,40 +147,40 @@ struct lowlevel_action_index {
 * @index: index of lowlevel action table
 */
 struct odr {
-	int hz;
+	__s32 hz;
 	struct lowlevel_action_index index;
-};
+}__attribute__ ((packed));
 
 /*
 * range table setting provided by developer for each sensor
 * @index: index of lowlevel action table
 */
 struct range_setting {
-	int range;
+	__s32 range;
 	struct lowlevel_action_index index;
-};
+}__attribute__ ((packed));
 
 /*
 * sysfs file info
-* @mode:file access mode
+* type: sensor_action or data_action
+* for extension, don't mix data action and
+* sensor actions specified by developer
+* @mode: file access mode
 */
+#define  MAX_ATTR_NAME_BYTES	15
+enum show_store_action {
+	DATA_ACTION = 0, SENSOR_ACTION,
+};
+
 struct sysfs_entry {
-#define  MAX_ATTR_NAME_BYTES	8
-	char name[MAX_ATTR_NAME_BYTES];
-	u16 mode;
-
-	/*action type: sensor_action or data_action
-	for extension, don't mix data action and
-	sensor actions specified by developer*/
-	enum show_store_action {
-		DATA_ACTION = 0, SENSOR_ACTION,
-	} type;
-
+	__u8 name[MAX_ATTR_NAME_BYTES];
+	__u8 type;
+	__u16 mode;
 	/*action detail*/
 	union {
 		struct {
-			enum sensor_action show;
-			enum sensor_action store;
+			__u8 show;
+			__u8 store;
 		} sensor;
 
 		struct {
@@ -184,7 +188,7 @@ struct sysfs_entry {
 			struct lowlevel_action_index index_store;
 		} data;
 	} action;
-};
+}__attribute__ ((packed));
 
 /* The whole config format
 *  XML parser will generate this formated config image from XML file
@@ -231,72 +235,85 @@ struct sysfs_entry {
 * @indexs: index infos of all specified sensor actions
 * @actions: pack all lowlevel actions together to reduce config image size
 */
-struct sensor_config {
-	u16 size;
-
-	/*Basic info of sensor driver*/
 #define INVALID_I2C_BUS			0xff
-	u8 i2c_bus;
-	u8 test_reg_addr;
 #define INVALID_I2C_ADDR		0xff
 #define MAX_I2C_ADDRS			4
-	u8 i2c_addrs[MAX_I2C_ADDRS];
 #define MAX_DEV_IDS			4
-	u8 id[MAX_DEV_IDS];
 #define MAX_DEV_NAME_BYTES		32
-	char name[MAX_DEV_NAME_BYTES];
-	char input_name[MAX_DEV_NAME_BYTES];
-	char attr_name[MAX_DEV_NAME_BYTES];
 #define SENSOR_INVALID_REG		0xff
-	u8 id_reg_addr;
-	u8 id_reg_flag;
-	u8 sensor_regs;
-	u8 event_type;
+#define SENSOR_INVALID_INTERVAL		0xffffffff
+#define MAX_ODR_SETTING_ENTRIES		8
+#define MAX_RANGES			6
+#define MAX_SYSFS_ENTRIES		6
+enum method_get_data {INT = 0, POLL, MIX,};
+struct sensor_config {
+	__u16 size;
+
+	/*Basic info of sensor driver*/
+	__u8 i2c_bus;
+	__u8 test_reg_addr;
+	__u8 i2c_addrs[MAX_I2C_ADDRS];
+	__u8 id[MAX_DEV_IDS];
+	__u8 name[MAX_DEV_NAME_BYTES];
+	__u8 input_name[MAX_DEV_NAME_BYTES];
+	__u8 attr_name[MAX_DEV_NAME_BYTES];
+	__u8 id_reg_addr;
+	__u8 id_reg_flag;
+	__u8 sensor_regs;
+	__u8 event_type;
 
 	/*infos to get data method */
-	enum method_get_data {INT = 0, POLL, MIX,} method;
-#define SENSOR_INVALID_INTERVAL		0xffffffff
-	int default_poll_interval;
-	int min_poll_interval;
-	int max_poll_interval;
-	int gpio_num;
-	int report_cnt;
-	int report_interval;
-	unsigned int irq_flag;
+	__u32 method;
+	__s32 default_poll_interval;
+	__s32 min_poll_interval;
+	__s32 max_poll_interval;
+	__s32 gpio_num;
+	__s32 report_cnt;
+	__s32 report_interval;
+	__u32 irq_flag;
 
 	/*multi function device*/
-	int shared_nums;
-	int irq_serialize;
+	__s32 shared_nums;
+	__s32 irq_serialize;
 
-#define MAX_ODR_SETTING_ENTRIES		8
-	int odr_entries;
+	__s32 odr_entries;
 	struct odr odr_table[MAX_ODR_SETTING_ENTRIES];
 
-#define MAX_RANGES			6
-	int range_entries;
+	__s32 range_entries;
 	struct range_setting range_table[MAX_RANGES];
 
-#define MAX_SYSFS_ENTRIES		6
-	int sysfs_entries;
-	int default_range;
+	__s32 sysfs_entries;
+	__s32 default_range;
 	struct sysfs_entry sysfs_table[MAX_SYSFS_ENTRIES];
 
 	struct lowlevel_action_index indexs[SENSOR_ACTION_RESERVE];
-	struct lowlevel_action *actions;
-};
+	/*struct lowlevel_action *actions;*/
+	__s32 actions;
+}__attribute__ ((packed));
 
 /*sensor config image
 * @num:how many sensor config in this image
 * @configs:sensor config array of all supported sensors
 */
 struct sensor_config_image {
-	int magic;
-	int version;
-	int num;
-	struct sensor_config *configs;
+	__u32 magic;
+	__u32 flags;
+	__u32 dbg_sensors;
+	__u32 dbg_level;
+	__s32 num;
+	__u32 configs;
 };
 
 #define DATA_STACK_MAX_SIZE	0x20
 #define PRIVATE_MAX_SIZE	0x20
+
+/*general flags*/
+#define SG_FLAGS_BOOT_DISABLE	0x1
+/*the way to start parse*/
+#define SG_START		0x1
+#define SG_FORCE_START		0x2
+
+/*maxium number of external c functions*/
+#define MAX_EXTERN_C            100
 
 #endif

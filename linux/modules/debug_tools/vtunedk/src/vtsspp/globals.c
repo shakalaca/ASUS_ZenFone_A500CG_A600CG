@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -407,5 +407,6 @@ fail:
             kfree(ppcb->scratch_ptr);
         ppcb->scratch_ptr = NULL;
     }
+    ERROR("NO memory");
     return VTSS_ERR_NOMEMORY;
 }

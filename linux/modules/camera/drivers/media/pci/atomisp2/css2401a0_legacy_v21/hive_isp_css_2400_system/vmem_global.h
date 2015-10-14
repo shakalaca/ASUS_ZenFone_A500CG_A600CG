@@ -22,15 +22,18 @@
 #ifndef __VMEM_GLOBAL_H_INCLUDED__
 #define __VMEM_GLOBAL_H_INCLUDED__
 
-#ifdef __KERNEL__
-#include <linux/types.h>
-#else
-#include <stdint.h>
-#endif
-
 #include "isp.h"
 
 #define VMEM_SIZE	ISP_VMEM_DEPTH
 #define VMEM_ELEMBITS	ISP_VMEM_ELEMBITS
+#ifdef C_RUN
+#define VMEM_ALIGN	1
+#else
+#define VMEM_ALIGN	ISP_VMEM_ALIGN
+#endif
+
+#ifndef PIPE_GENERATION
+typedef tvector *pvector;
+#endif
 
 #endif /* __VMEM_GLOBAL_H_INCLUDED__ */

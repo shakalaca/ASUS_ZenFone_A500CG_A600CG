@@ -161,15 +161,15 @@ static int __init dw_i2c_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	platform_set_drvdata(pdev, dev);
-
-	acpi_i2c_register_devices(&dev->adapter);
-
-	pm_runtime_set_active(&pdev->dev);
-	pm_runtime_enable(&pdev->dev);
-	pm_runtime_allow(&pdev->dev);
-	pm_runtime_use_autosuspend(&pdev->dev);
-	pm_runtime_set_autosuspend_delay(&pdev->dev, 50);
+	if (dev->shared_host) {
+		pm_runtime_forbid(&pdev->dev);
+	} else {
+		pm_runtime_set_active(&pdev->dev);
+		pm_runtime_enable(&pdev->dev);
+		pm_runtime_allow(&pdev->dev);
+		pm_runtime_use_autosuspend(&pdev->dev);
+		pm_runtime_set_autosuspend_delay(&pdev->dev, 50);
+	}
 
 	return 0;
 }
@@ -221,7 +221,7 @@ static int __init dw_i2c_init_driver(void)
 
 	return platform_driver_probe(&dw_i2c_driver, dw_i2c_probe);
 }
-module_init(dw_i2c_init_driver);
+rootfs_initcall(dw_i2c_init_driver);
 
 static void __exit dw_i2c_exit_driver(void)
 {

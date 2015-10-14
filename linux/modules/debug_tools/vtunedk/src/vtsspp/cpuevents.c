@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2010-2012 Intel Corporation.  All Rights Reserved.
+  Copyright (C) 2010-2014 Intel Corporation.  All Rights Reserved.
 
   This file is part of SEP Development Kit
 
@@ -53,6 +53,8 @@
 #define IA32_FIXED_CTR0      0x309
 #define IA32_PERFEVTSEL0     0x186
 #define IA32_PMC0            0x0c1
+
+#define IA32_PERF_GLOBAL_STATUS     0x38e
 
 /// SNB power MSRs
 #define VTSS_MSR_PKG_ENERGY_STATUS  0x611
@@ -208,6 +210,7 @@ void vtss_cpuevents_reqcfg_default(int need_clear, int defsav)
 
         reqcfg.cpuevent_cfg_v1[reqcfg.cpuevent_count_v1].event_id = i;
         if (defsav) {
+//            printk("in pmu init: defsav = %d\n", defsav);
             reqcfg.cpuevent_cfg_v1[reqcfg.cpuevent_count_v1].interval = defsav;
         } else if (hardcfg.family == 0x06) { // P6
             reqcfg.cpuevent_cfg_v1[reqcfg.cpuevent_count_v1].interval = 2000000;
@@ -216,6 +219,7 @@ void vtss_cpuevents_reqcfg_default(int need_clear, int defsav)
         } else {
             reqcfg.cpuevent_cfg_v1[reqcfg.cpuevent_count_v1].interval = 10000000;
         }
+        printk("in pmu init: defsav = %d\n", reqcfg.cpuevent_cfg_v1[reqcfg.cpuevent_count_v1].interval);
         reqcfg.cpuevent_cfg_v1[reqcfg.cpuevent_count_v1].mux_grp  = mux_cnt;
         reqcfg.cpuevent_cfg_v1[reqcfg.cpuevent_count_v1].mux_alg  = VTSS_CFGMUX_SEQ;
         reqcfg.cpuevent_cfg_v1[reqcfg.cpuevent_count_v1].mux_arg  = 1;
@@ -395,6 +399,11 @@ void vtss_cpuevents_sample(cpuevent_t* cpuevent_chain)
 {
     int i;
 
+    if (unlikely(!cpuevent_chain)){
+        ERROR("CPU event chain is empty!!!");
+        return;
+    }
+
     /// select between thread-specific and per-processor chains (system-wide)
     for (i = 0; i < VTSS_CFG_CHAIN_SIZE && cpuevent_chain[i].valid; i++) {
         TRACE("[%02d]: mux_idx=%d, mux_grp=%d of %d %s", i,
@@ -418,6 +427,10 @@ void vtss_cpuevents_sample(cpuevent_t* cpuevent_chain)
 void vtss_cpuevents_quantum_border(cpuevent_t* cpuevent_chain, int flag)
 {
     int i;
+    if (unlikely(!cpuevent_chain)){
+        ERROR("CPU event chain is empty!!!");
+        return;
+    }
 #if 0
     /// compute idle characteristics
     if (0 /*tidx == pcb_cpu.idle_tidx*/) {
@@ -454,7 +467,7 @@ void vtss_cpuevents_quantum_border(cpuevent_t* cpuevent_chain, int flag)
 #endif
     for (i = 0; i < VTSS_CFG_CHAIN_SIZE && cpuevent_chain[i].valid; i++) {
         TRACE("[%02d]: mux_idx=%d, mux_grp=%d of %d %s flag=%d", i,
-              cpuevent_chain[i].mux_idx, cpuevent_chain[i].mux_grp, cpuevent_chain[0].mux_cnt,
+              cpuevent_chain[i].mux_idx, cpuevent_chain[i].mux_grp, cpuevent_chain[i].mux_cnt,
               (cpuevent_chain[i].mux_grp != cpuevent_chain[i].mux_idx) ? "skip" : ".vft->update_restart()", flag);
         if (cpuevent_chain[i].mux_grp != cpuevent_chain[i].mux_idx)
             continue;

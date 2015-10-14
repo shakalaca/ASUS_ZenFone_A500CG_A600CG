@@ -424,6 +424,8 @@ out:
 
 static int __imx_init(struct v4l2_subdev *sd, u32 val)
 {
+
+
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct imx_device *dev = to_imx_sensor(sd);
 
@@ -458,6 +460,12 @@ static long imx_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	s32 value;
 	struct imx_device *dev = to_imx_sensor(sd);
 
+	/*
+	cmd -= 19;
+    printk("%s\t start cmd(%u) ATOMISP_IOC_S_EXPOSURE(%u)(%u)(%u)(%u)(%d)  leong_p \n",__func__ ,cmd, ATOMISP_IOC_S_EXPOSURE , ATOMISP_IOC_G_SENSOR_PRIV_INT_DATA,ATOMISP_TEST_CMD_SET_VCM_POS,ATOMISP_TEST_CMD_GET_VCM_POS,ATOMISP_IOC_S_BINNING_SUM);
+	*/
+
+
 	switch (cmd) {
 	case ATOMISP_IOC_S_EXPOSURE:
 		return imx_s_exposure(sd, arg);
@@ -483,6 +491,7 @@ static long imx_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	}
 	return 0;
 }
+
 
 static int power_up(struct v4l2_subdev *sd)
 {
@@ -519,6 +528,7 @@ fail_power:
 
 	return ret;
 }
+
 
 static int power_down(struct v4l2_subdev *sd)
 {
@@ -562,7 +572,7 @@ static int __imx_s_power(struct v4l2_subdev *sd, int on)
 			ret = dev->vcm_driver->power_up(sd);
 		if (ret)
 			return ret;
-		ret = power_up(sd);
+		 ret = power_up(sd);  // leong
 		if (!ret) {
 			dev->power = 1;
 			return __imx_init(sd, 0);
@@ -728,6 +738,7 @@ static int imx_get_intg_factor(struct i2c_client *client,
 	buf->binning_factor_x = dev->curr_res_table[dev->fmt_idx].bin_factor_x;
 	buf->binning_factor_y = dev->curr_res_table[dev->fmt_idx].bin_factor_y;
 
+
 	return 0;
 }
 
@@ -878,6 +889,7 @@ int imx_vcm_power_up(struct v4l2_subdev *sd)
 		return dev->vcm_driver->power_up(sd);
 	return 0;
 }
+
 
 int imx_vcm_power_down(struct v4l2_subdev *sd)
 {
@@ -1429,11 +1441,13 @@ static int imx_detect(struct i2c_client *client, u16 *id, u8 *revision)
 	if (!i2c_check_functionality(adapter, I2C_FUNC_I2C))
 		return -ENODEV;
 
+
 	/* check sensor chip ID	 */
 	if (imx_read_reg(client, IMX_16BIT, IMX219_CHIP_ID, id)) {
 		v4l2_err(client, "sensor_id = 0x%x\n", *id);
 		return -ENODEV;
 	}
+
 	if (*id == IMX219_ID)
 		goto found;
 	else {
@@ -1457,6 +1471,7 @@ static int imx_s_stream(struct v4l2_subdev *sd, int enable)
 	int ret;
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	struct imx_device *dev = to_imx_sensor(sd);
+
 
 	mutex_lock(&dev->input_lock);
 	if (enable) {
@@ -1551,6 +1566,8 @@ static int imx_s_config(struct v4l2_subdev *sd,
 	u8 sensor_revision;
 	u16 sensor_id;
 	int ret;
+
+
 	if (pdata == NULL)
 		return -ENODEV;
 
@@ -1575,8 +1592,10 @@ static int imx_s_config(struct v4l2_subdev *sd,
 	}
 
 	ret = dev->platform_data->csi_cfg(sd, 1);
+
 	if (ret)
 		goto fail_csi_cfg;
+
 
 	/* config & detect sensor */
 	ret = imx_detect(client, &sensor_id, &sensor_revision);
@@ -1596,6 +1615,7 @@ static int imx_s_config(struct v4l2_subdev *sd,
 	mutex_unlock(&dev->input_lock);
 	if (ret)
 		v4l2_err(client, "imx power-down err.\n");
+
 
 	return ret;
 
@@ -1683,6 +1703,8 @@ static int
 imx_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param)
 {
 	struct imx_device *dev = to_imx_sensor(sd);
+
+
 	dev->run_mode = param->parm.capture.capturemode;
 
 	mutex_lock(&dev->input_lock);
@@ -1700,6 +1722,7 @@ imx_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *param)
 		dev->entries_curr_table = dev->mode_tables->n_res_preview;
 	}
 	mutex_unlock(&dev->input_lock);
+
 	return 0;
 }
 
@@ -1938,10 +1961,12 @@ static const struct file_operations otp_proc_fops = {
 static int imx_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
+
+
 	struct imx_device *dev;
 	struct camera_mipi_info *imx_info = NULL;
 	int ret;
-
+	mdelay(500);
 	/* allocate sensor device & init sub device */
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev) {
@@ -1949,7 +1974,11 @@ static int imx_probe(struct i2c_client *client,
 		return -ENOMEM;
 	}
 
+
 	mutex_init(&dev->input_lock);
+
+
+
 
 	dev->fmt_idx = 0;
 	dev->sensor_id = IMX_ID_DEFAULT;
@@ -1957,8 +1986,11 @@ static int imx_probe(struct i2c_client *client,
 
 	v4l2_i2c_subdev_init(&(dev->sd), client, &imx_ops);
 
+
 	/* Resolution settings depend on sensor type and platform */
-	ret = __update_imx_device_settings(dev, dev->sensor_id);
+	ret = __update_imx_device_settings(dev, dev->sensor_id);		//   dev->vcm_driver->init(&dev->sd);
+
+
 	if (ret)
 		goto out_free;
 
@@ -1968,6 +2000,7 @@ static int imx_probe(struct i2c_client *client,
 		if (ret)
 			goto out_free;
 	}
+
 	imx_info = v4l2_get_subdev_hostdata(&dev->sd);
 
 	/*
@@ -1991,7 +2024,12 @@ static int imx_probe(struct i2c_client *client,
 
 	proc_create("otp", 0, NULL, &otp_proc_fops);
 
+//	printk("%s\t finish  return1 leong_p\n",__func__);	return 1;	// leong_p	return fail
+
+
 	return ret;
+
+
 out_free:
 	v4l2_device_unregister_subdev(&dev->sd);
 	kfree(dev);
@@ -2019,7 +2057,13 @@ static struct i2c_driver imx_driver = {
 
 static __init int init_imx(void)
 {
-	return i2c_add_driver(&imx_driver);
+
+
+
+
+	return i2c_add_driver(&imx_driver); //  leong
+
+
 }
 
 static __exit void exit_imx(void)

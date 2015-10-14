@@ -205,6 +205,7 @@ extern bool g_do_debugging;
 } while(0)
 
 #define LOG_WUWATCH_FUNCTION_ENTER() db_fprintf(stderr, "ENTERING Function \"%s\"\n", __FUNCTION__);
+#define LOG_WUWATCH_FUNCTION_EXIT() db_fprintf(stderr, "EXITTING Function \"%s\"\n", __FUNCTION__);
 
 /*
  * Macros corresponding to the kernel versions of 'likely()'

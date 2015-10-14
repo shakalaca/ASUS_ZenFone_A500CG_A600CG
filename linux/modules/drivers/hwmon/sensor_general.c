@@ -27,103 +27,21 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/gpio.h>
+#include <linux/acpi_gpio.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
 #include <asm/div64.h>
 #include "sensor_driver_config.h"
-
-#define GENERAL_SENSOR_FIRMWARE "sensor_config.bin"
-#define MAX_SENSOR_DRIVERS	32
-
-#define le24_to_cpu(a)		(a)
-#define be24_to_cpu(a)		((((a)&0xff)<<16) |	\
-				((a)&0xff00) | (((a)&0xff0000>>16)))
-
-/*stack of data operation
-* store the input/intermeidate/output data between actions
-* all data actions except access will store result in stack
-*/
-struct sensor_data_stack {
-	int top;              /*pointer of top valid data*/
-	int data_stack[DATA_STACK_MAX_SIZE];
-};
-
-/*Private data for each sensor*/
-struct sensor_data {
-	struct i2c_client *client;
-	struct input_dev *input_dev;
-	struct device *attr_dev;
-	unsigned int dbg_on;
-
-	struct mutex *lock;
-	struct mutex real_lock;
-
-	struct delayed_work input_work;
-	/*work queue status*/
-	int launched;
-
-	/*record sysfs device files for each sensor for remove*/
-	struct device_attribute *dev_attr;
-	struct sensor_config *config;
-
-	enum sensor_state {
-		STATE_DIS,  STATE_EN, STATE_SUS,
-	} state;
-	int poll_interval;
-	int range;
-	/*remain report count for poll + interrupt mode*/
-	int report_cnt;
-
-	/*multi function device*/
-	u8 multi_index;		/*index of multi device: [0, nums)*/
-	u8 *share_irq_seq;	/*irq sequence of multi device*/
-
-	/*i2c registers buf indexed by i2c reg addr: [0, sensor_regs)*/
-	u8 *regbuf;
-
-	struct sensor_data_stack stack;
-
-	/*for extension, such as: sensitivity of accelerometer */
-	int private[PRIVATE_MAX_SIZE];
-};
+#include "sensor_general.h"
 
 #ifdef CONFIG_GENERAL_SENSOR_DEBUG
 
 /*debug switch*/
-static unsigned int sensor_general_debug_sensors;
-static unsigned int sensor_general_debug_level;
-
-#define DBG_ALL_SENSORS		0xffffffff
-#define DBG_LEVEL1		1
-#define DBG_LEVEL2		2
-#define DBG_LEVEL3		3
-#define DBG_LEVEL4		4
-
-#define SENSOR_DBG(level, sensors, fmt, ...)			\
-do {								\
-	if ((level <= sensor_general_debug_level) &&		\
-		(sensors & sensor_general_debug_sensors))	\
-		printk(KERN_DEBUG "[%d]%s "			\
-			fmt "\n",				\
-			__LINE__, __func__,			\
-			##__VA_ARGS__);				\
-} while (0)
-
-static void dbg_dump(char *buf, int len) __attribute__((unused));
-static void dbg_dump(char *buf, int len)
-{
-	int i;
-
-	printk(KERN_DEBUG "%p 0x%x\n", buf, len);
-	for (i = 0; i < len; i++) {
-		printk(KERN_DEBUG "%02x ", (unsigned char)buf[i]);
-		if ((i + 1) % 32 == 0)
-			printk(KERN_DEBUG "\n");
-	}
-	printk(KERN_DEBUG "\n");
-}
-
-static char *action_debug[] = {
+unsigned int sensor_general_debug_sensors;
+unsigned int sensor_general_debug_level;
+EXPORT_SYMBOL(sensor_general_debug_sensors);
+EXPORT_SYMBOL(sensor_general_debug_level);
+char *action_debug[] = {
 	"OP_ACCESS",
 	"OP_MIN", "OP_MAX",
 	"OP_LOGIC_EQ", "OP_LOGIC_NEQ", "OP_LOGIC_GREATER", "OP_LOGIC_LESS",
@@ -172,12 +90,14 @@ static inline void sensor_time_end(struct sensor_data *data, ktime_t *start)
 
 #else
 
-#define SENSOR_DBG(level, sensors, fmt, ...)
-#define dbg_dump(a, b)
 #define sensor_time_start(a, b)
 #define sensor_time_end(a, b)
 
 #endif
+
+static p_extern_c extern_c_array[MAX_EXTERN_C];
+static DEFINE_MUTEX(sensor_externc_lock);
+static long extern_c_ref_cnt = 0;
 
 static void sensor_launch_work(struct sensor_data *data);
 static void unregister_failed_devices(void);
@@ -209,7 +129,7 @@ static inline int pop(struct sensor_data *data)
 
 	ret = stack->data_stack[stack->top--];
 
-	SENSOR_DBG(DBG_LEVEL4, data->dbg_on, "%d val:0x%x %s",
+	SENSOR_DBG(DBG_LEVEL5, data->dbg_on, "%d val:0x%x %s",
 				stack->top, ret, data->config->input_name);
 	return ret;
 }
@@ -225,7 +145,7 @@ static inline void push(struct sensor_data *data, int val)
 		return;
 	}
 
-	SENSOR_DBG(DBG_LEVEL4, data->dbg_on, "%d val:0x%x %s",
+	SENSOR_DBG(DBG_LEVEL5, data->dbg_on, "%d val:0x%x %s",
 					stack->top, val,
 					data->config->input_name);
 	stack->data_stack[++stack->top] = val;
@@ -287,7 +207,7 @@ static int data_op_access(struct sensor_data *data, struct data_action *action)
 	int val;
 	int ret = 0;
 
-	SENSOR_DBG(DBG_LEVEL4, data->dbg_on, "%x", (unsigned int)action);
+	SENSOR_DBG(DBG_LEVEL4, data->dbg_on, "%p", action);
 
 	switch (action->operand1.type) {
 	case OPT_REG_BUF:
@@ -300,7 +220,7 @@ static int data_op_access(struct sensor_data *data, struct data_action *action)
 			flag = action->operand2.data.reg.flag;
 
 			SENSOR_DBG(DBG_LEVEL3, data->dbg_on,
-				"readreg:(%x %x)=",
+				"readreg:(0x%x %d)=",
 				(unsigned int)addr|flag, (unsigned int)len);
 
 			if (len > 1) {
@@ -317,7 +237,7 @@ static int data_op_access(struct sensor_data *data, struct data_action *action)
 					for (; i < len; i++)
 						SENSOR_DBG(DBG_LEVEL3,
 							data->dbg_on,
-							"%x",
+							"0x%x",
 						data->regbuf[addr + i]);
 
 					ret = 0;
@@ -479,16 +399,19 @@ static int sensor_exec_data_action(struct sensor_data *data,
 
         if (action->op == OP_ACCESS)
                 return data_op_access(data, action);
-        else if (action->op < OP_BIT_NOR)/*two operands*/
-                op2 = data_operand(data, &action->operand2);
+        else if (action->op > OP_ACCESS && action->op < OP_RESERVE) {
+		/*other data operations*/
+	        op1 = data_operand(data, &action->operand1);
+		if (action->op < OP_BIT_NOR)
+			op2 = data_operand(data, &action->operand2);
+		result = data_op_array[action->op](op1, op2);
+		push(data, result);
 
-        op1 = data_operand(data, &action->operand1);
-        result = data_op_array[action->op](op1, op2);
-	push(data, result);
-
-        SENSOR_DBG(DBG_LEVEL3, data->dbg_on, "%x %s %x=%x",
+		SENSOR_DBG(DBG_LEVEL3, data->dbg_on, "0x%x %s 0x%x = 0x%x",
                         op1, action_debug[action->op], op2, result);
-        return 0;
+		return 0;
+	} else
+		return -EINVAL;
 }
 
 #define RET_RETURN	2
@@ -499,12 +422,14 @@ static int sensor_exec_actions(struct sensor_data *data,
 	int num_con;
 	int num_if;
 	int num_else;
+	int inx;
+	p_extern_c p = NULL;
 
 	while (num > 0) {
-		SENSOR_DBG(DBG_LEVEL3, data->dbg_on,
-				"%s %x actions:%x num:%d",
-				data->config->input_name, (int)data,
-				(int)actions, (int)num);
+		SENSOR_DBG(DBG_LEVEL4, data->dbg_on,
+				"%s %p actions:%p num:%d",
+				data->config->input_name, data,
+				actions, (int)num);
 
 		switch (actions->type) {
 		case DATA:
@@ -540,7 +465,7 @@ static int sensor_exec_actions(struct sensor_data *data,
 
 			if (pop(data)) {
 				SENSOR_DBG(DBG_LEVEL3, data->dbg_on,
-					"true of if action:%x", (int)actions);
+					"true of if action:%p", actions);
 
 				ret = sensor_exec_actions(data,
 							num_if, actions);
@@ -552,8 +477,8 @@ static int sensor_exec_actions(struct sensor_data *data,
 				}
 			} else {
 				SENSOR_DBG(DBG_LEVEL3, data->dbg_on,
-						"false of if action:%x",
-						(int)actions);
+						"false of if action:%p",
+						actions);
 
 				ret = sensor_exec_actions(data,
 						num_else, actions + num_if);
@@ -576,6 +501,39 @@ static int sensor_exec_actions(struct sensor_data *data,
 
 		case RETURN:
 			return RET_RETURN;
+
+		case EXTERNC:
+			SENSOR_DBG(DBG_LEVEL3, data->dbg_on,
+					"extern c action:%p", actions);
+
+			inx = actions->action.externc.index;
+
+			/*Don't use sensor_externc_lock directly for sake of performance
+			  use a reference count to aovid unregister extern_c here*/
+			mutex_lock(&sensor_externc_lock);
+			extern_c_ref_cnt++;
+			mutex_unlock(&sensor_externc_lock);
+			if (inx < MAX_EXTERN_C && (p = extern_c_array[inx])) {
+				ret = (*p)(data);
+				if (ret) {
+					dev_err(&data->client->dev,
+						"[%d]%s exec extern c %p\n",
+						__LINE__, __func__, p);
+				}
+			} else {
+				dev_err(&data->client->dev,
+						"[%d]%s\n", __LINE__, __func__);
+				ret = -EINVAL;
+			}
+			mutex_lock(&sensor_externc_lock);
+			extern_c_ref_cnt--;
+			mutex_unlock(&sensor_externc_lock);
+
+			if (ret)
+				return ret;
+			actions++;
+			num--;
+			break;
 
 		default:
 			dev_err(&data->client->dev,
@@ -774,25 +732,24 @@ static int sensor_disable(struct sensor_data *data)
 
 static int sensor_suspend(struct device *dev)
 {
-	int ret = 0;
 	int i;
 	struct i2c_client *client = to_i2c_client(dev);
 	struct sensor_data *data = i2c_get_clientdata(client);
 	struct mutex *lock = data->lock;
-	int num;
+	int num = data->config->shared_nums;
 
 	SENSOR_DBG(DBG_LEVEL1, data->dbg_on, "%s", data->config->input_name);
 
 	if (INT == data->config->method) {
-		int irq = gpio_to_irq(data->config->gpio_num);
+		int irq = gpio_to_irq(data->gpio);
 		disable_irq(irq);
 	}
 
 	mutex_lock(lock);
 
-	num = data->config->shared_nums;
 	for (i = 0; i < num; i++, data++) {
-		ret |= sensor_disable(data);
+		data->state_suspend = data->state;
+		sensor_disable(data);
 		data->state = STATE_SUS;
 	}
 
@@ -803,35 +760,215 @@ static int sensor_suspend(struct device *dev)
 
 static int sensor_resume(struct device *dev)
 {
-	int ret = 0;
 	int i;
 	struct i2c_client *client = to_i2c_client(dev);
 	struct sensor_data *data = i2c_get_clientdata(client);
 	struct mutex *lock = data->lock;
-	int num;
+	int num = data->config->shared_nums;
 
 	SENSOR_DBG(DBG_LEVEL1, data->dbg_on, "%s", data->config->input_name);
 
 	if (INT == data->config->method) {
-		int irq = gpio_to_irq(data->config->gpio_num);
+		int irq = gpio_to_irq(data->gpio);
 		enable_irq(irq);
 	}
 
 	mutex_lock(lock);
 
-	num = data->config->shared_nums;
-	for (i = 0; i < num; i++, data++)
-		ret |= sensor_enable(data);
+	for (i = 0; i < num; i++, data++) {
+		if (data->state_suspend == STATE_EN)
+			sensor_enable(data);
+	}
 
 	mutex_unlock(lock);
 
 	return 0;
 }
 
+/*Fix me, only support up to 32 sensor drivers*/
+static int general_sensor_nums;
+/*sync access of below*/
+static DEFINE_MUTEX(sensor_proc_lock);
+static struct sensor_data *sensor_data_tbl[MAX_SENSOR_DRIVERS] = {NULL};
+static struct sensor_rawdata_proc *rawdata_proc_tbl[MAX_SENSOR_DRIVERS] = {NULL};
+
+static inline int sensor_add_data(struct sensor_data *data_new)
+{
+	int i;
+	int ret = 0;
+
+	mutex_lock(&sensor_proc_lock);
+	for (i = 0; i < MAX_SENSOR_DRIVERS; i++) {
+		struct sensor_data *data = sensor_data_tbl[i];
+
+		if (!data) {
+			sensor_data_tbl[i] = data_new;
+			break;
+		}
+	}
+	if (i >= MAX_SENSOR_DRIVERS) {
+		ret = -EINVAL;
+	}
+	mutex_unlock(&sensor_proc_lock);
+	return ret;
+}
+
+static inline int sensor_remove_data(struct sensor_data *data_new)
+{
+	int i;
+	int ret = 0;
+
+	mutex_lock(&sensor_proc_lock);
+	for (i = 0; i < MAX_SENSOR_DRIVERS; i++) {
+		struct sensor_data *data = sensor_data_tbl[i];
+
+		if (data == data_new) {
+			sensor_data_tbl[i] = NULL;
+			break;
+		}
+	}
+	if (i >= MAX_SENSOR_DRIVERS) {
+		ret = -EINVAL;
+	}
+	mutex_unlock(&sensor_proc_lock);
+	return ret;
+}
+
+int sensor_register_rawdata_proc(struct sensor_rawdata_proc *proc_new)
+{
+	int i;
+	int ret = 0;
+
+	SENSOR_DBG(DBG_LEVEL3, DBG_ALL_SENSORS, "%s", proc_new->name);
+
+	mutex_lock(&sensor_proc_lock);
+	for (i = 0; i < MAX_SENSOR_DRIVERS; i++) {
+		struct sensor_rawdata_proc *proc = rawdata_proc_tbl[i];
+
+		if (!proc) {
+			rawdata_proc_tbl[i] = proc_new;
+			break;
+		}
+	}
+	if (i >= MAX_SENSOR_DRIVERS) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	for (i = 0; i < MAX_SENSOR_DRIVERS; i++) {
+		struct sensor_data *data = sensor_data_tbl[i];
+
+		if (data && !strncmp(proc_new->name,
+			data->config->name, strlen(proc_new->name))) {
+
+			if (data->rawdata_proc)
+				printk(KERN_WARNING
+					"Override new raw data proc for %s\n",
+					data->config->input_name);
+
+			data->rawdata_proc = proc_new;
+			break;
+		}
+	}
+
+out:
+	mutex_unlock(&sensor_proc_lock);
+	return ret;
+}
+EXPORT_SYMBOL(sensor_register_rawdata_proc);
+
+int sensor_unregister_rawdata_proc(struct sensor_rawdata_proc *proc_new)
+{
+	int i;
+	int ret = 0;
+
+	SENSOR_DBG(DBG_LEVEL3, DBG_ALL_SENSORS, "%s", proc_new->name);
+
+	mutex_lock(&sensor_proc_lock);
+	for (i = 0; i < MAX_SENSOR_DRIVERS; i++) {
+		struct sensor_rawdata_proc *proc = rawdata_proc_tbl[i];
+
+		if (proc == proc_new) {
+			rawdata_proc_tbl[i] = NULL;
+			break;
+		}
+	}
+	if (i >= MAX_SENSOR_DRIVERS) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	for (i = 0; i < MAX_SENSOR_DRIVERS; i++) {
+		struct sensor_data *data = sensor_data_tbl[i];
+
+		if (data && data->rawdata_proc == proc_new) {
+			data->rawdata_proc = NULL;
+			break;
+		}
+	}
+
+out:
+	mutex_unlock(&sensor_proc_lock);
+	return ret;
+}
+EXPORT_SYMBOL(sensor_unregister_rawdata_proc);
+
+int sensor_register_extern_c(p_extern_c p)
+{
+	int i;
+	int ret = 0;
+
+	SENSOR_DBG(DBG_LEVEL3, DBG_ALL_SENSORS, "%p", p);
+
+	mutex_lock(&sensor_externc_lock);
+	for (i = 0; i < MAX_EXTERN_C; i++) {
+		if (!extern_c_array[i]) {
+			extern_c_array[i] = p;
+			break;
+		}
+	}
+	if (i >= MAX_EXTERN_C)
+		ret = -EINVAL;
+	mutex_unlock(&sensor_externc_lock);
+	return ret;
+}
+EXPORT_SYMBOL(sensor_register_extern_c);
+
+int sensor_unregister_extern_c(p_extern_c p)
+{
+	int i;
+	int ret = 0;
+
+	SENSOR_DBG(DBG_LEVEL3, DBG_ALL_SENSORS, "%p", p);
+
+	mutex_lock(&sensor_externc_lock);
+
+	if (extern_c_ref_cnt > 0) {
+		printk(KERN_ERR "Err: can't unregister externc %d",
+				extern_c_ref_cnt);
+		ret = -EBUSY;
+		goto out;
+	}
+
+	for (i = 0; i < MAX_EXTERN_C; i++) {
+		if (extern_c_array[i] == p) {
+			extern_c_array[i] = NULL;
+			break;
+		}
+	}
+	if (i >= MAX_EXTERN_C)
+		ret = -EINVAL;
+out:
+	mutex_unlock(&sensor_externc_lock);
+	return ret;
+}
+EXPORT_SYMBOL(sensor_unregister_extern_c);
+
 static int sensor_get_report_data(struct sensor_data *data)
 {
 	int ret = 0;
 	int val;
+	int (*proc)(struct sensor_data *, int);
 #ifdef CONFIG_GENERAL_SENSOR_DEBUG
 	ktime_t start;
 #endif
@@ -850,6 +987,10 @@ static int sensor_get_report_data(struct sensor_data *data)
 
 			val = pop(data);
 
+			if (data->rawdata_proc &&
+				(proc = data->rawdata_proc->proc_x))
+				val = (*proc)(data, val);
+
 			SENSOR_DBG(DBG_LEVEL2, data->dbg_on, "%s X:%d",
 					data->config->input_name, val);
 			/*Fix me: REL_X/Y/Z == ABS_X/Y/Z*/
@@ -866,6 +1007,10 @@ static int sensor_get_report_data(struct sensor_data *data)
 				return ret;
 			val = pop(data);
 
+			if (data->rawdata_proc &&
+				(proc = data->rawdata_proc->proc_y))
+				val = (*proc)(data, val);
+
 			SENSOR_DBG(DBG_LEVEL2, data->dbg_on, "%s Y:%d",
 					data->config->input_name, val);
 			input_event(data->input_dev,
@@ -880,6 +1025,10 @@ static int sensor_get_report_data(struct sensor_data *data)
 			if (stack_empty(&data->stack))
 				return ret;
 			val = pop(data);
+
+			if (data->rawdata_proc &&
+				(proc = data->rawdata_proc->proc_z))
+				val = (*proc)(data, val);
 
 			SENSOR_DBG(DBG_LEVEL2, data->dbg_on, "%s Z:%d",
 					data->config->input_name, val);
@@ -921,17 +1070,13 @@ static ssize_t sensor_range_store(struct device *dev,
 		return -EINVAL;
 
 	mutex_lock(data->lock);
-
 	ret = sensor_update_range(data, range);
 	if (ret < 0)
-		goto range_err;
-
+		goto err;
 	data->range = range;
-
 	ret = count;
-range_err:
+err:
 	mutex_unlock(data->lock);
-
 	return ret;
 }
 
@@ -1292,22 +1437,21 @@ static int sensor_get_data_init(struct sensor_data *data)
 
 		/*only the fisrt one request gpio*/
 		if (data->multi_index == 0) {
-			gpio_request(data->config->gpio_num,
-					data->config->name);
-			gpio_direction_input(data->config->gpio_num);
+			gpio_request(data->gpio, data->config->name);
+			gpio_direction_input(data->gpio);
 		}
 
 		flags = data->config->irq_flag;
 		if (data->config->shared_nums > 1)
 			flags |= IRQF_SHARED;
 
-		irq = gpio_to_irq(data->config->gpio_num);
+		irq = gpio_to_irq(data->gpio);
 
 		ret = request_threaded_irq(irq, NULL, sensor_interrupt_handler,
 					flags, data->config->input_name, data);
 		if (ret < 0) {
 			if (data->multi_index == 0)
-				gpio_free(data->config->gpio_num);
+				gpio_free(data->gpio);
 			dev_err(&data->client->dev,
 				"Fail to request irq:%d ret=%d\n", irq, ret);
 			return ret;
@@ -1521,6 +1665,19 @@ union sysfsapi_action sysfsapi_table[SENSOR_ACTION_RESERVE] = {
 	 { .store = attr_set_selftest },
 };
 
+static struct device general_sensor_device;
+static void sysfs_interfaces_link(struct device *dev)
+{
+	static int general_sensor_num = 0;
+	int ret = 0;
+	char name[32] = {0};
+
+	sprintf(name, "sensor%d", general_sensor_num++);
+	ret = sysfs_create_link(&general_sensor_device.kobj, &dev->kobj, name);
+	if (ret) {
+		dev_warn(dev, "Fail to link  %s\n", dev_name(dev));
+	}
+}
 static int create_sysfs_interfaces(struct sensor_data *data)
 {
 	int ret = 0;
@@ -1546,6 +1703,8 @@ static int create_sysfs_interfaces(struct sensor_data *data)
 		return ret;
 	}
 
+	sysfs_interfaces_link(data->attr_dev);
+
 	/*developer defined */
 	if (!data->config->sysfs_entries)
 		return ret;
@@ -1561,7 +1720,7 @@ static int create_sysfs_interfaces(struct sensor_data *data)
 
 	for (i = 0; i < data->config->sysfs_entries; i++, dev_attr++) {
 		dev_attr->attr.name = data->config->sysfs_table[i].name;
-		dev_attr->attr.mode = data->config->sysfs_table[i].mode;
+		dev_attr->attr.mode = S_IRUGO|S_IWUSR;
 
 		if (data->config->sysfs_table[i].type == DATA_ACTION) {
 			dev_attr->show = sensor_sysfs_data_acton_show;
@@ -1630,8 +1789,25 @@ static void remove_sysfs_interfaces(struct sensor_data *data)
 	}
 }
 
-/*fix me, only support up to 32*/
-static int general_sensor_nums;
+static int sensor_rawdata_proc_init(struct sensor_data *data)
+{
+	int i;
+
+	mutex_lock(&sensor_proc_lock);
+	for (i = 0; i < MAX_SENSOR_DRIVERS; i++) {
+		struct sensor_rawdata_proc *proc = rawdata_proc_tbl[i];
+
+		if (proc && !strncmp(proc->name,
+			data->config->name, strlen(proc->name))) {
+			data->rawdata_proc = proc;
+			goto out;
+		}
+	}
+	data->rawdata_proc = NULL;
+out:
+	mutex_unlock(&sensor_proc_lock);
+	return 0;
+}
 
 /*
 * sensor private data init
@@ -1661,9 +1837,27 @@ static int sensor_data_init(struct i2c_client *client,
 		data->regbuf = regbuf;
 		data->client = client;
 		data->state = STATE_DIS;
+		data->state_suspend = STATE_DIS;
 		data->launched = 0;
 		data->poll_interval = data->config->default_poll_interval;
 		data->range = data->config->default_range;
+
+		if (config->method != POLL) {
+			data->gpio =
+				acpi_get_gpio_by_index(&client->dev, 0, NULL);
+			if (data->gpio < 0) {
+				dev_warn(&client->dev,
+					"Fail to get gpio pin by ACPI\n");
+				data->gpio = config->gpio_num;
+			}
+
+			if (data->gpio < 0) {
+				dev_err(&client->dev, "Need to specify gpio\n");
+				goto err;
+			}
+		}
+		sensor_rawdata_proc_init(data);
+
 		data->multi_index = i;
 		data->share_irq_seq = regbuf + config->sensor_regs;
 
@@ -1697,10 +1891,7 @@ static int sensor_data_init(struct i2c_client *client,
 			dev_set_drvdata(dev, data);
 		}
 
-		data->dbg_on = (1 << general_sensor_nums);
-		general_sensor_nums++;
-
-		config = (struct sensor_config *)((int)config + config->size);
+		config = (struct sensor_config *)((char *)config + config->size);
 	}
 
 	return 0;
@@ -1755,7 +1946,8 @@ static int sensor_probe(struct i2c_client *client,
 	ret = sensor_data_init(client, data, config);
 	if (ret) {
 		dev_err(&client->dev, "sensor_data_init\n");
-		goto err;
+		kfree(data);
+		return ret;
 	}
 
 	for (i = 0; i < config->shared_nums; i++) {
@@ -1785,13 +1977,22 @@ static int sensor_probe(struct i2c_client *client,
 			dev_err(&client->dev, "create_sysfs_interfaces\n");
 			goto err;
 		}
+
+		if (general_sensor_nums <= MAX_SENSOR_DRIVERS - 1) {
+			(data + i)->dbg_on = (1 << general_sensor_nums);
+			general_sensor_nums++;
+		} else {
+			dev_err(&client->dev, "Too many sensor drivers\n");
+			goto err;
+		}
+
+		sensor_add_data(data + i);
 	}
 
 	return ret;
-
 err:
-	kfree(data);
-
+	if (0 == i)
+		kfree(data);
 	return ret;
 }
 
@@ -1809,14 +2010,16 @@ static int sensor_remove(struct i2c_client *client)
 
 		if (data->config->method == INT ||
 				data->config->method == MIX) {
-			free_irq(gpio_to_irq(data->config->gpio_num), data);
+			free_irq(gpio_to_irq(data->gpio), data);
 			if (num == 0)
-				gpio_free(data->config->gpio_num);
+				gpio_free(data->gpio);
 		}
 
 		input_unregister_device(data->input_dev);
 		sensor_disable(data);
 		sensor_deinit(data);
+
+		sensor_remove_data(data);
 	}
 
 	data++;
@@ -1939,6 +2142,7 @@ static void unregister_sensor_drivers(void)
 	registered_drivers = 0;
 }
 
+static void unregister_failed_driver(char *name) __attribute__((unused));
 static void unregister_failed_driver(char *name)
 {
 	int failed_num = failed_drivers - 1;
@@ -2030,28 +2234,33 @@ static int sensor_parse_config(int num, struct sensor_config *configs)
 		shared_nums = configs->shared_nums;
 		num -= shared_nums;
 
-		while (shared_nums--)
+		while (shared_nums > 0) {
+			shared_nums--;
 			configs = (struct sensor_config *)
-				((int)configs + configs->size);
+				((char *)configs + configs->size);
+		}
 	}
 
 	return 0;
 }
 
-static struct device general_sensor_device;
 static struct sensor_config_image *sensor_image;
-static int sensor_general_start(void)
+static int sensor_general_attached;
+static int start_method;
+static void sensor_firmware_cb(const struct firmware *fw_entry, void *ctx)
 {
 	int ret;
-	const struct firmware *fw_entry;
 
-	/*request config image*/
-	ret = request_firmware(&fw_entry,
-		GENERAL_SENSOR_FIRMWARE, &general_sensor_device);
-	if (ret) {
-		printk(KERN_ERR "Fail to request firmware %s\n",
-				GENERAL_SENSOR_FIRMWARE);
-		return ret;
+	if (!fw_entry) {
+		printk(KERN_ERR "Fail to request sensor firmware\n");
+		return;
+	}
+
+	sensor_image = (struct sensor_config_image *)fw_entry->data;
+	if (start_method != SG_FORCE_START &&
+		(sensor_image->flags & SG_FLAGS_BOOT_DISABLE)) {
+		ret = -EINVAL;
+		goto out;
 	}
 
 	sensor_image = kmalloc(fw_entry->size, GFP_KERNEL);
@@ -2062,21 +2271,34 @@ static int sensor_general_start(void)
 	}
 	memcpy((void *)sensor_image, fw_entry->data, fw_entry->size);
 
+#ifdef CONFIG_GENERAL_SENSOR_DEBUG
+	/*set default debug switch*/
+	sensor_general_debug_sensors = sensor_image->dbg_sensors;
+	sensor_general_debug_level = sensor_image->dbg_level;
+#endif
+
 	ret = sensor_parse_config(sensor_image->num,
 			(struct sensor_config *)&sensor_image->configs);
 	if (ret) {
 		printk(KERN_ERR "Fail to parse config image\n");
 		kfree(sensor_image);
 		sensor_image = NULL;
-	}
-
+	} else
+		sensor_general_attached = 1;
 out:
 	release_firmware(fw_entry);
-	fw_entry = NULL;
-	return ret;
+	return;
 }
 
-static int sensor_general_attached;
+static int sensor_general_start(int start)
+{
+	start_method = start;
+	return request_firmware_nowait(THIS_MODULE, true,
+			GENERAL_SENSOR_FIRMWARE,
+			&general_sensor_device, GFP_KERNEL, NULL,
+			sensor_firmware_cb);
+}
+
 static ssize_t sensor_general_start_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -2087,12 +2309,9 @@ static ssize_t sensor_general_start_store(struct device *dev,
 		return -EINVAL;
 
 	if (!sensor_general_attached && val) {
-		ret = sensor_general_start();
+		ret = sensor_general_start(val);
 		if (ret)
 			printk(KERN_ERR "Fail to start general sensor\n");
-		else
-			sensor_general_attached = 1;
-
 	} else if (sensor_general_attached && !val) {
 		printk(KERN_DEBUG "[%d]%s, unattach general sensor driver\n",
 						__LINE__, __func__);
@@ -2281,9 +2500,6 @@ static int __init sensor_general_init(void)
 	}
 
 #ifdef CONFIG_GENERAL_SENSOR_DEBUG
-	/*set default debug switch*/
-	sensor_general_debug_sensors = 0;
-	sensor_general_debug_level = 0;
 	sensor_general_time = 0;
 #endif
 
@@ -2307,7 +2523,7 @@ static int __init sensor_general_init(void)
 
 	/*trigger at kernel boot time*/
 #ifdef CONFIG_GENERAL_SENSOR_BOOT
-	ret = sensor_general_start();
+	ret = sensor_general_start(SG_START);
 	if (ret) {
 		dev_err(&general_sensor_device, "error sensor general init\n");
 		sysfs_remove_group(&general_sensor_device.kobj,
