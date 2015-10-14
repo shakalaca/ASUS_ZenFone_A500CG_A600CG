@@ -210,6 +210,13 @@ static struct rt5647_init_reg init_list[] = {
 		{ RT5647_MONO_OUT       , 0x0800 }, //MX-04
 	#endif
 
+	//A502CG
+	#ifdef CONFIG_A502CG_AUDIO_SETTING
+		{ RT5647_CJ_CTRL1       , 0x1c06 },
+		{ RT5647_MONO_OUT       , 0x1200 },
+		{ RT5647_CLSD_OUT_CTRL  , 0x03a8 },
+	#endif
+
 	{ RT5647_CJ_CTRL3        , 0xc000 },
 	{ RT5647_MONO_ADC_DIG_VOL, 0xafaf },
 };
@@ -2038,6 +2045,21 @@ static int rt5647_spk_event(struct snd_soc_dapm_widget *w,
 						rt5647_index_write(codec, 0x9b, 0x003d);
 						rt5647_index_write(codec, 0x9c, 0x10c3);
 						rt5647_index_write(codec, 0x9d, 0x1b04);
+					#endif
+					#ifdef CONFIG_A502CG_AUDIO_SETTING
+						snd_soc_write(codec, 0xf1, 0x0006);
+						snd_soc_write(codec, 0xf2, 0x5f80);
+						snd_soc_write(codec, 0xf3, 0x05df);
+						snd_soc_write(codec, 0xf4, 0x6040);
+						rt5647_index_write(codec, 0x95, 0x7cc3);
+						rt5647_index_write(codec, 0x96, 0x7252);
+						rt5647_index_write(codec, 0x97, 0x7519);
+						rt5647_index_write(codec, 0x98, 0x7cc3);
+						rt5647_index_write(codec, 0x99, 0x7252);
+						rt5647_index_write(codec, 0x9a, 0x7519);
+						rt5647_index_write(codec, 0x9b, 0x003e);
+						rt5647_index_write(codec, 0x9c, 0x0625);
+						rt5647_index_write(codec, 0x9d, 0x3f4e);
 					#endif
 					snd_soc_write(codec, 0xb4, 0x4006); //enable DRC
 					printk(KERN_INFO "[DRC] enable spk DRC in spk_event\n");
@@ -3955,6 +3977,21 @@ void do_enable_drc_work(struct work_struct *work)
 			rt5647_index_write(codec_global, 0x9b, 0x003d);
 			rt5647_index_write(codec_global, 0x9c, 0x10c3);
 			rt5647_index_write(codec_global, 0x9d, 0x1b04);
+		#endif
+		#ifdef CONFIG_A502CG_AUDIO_SETTING
+			snd_soc_write(codec_global, 0xf1, 0x0006);
+			snd_soc_write(codec_global, 0xf2, 0x5f80);
+			snd_soc_write(codec_global, 0xf3, 0x05df);
+			snd_soc_write(codec_global, 0xf4, 0x6040);
+			rt5647_index_write(codec_global, 0x95, 0x7cc3);
+			rt5647_index_write(codec_global, 0x96, 0x7252);
+			rt5647_index_write(codec_global, 0x97, 0x7519);
+			rt5647_index_write(codec_global, 0x98, 0x7cc3);
+			rt5647_index_write(codec_global, 0x99, 0x7252);
+			rt5647_index_write(codec_global, 0x9a, 0x7519);
+			rt5647_index_write(codec_global, 0x9b, 0x003e);
+			rt5647_index_write(codec_global, 0x9c, 0x0625);
+			rt5647_index_write(codec_global, 0x9d, 0x3f4e);
 		#endif
 
 		snd_soc_write(codec_global, 0xb4, 0x4006); //enable DRC

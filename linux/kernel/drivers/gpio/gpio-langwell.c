@@ -250,6 +250,7 @@ struct lnw_gpio {
 	u32			(*get_flis_offset)(int gpio);
 	u32			chip_irq_type;
 	int			type;
+	int			wakeup;
 	struct gpio_debug	*debug;
 };
 
@@ -779,6 +780,9 @@ static void lnw_irq_handler(unsigned irq, struct irq_desc *desc)
 			gpio = __ffs(pending);
 			DEFINE_DEBUG_IRQ_CONUNT_INCREASE(lnw->chip.base +
 				base + gpio);
+			if (!lnw->wakeup)
+				dev_info(&lnw->pdev->dev,
+				"wakeup source: gpio %d\n", base + gpio);
 			/* Mask irq if not requested in kernel */
 			lnw_irq = irq_find_mapping(lnw->domain, base + gpio);
 			lnw_irq_desc = irq_to_desc(lnw_irq);
@@ -1229,6 +1233,26 @@ static const struct irq_domain_ops lnw_gpio_irq_ops = {
 	.xlate = irq_domain_xlate_twocell,
 };
 
+static int lnw_gpio_suspend_noirq(struct device *dev)
+{
+	struct pci_dev *pdev = container_of(dev, struct pci_dev, dev);
+	struct lnw_gpio *lnw = pci_get_drvdata(pdev);
+
+	lnw->wakeup = 0;
+	printk("%s called\n", __func__);
+	return 0;
+}
+
+static int lnw_gpio_resume_noirq(struct device *dev)
+{
+	struct pci_dev *pdev = container_of(dev, struct pci_dev, dev);
+	struct lnw_gpio *lnw = pci_get_drvdata(pdev);
+
+	lnw->wakeup = 1;
+	printk("%s called\n", __func__);
+	return 0;
+}
+
 static int lnw_gpio_runtime_resume(struct device *dev)
 {
 	return 0;
@@ -1250,6 +1274,8 @@ static int lnw_gpio_runtime_idle(struct device *dev)
 }
 
 static const struct dev_pm_ops lnw_gpio_pm_ops = {
+	.suspend_noirq = lnw_gpio_suspend_noirq,
+	.resume_noirq = lnw_gpio_resume_noirq,
 	SET_RUNTIME_PM_OPS(lnw_gpio_runtime_suspend,
 			   lnw_gpio_runtime_resume,
 			   lnw_gpio_runtime_idle)
@@ -1311,6 +1337,7 @@ static int lnw_gpio_probe(struct pci_dev *pdev,
 	}
 
 	lnw->type = pid;
+	lnw->wakeup = 1;
 	lnw->reg_base = base;
 	lnw->reg_gplr = lnw->reg_base + ddata->gplr_offset;
 	lnw->get_flis_offset = ddata->get_flis_offset;

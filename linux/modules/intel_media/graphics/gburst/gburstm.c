@@ -349,7 +349,8 @@ static int pfs_verbosity_read(struct file *file, char __user *buf,
         size_t nbytes,loff_t *ppos);
 static int pfs_verbosity_write(struct file *file,
 	const char *buffer, size_t count, loff_t *ppos);
-
+static int pfs_gpu_freq_read(struct file *file, char __user *buf,
+        size_t nbytes,loff_t *ppos);
 
 /**
  * pfs_tab -- table specifying each gburst file under /proc/gburst.
@@ -418,6 +419,10 @@ static const struct pfs_data pfs_tab[] = {
 	{ "verbosity",
 		pfs_verbosity_read,
 		pfs_verbosity_write,
+		0644, },
+	{ "gpu_freq",
+		pfs_gpu_freq_read,
+		NULL,
 		0644, },
 };
 
@@ -2646,6 +2651,37 @@ static int pfs_utilization_override_write(struct file *file,
 	return count;
 }
 
+/**
+ * pfs_gpu_freq_read() - Procfs read function for
+ * /proc/gburst/gpu_freq
+ * Parameters are the standard ones for procfs read functions.
+ * @buf: buffer into which output can be provided for read function.
+ * @start: May be used to provide multiple buffers of output.
+ * @offset: May be used to provide multiple buffers of output.
+ * @breq: Number of bytes available in buf.
+ * @eof: Set by this function to indicate EOF.
+ * @pvd: Private data (in this case, gbprv).
+ *
+ * read: return gpu frequence now
+ * write: null.
+ */
+static int pfs_gpu_freq_read(struct file *file, char __user *buf,
+        size_t nbytes,loff_t *ppos)
+{
+	char msg[128];
+	int res;
+	struct gburst_pvt_s *gbprv = (struct gburst_pvt_s *)PDE_DATA(file_inode(file));
+	u32 pwrgt_sts;
+	u32 tmpv1;
+
+	/* Get Punit Status Register */
+	pwrgt_sts = read_and_process_PWRGT_STS(gbprv);
+	tmpv1 = (pwrgt_sts & PWRGT_STS_BURST_REALIZED_M) >>
+			PWRGT_STS_BURST_REALIZED_P;
+
+	res = scnprintf(msg, sizeof(msg), "%d\n", freq_mhz_table[tmpv1]);
+	return simple_read_from_buffer(buf, nbytes, ppos, msg, res);
+}
 
 /**
  * pfs_verbosity_read() - Procfs read function for

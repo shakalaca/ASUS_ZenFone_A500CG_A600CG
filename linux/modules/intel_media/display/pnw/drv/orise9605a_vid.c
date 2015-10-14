@@ -535,6 +535,14 @@ static int orise9605a_vid_drv_ic_init(struct mdfld_dsi_config *dsi_config){
 	for(i = 0; i < orise9605a_power_on_table_size; i++)
 		send_mipi_cmd_orise(sender, &orise9605a_power_on_table[i]);
 
+	mdfld_dsi_send_mcs_short_lp(sender, 0x00, 0xA0, 1, MDFLD_DSI_SEND_PACKAGE);
+	mdfld_dsi_read_mcs_lp(sender, 0xCC, data2, 1);
+
+	if (data2[0] != 0x05) {
+		printk("[DISP] Orise mode set failed : 0x%x, RESET!\n", data2[0]);
+		return -EIO;
+	}
+
 	mdfld_dsi_send_mcs_short_lp(sender, cm_004[0], cm_004[1], 1, MDFLD_DSI_SEND_PACKAGE);
 	mdfld_dsi_send_gen_long_lp(sender, cm_005, sizeof(cm_005), MDFLD_DSI_SEND_PACKAGE);
 
