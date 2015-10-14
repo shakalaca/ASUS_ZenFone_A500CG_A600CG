@@ -39,9 +39,10 @@
 static struct regulator_consumer_supply redhookbay_vprog1_consumer[] = {
 //	REGULATOR_SUPPLY("vprog1", "4-0048"), /* lm3554 */
 //	REGULATOR_SUPPLY("vprog1", "4-0036"), /* ov8830 */
-    	REGULATOR_SUPPLY("vprog1", "4-0024"), /* hm2056 */
+    REGULATOR_SUPPLY("vprog1", "4-0024"), /* hm2056 */
 	REGULATOR_SUPPLY("vprog1", "4-0010"), /* imx111 */
 	REGULATOR_SUPPLY("vprog1", "4-0037"), /* mn34130 */
+    REGULATOR_SUPPLY("vprog1", "4-0036"), /* t4k37 */
 	/*
 	 * Begin Scaleht / VV board consumers
 	 *
@@ -222,6 +223,7 @@ static void __init atom_regulator_victoriabay_init(void)
 static struct regulator_consumer_supply vprog2_consumer[] = {
 	REGULATOR_SUPPLY("vprog2", "4-0010"), /* imx111 */
 	REGULATOR_SUPPLY("vprog2", "4-0037"), /* mn34130 */
+	REGULATOR_SUPPLY("vprog2", "4-0036"), /* t4k37 */
 };
 
 static struct regulator_init_data vprog2_data = {
@@ -288,6 +290,7 @@ static struct platform_device vemmc2_device = {
 static struct regulator_consumer_supply vemmc1_consumer[] = {
 	REGULATOR_SUPPLY("VEMMC1", "4-0010"), /* imx111 */
 	REGULATOR_SUPPLY("VEMMC1", "4-0037"), /* mn34130 */
+	REGULATOR_SUPPLY("VEMMC1", "4-0036"), /* t4k37 */
 };
 static struct regulator_init_data vemmc1_data = {
 	.constraints = {

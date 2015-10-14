@@ -203,6 +203,8 @@ static void batt_info_update_work_func(struct work_struct *work);
 #define UG31XX_IOCTL_ALGORITHM_READ_BO_AUTO   _IOWR(UG31XX_IOC_MAGIC, 35, unsigned char *)
 #define UG31XX_IOCTL_ALGORITHM_WRITE_BO_AUTO  _IOWR(UG31XX_IOC_MAGIC, 36, unsigned char *)
 #endif ///< for FEATRUE_K_BOARD_OFFSET
+#define UG31XX_IOCTL_RESET_TOTALLY      			_IO(UG31XX_IOC_MAGIC, 37)
+#define UG31XX_IOCTL_ALGORITHM_RESET_BY_RANGE _IO(UG31XX_IOC_MAGIC, 38)
 
 #endif	///< end of UG31XX_MISC_DEV
 
@@ -278,7 +280,7 @@ static int cable_status_changed = 0;
 static bool force_power_supply_change = true;
 static bool charger_full_status = false;
 static bool charger_dc_in_before_suspend = false;
-static unsigned char op_options = LKM_OPTIONS_DEBUG_ERROR;	///< [AT-PM] : Set to "LKM_OPTIONS_ENABLE_REVERSE_CURRENT" to enable reverse current direction feature ; 11/12/2013
+static unsigned short op_options = LKM_OPTIONS_DEBUG_ERROR;	///< [AT-PM] : Set to "LKM_OPTIONS_ENABLE_REVERSE_CURRENT" to enable reverse current direction feature ; 11/12/2013
 static int rsense_value = 0;                        ///< [AT-PM] : Set R-Sense value (0 = from GGB settings) ; 09/05/2013
 static int ug31xx_backup_file_status = 0;
 static unsigned short design_capacity = 0;
@@ -892,6 +894,20 @@ static long ug31xx_misc_ioctl(struct file *file, unsigned int cmd, unsigned long
       ug31_module.set_board_offset(auto_kbo_result, UG31XX_BOARD_OFFSET_FROM_UPI_BO);
       break;
 #endif ///< for FEATRUE_K_BOARD_OFFSET
+
+		case UG31XX_IOCTL_RESET_TOTALLY:
+			UG31_LOGN("[%s] cmd -> UG31XX_IOCTL_RESET_TOTALLY\n", __func__);
+			op_options = op_options | LKM_OPTIONS_FORCE_RESET_TOTALLY;
+			cancel_delayed_work_sync(&ug31->batt_info_update_work);
+			schedule_delayed_work(&ug31->batt_info_update_work, 0*HZ);
+			break;
+
+		case UG31XX_IOCTL_ALGORITHM_RESET_BY_RANGE:
+      UG31_LOGN("[%s] cmd -> UG31XX_IOCTL_ALGORITHM_RESET_BY_RANGE\n", __func__);
+      op_options = op_options | LKM_OPTIONS_RESET_BY_RANGE;
+      cancel_delayed_work_sync(&ug31->batt_info_update_work);
+      schedule_delayed_work(&ug31->batt_info_update_work, 0*HZ);
+      break;
 
     default:
       UG31_LOGE("[%s] invalid cmd %d\n", __func__, _IOC_NR(cmd));
@@ -1849,7 +1865,7 @@ static void adjust_cell_table(void)
 	{
 		if(design_capacity >= 1)
 		{
-			rtn = ug31_module.adjust_cell_table(design_capacity);
+			rtn = ug31_module.adjust_cell_table(design_capacity, false);
 			GAUGE_info("[%s] design capacity has been adjusted. (%d)\n", __func__, rtn);
 		}
 	}
@@ -1983,7 +1999,7 @@ static void batt_info_update_work_func(struct work_struct *work)
 
 	mutex_lock(&ug31_dev->info_update_lock); 
 	ug31_module.set_options(op_options);  
-	if(op_options & LKM_OPTIONS_FORCE_RESET)
+	if(op_options & (LKM_OPTIONS_FORCE_RESET || LKM_OPTIONS_FORCE_RESET_TOTALLY || LKM_OPTIONS_RESET_BY_RANGE))
 	{
 	  now_is_charging = is_charging();
 	  if(now_is_charging == true)
@@ -2008,7 +2024,7 @@ static void batt_info_update_work_func(struct work_struct *work)
 		}
 #endif ///< for FEATRUE_K_BOARD_OFFSET
 	}
-	op_options = op_options & (~LKM_OPTIONS_FORCE_RESET);
+	op_options = op_options & (~(LKM_OPTIONS_FORCE_RESET|| LKM_OPTIONS_FORCE_RESET_TOTALLY || LKM_OPTIONS_RESET_BY_RANGE));
   
 	adjust_cell_table();
 	update_project_config();
@@ -3388,6 +3404,7 @@ static void ug31xx_i2c_shutdown(struct i2c_client *client)
 	{
 		GAUGE_err("[%s] Gauge driver not init finish\n", __func__);
 	}
+	ug31xx_drv_status = UG31XX_DRV_NOT_READY;
 
 	cancel_delayed_work_sync(&ug31->batt_info_update_work);
 	cancel_delayed_work_sync(&ug31->batt_power_update_work);
@@ -3536,7 +3553,7 @@ module_exit(ug31xx_i2c_exit);
 MODULE_DESCRIPTION("ug31xx gauge driver");
 MODULE_LICENSE("GPL");
 
-module_param(op_options, byte, 0644);
+module_param(op_options, ushort, 0644);
 MODULE_PARM_DESC(op_options, "Set operation options for uG31xx driver.");
 module_param(design_capacity, ushort, 0644);
 MODULE_PARM_DESC(design_capacity, "Set new design capacity for uG31xx driver.");

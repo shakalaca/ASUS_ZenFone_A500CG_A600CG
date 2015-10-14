@@ -24,25 +24,25 @@ static struct device* flash_dev;
 static struct class* flash_class;
 */
 static int set_light_record;
-static void rt8515_torch_on(u8);  
-static void rt8515_flash_off(unsigned long );      
+static int set_light_record_odd;
+static void rt8515_torch_on(u8);
+static void rt8515_flash_off(unsigned long );
 u8 inline turn_percent_to_s2c(u8);
 
 
 static ssize_t flash_show(struct file *dev, char *buffer, size_t count, loff_t *ppos)
 {
 
-   int len = 0;       
-   int report_light =0;                                                                                                                                                                                  
+   int len = 0;
+   int report_light =0;
    ssize_t ret = 0;
    char *buff;
- 
+
    buff = kmalloc(100,GFP_KERNEL);
    if(!buff)
             return -ENOMEM;
 
-    report_light = set_light_record;
-    report_light *= 2; 
+    report_light = set_light_record*2 + set_light_record_odd;
     len += sprintf(buff+len, "%d\n", report_light);
     ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
     kfree(buff);
@@ -53,24 +53,31 @@ static ssize_t flash_show(struct file *dev, char *buffer, size_t count, loff_t *
 
 static ssize_t flash_store(struct file *dev, const char *buf, size_t count, loff_t *loff)
 {
-    int set_light; 
+    int set_light;
+    set_light_record_odd = 0;
     set_light = -1;
     sscanf(buf, "%d", &set_light);
-    printk(KERN_INFO "[Flash] Set light to %d ", set_light);        
-    if (set_light == set_light_record) return count;  
-  
+    printk(KERN_INFO "[Flash] Set light to %d \n", set_light);
+    if (set_light == set_light_record) return count;
+
     if(set_light ==-1 || set_light >200) return -1;
-    
-    else if (set_light == 0 ){ 
-        rt8515_flash_off((unsigned long) 0); 
-    }else{
-        set_light /= 2;
-        set_light_record = set_light; 
+
+    else if (set_light == 0 ){
         rt8515_flash_off((unsigned long) 0);
-        u8 map_num = turn_percent_to_s2c((u8)set_light); 
+    }else{
+        if(set_light%2 == 0){
+                set_light_record_odd = 0;
+        }else{
+                set_light_record_odd = 1;
+        }
+
+        set_light /= 2;
+        set_light_record = set_light;
+        rt8515_flash_off((unsigned long) 0);
+        u8 map_num = turn_percent_to_s2c((u8)set_light);
         printk(KERN_INFO "map_num is %x", map_num);
-        rt8515_torch_on(map_num);         
-    }    
+        rt8515_torch_on(map_num);
+    }
 
     return count;
 }
@@ -171,7 +178,7 @@ static void rt8515_flash_on(void)
 
 static void rt8515_flash_off(unsigned long dummy)
 {
-    set_light_record = 0; 
+    set_light_record = 0;
 	del_timer(&flash_timer);
 	gpio_direction_output(rt8515_ENF, 0);
 	gpio_direction_output(rt8515_ENT, 0);
@@ -185,13 +192,17 @@ static void rt8515_torch_on(u8 data)
 	gpio_set_value(rt8515_ENF, 0);
 	gpio_set_value(rt8515_ENT, 0);
 	//usleep_range(500, 600);
-	udelay(3500);
+	mdelay(4);
 	printk(KERN_DEBUG "[FLASH] Settings RT8515_FLASH_ENT (%d) is set from 0 to 1 %d times for s2c communication \n",rt8515_ENT,data);
+	if(data > 9){
+		printk(KERN_DEBUG "[FLASH] change the step from %d to 9 \n",data);
+		data = 9;
+	}
 	while(data--){
 		gpio_set_value(rt8515_ENT, 0);
-		udelay(1);
+		udelay(4);
 		gpio_set_value(rt8515_ENT, 1);
-		udelay(1);
+		udelay(4);
 	}
 	//rt8515_hw_status = (RT8515_HW_FLASH_IS_ON);
 }
@@ -274,7 +285,7 @@ static int rt8515_s_torch_intensity(struct v4l2_subdev *sd, u32 intensity)
 {
 	struct rt8515 *flash = to_rt8515(sd);
 	flash->torch_intensity = intensity;
-	return rt8515_apply(sd,0);
+	return 0;
 }
 
 static int rt8515_g_torch_intensity(struct v4l2_subdev *sd, s32 *val)
@@ -589,7 +600,7 @@ static long rt8515_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 			rt8515_flash_off((unsigned long) 0);
 		}else{
 			printk("[AsusFlash] Set Torch on \n");
-			rt8515_torch_on((u8)100);
+			rt8515_torch_on((u8)9);
 		}
 		return 0;
 	case ATOMISP_TEST_CMD_SET_FLASH:
@@ -749,11 +760,11 @@ static int __devinit rt8515_probe(struct i2c_client *client,
     device_create_file(flash_dev, &dev_attr_flash);
 */
     void* dummy;
-    struct proc_dir_entry* proc_entry_flash; 
+    struct proc_dir_entry* proc_entry_flash;
     proc_entry_flash = proc_create_data("driver/asus_flash_brightness", 0664, NULL, &flash_proc_fops, dummy);
     proc_entry_flash->uid = 1000;
     proc_entry_flash->gid = 1000;
-     
+
 #if 0
 
 

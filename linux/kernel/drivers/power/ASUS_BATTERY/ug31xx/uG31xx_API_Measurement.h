@@ -4,15 +4,15 @@
  *  Header for uG31xx measurement API
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 81 $
+ * @revision  $Revision: 107 $
  */
 
 typedef signed char       _meas_s8_;
 typedef unsigned char     _meas_u8_;
 typedef signed short      _meas_s16_;
 typedef unsigned short    _meas_u16_;
-typedef signed long       _meas_s32_;
-typedef unsigned long     _meas_u32_;
+typedef signed int       _meas_s32_;
+typedef unsigned int     _meas_u32_;
 typedef signed long long  _meas_s64_;
 typedef char              _meas_bool_;
 
@@ -58,12 +58,6 @@ typedef enum _MEAS_SEL_CODE {
 
 typedef struct MeasDataST {
 
-  /// [AT-PM] : System data ; 04/08/2013
-  SystemDataType *sysData;
-  
-  /// [AT-PM] : OTP data ; 01/23/2013
-  OtpDataType *otp;
-  
   /// [AT-PM] : Physical value ; 01/23/2013
   _meas_u16_ bat1Voltage;
   _meas_u16_ bat2Voltage;
@@ -159,6 +153,8 @@ typedef struct MeasDataST {
   _meas_s32_ cycleCountBuf;
   _meas_u16_ cycleCount;
 } ALIGNED_ATTRIBUTE MeasDataType;
+
+extern MeasDataType *ptrMeasData;
 
 /**
  * @brief UpiResetCoulombCounter

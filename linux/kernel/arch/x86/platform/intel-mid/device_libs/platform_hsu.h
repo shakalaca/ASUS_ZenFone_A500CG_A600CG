@@ -49,6 +49,7 @@ struct hsu_port_pin_cfg {
 	int cts_alt;
 	int rts_gpio;
 	int rts_alt;
+	bool rts_fixed; /* not change rts setting when modem is doing core_dump, cold_reset*/
 	struct device *dev;
 	irq_handler_t wake_isr;
 };

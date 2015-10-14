@@ -57,6 +57,8 @@ typedef enum {
 #define LKM_OPTIONS_ENABLE_REVERSE_CURRENT  (1<<4)
 #define LKM_OPTIONS_ADJUST_DESIGN_CAPACITY  (1<<5)
 #define LKM_OPTIONS_DISABLE_BACHUP_FILE     (1<<6)
+#define LKM_OPTIONS_FORCE_RESET_TOTALLY     (1<<7)
+#define LKM_OPTIONS_RESET_BY_RANGE          (1<<8)
 
 #endif  ///< end of _LKM_OPTIONS_
 
@@ -93,6 +95,7 @@ struct ug31xx_module_interface {
 	int (*get_battery_removed)(void);
 	int (*get_alarm_status)(void);
 	int (*get_charge_termination_current)(void);
+	int (*get_charge_termination_voltage)(void);
 	int (*get_full_charge_status)(void);
 	int (*get_design_capacity)(void);
 	int (*get_rsense)(void);
@@ -116,10 +119,12 @@ struct ug31xx_module_interface {
 	unsigned int (*get_ggb_config)(void);
 	unsigned char (*get_decimate_rst_sts)(void);
   int (*get_delta_time)(void);
+  void (*get_cc_chg_offset)(unsigned int *offset_25, unsigned int *offset_50, unsigned int *offset_75, unsigned int *offset_100);
 
 	int (*set_backup_file)(char enable);
 	int (*set_charger_full)(char is_full);
 	int (*set_charge_termination_current)(int curr);
+	int (*set_charge_termination_voltage)(int volt);
 	int (*set_battery_temp_external)(void);
 	int (*set_battery_temp_internal)(void);
 	int (*set_rsense)(int rsense);
@@ -137,6 +142,7 @@ struct ug31xx_module_interface {
 	int (*set_standby_current)(int curr);
 	int (*set_ggb_board_gain)(int gain);
 	int (*set_ggb_config)(unsigned int config);
+  int (*set_cc_chg_offset)(unsigned int offset_25, unsigned int offset_50, unsigned int offset_75, unsigned int offset_100);
 
 	int (*chk_backup_file)(void);
 	int (*enable_save_data)(char enable);
@@ -144,10 +150,11 @@ struct ug31xx_module_interface {
 	int (*ug31xx_i2c_read)(unsigned short addr, unsigned char *data);
 	int (*ug31xx_i2c_write)(unsigned short addr, unsigned char *data);
 	int (*reset_cycle_count)(void);
-	int (*adjust_cell_table)(unsigned short design_capacity);
+	int (*adjust_cell_table)(unsigned short adjust_design_capacity, char force_reset);
 	int (*calibrate_offset)(unsigned char options);
 	int (*backup_pointer)(void);
 	int (*restore_pointer)(void);
+  int (*reset_q_from_cc)(void);
 };
 
 enum {

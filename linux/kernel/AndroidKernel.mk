@@ -55,7 +55,6 @@ KERNEL_CCACHE :=$(firstword $(TARGET_CC))
 KERNEL_PATH := $(ANDROID_BUILD_TOP)/vendor/intel/support
 ifeq ($(notdir $(KERNEL_CCACHE)),ccache)
 KERNEL_CROSS_COMP := "ccache $(KERNEL_CROSS_COMP)"
-KERNEL_PATH := $(KERNEL_PATH):$(ANDROID_BUILD_TOP)/$(dir $(KERNEL_CCACHE))
 endif
 
 #remove time_macros from ccache options, it breaks signing process
@@ -91,6 +90,12 @@ KERNEL_VERSION_FILE := $(KERNEL_OUT_DIR)/include/config/kernel.release
 KERNEL_VERSION_FILE_KDUMP := $(KERNEL_OUT_DIR_KDUMP)/include/config/kernel.release
 
 $(KERNEL_CONFIG): $(KERNEL_DEFCONFIG) $(wildcard $(KERNEL_DIFFCONFIG))
+	@echo $(KERNEL_BLD_ENV) ENV---- $(KERNEL_BLD_FLAGS)
+	@echo SLOPPINESS ---- $(CCACHE_SLOPPINESS)
+	@echo TARGET_BOARD_PLATFORM $(TARGET_BOARD_PLATFORM)
+	@echo TARGET_TOOLS_PREFIX $(TARGET_TOOLS_PREFIX)
+	@echo TARGET_CC $(TARGET_CC)
+	@echo $(PATH)
 	@echo Regenerating kernel config $(KERNEL_OUT_DIR)
 	@mkdir -p $(KERNEL_OUT_DIR)
 	@cat $^ > $@

@@ -748,6 +748,7 @@ int rt5647_headset_detect(struct snd_soc_codec *codec, int jack_insert)
 		snd_soc_update_bits(codec, RT5647_PWR_ANLG1,
 		RT5647_PWR_MB | RT5647_PWR_VREF2,
 		RT5647_PWR_MB | RT5647_PWR_VREF2);
+		snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x20, 0x0); //bard 0603
 		/* Oder 140117 end */
 
 		snd_soc_dapm_force_enable_pin(&codec->dapm, "micbias1");
@@ -791,6 +792,7 @@ int rt5647_headset_detect(struct snd_soc_codec *codec, int jack_insert)
 			break;
 		}
 	} else {
+		snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x20, 0x20); //bard 0603
 		snd_soc_update_bits(codec, RT5647_INT_IRQ_ST, 0x8, 0x0);
 		snd_soc_update_bits(codec, RT5647_GEN_CTRL2, 0x8, 0x0); //bard 12-20
 		snd_soc_dapm_disable_pin(&codec->dapm, "micbias1");
@@ -1986,36 +1988,54 @@ static int rt5647_spk_event(struct snd_soc_dapm_widget *w,
 			RT5647_PWR_CLS_D | RT5647_PWR_CLS_D_R | RT5647_PWR_CLS_D_L);
                 snd_soc_update_bits(codec, RT5647_GEN_CTRL3, 0x0200, 0x0200);
 
-		if(stream_usecase == 1 && is_recording == 0) {
+		if(stream_usecase == 1 && is_recording == 0) { //enable DRC only on ring/alarm/notification
 			if (!(snd_soc_read(codec_global, RT5647_PWR_DIG2) & RT5647_PWR_DAC_S1F)) {
 				printk(KERN_INFO "DAC filter power is not on, don't enable DRC\n");
 			} else {
 				DRC_CTRL = snd_soc_read(codec_global, RT5647_ALC_CTRL_1) & 0xc000;
 				if(!(DRC_CTRL == 0x4000)) { //check if DRC disable, only when DRC disable needs to be open
-					printk(KERN_INFO "[DRC] enable spk DRC in spk_event\n");
-					snd_soc_write(codec, 0xb4, 0x4006); //enable DRC on ring/alarm/notification
 
+					//set DRC parameters
 					snd_soc_write(codec, 0xb3, 0x041f);
 					snd_soc_write(codec, 0xb5, 0xdf80);
 					snd_soc_write(codec, 0xb6, 0x05df);
 					snd_soc_write(codec, 0xb7, 0x6040);
 					snd_soc_write(codec, 0xf0, 0x001f);
-					snd_soc_write(codec, 0xf1, 0x0006);
-					snd_soc_write(codec, 0xf2, 0x5f80);
-					snd_soc_write(codec, 0xf3, 0x05df);
-					snd_soc_write(codec, 0xf4, 0x6040);
 					snd_soc_write(codec, 0xe6, 0x8000);
 					snd_soc_write(codec, 0xe7, 0x0700);
 					snd_soc_write(codec, 0xea, 0x0c20);
-					rt5647_index_write(codec, 0x95, 0x7cc3);
-					rt5647_index_write(codec, 0x96, 0x7252);
-					rt5647_index_write(codec, 0x97, 0x7519);
-					rt5647_index_write(codec, 0x98, 0x7cc3);
-					rt5647_index_write(codec, 0x99, 0x7252);
-					rt5647_index_write(codec, 0x9a, 0x7519);
-					rt5647_index_write(codec, 0x9b, 0x003e);
-					rt5647_index_write(codec, 0x9c, 0x0625);
-					rt5647_index_write(codec, 0x9d, 0x3f4e);
+					#ifdef CONFIG_A500CG_AUDIO_SETTING
+						snd_soc_write(codec, 0xf1, 0x0006);
+						snd_soc_write(codec, 0xf2, 0x5f80);
+						snd_soc_write(codec, 0xf3, 0x05df);
+						snd_soc_write(codec, 0xf4, 0x6040);
+						rt5647_index_write(codec, 0x95, 0x7cc3);
+						rt5647_index_write(codec, 0x96, 0x7252);
+						rt5647_index_write(codec, 0x97, 0x7519);
+						rt5647_index_write(codec, 0x98, 0x7cc3);
+						rt5647_index_write(codec, 0x99, 0x7252);
+						rt5647_index_write(codec, 0x9a, 0x7519);
+						rt5647_index_write(codec, 0x9b, 0x003e);
+						rt5647_index_write(codec, 0x9c, 0x0625);
+						rt5647_index_write(codec, 0x9d, 0x3f4e);
+					#endif
+					#ifdef CONFIG_A600CG_AUDIO_SETTING
+						snd_soc_write(codec, 0xf1, 0x020c);
+						snd_soc_write(codec, 0xf2, 0x1f00);
+						snd_soc_write(codec, 0xf3, 0x001f);
+						snd_soc_write(codec, 0xf4, 0x4000);
+						rt5647_index_write(codec, 0x95, 0x7ac5);
+						rt5647_index_write(codec, 0x96, 0x1481);
+						rt5647_index_write(codec, 0x97, 0xa870);
+						rt5647_index_write(codec, 0x98, 0x7ac5);
+						rt5647_index_write(codec, 0x99, 0x1481);
+						rt5647_index_write(codec, 0x9a, 0xa870);
+						rt5647_index_write(codec, 0x9b, 0x003d);
+						rt5647_index_write(codec, 0x9c, 0x10c3);
+						rt5647_index_write(codec, 0x9d, 0x1b04);
+					#endif
+					snd_soc_write(codec, 0xb4, 0x4006); //enable DRC
+					printk(KERN_INFO "[DRC] enable spk DRC in spk_event\n");
 					rt5647_index_write(codec, 0x94, 0xcf00); //after parameter ready, enable Cross-Over Filter
 					mdelay(0);
 				}
@@ -3850,6 +3870,7 @@ void do_disable_drc_work(struct work_struct *work)
 	mutex_unlock(&event_drc_mutex);
 }
 
+/* enable DRC on ring/alarm/notification */
 void do_enable_drc_work(struct work_struct *work)
 {
 	mutex_lock(&event_drc_mutex);
@@ -3863,31 +3884,49 @@ void do_enable_drc_work(struct work_struct *work)
 	DRC_CTRL = snd_soc_read(codec_global, RT5647_ALC_CTRL_1) & 0xc000;
 	printk(KERN_INFO "[DRC] DRC_CTRL = %x\n", DRC_CTRL);
 	if(!(DRC_CTRL == 0x4000)) { //check if DRC disable, only when DRC disable needs to be open
-		printk(KERN_INFO "[DRC] enable spk DRC\n");
-		snd_soc_write(codec_global, 0xb4, 0x4006); //enable DRC on ring/alarm/notification
+		//Set DRC parameters
+		snd_soc_write(codec_global, 0xb3, 0x041f);
+		snd_soc_write(codec_global, 0xb5, 0xdf80);
+		snd_soc_write(codec_global, 0xb6, 0x05df);
+		snd_soc_write(codec_global, 0xb7, 0x6040);
+		snd_soc_write(codec_global, 0xf0, 0x001f);
+		snd_soc_write(codec_global, 0xe6, 0x8000);
+		snd_soc_write(codec_global, 0xe7, 0x0700);
+		snd_soc_write(codec_global, 0xea, 0x0c20);
+		#ifdef CONFIG_A500CG_AUDIO_SETTING
+			snd_soc_write(codec_global, 0xf1, 0x0006);
+			snd_soc_write(codec_global, 0xf2, 0x5f80);
+			snd_soc_write(codec_global, 0xf3, 0x05df);
+			snd_soc_write(codec_global, 0xf4, 0x6040);
+			rt5647_index_write(codec_global, 0x95, 0x7cc3);
+			rt5647_index_write(codec_global, 0x96, 0x7252);
+			rt5647_index_write(codec_global, 0x97, 0x7519);
+			rt5647_index_write(codec_global, 0x98, 0x7cc3);
+			rt5647_index_write(codec_global, 0x99, 0x7252);
+			rt5647_index_write(codec_global, 0x9a, 0x7519);
+			rt5647_index_write(codec_global, 0x9b, 0x003e);
+			rt5647_index_write(codec_global, 0x9c, 0x0625);
+			rt5647_index_write(codec_global, 0x9d, 0x3f4e);
+		#endif
+		#ifdef CONFIG_A600CG_AUDIO_SETTING
+			snd_soc_write(codec_global, 0xf1, 0x020c);
+			snd_soc_write(codec_global, 0xf2, 0x1f00);
+			snd_soc_write(codec_global, 0xf3, 0x001f);
+			snd_soc_write(codec_global, 0xf4, 0x4000);
+			rt5647_index_write(codec_global, 0x95, 0x7ac5);
+			rt5647_index_write(codec_global, 0x96, 0x1481);
+			rt5647_index_write(codec_global, 0x97, 0xa870);
+			rt5647_index_write(codec_global, 0x98, 0x7ac5);
+			rt5647_index_write(codec_global, 0x99, 0x1481);
+			rt5647_index_write(codec_global, 0x9a, 0xa870);
+			rt5647_index_write(codec_global, 0x9b, 0x003d);
+			rt5647_index_write(codec_global, 0x9c, 0x10c3);
+			rt5647_index_write(codec_global, 0x9d, 0x1b04);
+		#endif
 
-                snd_soc_write(codec_global, 0xb3, 0x041f);
-                snd_soc_write(codec_global, 0xb5, 0xdf80);
-                snd_soc_write(codec_global, 0xb6, 0x05df);
-                snd_soc_write(codec_global, 0xb7, 0x6040);
-                snd_soc_write(codec_global, 0xf0, 0x001f);
-                snd_soc_write(codec_global, 0xf1, 0x0006);
-                snd_soc_write(codec_global, 0xf2, 0x5f80);
-                snd_soc_write(codec_global, 0xf3, 0x05df);
-                snd_soc_write(codec_global, 0xf4, 0x6040);
-                snd_soc_write(codec_global, 0xe6, 0x8000);
-                snd_soc_write(codec_global, 0xe7, 0x0700);
-                snd_soc_write(codec_global, 0xea, 0x0c20);
-                rt5647_index_write(codec_global, 0x95, 0x7cc3);
-                rt5647_index_write(codec_global, 0x96, 0x7252);
-                rt5647_index_write(codec_global, 0x97, 0x7519);
-                rt5647_index_write(codec_global, 0x98, 0x7cc3);
-                rt5647_index_write(codec_global, 0x99, 0x7252);
-                rt5647_index_write(codec_global, 0x9a, 0x7519);
-                rt5647_index_write(codec_global, 0x9b, 0x003e);
-                rt5647_index_write(codec_global, 0x9c, 0x0625);
-                rt5647_index_write(codec_global, 0x9d, 0x3f4e);
-                rt5647_index_write(codec_global, 0x94, 0xcf00); //after parameter ready, enable Cross-Over Filter
+		snd_soc_write(codec_global, 0xb4, 0x4006); //enable DRC
+		printk(KERN_INFO "[DRC] enable spk DRC\n");
+		rt5647_index_write(codec_global, 0x94, 0xcf00); //after parameter ready, enable Cross-Over Filter
 
 		mdelay(0);
 	}
@@ -3904,7 +3943,7 @@ static void jd_check_handler(struct work_struct *work)
 	struct snd_soc_jack *jack = get_jack(jack_fake);
 
 	val = snd_soc_read(codec, RT5647_A_JD_CTRL1) & 0x0020;
-	pr_debug("jd_check_handler : val = 0x%x\n", val);
+      // pr_debug("jd_check_handler : val = 0x%x\n", val);
 	if (val == 0x20) {
 
 		snd_soc_update_bits(codec, RT5647_SPK_L_MIXER , RT5647_M_IN_L_SM_L, RT5647_M_IN_L_SM_L); //Angus 0326

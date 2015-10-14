@@ -4,7 +4,7 @@
  *  Header of uG31xx_API_Backup.cpp
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 14 $
+ * @revision  $Revision: 107 $
  */
 
 #define BACKUP_BOOL_TRUE      (1)
@@ -24,8 +24,8 @@ typedef unsigned char _backup_bool_;
 typedef unsigned char _backup_u8_;
 typedef unsigned short _backup_u16_;
 typedef signed short _backup_s16_;
-typedef unsigned long _backup_u32_;
-typedef signed long _backup_s32_;
+typedef unsigned int _backup_u32_;
+typedef signed int _backup_s32_;
 
 #define BACKUP_MAX_LOG_SUSPEND_DATA     (8)
 
@@ -40,10 +40,6 @@ typedef struct BackupSuspendDataST {
 #define MAX_BACKUP_BUFFER_SIZE      (128)
 
 typedef struct BackupDataST {
-
-  CapacityDataType *capData;
-  SystemDataType *sysData;
-  MeasDataType *measData;
 
   _backup_bool_ icDataAvailable;
   _backup_u8_ backupFileSts;
@@ -70,6 +66,9 @@ typedef struct BackupDataST {
   #endif
 
 } ALIGNED_ATTRIBUTE BackupDataType;
+
+extern char *ptrBackupFileName;
+extern char *ptrSuspendFileName;
 
 /**
  * @brief UpiBackupData

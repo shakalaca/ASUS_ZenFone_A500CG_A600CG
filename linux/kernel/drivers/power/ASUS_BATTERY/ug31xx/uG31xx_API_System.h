@@ -4,7 +4,7 @@
  *  Interface of ug31xx system control
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 564 $
+ * @revision  $Revision: 107 $
  */
 
 #define UG31XX_SYSTEM_VERSION     (7)
@@ -13,8 +13,8 @@ typedef unsigned char   _sys_u8_;
 typedef signed char     _sys_s8_;
 typedef unsigned short  _sys_u16_;
 typedef signed short    _sys_s16_;
-typedef unsigned long   _sys_u32_;
-typedef signed long     _sys_s32_;
+typedef unsigned int   _sys_u32_;
+typedef signed int     _sys_s32_;
 typedef char            _sys_bool_;
 
 typedef enum _SYSTEM_RTN_CODE {
@@ -34,13 +34,7 @@ typedef struct SystemDataST {
   #if defined (uG31xx_OS_WINDOWS)
     const wchar_t* ggbFilename;
     const wchar_t* otpFileName;
-  #else   ///< else of defined (uG31xx_OS_WINDOWS)
-    GGBX_FILE_HEADER *ggbXBuf;
   #endif  ///< end of defined (uG31xx_OS_WINDOWS)
-  
-  CELL_PARAMETER *ggbParameter;
-  CELL_TABLE *ggbCellTable;
-  OtpDataType *otpData;
   
   ADC_CHECK adcCheckData;			//add for adc error check 20121025/jacky
 
@@ -73,6 +67,8 @@ typedef struct SystemDataST {
   AlarmDataType uetAlarm;
   _sys_u16_ alarmSts;
 } ALIGNED_ATTRIBUTE SystemDataType;
+
+extern SystemDataType *ptrSysData;
 
 /**
  * @brief UpiInitSystemData
@@ -196,7 +192,7 @@ extern void UpiUpdateBatInfoFromIC(SystemDataType *data, _sys_s16_ deltaQ, _sys_
  * @para  data  address of SystemDataType
  * @return  _UPI_NULL_
  */
-extern void UpiSaveBatInfoTOIC(SystemDataType *data);
+extern void UpiSaveBatInfoTOIC(SystemDataType *data, _sys_bool_ shutdown);
 
 /**
  * @brief UpiInitAlarm

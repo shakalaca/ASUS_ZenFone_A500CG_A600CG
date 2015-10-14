@@ -11,7 +11,7 @@
  *  Backup data on uG31xx to a file in system
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 16 $
+ * @revision  $Revision: 107 $
  */
 
 #include "stdafx.h"     //windows need this??
@@ -19,11 +19,11 @@
 
 #ifdef  uG31xx_OS_WINDOWS
 
-  #define BACKUP_VERSION      (_T("Backup $Rev: 413 $ "))
+  #define BACKUP_VERSION      (_T("Backup $Rev: 107 $ "))
 
 #else   ///< else of uG31xx_OS_WINDOWS
 
-  #define BACKUP_VERSION      ("Backup $Rev: 413 $ ")
+  #define BACKUP_VERSION      ("Backup $Rev: 107 $ ")
 
 #endif  ///< end of uG31xx_OS_WINDOWS
 
@@ -37,6 +37,9 @@ static BackupSuspendDataType UpiWriteSuspendResumeData_buf[BACKUP_MAX_LOG_SUSPEN
 
 #endif  ///< end of UG31XX_SHELL_ALGORITHM
 
+char *ptrBackupFileName = _UPI_NULL_;
+char *ptrSuspendFileName = _UPI_NULL_;
+
 /**
  * @brief CreateBackupBuffer
  *
@@ -48,21 +51,21 @@ static BackupSuspendDataType UpiWriteSuspendResumeData_buf[BACKUP_MAX_LOG_SUSPEN
 void CreateBackupBuffer(BackupDataType *data)
 {
   /// [AT-PM] : Count total size to be written to file ; 07/12/2013
-  data->backupBufferSize = data->capData->tableSize;
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->rmFromIC);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->fccFromIC);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->timeTagFromIC);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->tableUpdateIdxFromIC);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->deltaCapFromIC);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->adc1ConvTime);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->rsocFromIC);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->cycleCount);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->ccOffset);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->predictRsoc);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->sysData->standbyDsgRatio);
+  data->backupBufferSize = ptrCapData->tableSize;
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->rmFromIC);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->fccFromIC);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->timeTagFromIC);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->tableUpdateIdxFromIC);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->deltaCapFromIC);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->adc1ConvTime);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->rsocFromIC);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->cycleCount);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->ccOffset);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->predictRsoc);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrSysData->standbyDsgRatio);
   data->backupBufferSize = data->backupBufferSize + sizeof(data->backupVolt1);
   data->backupBufferSize = data->backupBufferSize + sizeof(data->backupVolt2);
-  data->backupBufferSize = data->backupBufferSize + sizeof(data->capData->preDsgCharge);
+  data->backupBufferSize = data->backupBufferSize + sizeof(ptrCapData->preDsgCharge);
   data->backupBufferSize = data->backupBufferSize + CELL_PARAMETER_STRING_LENGTH;
   data->backupBufferSize = data->backupBufferSize + CELL_PARAMETER_STRING_LENGTH;
   data->backupBufferSize = data->backupBufferSize + sizeof(_backup_u32_);     ///< [AT-PM] : Used for driver version ; 11/07/2013
@@ -93,44 +96,44 @@ void PrepareData(BackupDataType *data)
   driverVer = (_backup_u32_)UG31XX_DRIVER_VERSION;
   UG31_LOGN("[%s]: Driver version = %d (%d)\n", __func__, (int)driverVer, UG31XX_DRIVER_VERSION);
 
-  upi_memcpy(&data->backupCustomerSelfDef[0], (_backup_u8_ *)&data->sysData->ggbParameter->customerSelfDef, CELL_PARAMETER_STRING_LENGTH);
+  upi_memcpy(&data->backupCustomerSelfDef[0], (_backup_u8_ *)&ptrCellParameter->customerSelfDef, CELL_PARAMETER_STRING_LENGTH);
   UG31_LOGN("[%s]: CustomerSelfDef = %s\n", __func__,
             data->backupCustomerSelfDef);
-  upi_memcpy(&data->backupProjectSelfDef[0], (_backup_u8_ *)&data->sysData->ggbParameter->projectSelfDef, CELL_PARAMETER_STRING_LENGTH);
+  upi_memcpy(&data->backupProjectSelfDef[0], (_backup_u8_ *)&ptrCellParameter->projectSelfDef, CELL_PARAMETER_STRING_LENGTH);
   UG31_LOGN("[%s]: ProjectSelfDef = %s\n", __func__,
             data->backupProjectSelfDef);
   
   ptr = data->backupBuffer;
-  upi_memcpy(ptr, (_backup_u8_ *)data->capData->encriptTable, (_upi_u32_)data->capData->tableSize);
-  ptr = ptr + data->capData->tableSize;
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->rmFromIC, sizeof(data->sysData->rmFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->rmFromIC)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->fccFromIC, sizeof(data->sysData->fccFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->fccFromIC)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->timeTagFromIC, sizeof(data->sysData->timeTagFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->timeTagFromIC)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->tableUpdateIdxFromIC, sizeof(data->sysData->tableUpdateIdxFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->tableUpdateIdxFromIC)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->deltaCapFromIC, sizeof(data->sysData->deltaCapFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->deltaCapFromIC)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->adc1ConvTime, sizeof(data->sysData->adc1ConvTime)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->adc1ConvTime)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->rsocFromIC, sizeof(data->sysData->rsocFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->rsocFromIC)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->cycleCount, sizeof(data->sysData->cycleCount)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->cycleCount)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->ccOffset, sizeof(data->sysData->ccOffset)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->ccOffset)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->predictRsoc, sizeof(data->sysData->predictRsoc)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->predictRsoc)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->sysData->standbyDsgRatio, sizeof(data->sysData->standbyDsgRatio)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->standbyDsgRatio)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)ptrCapData->encriptTable, (_upi_u32_)ptrCapData->tableSize);
+  ptr = ptr + ptrCapData->tableSize;
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->rmFromIC, sizeof(ptrSysData->rmFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->rmFromIC)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->fccFromIC, sizeof(ptrSysData->fccFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->fccFromIC)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->timeTagFromIC, sizeof(ptrSysData->timeTagFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->timeTagFromIC)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->tableUpdateIdxFromIC, sizeof(ptrSysData->tableUpdateIdxFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->tableUpdateIdxFromIC)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->deltaCapFromIC, sizeof(ptrSysData->deltaCapFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->deltaCapFromIC)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->adc1ConvTime, sizeof(ptrSysData->adc1ConvTime)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->adc1ConvTime)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->rsocFromIC, sizeof(ptrSysData->rsocFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->rsocFromIC)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->cycleCount, sizeof(ptrSysData->cycleCount)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->cycleCount)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->ccOffset, sizeof(ptrSysData->ccOffset)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->ccOffset)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->predictRsoc, sizeof(ptrSysData->predictRsoc)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->predictRsoc)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrSysData->standbyDsgRatio, sizeof(ptrSysData->standbyDsgRatio)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->standbyDsgRatio)/sizeof(_backup_u8_);
   upi_memcpy(ptr, (_backup_u8_ *)&data->backupVolt1, sizeof(data->backupVolt1)/sizeof(_backup_u8_));
   ptr = ptr + sizeof(data->backupVolt1)/sizeof(_backup_u8_);
   upi_memcpy(ptr, (_backup_u8_ *)&data->backupVolt2, sizeof(data->backupVolt2)/sizeof(_backup_u8_));
   ptr = ptr + sizeof(data->backupVolt2)/sizeof(_backup_u8_);
-  upi_memcpy(ptr, (_backup_u8_ *)&data->capData->preDsgCharge, sizeof(data->capData->preDsgCharge)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->capData->preDsgCharge)/sizeof(_backup_u8_);
+  upi_memcpy(ptr, (_backup_u8_ *)&ptrCapData->preDsgCharge, sizeof(ptrCapData->preDsgCharge)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrCapData->preDsgCharge)/sizeof(_backup_u8_);
   upi_memcpy(ptr, &data->backupCustomerSelfDef[0], CELL_PARAMETER_STRING_LENGTH);
   ptr = ptr + CELL_PARAMETER_STRING_LENGTH;
   upi_memcpy(ptr, &data->backupProjectSelfDef[0], CELL_PARAMETER_STRING_LENGTH);
@@ -152,36 +155,36 @@ _backup_u32_ ConvertData(BackupDataType *data)
   _backup_u32_ driverVer;
 
   ptr = data->backupBuffer;
-  upi_memcpy((_backup_u8_ *)data->capData->encriptTable, ptr, (_upi_u32_)data->capData->tableSize);
-  ptr = ptr + data->capData->tableSize;
-  upi_memcpy((_backup_u8_ *)&data->sysData->rmFromIC, ptr, sizeof(data->sysData->rmFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->rmFromIC)/sizeof(_backup_u8_);
-  upi_memcpy((_backup_u8_ *)&data->sysData->fccFromIC, ptr, sizeof(data->sysData->fccFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->fccFromIC)/sizeof(_backup_u8_);
-  upi_memcpy((_backup_u8_ *)&data->sysData->timeTagFromIC, ptr, sizeof(data->sysData->timeTagFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->timeTagFromIC)/sizeof(_backup_u8_);
-  upi_memcpy((_backup_u8_ *)&data->sysData->tableUpdateIdxFromIC, ptr, sizeof(data->sysData->tableUpdateIdxFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->tableUpdateIdxFromIC)/sizeof(_backup_u8_);
-  upi_memcpy((_backup_u8_ *)&data->sysData->deltaCapFromIC, ptr, sizeof(data->sysData->deltaCapFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->deltaCapFromIC)/sizeof(_backup_u8_);
-  upi_memcpy((_backup_u8_ *)&data->sysData->adc1ConvTime, ptr, sizeof(data->sysData->adc1ConvTime)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->adc1ConvTime)/sizeof(_backup_u8_);
-  upi_memcpy((_backup_u8_ *)&data->sysData->rsocFromIC, ptr, sizeof(data->sysData->rsocFromIC)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->rsocFromIC)/sizeof(_backup_u8_);
-  upi_memcpy((_backup_u8_ *)&data->sysData->cycleCount, ptr, sizeof(data->sysData->cycleCount)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->cycleCount)/sizeof(_backup_u8_);
-  upi_memcpy((_backup_u8_ *)&data->sysData->ccOffset, ptr, sizeof(data->sysData->ccOffset)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->ccOffset)/sizeof(_backup_u8_);
-  upi_memcpy((_backup_u8_ *)&data->sysData->predictRsoc, ptr, sizeof(data->sysData->predictRsoc)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->predictRsoc)/sizeof(_backup_u8_);  
-  upi_memcpy((_backup_u8_ *)&data->sysData->standbyDsgRatio, ptr, sizeof(data->sysData->standbyDsgRatio)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->sysData->standbyDsgRatio)/sizeof(_backup_u8_);  
+  upi_memcpy((_backup_u8_ *)ptrCapData->encriptTable, ptr, (_upi_u32_)ptrCapData->tableSize);
+  ptr = ptr + ptrCapData->tableSize;
+  upi_memcpy((_backup_u8_ *)&ptrSysData->rmFromIC, ptr, sizeof(ptrSysData->rmFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->rmFromIC)/sizeof(_backup_u8_);
+  upi_memcpy((_backup_u8_ *)&ptrSysData->fccFromIC, ptr, sizeof(ptrSysData->fccFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->fccFromIC)/sizeof(_backup_u8_);
+  upi_memcpy((_backup_u8_ *)&ptrSysData->timeTagFromIC, ptr, sizeof(ptrSysData->timeTagFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->timeTagFromIC)/sizeof(_backup_u8_);
+  upi_memcpy((_backup_u8_ *)&ptrSysData->tableUpdateIdxFromIC, ptr, sizeof(ptrSysData->tableUpdateIdxFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->tableUpdateIdxFromIC)/sizeof(_backup_u8_);
+  upi_memcpy((_backup_u8_ *)&ptrSysData->deltaCapFromIC, ptr, sizeof(ptrSysData->deltaCapFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->deltaCapFromIC)/sizeof(_backup_u8_);
+  upi_memcpy((_backup_u8_ *)&ptrSysData->adc1ConvTime, ptr, sizeof(ptrSysData->adc1ConvTime)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->adc1ConvTime)/sizeof(_backup_u8_);
+  upi_memcpy((_backup_u8_ *)&ptrSysData->rsocFromIC, ptr, sizeof(ptrSysData->rsocFromIC)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->rsocFromIC)/sizeof(_backup_u8_);
+  upi_memcpy((_backup_u8_ *)&ptrSysData->cycleCount, ptr, sizeof(ptrSysData->cycleCount)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->cycleCount)/sizeof(_backup_u8_);
+  upi_memcpy((_backup_u8_ *)&ptrSysData->ccOffset, ptr, sizeof(ptrSysData->ccOffset)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->ccOffset)/sizeof(_backup_u8_);
+  upi_memcpy((_backup_u8_ *)&ptrSysData->predictRsoc, ptr, sizeof(ptrSysData->predictRsoc)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->predictRsoc)/sizeof(_backup_u8_);  
+  upi_memcpy((_backup_u8_ *)&ptrSysData->standbyDsgRatio, ptr, sizeof(ptrSysData->standbyDsgRatio)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrSysData->standbyDsgRatio)/sizeof(_backup_u8_);  
   upi_memcpy((_backup_u8_ *)&data->backupVolt1, ptr, sizeof(data->backupVolt1)/sizeof(_backup_u8_));
   ptr = ptr + sizeof(data->backupVolt1)/sizeof(_backup_u8_);  
   upi_memcpy((_backup_u8_ *)&data->backupVolt2, ptr, sizeof(data->backupVolt2)/sizeof(_backup_u8_));
   ptr = ptr + sizeof(data->backupVolt2)/sizeof(_backup_u8_);  
-  upi_memcpy((_backup_u8_ *)&data->capData->preDsgCharge, ptr, sizeof(data->capData->preDsgCharge)/sizeof(_backup_u8_));
-  ptr = ptr + sizeof(data->capData->preDsgCharge)/sizeof(_backup_u8_);  
+  upi_memcpy((_backup_u8_ *)&ptrCapData->preDsgCharge, ptr, sizeof(ptrCapData->preDsgCharge)/sizeof(_backup_u8_));
+  ptr = ptr + sizeof(ptrCapData->preDsgCharge)/sizeof(_backup_u8_);  
   upi_memcpy(&data->backupCustomerSelfDef[0], ptr, CELL_PARAMETER_STRING_LENGTH);
   ptr = ptr + CELL_PARAMETER_STRING_LENGTH;
   upi_memcpy(&data->backupProjectSelfDef[0], ptr, CELL_PARAMETER_STRING_LENGTH);
@@ -225,13 +228,17 @@ _backup_u8_ CheckBackupFile(BackupDataType *data)
     orgCapData = (CapacityDataType *)upi_malloc(sizeof(CapacityDataType));
     orgSysData = (SystemDataType *)upi_malloc(sizeof(SystemDataType));
   #endif  ///< end of UG31XX_SHELL_ALGORITHM
-  upi_memcpy(orgCapData, data->capData, sizeof(CapacityDataType));
-  upi_memcpy(orgSysData, data->sysData, sizeof(SystemDataType));
+  upi_memcpy(orgCapData, ptrCapData, sizeof(CapacityDataType));
+  upi_memcpy(orgSysData, ptrSysData, sizeof(SystemDataType));
   volt1 = data->backupVolt1;
   volt2 = data->backupVolt2;
 
   /// [AT-PM] : Get data from file ; 02/21/2013
+  #if defined (uG31xx_OS_WINDOWS)
   rtn = read_backup_file(data->backupFileName, data->backupBuffer, data->backupBufferSize);
+  #else  ///< else of defined (uG31xx_OS_WINDOWS)
+  rtn = read_backup_file(ptrBackupFileName, data->backupBuffer, data->backupBufferSize);
+  #endif ///< end of defined (uG31xx_OS_WINDOWS)
   if(rtn == _UPI_FALSE_)
   {
     UG31_LOGD("[%s]: Read data from backup file fail.\n", __func__);
@@ -244,11 +251,11 @@ _backup_u8_ CheckBackupFile(BackupDataType *data)
   driverVer = ConvertData(data);
 
   /// [AT-PM] : Following information is not checked ; 02/21/2013
-  data->sysData->rmFromIC = orgSysData->rmFromIC;
-  data->sysData->timeTagFromIC = orgSysData->timeTagFromIC;
-  data->sysData->deltaCapFromIC = orgSysData->deltaCapFromIC;
-  data->sysData->adc1ConvTime = orgSysData->adc1ConvTime;
-  data->capData->preDsgCharge = orgCapData->preDsgCharge;
+  ptrSysData->rmFromIC = orgSysData->rmFromIC;
+  ptrSysData->timeTagFromIC = orgSysData->timeTagFromIC;
+  ptrSysData->deltaCapFromIC = orgSysData->deltaCapFromIC;
+  ptrSysData->adc1ConvTime = orgSysData->adc1ConvTime;
+  ptrCapData->preDsgCharge = orgCapData->preDsgCharge;
   
   /// [AT-PM] : Check data ; 02/21/2013
   if(driverVer != UG31XX_DRIVER_VERSION)
@@ -256,14 +263,14 @@ _backup_u8_ CheckBackupFile(BackupDataType *data)
     UG31_LOGN("[%s]: Backup file version mismatched.\n", __func__);
     rtnU8 = CHECK_BACKUP_FILE_STS_VERSION_MISMATCH;
   }
-  else if((upi_memcmp(data->backupCustomerSelfDef, data->sysData->ggbParameter->customerSelfDef, CELL_PARAMETER_STRING_LENGTH) != 0) ||
-           (upi_memcmp(data->backupProjectSelfDef, data->sysData->ggbParameter->projectSelfDef, CELL_PARAMETER_STRING_LENGTH) != 0))
+  else if((upi_memcmp(data->backupCustomerSelfDef, ptrCellParameter->customerSelfDef, CELL_PARAMETER_STRING_LENGTH) != 0) ||
+           (upi_memcmp(data->backupProjectSelfDef, ptrCellParameter->projectSelfDef, CELL_PARAMETER_STRING_LENGTH) != 0))
   {
     UG31_LOGN("[%s]: Backup file cell information mismatched.\n", __func__);
     rtnU8 = CHECK_BACKUP_FILE_STS_VERSION_MISMATCH;
   }
-  else if((upi_memcmp(orgCapData, data->capData, sizeof(CapacityDataType)) != 0) ||
-          (upi_memcmp(orgSysData, data->sysData, sizeof(SystemDataType)) != 0) ||
+  else if((upi_memcmp(orgCapData, ptrCapData, sizeof(CapacityDataType)) != 0) ||
+          (upi_memcmp(orgSysData, ptrSysData, sizeof(SystemDataType)) != 0) ||
           (volt1 != data->backupVolt1) ||
           (volt2 != data->backupVolt2))
   {
@@ -294,7 +301,11 @@ _backup_u8_ UpdateBackupFile(BackupDataType *data)
   _upi_bool_ rtn;
 
   PrepareData(data);
+  #if defined (uG31xx_OS_WINDOWS)
   rtn = write_backup_file(data->backupFileName, data->backupBuffer, data->backupBufferSize);
+  #else  ///< else of defined (uG31xx_OS_WINDOWS)
+  rtn = write_backup_file(ptrBackupFileName, data->backupBuffer, data->backupBufferSize);
+  #endif ///< end of defined (uG31xx_OS_WINDOWS)
   if(rtn == _UPI_FALSE_)
   {
     UG31_LOGD("[%s]: Write data to backup file fail.\n", __func__);
@@ -339,7 +350,11 @@ void UpiBackupData(BackupDataType *data)
   {
     case  BACKUP_FILE_STS_CHECKING:
       /// [AT-PM] : Check backup file existed or not ; 02/21/2013
+      #if defined (uG31xx_OS_WINDOWS)
       rtnBool = is_file_exist(data->backupFileName);
+      #else  ///< else of defined (uG31xx_OS_WINDOWS)
+      rtnBool = is_file_exist(ptrBackupFileName);
+      #endif ///< end of defined (uG31xx_OS_WINDOWS)
       UG31_LOGN("[%s]: is_file_exist() = %d.\n", __func__, rtnBool);
       if(rtnBool == BACKUP_BOOL_TRUE)
       {
@@ -360,7 +375,11 @@ void UpiBackupData(BackupDataType *data)
     case  BACKUP_FILE_STS_NOT_EXIST:
       /// [AT-PM] : Create backup file ; 02/21/2013
       PrepareData(data);
+      #if defined (uG31xx_OS_WINDOWS)
       rtnBool = create_backup_file(data->backupFileName, data->backupBuffer, data->backupBufferSize);
+      #else  ///< else of defined (uG31xx_OS_WINDOWS)
+      rtnBool = create_backup_file(ptrBackupFileName, data->backupBuffer, data->backupBufferSize);
+      #endif ///< end of defined (uG31xx_OS_WINDOWS)
       UG31_LOGN("[%s]: create_backup_file() = %d.\n", __func__, rtnBool);
       if(rtnBool == BACKUP_BOOL_TRUE)
       {
@@ -456,10 +475,14 @@ _backup_bool_ UpiRestoreData(BackupDataType *data)
   #else   ///< else of UG31XX_SHELL_ALGORITHM
     orgSysData = (SystemDataType *)upi_malloc(sizeof(SystemDataType));
   #endif  ///< end of UG31XX_SHELL_ALGORITHM
-  upi_memcpy(orgSysData, data->sysData, sizeof(SystemDataType));
+  upi_memcpy(orgSysData, ptrSysData, sizeof(SystemDataType));
 
   /// [AT-PM] : Get data from file ; 02/21/2013
+  #if defined (uG31xx_OS_WINDOWS)
   rtn = read_backup_file(data->backupFileName, data->backupBuffer, data->backupBufferSize);
+  #else  ///< else of defined (uG31xx_OS_WINDOWS)
+  rtn = read_backup_file(ptrBackupFileName, data->backupBuffer, data->backupBufferSize);
+  #endif ///< end of defined (uG31xx_OS_WINDOWS)
   if(rtn == _UPI_FALSE_)
   {
     UG31_LOGE("[%s]: Read data from backup file fail.\n", __func__);
@@ -472,8 +495,8 @@ _backup_bool_ UpiRestoreData(BackupDataType *data)
   UG31_LOGI("[%s]: Driver version = %d\n", __func__, (int)driverVer);
 
   /// [AT-PM] : Keep following information ; 01/22/2014
-  data->sysData->timeTagFromIC = orgSysData->timeTagFromIC;
-  data->sysData->tableUpdateIdxFromIC = orgSysData->tableUpdateIdxFromIC;
+  ptrSysData->timeTagFromIC = orgSysData->timeTagFromIC;
+  ptrSysData->tableUpdateIdxFromIC = orgSysData->tableUpdateIdxFromIC;
 
   /// [AT-PM] : Check abnormal condition ; 01/22/2014
   if((data->backupVolt1 != 0) && (data->backupVolt2 != 0))
@@ -482,9 +505,9 @@ _backup_bool_ UpiRestoreData(BackupDataType *data)
     tmp32 = tmp32 - data->backupVolt2;
     if((tmp32 < RESTORE_ABNORMAL_VOLT_RANGE_UPBND) && (tmp32 > RESTORE_ABNORMAL_VOLT_RANGE_LWBND))
     {
-      data->sysData->rmFromIC = orgSysData->rmFromIC;
-      data->sysData->fccFromIC = orgSysData->fccFromIC;
-      data->sysData->rsocFromIC = orgSysData->rsocFromIC;
+      ptrSysData->rmFromIC = orgSysData->rmFromIC;
+      ptrSysData->fccFromIC = orgSysData->fccFromIC;
+      ptrSysData->rsocFromIC = orgSysData->rsocFromIC;
     }
   }
   #ifdef  UG31XX_SHELL_ALGORITHM
@@ -504,7 +527,7 @@ _backup_bool_ UpiRestoreData(BackupDataType *data)
 void UpiInitBackupData(BackupDataType *data)
 {
   /// [AT-PM] : Backup data in GGB file ; 12/10/2013
-  data->backupNacLmdAdjustCfg = (_backup_u32_)data->sysData->ggbParameter->NacLmdAdjustCfg;
+  data->backupNacLmdAdjustCfg = (_backup_u32_)ptrCellParameter->NacLmdAdjustCfg;
   
   /// [AT-PM] : Memory buffer for backup file ; 12/03/2013
   data->backupFileRetryCnt = 0;
@@ -558,8 +581,8 @@ void UpiFreeBackupData(BackupDataType *data)
  */
 void UpiSaveSuspendData(BackupDataType *data)
 {
-  data->backupSuspendData[data->backupSuspendIdx].beforeCapData = *(data->capData);
-  data->backupSuspendData[data->backupSuspendIdx].beforeMeasData = *(data->measData);  
+  data->backupSuspendData[data->backupSuspendIdx].beforeCapData = *(ptrCapData);
+  data->backupSuspendData[data->backupSuspendIdx].beforeMeasData = *(ptrMeasData);  
   UG31_LOGN("[%s]: Save suspend data to buffer %d\n", __func__, data->backupSuspendIdx);
 }
 
@@ -573,8 +596,8 @@ void UpiSaveSuspendData(BackupDataType *data)
  */
 void UpiSaveResumeData(BackupDataType *data)
 {
-  data->backupSuspendData[data->backupSuspendIdx].afterCapData = *(data->capData);
-  data->backupSuspendData[data->backupSuspendIdx].afterMeasData = *(data->measData);
+  data->backupSuspendData[data->backupSuspendIdx].afterCapData = *(ptrCapData);
+  data->backupSuspendData[data->backupSuspendIdx].afterMeasData = *(ptrMeasData);
   UG31_LOGN("[%s]: Save resume data to buffer %d\n", __func__, data->backupSuspendIdx);
 
   data->backupSuspendIdx = data->backupSuspendIdx + 1;
@@ -616,12 +639,20 @@ void UpiWriteSuspendResumeData(BackupDataType *data)
     buf = (_backup_u8_ *)upi_malloc(size);
   #endif  ///< end of UG31XX_SHELL_ALGORITHM
 
-  rtn = read_backup_file(data->suspendFileName, (_upi_u8_ *)buf, size);
+  #if defined (uG31xx_OS_WINDOWS)
+    rtn = read_backup_file(data->suspendFileName, (_upi_u8_ *)buf, size);
+  #else  ///< else of defined (uG31xx_OS_WINDOWS)
+    rtn = read_backup_file(ptrSuspendFileName, (_upi_u8_ *)buf, size);
+  #endif ///< end of defined (uG31xx_OS_WINDOWS)
   UG31_LOGN("[%s]: Read suspend / resume data from file -> %d\n", __func__, rtn);
   
   if(rtn != _UPI_TRUE_)
   {
-    rtn = write_backup_file(data->suspendFileName, (_upi_u8_ *)(&data->backupSuspendData[0]), size);
+    #if defined (uG31xx_OS_WINDOWS)
+      rtn = write_backup_file(data->suspendFileName, (_upi_u8_ *)(&data->backupSuspendData[0]), size);
+    #else  ///< else of defined (uG31xx_OS_WINDOWS)
+      rtn = write_backup_file(ptrSuspendFileName, (_upi_u8_ *)(&data->backupSuspendData[0]), size);
+    #endif ///< end of defined (uG31xx_OS_WINDOWS)
     UG31_LOGN("[%s]: Write suspend / resume data to file -> %d\n", __func__, rtn);
     #ifdef  UG31XX_SHELL_ALGORITHM
       upi_free(buf);
@@ -634,7 +665,11 @@ void UpiWriteSuspendResumeData(BackupDataType *data)
   
   if(cmpResult != 0)
   {
-    rtn = write_backup_file(data->suspendFileName, (_upi_u8_ *)(&data->backupSuspendData[0]), size);
+    #if defined (uG31xx_OS_WINDOWS)
+      rtn = write_backup_file(data->suspendFileName, (_upi_u8_ *)(&data->backupSuspendData[0]), size);
+    #else  ///< else of defined (uG31xx_OS_WINDOWS)
+      rtn = write_backup_file(ptrSuspendFileName, (_upi_u8_ *)(&data->backupSuspendData[0]), size);
+    #endif ///< end of defined (uG31xx_OS_WINDOWS)
     UG31_LOGN("[%s]: Write suspend / resume data to file -> %d\n", __func__, rtn);
   }
   #ifdef  UG31XX_SHELL_ALGORITHM
@@ -652,7 +687,9 @@ void UpiWriteSuspendResumeData(BackupDataType *data)
 _backup_u32_ UpiGetBackupMemorySize(void)
 {
   _backup_u32_ totalSize;
+  #ifndef UG31XX_SHELL_ALGORITHM
   _backup_u32_ tmp;
+  #endif  ///< end of UG31XX_SHELL_ALGORITHM
 
   totalSize = 0;
 
@@ -690,25 +727,25 @@ void UpiBackupVoltage(BackupDataType *data)
   _backup_s32_ tmp32;
 
   /// [AT-PM] : Cumulate delta Q ; 01/22/2014
-  tmp32 = (_backup_s32_)data->measData->stepCap;
-  tmp32 = tmp32*data->measData->curr;
+  tmp32 = (_backup_s32_)ptrMeasData->stepCap;
+  tmp32 = tmp32*ptrMeasData->curr;
   if(tmp32 < 0)
   {
     tmp32 = 0;
   }
   else
   {
-    tmp32 = (_backup_s32_)data->measData->stepCap;
+    tmp32 = (_backup_s32_)ptrMeasData->stepCap;
   }
   tmp32 = tmp32 + data->backupDeltaQ;
   data->backupDeltaQ = (_backup_u16_)tmp32;
 
   /// [AT-PM] : Update voltage point 1 ; 01/22/2014
-  data->backupVolt1 = (_backup_u16_)data->measData->bat1Voltage;
+  data->backupVolt1 = (_backup_u16_)ptrMeasData->bat1Voltage;
   UG31_LOGN("[%s]: Update backup voltage point 1 = %d (%d)\n", __func__, data->backupVolt1, data->backupDeltaQ);
   
   /// [AT-PM] : Check delta Q ; 01/22/2014
-  tmp32 = data->sysData->ggbParameter->ILMD;
+  tmp32 = ptrCellParameter->ILMD;
   tmp32 = tmp32*BACKUP_VOLTAGE_DELTA_Q_THRESHOLD/CONST_PERCENTAGE;
   if(data->backupDeltaQ < 0)
   {

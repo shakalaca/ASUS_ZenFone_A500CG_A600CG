@@ -1,0 +1,28 @@
+How to build zenfone kernel
+
+#1 download aosp source code
+	cd [working dir]
+	repo init -u https://android.googlesource.com/platform/manifest -b android-4.3_r3
+	repo sync
+
+#2 checkout correct tool-chain
+	cd prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.7
+	git checkout tools_r22.2
+	cd [working dir]
+
+#3 extract kernel source code to working dir
+	tar -zxvf [kernel-source].tar.gz
+
+#4 build 'minigzip' and 'openssl' modules
+	source build/envsetup.sh
+	lunch aosp_x86-eng
+	make minigzip openssl
+
+#5 build kernel image and install modules , default configuration is a500cg
+## define TARGET_DEVICE to overwrite
+	make -f KernelMakefile TARGET_DEVICE=a600cg build_bzImage
+	or
+	make -f KernelMakefile build_bzImage
+
+
+	

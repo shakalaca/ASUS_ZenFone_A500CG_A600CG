@@ -1,0 +1,11 @@
+INCLUDES_RGX += \
+	-I../modules/intel_media/graphics/dfrgx \
+	-I../modules/intel_media/graphics/rgx/services/server/include \
+	-I../modules/intel_media/graphics/rgx/services/shared/include \
+	-I../modules/intel_media/graphics/rgx/services/include \
+	-I../modules/intel_media/graphics/rgx/services/include/shared \
+	-I../modules/intel_media/graphics/rgx/include \
+	-I../modules/intel_media/graphics/rgx/hwdefs \
+	-I../modules/intel_media/graphics/rgx/hwdefs/km \
+	-I../modules/intel_media/graphics/rgx/services/system/rgx_nohw \
+	-I../modules/intel_media/graphics/rgx/services/server/devices/rgx

@@ -38,11 +38,14 @@
 #include <linux/delay.h>
 #include <linux/pm_runtime.h>
 #include <linux/wakelock.h>
+
+
  #include <asm/intel_scu_pmic.h>
 #include <asm/intel_scu_ipc.h>
 #include <asm/intel-mid.h>
 #include "../core/usb.h"
 #include <linux/intel_mid_pm.h>
+#include <linux/debugfs.h>
 
 #include <linux/usb/penwell_otg.h>
 #include <linux/notifier.h>
@@ -81,6 +84,10 @@ static void set_client_mode(void);
 #ifdef CONFIG_A500CG_BATTERY_SMB347
 #include "../../power/ASUS_BATTERY/smb347_external_include.h"
 extern int setSMB347Charger(int usb_state);
+#endif
+
+#ifdef CONFIG_USB_OTG_SUPPLY_VOLT_CAP
+static u32 usb_otg_support=1;
 #endif
 
 enum usb_charger_type usb_cable_status = CHRG_UNKNOWN;
@@ -844,8 +851,10 @@ static int penwell_otg_set_vbus(struct usb_otg *otg, bool enabled)
 						enabled ? "ON" : "OFF");
 			atomic_notifier_call_chain(&pnw->iotg.otg.notifier,
 				USB_EVENT_DRIVE_VBUS, &enabled);
-#ifdef CONFIG_USB_OTG_SUPPLY_VOLT
-                        setSMB347Charger(enabled ? ENABLE_5V: DISABLE_5V);
+#ifdef CONFIG_USB_OTG_SUPPLY_VOLT_CAP
+                        if (usb_otg_support)
+                                setSMB347Charger(enabled ? ENABLE_5V: DISABLE_5V);
+
 #endif
 			kfree(evt);
 			goto done;
@@ -5791,6 +5800,10 @@ static int __init penwell_otg_init(void)
 {
 #ifdef	CONFIG_DEBUG_FS
 	pm_sss0_base = ioremap_nocache(0xFF11D030, 0x100);
+#ifdef CONFIG_USB_OTG_SUPPLY_VOLT_CAP
+	if (!debugfs_create_u32("usb_otg_support", S_IRUGO | S_IWUSR, NULL,&usb_otg_support)) 
+                pr_err("create usb_otg_support node FAIL\n");
+#endif
 #endif
 	return pci_register_driver(&otg_pci_driver);
 }

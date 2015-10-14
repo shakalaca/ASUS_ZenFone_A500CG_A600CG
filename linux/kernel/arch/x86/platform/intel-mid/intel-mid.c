@@ -868,6 +868,7 @@ static int __init sfi_parse_devs(struct sfi_table_header *table)
 	for (i = 0; i < num; i++, pentry++) {
 		int irq = pentry->irq;
 
+        printk("List of devices, name = %s\n", pentry->name);
 		if (irq != (u8)0xff) { /* native RTE case */
 			/* these SPI2 devices are not exposed to system as PCI
 			 * devices, but they have separate RTE entry in IOAPIC

@@ -1,0 +1,1 @@
+source "../modules/drivers/staging/sep/Kconfig"

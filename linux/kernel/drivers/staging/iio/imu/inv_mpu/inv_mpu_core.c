@@ -53,6 +53,11 @@ static bool enter_resume = false;
 //Panda add for the calibration data loading dynamically:--->
 #define CAL_DATA_AUTO_LOAD      1
 //Panda add for the calibration data loading dynamically:<---
+
+static struct work_struct mpu6500_resume_work;
+static struct workqueue_struct *mpu6500_resume_queue;
+static struct i2c_client *mpu_i2c_client;
+
 s64 get_time_ns(void)
 {
 	struct timespec ts;
@@ -284,6 +289,7 @@ static int inv_lpa_freq(struct inv_mpu_iio_s *st, int lpa_freq)
 	return 0;
 }
 
+#if 0
 static int set_power_itg(struct inv_mpu_iio_s *st, bool power_on)
 {
 	struct inv_reg_map_s *reg;
@@ -298,25 +304,73 @@ static int set_power_itg(struct inv_mpu_iio_s *st, bool power_on)
 	result = inv_i2c_single_write(st, reg->pwr_mgmt_1, data);
 	if (result)
 		return result;
-	do_gettimeofday(&t1);
-//	if (power_on) {
-//		msleep(POWER_UP_TIME);
-//		result = inv_switch_engine(st, st->chip_config.gyro_enable,
-//					BIT_PWR_GYRO_STBY);
-//		if (result)
-//			return result;
-//		result = inv_switch_engine(st, st->chip_config.accl_enable,
-//					BIT_PWR_ACCL_STBY);
-//		if (result)
-//			return result;
-//		result = inv_lpa_freq(st, st->chip_config.lpa_freq);
-//		if (result)
-//			return result;
-//	}
+
+	if (power_on) {
+		msleep(POWER_UP_TIME);
+		result = inv_switch_engine(st, st->chip_config.gyro_enable,
+					BIT_PWR_GYRO_STBY);
+		if (result)
+			return result;
+		result = inv_switch_engine(st, st->chip_config.accl_enable,
+					BIT_PWR_ACCL_STBY);
+		if (result)
+			return result;
+		result = inv_lpa_freq(st, st->chip_config.lpa_freq);
+		if (result)
+			return result;
+	}
 	st->chip_config.is_asleep = !power_on;
 
 	return 0;
 }
+#else
+static int set_power_itg(struct inv_mpu_iio_s *st, bool power_on)
+{
+        struct inv_reg_map_s *reg;
+        u8 data;
+        int result;
+
+        reg = &st->reg;
+        if (power_on)
+                data = 0;
+        else
+                data = BIT_SLEEP;
+        if (st->chip_config.lpa_mode)
+                data |= BIT_CYCLE;
+        if (st->chip_config.gyro_enable) {
+                result = inv_i2c_single_write(st,
+                        reg->pwr_mgmt_1, data | INV_CLK_PLL);
+                if (result)
+                        return result;
+                st->chip_config.clk_src = INV_CLK_PLL;
+        } else {
+                result = inv_i2c_single_write(st,
+                        reg->pwr_mgmt_1, data | INV_CLK_INTERNAL);
+                if (result)
+                        return result;
+                st->chip_config.clk_src = INV_CLK_INTERNAL;
+        }
+
+        if (power_on) {
+                msleep (POWER_UP_TIME);
+                data = 0;
+                if (0 == st->chip_config.accl_enable)
+                        data |= BIT_PWR_ACCL_STBY;
+                if (0 == st->chip_config.gyro_enable)
+                        data |= BIT_PWR_GYRO_STBY;
+                if (INV_MPU6500 != st->chip_type)
+                data |= (st->chip_config.lpa_freq << LPA_FREQ_SHIFT);
+
+                result = inv_i2c_single_write(st, reg->pwr_mgmt_2, data);
+                if (result)
+                        return result;
+                //msleep (POWER_UP_TIME);
+                st->chip_config.is_asleep = 0;
+        } else
+                st->chip_config.is_asleep = 1;
+        return 0;
+}
+#endif
 
 /**
  *  inv_init_config() - Initialize hardware, disable FIFO.
@@ -1840,6 +1894,15 @@ static int mpu6500_i2c_txdata(
 	return 0;
 }
 
+static void mpu6500_do_resume_work( struct work_struct *work){
+       int err=0;
+       struct inv_mpu_iio_s *st =
+       iio_priv(i2c_get_clientdata(mpu_i2c_client));
+       pr_debug("%s inv_mpu_resume\n", st->hw->name);
+       err = st->set_power_state(st, true);
+       printk("mpu6500_do_resume_work err = %d \n",err);
+}
+
 
 static ssize_t get_mpu6500_state(struct device *dev, struct device_attribute *devattr, char *buf)
 {	
@@ -2297,7 +2360,7 @@ static int inv_create_dmp_sysfs(struct iio_dev *ind)
 
 	return result;
 }
-
+#if 0
 static void mpu6500_early_suspend(struct early_suspend *h)
 {
 	printk("mpu6500_early_suspend");
@@ -2351,7 +2414,7 @@ static void mpu6500_late_resume(struct early_suspend *h)
 	return;
 }
 
-
+#endif
 /**
  *  inv_mpu_probe() - probe function.
  */
@@ -2480,14 +2543,22 @@ static int inv_mpu_probe(struct i2c_client *client,
 	if (result) {
 		printk("alp : mpu6500 sysfs_create_group fail\n");
 	}
-
+#if 0
 	//leon add for fix suspend too long ++
 	st->invmpu6500_early_suspend.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 1;
 	st->invmpu6500_early_suspend.suspend = mpu6500_early_suspend;
 	st->invmpu6500_early_suspend.resume = mpu6500_late_resume;
 	register_early_suspend(&st->invmpu6500_early_suspend);
 	//leon add for fix suspend too long --
+#endif
 
+	mpu_i2c_client = client;
+    mpu6500_resume_queue = create_singlethread_workqueue("mpu_resume_wq");
+    if(!mpu6500_resume_queue){
+		printk("mpu6500 : unable to create mpu6500_resume_queue \n");
+		}
+
+    INIT_WORK(&mpu6500_resume_work, mpu6500_do_resume_work);
 	printk("alp : INV_MPU6500 Probe success!!!!\n");
 	return 0;
 out_unreg_iio:
@@ -2543,9 +2614,11 @@ static int inv_mpu_remove(struct i2c_client *client)
 		inv_mpu_remove_trigger(indio_dev);
 	iio_buffer_unregister(indio_dev);
 	inv_mpu_unconfigure_ring(indio_dev);
+#if 0
 	//leon add for fix suspend too long ++
 	unregister_early_suspend(&st->invmpu6500_early_suspend);
 	//leon add for fix suspend too long --
+#endif
 	iio_free_device(indio_dev);
 
 	dev_info(&client->adapter->dev, "inv-mpu-iio module removed.\n");
@@ -2557,11 +2630,19 @@ static int inv_mpu_remove(struct i2c_client *client)
 #ifdef CONFIG_PM
 static int inv_mpu_resume(struct device *dev)
 {
+#if 0
 	enter_resume = true;
 	struct inv_mpu_iio_s *st =
 			iio_priv(i2c_get_clientdata(to_i2c_client(dev)));
 	pr_debug("%s inv_mpu_resume\n", st->hw->name);
 	return st->set_power_state(st, true);
+#else
+	struct inv_mpu_iio_s *st =
+			iio_priv(i2c_get_clientdata(to_i2c_client(dev)));
+	printk("%s inv_mpu_resume\n", st->hw->name);
+	queue_work(mpu6500_resume_queue, &mpu6500_resume_work);
+	return 0;
+#endif
 }
 
 static int inv_mpu_suspend(struct device *dev)

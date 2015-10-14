@@ -182,6 +182,7 @@ struct inv_chip_config_s {
 	u16  prog_start_addr;
 	u16 fifo_rate;
 	u16 dmp_output_rate;
+	u32 clk_src;
 };
 
 /**

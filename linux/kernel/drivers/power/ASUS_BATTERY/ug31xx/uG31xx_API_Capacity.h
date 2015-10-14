@@ -4,7 +4,7 @@
  *  Header of uG31xx capacity algorithm
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 95 $
+ * @revision  $Revision: 108 $
  */
 
 typedef char            _cap_bool_;
@@ -12,8 +12,8 @@ typedef unsigned char   _cap_u8_;
 typedef signed char     _cap_s8_;
 typedef unsigned short  _cap_u16_;
 typedef signed short    _cap_s16_;
-typedef unsigned long   _cap_u32_;
-typedef signed long     _cap_s32_;
+typedef unsigned int   _cap_u32_;
+typedef signed int     _cap_s32_;
 
 #define CAP_TRUE                (1)
 #define CAP_FALSE               (0)
@@ -30,13 +30,6 @@ typedef signed long     _cap_s32_;
 
 typedef struct CapacityDataST {
 
-  /// [AT-PM] : Data from GGB file ; 01/25/2013
-  CELL_PARAMETER *ggbParameter;
-  CELL_TABLE *ggbTable;
-  
-  /// [AT-PM] : Measurement data ; 01/25/2013
-  MeasDataType *measurement;
-  
   _cap_u8_ encriptTable[MAX_ENCRIPT_TABLE_SIZE];
   /// [FC] : encript backup in order to compare the difference ; 05/30/2013
   _cap_u8_ encriptBuf[MAX_ENCRIPT_TABLE_SIZE];
@@ -90,6 +83,10 @@ typedef struct CapacityDataST {
   _cap_u8_ transferStateToChg;
   _cap_u16_ startChgVolt;
   _cap_u8_ startChgRsoc;
+  _cap_u8_ ccChgOffset25;
+  _cap_u8_ ccChgOffset50;
+  _cap_u8_ ccChgOffset75;
+  _cap_u8_ ccChgOffset100;
   _cap_u16_ avgRM;
   _cap_s16_ lastCVDeltaChgCurr;
   _cap_u8_ cvCheckCnt;
@@ -113,6 +110,8 @@ typedef struct CapacityDataST {
   _cap_s16_ tableNac[SOV_NUMS];
   _cap_s16_ tableNacUpdate[SOV_NUMS];
 } ALIGNED_ATTRIBUTE CapacityDataType;
+
+extern CapacityDataType *ptrCapData;
 
 /**
  * @brief UpiInitCapacity
@@ -243,7 +242,7 @@ extern void UpiSetFactoryBoardOffset(CapacityDataType *data);
  *
  * @return  NULL
  */
-extern void UpiPrintCapacityVersion(void);
+extern void UpiPrintCapacityVersion(void);
 /**
  * @brief UpiGetOcvSoc
  *
@@ -254,4 +253,34 @@ extern void UpiPrintCapacityVersion(void);
  * @return  SOC from OCV table
  */
 extern _cap_u8_ UpiGetOcvSoc(CapacityDataType *data, _cap_u16_ volt);
+
+/**
+ * @brief CapStatusAdjustCellTableSet
+ *
+ * Set CAP_STS_ADJUST_CELL_TABLE status
+ *
+ * @para data address of data strcture CapacityDataType
+ * @return NULL
+ */
+extern void CapStatusAdjustCellTableSet(CapacityDataType *data);
+
+/**
+ * @brief CapStatusAdjustCellTableClear
+ *
+ * Clear CAP_STS_ADJUST_CELL_TABLE status
+ *
+ * @para data address of data strcture CapacityDataType
+ * @return NULL
+ */
+extern void CapStatusAdjustCellTableClear(CapacityDataType *data);
+
+/**
+ * @brief CapStatusAdjustCellTableGet
+ *
+ * Get CAP_STS_ADJUST_CELL_TABLE status
+ *
+ * @para data address of data strcture CapacityDataType
+ * @return NULL
+ */
+extern _cap_bool_ CapStatusAdjustCellTableGet(CapacityDataType *info);
 

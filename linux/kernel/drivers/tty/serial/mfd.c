@@ -58,6 +58,25 @@ static struct hsu_port_cfg *hsu_port_func_cfg;
 
 static void serial_hsu_command(struct uart_hsu_port *up);
 
+/* called by modem ctrl*/
+void serial_hsu_set_rts_fixed(bool enable)
+{
+	struct hsu_port_cfg *cfg;
+
+	if (phsu)
+		cfg = phsu->configs[1];
+	else
+		return;
+
+	if (enable) {
+		if (cfg->hw_set_rts_fixed && cfg->type == modem_port)
+			cfg->hw_set_rts_fixed(1, enable);
+	} else {
+		if (cfg->hw_set_rts_fixed && cfg->type == modem_port)
+			cfg->hw_set_rts_fixed(1, enable);
+	}
+}
+
 int hsu_register_board_info(void *inf)
 {
 	hsu_port_func_cfg = inf;

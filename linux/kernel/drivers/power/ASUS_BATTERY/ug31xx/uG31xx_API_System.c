@@ -11,15 +11,17 @@
  *  uG31xx system control
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 590 $
+ * @revision  $Revision: 645 $
  */
 
 #include "stdafx.h"     //windows need this??
 #include "uG31xx_API.h"
 
+SystemDataType *ptrSysData = _UPI_NULL_;
+
 #if defined(uG31xx_OS_WINDOWS)
 
-#define SYSTEM_VERSION      (_T("System $Rev: 590 $"))
+#define SYSTEM_VERSION      (_T("System $Rev: 645 $"))
 
 _upi_bool_ ReadGGBFileToCellDataAndInitSetting(SystemDataType *obj)
 {
@@ -29,19 +31,19 @@ _upi_bool_ ReadGGBFileToCellDataAndInitSetting(SystemDataType *obj)
 
   _wfopen_s(&stream, obj->ggbFilename, _T("rb, ccs=UTF-8"));
 
-  upi_memset(obj->ggbCellTable, 0x00, sizeof(CELL_TABLE));
-  upi_memset(obj->ggbParameter, 0x00, sizeof(CELL_PARAMETER));
+  upi_memset(ptrCellTable, 0x00, sizeof(CELL_TABLE));
+  upi_memset(ptrCellParameter, 0x00, sizeof(CELL_PARAMETER));
 
   if(!stream)
   {
     return (_UPI_FALSE_);
   }
-  if(fread(obj->ggbParameter, sizeof(char), sizeof(CELL_PARAMETER), stream) != sizeof(CELL_PARAMETER))
+  if(fread(ptrCellParameter, sizeof(char), sizeof(CELL_PARAMETER), stream) != sizeof(CELL_PARAMETER))
   {
     fclose(stream);
     return (_UPI_FALSE_);
   }
-  if(fread(obj->ggbCellTable, sizeof(char), sizeof(CELL_TABLE), stream) != sizeof(CELL_TABLE))
+  if(fread(ptrCellTable, sizeof(char), sizeof(CELL_TABLE), stream) != sizeof(CELL_TABLE))
   {
     fclose(stream);
     return (_UPI_FALSE_);
@@ -54,7 +56,7 @@ _upi_bool_ ReadGGBFileToCellDataAndInitSetting(SystemDataType *obj)
 
 #else   ///< else of defined(uG31xx_OS_WINDOWS)
 
-#define SYSTEM_VERSION      ("System $Rev: 590 $")
+#define SYSTEM_VERSION      ("System $Rev: 645 $")
 
 _upi_bool_ ReadGGBXFileToCellDataAndInitSetting(SystemDataType *obj)
 {
@@ -64,39 +66,58 @@ _upi_bool_ ReadGGBXFileToCellDataAndInitSetting(SystemDataType *obj)
   _sys_u32_ i=0;
 
   UG31_LOGI("[%s]: %s\n", __func__, SYSTEM_VERSION);
+  UG31_LOGI("[%s]: Tag = %x (%x)\n", __func__, ptrGgbBuf->ggb_tag, GGBX_FILE_TAG);
   
   /*
      * check GGBX_FILE tag
      */
-  if(obj->ggbXBuf->ggb_tag != GGBX_FILE_TAG)
+  if(ptrGgbBuf->ggb_tag != GGBX_FILE_TAG)
   {
-    UG31_LOGE("[%s] GGBX file tag not correct. tag: %08X\n", __func__, obj->ggbXBuf->ggb_tag);
+    UG31_LOGE("[%s] GGBX file tag not correct. tag: %08X\n", __func__, ptrGgbBuf->ggb_tag);
     return (_UPI_FALSE_);
   }
 
+  UG31_LOGI("[%s]: Size = %d (%d)\n", __func__, sizeof(GGBX_FILE_HEADER), ptrGgbBuf->length);
   /*
      * check GGBX_FILE checksum
      */
-  p_start = (_sys_u8_ *)obj->ggbXBuf + sizeof(GGBX_FILE_HEADER);
-  p_end = p_start + obj->ggbXBuf->length - 1;
+  p_start = (_sys_u8_ *)ptrGgbBuf + sizeof(GGBX_FILE_HEADER);
+  p_end = p_start + ptrGgbBuf->length - 1;
+  UG31_LOGI("[%s]: SUM Start at %x, end at %x\n", __func__, p_start, p_end);
   for (; p_start <= p_end; p_start++) 
   {
     sum16 += *p_start;
   }
+  UG31_LOGI("[%s]: checksum = %x\n", __func__, sum16);
 
+  UG31_LOGI("[%s]: GGB address = %x,%x\n", __func__, ptrCellTable, ptrCellParameter);
   /* check done. prepare copy data */
-  upi_memset(obj->ggbCellTable, 0x00, sizeof(CELL_TABLE));
-  upi_memset(obj->ggbParameter, 0x00, sizeof(CELL_PARAMETER));
+  upi_memset(ptrCellTable, 0x00, sizeof(CELL_TABLE));
+  upi_memset(ptrCellParameter, 0x00, sizeof(CELL_PARAMETER));
 
-  p_start = (_sys_u8_ *)obj->ggbXBuf + sizeof(GGBX_FILE_HEADER);
-  for (i=0; i<obj->ggbXBuf->num_ggb; i++)
+  p_start = (_sys_u8_ *)ptrGgbBuf + sizeof(GGBX_FILE_HEADER);
+  UG31_LOGI("[%s]: Copy %d GGB data start from %x\n", __func__, ptrGgbBuf->num_ggb, p_start);
+  for (i=0; i<ptrGgbBuf->num_ggb; i++)
   {
     /* TODO: boundary checking */
     /* TODO: select right ggb content by sku */
-    upi_memcpy(obj->ggbParameter, p_start, sizeof(CELL_PARAMETER)); 
-    upi_memcpy(obj->ggbCellTable, p_start + obj->ggbXBuf->parameter_size, sizeof(CELL_TABLE)); 
-    p_start += (obj->ggbXBuf->parameter_size + obj->ggbXBuf->cell_table_size);
+    upi_memcpy(ptrCellParameter, p_start, sizeof(CELL_PARAMETER)); 
+    upi_memcpy(ptrCellTable, p_start + ptrGgbBuf->parameter_size, sizeof(CELL_TABLE)); 
+    p_start += (ptrGgbBuf->parameter_size + ptrGgbBuf->cell_table_size);
+    UG31_LOGI("[%s]: Parameter size = %d (%d), Table size = %d (%d)\n", __func__, ptrGgbBuf->parameter_size, sizeof(CELL_PARAMETER), ptrGgbBuf->cell_table_size, sizeof(CELL_TABLE));
   }
+
+  UG31_LOGI("[%s]: adc2_gain = %x\n", __func__, ptrCellParameter->adc2_gain);
+  UG31_LOGI("[%s]: rtTable[0] = %x\n", __func__, ptrCellParameter->rtTable[0]);
+  UG31_LOGI("[%S]: SOV_TABLE[0] = %d\n", __func__, ptrCellParameter->SOV_TABLE[0]);
+  UG31_LOGI("[%S]: SOV_TABLE[%d] = %d\n", __func__, SOV_NUMS - 1, ptrCellParameter->SOV_TABLE[SOV_NUMS - 1]);
+  UG31_LOGI("[%s]: adc_d1 = %x\n", __func__, ptrCellParameter->adc_d1);
+  UG31_LOGI("[%s]: adc_d2 = %x\n", __func__, ptrCellParameter->adc_d2);
+  UG31_LOGI("[%s]: adc_d3 = %x\n", __func__, ptrCellParameter->adc_d3);
+  UG31_LOGI("[%s]: adc_d4 = %x\n", __func__, ptrCellParameter->adc_d4);
+  UG31_LOGI("[%s]: adc_d5 = %x\n", __func__, ptrCellParameter->adc_d5);
+  UG31_LOGI("[%s]: CycleCountThrd = %x\n", __func__, ptrCellParameter->CycleCountThrd);
+  UG31_LOGI("[%s]: NacLmdAdjustCfg = %x\n", __func__, ptrCellParameter->NacLmdAdjustCfg);
   return (_UPI_TRUE_);
 }
 
@@ -112,7 +133,7 @@ _upi_bool_ ReadGGBXFileToCellDataAndInitSetting(SystemDataType *obj)
  */
 void GetCellNum(SystemDataType *data)
 {
-  switch(data->ggbParameter->ICType)
+  switch(ptrCellParameter->ICType)
   {
     case  0:
     case  1:
@@ -147,7 +168,7 @@ void SetupAdcChopFunction(SystemDataType *data)
                 UG31XX_I2C_TEM_BITS_MODE,
                 REG_FW_CTRL,
                 1,
-                &data->ggbParameter->chopCtrl);
+                &ptrCellParameter->chopCtrl);
 }
 
 /**
@@ -169,7 +190,7 @@ _sys_bool_ CheckAdcChopFunction(SystemDataType *data)
                REG_FW_CTRL,
                1,
                &buf);
-  return ((buf == data->ggbParameter->chopCtrl) ? _UPI_TRUE_ : _UPI_FALSE_);
+  return ((buf == ptrCellParameter->chopCtrl) ? _UPI_TRUE_ : _UPI_FALSE_);
 }
 
 static _sys_u8_ adc1QueueInit[] = 
@@ -382,7 +403,7 @@ void EnableCbc(SystemDataType *data)
                &tmp8);
   tmp8 = tmp8 & (~(INTR_CTRL_B_CBC_32_EN | INTR_CTRL_B_CBC_21_EN));
   tmp8 = tmp8 | (INTR_CTRL_B_ET_EN | INTR_CTRL_B_IT_EN | INTR_CTRL_B_RID_EN);
-  tmp8 = tmp8 | (data->ggbParameter->cbcEnable << 4);
+  tmp8 = tmp8 | (ptrCellParameter->cbcEnable << 4);
   API_I2C_Write(SECURITY,
                 UG31XX_I2C_HIGH_SPEED_MODE,
                 UG31XX_I2C_TEM_BITS_MODE,
@@ -411,7 +432,7 @@ void EnableICType(SystemDataType *data)
                1,
                &tmp8);
   tmp8 = tmp8 & (~CELL_EN_APPLICATION);
-  tmp8 = tmp8 | (data->ggbParameter->ICType << 2);
+  tmp8 = tmp8 | (ptrCellParameter->ICType << 2);
   API_I2C_Write(SECURITY,
                 UG31XX_I2C_HIGH_SPEED_MODE,
                 UG31XX_I2C_TEM_BITS_MODE,
@@ -451,6 +472,7 @@ _sys_u8_ ConfigGpioFunction(_sys_u8_ setting)
 	{
 		gpioSelData = 4;
 	}
+  UG31_LOGE("[%s]: gpioSelData = %d\n", __func__, gpioSelData);
 	return (gpioSelData);
 }
 
@@ -473,20 +495,21 @@ void ConfigureGpio(SystemDataType *data)
                REG_INTR_CTRL_A,
                1,
                &tmp8);
-  tmp8 = tmp8 | (ConfigGpioFunction(data->ggbParameter->gpio1) << 2);
-  tmp8 = tmp8 | (ConfigGpioFunction(data->ggbParameter->gpio2) << 5);
+  tmp8 = tmp8 | (ConfigGpioFunction(ptrCellParameter->gpio1) << 2);
+  tmp8 = tmp8 | (ConfigGpioFunction(ptrCellParameter->gpio2) << 5);
   API_I2C_Write(SECURITY,
                 UG31XX_I2C_HIGH_SPEED_MODE,
                 UG31XX_I2C_TEM_BITS_MODE,
                 REG_INTR_CTRL_A,
                 1,
                 &tmp8);
+  UG31_LOGE("[%s]: REG_INTR_CTRL_A = %x\n", __func__, tmp8);
   API_I2C_Write(SECURITY,
                 UG31XX_I2C_HIGH_SPEED_MODE,
                 UG31XX_I2C_TEM_BITS_MODE,
                 REG_INTR_CTRL_D,
                 1,
-                &data->ggbParameter->gpio34);
+                &ptrCellParameter->gpio34);
 }
 
 #define ADC1_FAIL_CRITERIA    (0)
@@ -652,7 +675,7 @@ void ProcUVAlarm(SystemDataType *data)
   _sys_u8_ tmp8[4];
   
   /// [AT-PM] : Check alarm is enable or not ; 04/08/2013
-  if(!(data->ggbParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_UV))
+  if(!(ptrCellParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_UV))
   {
     /// [AT-PM] : Disable UV and OV alarm ; 04/08/2013
     AlarmDisable(ALARM_EN_V1_ALARM_EN);
@@ -730,7 +753,7 @@ void ProcETAlarm(SystemDataType *data)
   _sys_u8_ tmp8[4];
   
   /// [AT-PM] : Check alarm is enable or not ; 04/08/2013
-  if(!(data->ggbParameter->alarmEnable & (CELL_PARAMETER_ALARM_EN_UET | CELL_PARAMETER_ALARM_EN_OET)))
+  if(!(ptrCellParameter->alarmEnable & (CELL_PARAMETER_ALARM_EN_UET | CELL_PARAMETER_ALARM_EN_OET)))
   {
     /// [AT-PM] : Disable UV and OV alarm ; 04/08/2013
     AlarmDisable(ALARM_EN_ET_ALARM_EN);
@@ -791,7 +814,7 @@ void ProcETAlarm(SystemDataType *data)
   {
     /// [AT-PM] : Normal state ; 04/08/2013
     if((data->alarmSts & SYS_ALARM_STS_UET) && 
-       (data->ggbParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_UET))
+       (ptrCellParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_UET))
     {
       data->uetAlarm.state = _UPI_TRUE_;
       
@@ -805,7 +828,7 @@ void ProcETAlarm(SystemDataType *data)
       tmp8[3] = 0x00;
     }
     else if((data->alarmSts & SYS_ALARM_STS_OET) && 
-            (data->ggbParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_OET))
+            (ptrCellParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_OET))
     {
       data->oetAlarm.state = _UPI_TRUE_;
       
@@ -821,7 +844,7 @@ void ProcETAlarm(SystemDataType *data)
     else
     {
       /// [AT-PM] : Set OET alarm threshold ; 04/08/2013
-      if(data->ggbParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_OET)
+      if(ptrCellParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_OET)
       {
         tmp8[0] = (_sys_u8_)(data->oetAlarm.alarmThrd & 0x00ff);
         tmp8[1] = (_sys_u8_)(data->oetAlarm.alarmThrd >> 8);
@@ -832,7 +855,7 @@ void ProcETAlarm(SystemDataType *data)
         tmp8[1] = 0x7f;
       }
       /// [AT-PM] : Set UET alarm threshold ; 04/11/2013
-      if(data->ggbParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_UET)
+      if(ptrCellParameter->alarmEnable & CELL_PARAMETER_ALARM_EN_UET)
       {
         tmp8[2] = (_sys_u8_)(data->uetAlarm.alarmThrd & 0x00ff);
         tmp8[3] = (_sys_u8_)(data->uetAlarm.alarmThrd >> 8);
@@ -1144,12 +1167,12 @@ void UpiCalculateOscFreq(SystemDataType *data)
   _sys_s32_ deltaT;
 
   /// [AT-PM] : Convert OSC frequency from OTP ; 05/17/2013
-  oscFreq25 = OSC_CNT_TARG + data->otpData->oscDeltaCode25;
+  oscFreq25 = OSC_CNT_TARG + ptrOtpData->oscDeltaCode25;
   oscFreq25 = oscFreq25*OSC_KHZ_TO_HZ*OSC_KHZ_TO_HZ/OSC_CP_SCL_L_TIME;
-  UG31_LOGN("[%s]: oscFreq25 = %d (%d)\n", __func__, (int)oscFreq25, data->otpData->oscDeltaCode25);
-  oscFreq80 = OSC_CNT_TARG + data->otpData->oscDeltaCode80;
+  UG31_LOGN("[%s]: oscFreq25 = %d (%d)\n", __func__, (int)oscFreq25, ptrOtpData->oscDeltaCode25);
+  oscFreq80 = OSC_CNT_TARG + ptrOtpData->oscDeltaCode80;
   oscFreq80 = oscFreq80*OSC_KHZ_TO_HZ*OSC_KHZ_TO_HZ/OSC_CP_SCL_L_TIME;
-  UG31_LOGN("[%s]: oscFreq80 = %d (%d)\n", __func__, (int)oscFreq80, data->otpData->oscDeltaCode80);
+  UG31_LOGN("[%s]: oscFreq80 = %d (%d)\n", __func__, (int)oscFreq80, ptrOtpData->oscDeltaCode80);
 
   /// [AT-PM] : Read ITAve ; 01/27/2013
   aveIT = 0;
@@ -1159,15 +1182,15 @@ void UpiCalculateOscFreq(SystemDataType *data)
                REG_AVE_IT_LOW, 
                REG_AVE_IT_HIGH - REG_AVE_IT_LOW + 1, 
                (_sys_u8_ *)&aveIT);
-  UG31_LOGN("[%s]: aveIT = %d (%d <-> %d)\n", __func__, aveIT, data->otpData->aveIT80, data->otpData->aveIT25);
+  UG31_LOGN("[%s]: aveIT = %d (%d <-> %d)\n", __func__, aveIT, ptrOtpData->aveIT80, ptrOtpData->aveIT25);
 
   tmp32 = (_sys_s32_)oscFreq80;
   tmp32 = tmp32 - oscFreq25;
   deltaT = (_sys_s32_)aveIT;
-  deltaT = deltaT - data->otpData->aveIT25;
+  deltaT = deltaT - ptrOtpData->aveIT25;
   tmp32 = tmp32*deltaT;
-  deltaT = (_sys_s32_)data->otpData->aveIT80;
-  deltaT = deltaT - data->otpData->aveIT25;
+  deltaT = (_sys_s32_)ptrOtpData->aveIT80;
+  deltaT = deltaT - ptrOtpData->aveIT25;
   tmp32 = tmp32/deltaT + oscFreq25;
   data->oscFreq = (_sys_u32_)tmp32;
   UG31_LOGN("[%s]: OSC frequency = %dHz\n", __func__, (int)data->oscFreq);
@@ -1256,7 +1279,6 @@ void UpiLoadBatInfoFromIC(SystemDataType *data)
   _sys_u8_ u8TempHigh;
   #ifdef	uG31xx_BOOT_LOADER
     _sys_u32_ u32Temp;
-    _sys_u16_ u16Temp;
   #endif	///< end of uG31xx_BOOT_LOADER
 
   u8Temp = 0;
@@ -1482,9 +1504,9 @@ void UpiUpdateBatInfoFromIC(SystemDataType *data, _sys_s16_ deltaQ, _sys_bool_ s
   #endif	///< end of uG31xx_BOOT_LOADER
 
   /// [AT-PM] : Check taper condition reached ; 12/26/2013
-  if((data->voltage > data->ggbParameter->TPVoltage) &&
-     (data->curr < data->ggbParameter->TPCurrent) &&
-     (data->curr >= data->ggbParameter->standbyCurrent) &&
+  if((data->voltage > ptrCellParameter->TPVoltage) &&
+     (data->curr < ptrCellParameter->TPCurrent) &&
+     (data->curr >= ptrCellParameter->standbyCurrent) &&
      (suspend == _UPI_FALSE_))
   {
     data->tpCount = data->tpCount + 1;
@@ -1502,7 +1524,7 @@ void UpiUpdateBatInfoFromIC(SystemDataType *data, _sys_s16_ deltaQ, _sys_bool_ s
   }
 
   /// [AT-PM] : Check RSOC not 100 before taper condition ; 12/26/2013
-  if((data->curr >= data->ggbParameter->standbyCurrent) &&
+  if((data->curr >= ptrCellParameter->standbyCurrent) &&
      (data->rsocFromIC >= 100) &&
      (oldRsoc != 100))
   {
@@ -1520,7 +1542,7 @@ void UpiUpdateBatInfoFromIC(SystemDataType *data, _sys_s16_ deltaQ, _sys_bool_ s
   }
 
   /// [AT-PM] : Operation for EDVF ; 02/25/2014
-  if(data->voltage > data->ggbParameter->edv1Voltage)
+  if(data->voltage > ptrCellParameter->edv1Voltage)
   {    
     if(data->rsocFromIC > 0)
     {
@@ -1534,7 +1556,7 @@ void UpiUpdateBatInfoFromIC(SystemDataType *data, _sys_s16_ deltaQ, _sys_bool_ s
   else
   {
     /// [AT-PM] : Set RSOC to 0 if not in charging ; 02/25/2014
-    if((data->curr < data->ggbParameter->standbyCurrent) &&
+    if((data->curr < ptrCellParameter->standbyCurrent) &&
        (data->rsocFromIC != 0))
     {
       data->rsocFromIC = data->rsocFromIC - 1;
@@ -1554,9 +1576,10 @@ void UpiUpdateBatInfoFromIC(SystemDataType *data, _sys_s16_ deltaQ, _sys_bool_ s
  *  Save battery information from uG31xx
  *
  * @para  data  address of SystemDataType
+ * @para  suspend set _UPI_TRUE_ for shutdown operation
  * @return  _UPI_NULL_
  */
-void UpiSaveBatInfoTOIC(SystemDataType *data)
+void UpiSaveBatInfoTOIC(SystemDataType *data, _sys_bool_ shutdown)
 {
   _sys_u8_ *u8Ptr;
   _sys_u8_ u8Temp;
@@ -1581,12 +1604,12 @@ void UpiSaveBatInfoTOIC(SystemDataType *data)
 
   #endif  ///< end of defined(uG31xx_OS_ANDROID)
 
-  u16Temp = data->ggbParameter->edv1Voltage - SAVE_BATINFO_0_VOLT_THRESHOLD;
+  u16Temp = ptrCellParameter->edv1Voltage - SAVE_BATINFO_0_VOLT_THRESHOLD;
   if(data->voltage < u16Temp)
   {
     UG31_LOGE("[%d]: Voltage = %d < %d - %d -> Set NAC = 0 from %d\n", __func__,
               data->voltage,
-              data->ggbParameter->edv1Voltage,
+              ptrCellParameter->edv1Voltage,
               SAVE_BATINFO_0_VOLT_THRESHOLD,
               data->rmFromIC);
     data->rmFromIC = 0;
@@ -1691,6 +1714,14 @@ void UpiSaveBatInfoTOIC(SystemDataType *data)
 
   /// [AT-PM] : Save cycle count ; 10/14/2013
   u8Temp = data->cycleCount >> 8;
+	if(shutdown == _UPI_FALSE_)
+	{
+		u8Temp = u8Temp | 0x80;
+	}
+	else
+	{
+		u8Temp = u8Temp & 0x7F;
+	}
   API_I2C_Write((BACKUP_CYCLE_COUNT_HIGH < 0x80)? NORMAL: SECURITY,
                 UG31XX_I2C_HIGH_SPEED_MODE,
                 UG31XX_I2C_TEM_BITS_MODE,
@@ -1746,19 +1777,19 @@ void UpiInitAlarm(SystemDataType *data)
                 UG31XX_I2C_TEM_BITS_MODE, 
                 REG_TIMER, 
                 1,
-                &data->ggbParameter->alarm_timer);
+                &ptrCellParameter->alarm_timer);
   API_I2C_Write(SECURITY, 
                 UG31XX_I2C_HIGH_SPEED_MODE, 
                 UG31XX_I2C_TEM_BITS_MODE, 
                 REG_CLK_DIVA, 
                 1,
-                &data->ggbParameter->clkDivA);
+                &ptrCellParameter->clkDivA);
   API_I2C_Write(SECURITY, 
                 UG31XX_I2C_HIGH_SPEED_MODE, 
                 UG31XX_I2C_TEM_BITS_MODE, 
                 REG_CLK_DIVB, 
                 1,
-                &data->ggbParameter->clkDivB);
+                &ptrCellParameter->clkDivB);
 
   /// [AT-PM] : Enable alarm ; 04/08/2013
   data->alarmSts = 0;

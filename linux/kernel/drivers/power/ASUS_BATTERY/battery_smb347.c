@@ -198,6 +198,8 @@ struct smb347_charger {
 static struct smb347_charger *smb347_dev;
 static bool ischargerSuspend = false;
 static bool isUSBSuspendNotify = false;
+static int not_ready_flag=1;
+
 #if 0
 static char *smb347_power_supplied_to[] = {
 			"max170xx_battery",
@@ -554,6 +556,11 @@ int setSMB347Charger(int usb_state)
       return 0;
   }
 	CHR_info("%s  enter\n", __func__);
+	//CHR_info("not_ready_flag=%d\n", not_ready_flag);
+	if(not_ready_flag&&(usb_state==ENABLE_5V||usb_state==DISABLE_5V)) {
+		CHR_info("charger not ready yet\n");
+		return 0;
+	}
 	switch (usb_state)
 	{
 	case USB_IN:
@@ -2696,7 +2703,7 @@ static int smb347_probe(struct i2c_client *client,
 			wake_lock(&wakelock_cable);
 		}
 	}
-
+	not_ready_flag = 0;
 	CHR_info(KERN_DEBUG "==== smb347_probe done ====\n");
 	return 0;
 }

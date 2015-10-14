@@ -243,7 +243,7 @@ static void lid_report_function(struct work_struct *dat)
 static irqreturn_t hall_sensor_interrupt_handler(int irq, void *dev_id)
 {
 	pr_info("[%s] hall_sensor_interrupt_handler = %d\n", DRIVER_NAME,hall_sensor_dev->irq);
-	queue_delayed_work(hall_sensor_do_wq, &hall_sensor_dev->hall_sensor_dowork, msecs_to_jiffies(50));
+	queue_delayed_work(hall_sensor_do_wq, &hall_sensor_dev->hall_sensor_dowork, msecs_to_jiffies(0));
 	wake_lock(&hall_sensor_dev->wake_lock);
 	return IRQ_HANDLED;
 }

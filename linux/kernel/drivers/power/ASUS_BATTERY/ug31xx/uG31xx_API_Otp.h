@@ -4,7 +4,7 @@
  *  Header of OTP conversion module
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 503 $
+ * @revision  $Revision: 107 $
  */
 
 /// [AT-PM] : Product Type definition in OTP ; 01/23/2013
@@ -70,6 +70,8 @@ typedef struct OtpDataST {
   _otp_u8_ productType;
   
 } ALIGNED_ATTRIBUTE OtpDataType;
+
+extern OtpDataType *ptrOtpData;
 
 /**
  * @brief UpiConvertOtp

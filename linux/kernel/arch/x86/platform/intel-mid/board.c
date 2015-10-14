@@ -80,6 +80,7 @@
 #include "device_libs/platform_imx111.h"
 #include "device_libs/platform_imx219.h"
 #include "device_libs/platform_mn34130.h"
+#include "device_libs/platform_t4k37.h"
 #include "device_libs/platform_s5k8aay.h"
 #include "device_libs/platform_ov9724.h"
 #include "device_libs/platform_ov2722.h"
@@ -268,12 +269,14 @@ struct devs_id __initconst device_ids[] = {
 					&intel_register_i2c_camera_device},
 	{"mn34130", SFI_DEV_TYPE_I2C, 0, &mn34130_platform_data,
 					&intel_register_i2c_camera_device},
-//ChungYi					
-	{"rt8515", SFI_DEV_TYPE_I2C, 1, &rt8515_platform_data_func, 
-					&intel_register_i2c_camera_device},			
+	{"t4k37", SFI_DEV_TYPE_I2C, 0, &t4k37_platform_data,
+					&intel_register_i2c_camera_device},
+//ChungYi
+	{"rt8515", SFI_DEV_TYPE_I2C, 1, &rt8515_platform_data_func,
+					&intel_register_i2c_camera_device},
 	{"audience_es305", SFI_DEV_TYPE_I2C, 0, &audience_platform_data,
 					NULL},
-#if 0	
+#if 0
 	{"cs42l73", SFI_DEV_TYPE_I2C, 1, &cs42l73_platform_data, NULL},
 	{"mxt224", SFI_DEV_TYPE_I2C, 0, &mxt224_platform_data, NULL},
 	{"synaptics_3202", SFI_DEV_TYPE_I2C, 0, &rmi4_platform_data},

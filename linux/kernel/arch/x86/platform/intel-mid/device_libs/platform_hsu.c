@@ -48,6 +48,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 96+29,
 				.rts_alt = 1,
+				.rts_fixed = false,
 			},
 			[hsu_port1] = {
 				.id = 1,
@@ -61,10 +62,12 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 66,
 				.rts_alt = 2,
+				.rts_fixed = false,
 			},
 			[hsu_port2] = {
 				.id = 2,
 				.name = HSU_GPS_PORT,
+				.rts_fixed = false,
 			},
 			[hsu_port_share] = {
 				.id = 1,
@@ -74,6 +77,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.rx_alt = 1,
 				.tx_gpio = 96+31,
 				.tx_alt = 1,
+				.rts_fixed = false,
 			},
 		},
 	},
@@ -91,6 +95,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 96+29,
 				.rts_alt = 1,
+				.rts_fixed = false,
 			},
 			[hsu_port1] = {
 				.id = 1,
@@ -104,12 +109,14 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 66,
 				.rts_alt = 2,
+				.rts_fixed = true,
 			},
 			[hsu_port2] = {
 				.id = 2,
 				.name = HSU_DEBUG_PORT,
 				.rx_gpio = 67,
 				.rx_alt = 1,
+				.rts_fixed = false,
 			},
 #ifdef BCM2076_UART_PORT3
 			[hsu_port_share] = {
@@ -124,6 +131,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 96+32,
 				.rts_alt = 2,
+				.rts_fixed = false,
 			},
 #endif
 		},
@@ -139,6 +147,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 96+29,
 				.rts_alt = 1,
+				.rts_fixed = false,
 			},
 			[hsu_port1] = {
 				.id = 1,
@@ -152,6 +161,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 96+32,
 				.rts_alt = 2,
+				.rts_fixed = false,
 			},
 			[hsu_port2] = {
 				.id = 2,
@@ -159,6 +169,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.wake_gpio = 67,
 				.rx_gpio = 67,
 				.rx_alt = 1,
+				.rts_fixed = false,
 			},
 			[hsu_port_share] = {
 				.id = 1,
@@ -172,6 +183,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 66,
 				.rts_alt = 2,
+				.rts_fixed = false,
 			},
 		},
 		[hsu_pid_vtb_eng] = {
@@ -186,6 +198,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 96+29,
 				.rts_alt = 1,
+				.rts_fixed = false,
 			},
 			[hsu_port1] = {
 				.id = 1,
@@ -199,6 +212,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 66,
 				.rts_alt = 2,
+				.rts_fixed = false,
 			},
 			[hsu_port2] = {
 				.id = 2,
@@ -206,6 +220,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.wake_gpio = 67,
 				.rx_gpio = 67,
 				.rx_alt = 1,
+				.rts_fixed = false,
 			},
 			[hsu_port_share] = {
 				.id = 1,
@@ -219,6 +234,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 96+32,
 				.rts_alt = 2,
+				.rts_fixed = false,
 			},
 		},
 	},
@@ -235,6 +251,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 125,
 				.rts_alt = 1,
+				.rts_fixed = false,
 			},
 			[hsu_port1] = {
 				.id = 1,
@@ -246,6 +263,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 129,
 				.rts_alt = 1,
+				.rts_fixed = false,
 			},
 			[hsu_port2] = {
 				.id = 2,
@@ -257,6 +275,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.cts_alt = 1,
 				.rts_gpio = 133,
 				.rts_alt = 1,
+				.rts_fixed = false,
 			},
 		},
 	},
@@ -267,6 +286,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.name = HSU_BT_PORT,
 				.rts_gpio = 72,
 				.rts_alt = 1,
+				.rts_fixed = false,
 			},
 			[hsu_port1] = {
 				.id = 1,
@@ -276,6 +296,7 @@ hsu_port_pin_cfg hsu_port_pin_cfgs[][hsu_pid_max][hsu_port_max] = {
 				.rx_alt = 1,
 				.rts_gpio = 76,
 				.rts_alt = 1,
+				.rts_fixed = false,
 			},
 		},
 	},
@@ -367,6 +388,7 @@ static struct hsu_port_cfg hsu_port_cfgs[][hsu_port_max] = {
 			.hw_init = intel_mid_hsu_init,
 			.hw_set_alt = intel_mid_hsu_switch,
 			.hw_set_rts = intel_mid_hsu_rts,
+			.hw_set_rts_fixed = intel_mid_hsu_rts_fixed,
 			.hw_suspend = intel_mid_hsu_suspend,
 			.hw_resume = intel_mid_hsu_resume,
 			.hw_get_clk = intel_mid_hsu_get_clk,
@@ -628,6 +650,8 @@ void intel_mid_hsu_suspend(int port, struct device *dev, irq_handler_t wake_isr)
 	info->dev = dev;
 	info->wake_isr = wake_isr;
 
+	if (info->rts_fixed)
+		return;
 	if (info->wake_gpio) {
 		lnw_gpio_set_alt(info->wake_gpio, LNW_GPIO);
 		gpio_direction_input(info->wake_gpio);
@@ -643,6 +667,8 @@ void intel_mid_hsu_suspend(int port, struct device *dev, irq_handler_t wake_isr)
 void intel_mid_hsu_resume(int port, struct device *dev)
 {
 	struct hsu_port_pin_cfg *info = hsu_port_gpio_mux + port;
+	if (info->rts_fixed)
+		return;
 
 	if (info->wake_gpio)
 		free_irq(gpio_to_irq(info->wake_gpio), info->dev);
@@ -682,6 +708,8 @@ void intel_mid_hsu_rts(int port, int value)
 {
 	struct hsu_port_pin_cfg *info = hsu_port_gpio_mux + port;
 
+	if (info->rts_fixed)
+		return;
 	if (!info->rts_gpio)
 		return;
 
@@ -692,9 +720,36 @@ void intel_mid_hsu_rts(int port, int value)
 		lnw_gpio_set_alt(info->rts_gpio, info->rts_alt);
 }
 
+void intel_mid_hsu_rts_fixed(int port, bool enable)
+{
+	struct hsu_port_pin_cfg *info = hsu_port_gpio_mux + port;
+
+	if (enable) {
+		if (info->tx_gpio) {
+			lnw_gpio_set_alt(info->tx_gpio, LNW_GPIO);
+			gpio_direction_input(info->tx_gpio);
+		}
+		if (info->rts_gpio) {
+			lnw_gpio_set_alt(info->rts_gpio, LNW_GPIO);
+			gpio_direction_input(info->rts_gpio);
+		}
+	} else {
+		if (info->tx_gpio) {
+			lnw_gpio_set_alt(info->tx_gpio, info->tx_alt);
+		}
+		if (info->rts_gpio) {
+			lnw_gpio_set_alt(info->rts_gpio, info->rts_alt);
+		}
+	}
+
+	info->rts_fixed = enable;
+}
 void intel_mid_hsu_suspend_post(int port)
 {
 	struct hsu_port_pin_cfg *info = hsu_port_gpio_mux + port;
+
+	if (info->rts_fixed)
+		return;
 
 	if (info->rts_gpio && info->wake_gpio
 		&& info->wake_gpio == info->rx_gpio) {

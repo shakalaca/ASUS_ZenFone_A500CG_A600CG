@@ -51,6 +51,10 @@
 #define UG31XX_I2C_HIGH_SPEED_MODE    (_UPI_FALSE_)
 #define UG31XX_I2C_TEM_BITS_MODE      (_UPI_FALSE_)
 
+extern CELL_TABLE *ptrCellTable;
+extern CELL_PARAMETER *ptrCellParameter;
+extern GGBX_FILE_HEADER *ptrGgbBuf;
+
 /* data struct */
 typedef enum _GGSTATUS{
   UG_SUCCESS                    = 0x00,
@@ -104,11 +108,11 @@ typedef enum _GGSTATUS{
 */
 #if defined (uG31xx_OS_WINDOWS)
 
-  EXPORTS GGSTATUS upiGG_Initial(char **pObj, const wchar_t* GGBFilename, const wchar_t* OtpFileName, unsigned char ForceReset = 0);
+  EXPORTS GGSTATUS upiGG_Initial(char **pObj, const wchar_t* GGBFilename, const wchar_t* OtpFileName, unsigned char ForceReset = 0, unsigned char ResetByRange = 0);
 
 #else
 
-  GGSTATUS upiGG_Initial(char **pObj, GGBX_FILE_HEADER *pGGBXBuf, unsigned char ForceReset);
+  GGSTATUS upiGG_Initial(char **pObj, GGBX_FILE_HEADER *pGGBXBuf, unsigned char ForceReset, unsigned char ResetByRange);
 
 #endif
 
@@ -170,7 +174,7 @@ EXPORTS GGSTATUS upiGG_GetAlarmStatus(char *pObj, _upi_u8_ *pAlarmStatus);
 new add function for System suspend & wakeup
 
 */
-EXPORTS GGSTATUS upiGG_PreSuspend(char *pObj);
+EXPORTS GGSTATUS upiGG_PreSuspend(char *pObj, _upi_bool_ shutdown);
 EXPORTS GGSTATUS upiGG_Wakeup(char *pObj, _upi_bool_ dc_in_before);
 
 /**
@@ -510,7 +514,7 @@ EXPORTS int upiGG_SetCycleCount(char *pObj, _upi_u16_ value);
 
 EXPORTS void upiGG_ReverseCurrent(char *pObj, _upi_bool_ reverse);
 
-EXPORTS void upiGG_AdjustCellTable(char *pObj, _upi_u16_ designCap);
+EXPORTS void upiGG_AdjustCellTable(CapacityDataType *data);
 
 EXPORTS GGSTATUS upiGG_GetNtcStatus(char *pObj);
 

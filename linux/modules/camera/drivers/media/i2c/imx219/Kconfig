@@ -1,0 +1,22 @@
+config VIDEO_IMX
+	tristate "sony imx sensor support"
+	depends on I2C && VIDEO_V4L2
+	---help---
+	  This is a Video4Linux2 sensor-level driver for the Sony
+	  IMX RAW sensor.
+
+	  It currently depends on internal V4L2 extensions defined in
+	  atomisp driver.
+
+choice
+	prompt "Select sensor settings"
+	depends on VIDEO_IMX
+
+config VIDEO_IMX219
+	tristate "Sony IMX219 8Mp raw sensor"
+	---help---
+	  This is sensor driver for Sony IMX219 raw sensor.
+
+	  It currently depends on VIDEO_IMX defined in the above section.
+endchoice
+
