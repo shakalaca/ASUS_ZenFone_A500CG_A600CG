@@ -1,0 +1,26 @@
+# Generic register map support.  There are no user servicable options here,
+# this is an API intended to be used by other kernel subsystems.  These
+# subsystems should select the appropriate symbols.
+
+config REGMAP
+	default y if (REGMAP_I2C || REGMAP_SPI)
+	select LZO_COMPRESS
+	select LZO_DECOMPRESS
+	bool
+
+config REGMAP_I2C
+	tristate
+
+config REGMAP_SPI
+	tristate
+
+config REGMAP_IRQ
+	bool
+
+config REGMAP_ALLOW_WRITE_DEBUGFS
+	bool "Regmap write access to usermode"
+	default n
+	help
+	   WARNING: This allows usermode to write to hardware registers. Writing
+	   to stuff like PMICs is _never_ advised due to obvious side effects, use
+	   at very extreme caution. Is helpful for debugging
