@@ -1756,8 +1756,10 @@ static void sdhci_do_set_ios(struct sdhci_host *host, struct mmc_ios *ios)
 
 	sdhci_set_clock(host, ios->clock);
 
-	if (ios->power_mode == MMC_POWER_OFF)
+	if (ios->power_mode == MMC_POWER_OFF) {
 		vdd_bit = sdhci_set_power(host, -1);
+        vdd_bit = 0;
+    }
 	else
 		vdd_bit = sdhci_set_power(host, ios->vdd);
 
@@ -2458,6 +2460,88 @@ static void sdhci_enable_preset_value(struct sdhci_host *host, bool enable)
 	}
 }
 
+static int asus_enable_n_reset_function(struct mmc_host *host,
+                                        struct mmc_card *card)
+{
+    int err;
+
+    mmc_claim_host(host);
+    err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+                     EXT_CSD_RST_N_FUNCTION, EXT_CSD_RST_N_ENABLED,
+                     card->ext_csd.generic_cmd6_time);
+    mmc_release_host(host);
+    if (err) {
+        pr_warning("%s: unable to write ext_csd[162]\n",
+                   mmc_hostname(card->host));
+        return -1;
+    }
+    return 0;
+}
+
+/* export from intel-mid.c
+ * change the reboot behavior */
+extern void set_force_cold_boot(int cold_reboot);
+
+static void asus_change_configuration(struct mmc_host *host,
+                                      struct mmc_card *card)
+{
+    u8 rst;
+    u8 mid;
+    u8 prv;
+
+    if (mmc_card_mmc(card)) {
+        rst = card->ext_csd.rst_n_function & EXT_CSD_RST_N_EN_MASK;
+
+        switch (rst) {
+            case 0: // 0: RSTn is temporarily disabled (default), enable it
+                if (!asus_enable_n_reset_function(host, card))
+                    card->ext_csd.rst_n_function = EXT_CSD_RST_N_ENABLED;
+                break;
+            case 1: // 1: RSTn is permanently enabled
+                if (card->ext_csd.rst_n_function == EXT_CSD_RST_N_ENABLED)
+                    break;
+
+                if (host->ops->hw_reset) {
+                    /* we want to use the reset function */
+                    card->ext_csd.rst_n_function = EXT_CSD_RST_N_ENABLED;
+                    pr_info("%s enable ext_csd.rst_n_function\n", mmc_hostname(host));
+                }
+                break;
+            case 2: // RSTn is permanently disabled
+            default:
+                pr_err("%s ext_csd.rst_n_function = %02x, it should be 1\n", mmc_hostname(host), rst);
+                break;
+        }
+        mid = (card->raw_cid[0] >> 24) & 0xff;
+        prv = (card->raw_cid[2] >> 16) & 0xff;
+
+        pr_info("%s MID = %x, PRV = %x\n", mmc_hostname(host), mid, prv);
+        if (mid == 0x45 && prv == 0x28)
+            set_force_cold_boot(1);
+        /* For Hynix eMMC-4.5 chips,
+         * a dummy read should be issued preceding discard/trim command. */
+        if (mid == 0x90 && prv == 0x03)
+            card->quirks |= MMC_QUICK_BROKEN_DISCARD;
+        /* For Hynix eMMC-4.5 chips
+         * firmware 0x02, 0x03, 0x04 have bug in cache usage. */
+        if (mid == 0x90 && (prv < 0x05))
+            host->caps2 &= ~MMC_CAP2_CACHE_CTRL;
+    }
+}
+
+/* return
+ * 0: eMMC ready
+ * 1: eMMC busy */
+static int asus_mmc_poll_busy(struct mmc_host *mmc)
+{
+    struct sdhci_host *host;
+
+    if (!mmc_card_mmc(mmc->card))
+        return 1;
+    /* eMMC indicates the transition phase busy by pulling down DAT0. */
+    host = mmc_priv(mmc);
+    return !(sdhci_readl(host, SDHCI_PRESENT_STATE) & (1 << SDHCI_DATA_LVL_SHIFT));
+}
 static void sdhci_card_event(struct mmc_host *mmc)
 {
 	struct sdhci_host *host = mmc_priv(mmc);
@@ -2514,8 +2598,10 @@ static const struct mmc_host_ops sdhci_ops = {
 	.card_event			= sdhci_card_event,
 	.card_busy	= sdhci_card_busy,
 	.set_dev_power = sdhci_set_dev_power,
+	.change_configuration = asus_change_configuration,	
 	.init_card = sdhci_init_card,
 	.busy_wait	= sdhci_busy_wait,
+	.mmc_poll_busy = asus_mmc_poll_busy,
 };
 
 /*****************************************************************************\

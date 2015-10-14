@@ -202,6 +202,8 @@ extern int Read_HW_ID(); //20131118 ASUS-Eve_Wen for SR HW ID
 // define the GPIO PIN for Intel x86
 int gpio_line =  76;
 static bool canEnableGsensor = true;
+static int raw_camera[3];
+
 //int i2c_bus =    5;
 //module_param(gpio_line, int, S_IRUGO);
 //module_param(i2c_bus, int, S_IRUGO);
@@ -381,7 +383,9 @@ static void kxtj9_report_acceleration_data(struct kxtj9_data *tj9)
 	
 
 //	if(KXTJ9_DEBUG_MESSAGE) printk("report_acceleration data : (%d), (%d), (%d)\n",reportdata_x, reportdata_y, reportdata_z);
-
+    raw_camera[0] = reportdata_x;
+    raw_camera[1] = reportdata_y;
+    raw_camera[2] = reportdata_z;
 	input_report_abs(tj9->input_dev, ABS_X, reportdata_x);
 	input_report_abs(tj9->input_dev, ABS_Y, reportdata_y);
 	input_report_abs(tj9->input_dev, ABS_Z, reportdata_z);
@@ -801,6 +805,16 @@ static ssize_t get_cal_rawdata(struct device *dev, struct device_attribute *deva
 	return sprintf(buf, "%d %d %d\n",rawdata_x, rawdata_y, rawdata_z);
 }
 
+static ssize_t get_rawdata_for_camera(struct device *dev, struct device_attribute *devattr, char *buf)
+{
+    int cam_x, cam_y, cam_z;
+    cam_x = (raw_camera[0]*98)/1024;
+    cam_y = (raw_camera[1]*98)/1024;
+    cam_z = (raw_camera[2]*98)/1024;
+    printk("Accelerometer report to camera %d %d %d\n", cam_x, cam_y, cam_z);
+	return sprintf(buf, "%d %d %d\n", cam_x, cam_y, cam_z);
+}
+
 static ssize_t get_rawdata(struct device *dev, struct device_attribute *devattr, char *buf)
 {	
 	struct i2c_client *client = to_i2c_client(dev);
@@ -932,6 +946,7 @@ static DEVICE_ATTR(enable, 0660,kxtj9_enable_show,kxtj9_enable_store);
 static DEVICE_ATTR(rawdata, S_IRUGO, get_rawdata, NULL);
 static DEVICE_ATTR(state, S_IRUGO, get_kxtj9_state, NULL);
 static DEVICE_ATTR(cal_rawdata, S_IRUGO, get_cal_rawdata, NULL);
+static DEVICE_ATTR(camera_rawdata, S_IRUGO, get_rawdata_for_camera, NULL);
 static DEVICE_ATTR(calibration, S_IRUGO, reset_kxtj9_calibration, NULL);
 static struct attribute *kxtj9_attributes[] = {
 	&dev_attr_delay.attr,
@@ -939,6 +954,7 @@ static struct attribute *kxtj9_attributes[] = {
 	&dev_attr_rawdata.attr,
 	&dev_attr_state.attr,
 	&dev_attr_cal_rawdata.attr,
+    &dev_attr_camera_rawdata.attr,
 	&dev_attr_calibration.attr,
 	NULL
 };

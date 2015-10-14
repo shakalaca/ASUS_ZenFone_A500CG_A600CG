@@ -35,7 +35,28 @@ static struct regulator *vprog1_reg;
 
 static int hm2056_gpio_ctrl(struct v4l2_subdev *sd, int flag)
 {
-    printk("%s: ++\n",__func__);
+    int ret;
+    printk("%s: ++ on/off = %d\n",__func__, flag);
+
+    if (camera_reset < 0) {
+        ret = camera_sensor_gpio(GP_CORE_077, "SUB_CAM_RST#", GPIOF_DIR_OUT, 0);
+        if (ret < 0){
+            printk("camera_reset not available.\n");
+            return ret;
+        }
+        camera_reset = ret;
+    }
+    printk("<< camera_reset:%d, flag:%d\n", camera_reset, flag);
+
+    if (camera_power_down < 0) {
+        ret = camera_sensor_gpio(GP_CORE_080, "SUB_CAM_PWDN", GPIOF_DIR_OUT, 0);
+        if (ret < 0){
+            printk("camera_power_down not available.\n");
+            return ret;
+        }
+        camera_power_down = ret;
+    }
+    printk("<< camera_power_down:%d, flag:%d\n", camera_power_down, flag);
 
 	if (flag){
 		gpio_set_value(camera_reset, 1);
@@ -133,6 +154,21 @@ static int hm2056_power_ctrl(struct v4l2_subdev *sd, int flag)
             printk("<<< camera_power_down = 0\n");
             msleep(1);
         }
+		//turn off PWDN
+		if (camera_power_down >= 0){
+			gpio_set_value(camera_power_down, 0);
+			printk("<<< PWDN = 0\n");
+			gpio_free(camera_power_down);
+			camera_power_down = -1;
+			msleep(10);
+		}
+
+		if (camera_reset >= 0){
+			gpio_set_value(camera_reset, 0);
+			gpio_free(camera_reset);
+			camera_reset = -1;
+			msleep(10);
+		}
     }
     return 0;
 }

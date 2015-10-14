@@ -239,7 +239,7 @@ static ssize_t gpio_test_tool_store(struct device *dev,
     int gpio_num, reg_err; 
     gpio_num = -1;
     sscanf(buf, "%d", &gpio_num);
-    gpio_set_value(173,gpio_num); 
+//    gpio_set_value(173,gpio_num);
 
     return count;
 }
@@ -551,7 +551,7 @@ static int gc0310_init_common(struct v4l2_subdev *sd)
 	gc0310_write_reg(client, MISENSOR_8BIT, 0xf2,0x80);
 	gc0310_write_reg(client, MISENSOR_8BIT, 0xf3,0x00);
 	gc0310_write_reg(client, MISENSOR_8BIT, 0xf7,0x13);//1f
-	gc0310_write_reg(client, MISENSOR_8BIT, 0xf8,0x04);
+	gc0310_write_reg(client, MISENSOR_8BIT, 0xf8,0x05);
 	gc0310_write_reg(client, MISENSOR_8BIT, 0xf9,0x0e);
 	gc0310_write_reg(client, MISENSOR_8BIT, 0xfa,0x11);
 	
@@ -603,7 +603,7 @@ static int gc0310_init_common(struct v4l2_subdev *sd)
 	gc0310_write_reg(client, MISENSOR_8BIT, 0x29,0x00);
 	gc0310_write_reg(client, MISENSOR_8BIT, 0x33,0x18); //offset ratio
 	gc0310_write_reg(client, MISENSOR_8BIT, 0x37,0x20); //darkcurrent ratio
-    gc0310_write_reg(client, MISENSOR_8BIT, 0x32,0x06); 
+    gc0310_write_reg(client, MISENSOR_8BIT, 0x32,0x0f);
 	gc0310_write_reg(client, MISENSOR_8BIT, 0x2a,0x00); 
 	gc0310_write_reg(client, MISENSOR_8BIT, 0x2b,0x00);
 	gc0310_write_reg(client, MISENSOR_8BIT, 0x2c,0x00);
@@ -1884,8 +1884,8 @@ static int gc0310_probe(struct i2c_client *client,
     gc0310_userCtrl_class = class_create(THIS_MODULE, "gc0310_dev");
     gpio_userCtrl_dev = device_create(gc0310_userCtrl_class, NULL, 0, "%s", "gpio_front_camera");
     device_create_file(gpio_userCtrl_dev, &dev_attr_gpio_ctrl);
-    gpio_request(173, "gpio_front_camera_ctrl");
-    gpio_direction_output(173, 0);
+//    gpio_request(173, "gpio_front_camera_ctrl");
+//    gpio_direction_output(173, 0);
 
     gc0310_register_ctrl_dev = device_create(gc0310_userCtrl_class, NULL, 0, "%s", "register");
     device_create_file(gc0310_register_ctrl_dev, &dev_attr_write_reg);

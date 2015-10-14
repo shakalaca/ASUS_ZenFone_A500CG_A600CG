@@ -20,6 +20,7 @@
  * 02110-1301, USA.
  *
  */
+#include <linux/hid-holtekff.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/pm_runtime.h>
@@ -45,8 +46,185 @@
 #include "device_access.h"
 #include <linux/intel_mid_pm.h>
 #include <asm/intel-mid.h>
-
+#include <linux/hid.h>
+#include <linux/gpio.h>
 #define ATOMISP_INTERNAL_PM	(IS_BYT || IS_MOFD)
+
+
+static u8 read_cmd[] =  {0,0,0,0,0,0,0,0};
+static struct class* Xe_flash_userCtrl_class;
+static struct device* Xe_flash_register_ctrl_dev;
+struct holtekff_device {
+      struct hid_field *field;
+};
+int xe_debug_flag =0;
+static u16 debug_delay;
+static u16 debug_pulse;
+//extern void Xe_flash_send_cmd(u8[8]);
+//extern void Xe_flash_rcv_cmd(u8[8], u8**);
+
+static ssize_t Xe_flash_send_cmd_show(struct device *dev,
+        struct device_attribute *attr, char *buf){
+
+    int ret;
+//    ret = sprintf(buf, "ASUS --- send_buff[0] is 0x%x, send_buff[1] is 0x%x\n", send_buff[0], send_buff[1]);
+    ret = sprintf(buf, "ASUS ---@Xe_flash_send_cmd_show \n");
+    return ret;
+}
+
+static ssize_t Xe_flash_send_cmd_store(struct device *dev,
+        struct device_attribute *attr,
+        const char *buf, size_t count){
+
+	u8 send_buff[] = {0,0,0,0,0,0,0,0};	
+    int cmd_store;
+    cmd_store = -1;
+
+    sscanf(buf, "%x", &cmd_store);
+    send_buff[0] = (cmd_store &0xFF00)>>8;
+    send_buff[1] = cmd_store&0xFF;
+
+    printk(KERN_INFO "ASUS --- send_buff[0] is 0x%d, send_buff[1] is 0x%d\n", send_buff[0], send_buff[1]);
+#if 0
+    if(send_buff[0] == 0x01)
+        gpio_set_value(173, 0);
+     
+     if(send_buff[0] == 0x04)
+        gpio_set_value(173, 1);   
+#endif
+      Xe_flash_send_cmd(send_buff);
+
+    return count;
+}
+
+DEVICE_ATTR(send_cmd, 0660, Xe_flash_send_cmd_show, Xe_flash_send_cmd_store);
+
+static ssize_t Xe_flash_rcv_cmd_show(struct device *dev,
+        struct device_attribute *attr, char *buf){
+
+    int ret;
+    ret = sprintf(buf, "ASUS --- @Xe_flash_send_cmd_show \n");
+    return ret;
+}
+
+static ssize_t Xe_flash_rcv_cmd_store(struct device *dev,
+        struct device_attribute *attr,
+        const char *buf, size_t count){
+
+    int cmd_store;
+    int i;
+    u8* buff_read_back;
+	buff_read_back = NULL;
+    cmd_store = -1;
+    sscanf(buf, "%x", &cmd_store);
+
+    read_cmd[0] = (cmd_store &0xFF00)>>8;
+    read_cmd[1] = cmd_store&0xFF;
+    printk(KERN_INFO "ASUS --- @Xe_flash_rcv_cmd_store  \n");
+    Xe_flash_rcv_cmd(read_cmd, &buff_read_back);
+
+    for (i = 0; i < 8; i++) {
+        printk(KERN_INFO "ASUS, @Xe_flash_rcv_cmd_store GET: %x \n", buff_read_back[i]);
+     }
+
+
+    return count;
+}
+
+DEVICE_ATTR(rcv_cmd, 0660, Xe_flash_rcv_cmd_show, Xe_flash_rcv_cmd_store);
+
+static ssize_t Xe_flash_debug_flag_show(struct device *dev,
+        struct device_attribute *attr, char *buf){
+
+    int ret;
+    ret = sprintf(buf, "ASUS --- Xe_flash: xe_debug_flag is %d  \n", xe_debug_flag);
+    return ret;
+}
+
+static ssize_t Xe_flash_debug_flag_store(struct device *dev,
+        struct device_attribute *attr,
+        const char *buf, size_t count){
+
+    int flag_store;
+    flag_store = -1;
+    sscanf(buf, "%d", &flag_store);
+
+    xe_debug_flag = flag_store;
+    printk(KERN_INFO "ASUS --- Xe_flash: xe_debug_flag is %d  \n", xe_debug_flag);
+
+    return count;
+}
+
+DEVICE_ATTR(debug_flag, 0660, Xe_flash_debug_flag_show, Xe_flash_debug_flag_store);
+
+static ssize_t Xe_flash_debug_pulse_show(struct device *dev,
+        struct device_attribute *attr, char *buf){
+
+    int ret;
+    ret = sprintf(buf, "ASUS --- Xe_flash: debug_pulse is %d  \n", debug_pulse);
+    return ret;
+}
+
+static ssize_t Xe_flash_debug_pulse_store(struct device *dev,
+        struct device_attribute *attr,
+        const char *buf, size_t count){
+
+    int pulse_store;
+    pulse_store = -1;
+    sscanf(buf, "%d", &pulse_store);
+
+    debug_pulse = pulse_store;
+    printk(KERN_INFO "ASUS --- Xe_flash: debug_pulse is %d  \n", debug_pulse);
+
+    return count;
+}
+
+DEVICE_ATTR(debug_pulse, 0660, Xe_flash_debug_pulse_show, Xe_flash_debug_pulse_store);
+
+static ssize_t Xe_flash_debug_delay_show(struct device *dev,
+        struct device_attribute *attr, char *buf){
+
+    int ret;
+    ret = sprintf(buf, "ASUS --- Xe_flash: debug_delay is %d  \n", debug_delay);
+    return ret;
+}
+
+static ssize_t Xe_flash_debug_delay_store(struct device *dev,
+        struct device_attribute *attr,
+        const char *buf, size_t count){
+
+    int pulse_store;
+    pulse_store = -1;
+    sscanf(buf, "%d", &pulse_store);
+
+    debug_delay = pulse_store;
+    printk(KERN_INFO "ASUS --- Xe_flash: debug_delay is %d  \n", debug_delay);
+
+    return count;
+}
+
+DEVICE_ATTR(debug_delay, 0660, Xe_flash_debug_delay_show, Xe_flash_debug_delay_store);
+
+
+int Xe_flash_on(struct v4l2_subdev *sd, u16 delay, u16 pulse)
+{
+    u8 send_buff[] = {0,0,0,0,0,0,0,0};
+    send_buff[0] = 0x04;
+    send_buff[2] = pulse&0xFF;
+    send_buff[3] = ( pulse&0xFF00 )>>8;
+    send_buff[4] = delay&0xFF;
+    send_buff[5] = ( delay&0xFF00 )>>8;
+    if(xe_debug_flag){
+         send_buff[2] = debug_pulse&0xFF;
+         send_buff[3] = ( debug_pulse&0xFF00 )>>8;
+         send_buff[4] = debug_delay&0xFF;
+         send_buff[5] = ( debug_delay&0xFF00 )>>8;
+    }    
+//    printk(KERN_INFO "ASUSBSP --- @Xe_flash_on 1\n"); 
+    Xe_flash_send_cmd(send_buff);
+    return 0;
+}
+
 
 /* set reserved memory pool size in page */
 unsigned int repool_pgnr;
@@ -1189,7 +1367,9 @@ static int atomisp_pci_probe(struct pci_dev *dev,
 		dev_err(&dev->dev, "Failed to alloc CI ISP structure\n");
 		return -ENOMEM;
 	}
-	isp->pdev = dev;
+	isp->xe_flash_pulse = 0;
+    isp->xe_flash_delay = 0;
+    isp->pdev = dev;
 	isp->dev = &dev->dev;
 	isp->sw_contex.power_state = ATOM_ISP_POWER_UP;
 	isp->pci_root = pci_get_bus_and_slot(0, 0);
@@ -1203,6 +1383,14 @@ static int atomisp_pci_probe(struct pci_dev *dev,
 	mutex_init(&isp->streamoff_mutex);
 	spin_lock_init(&isp->lock);
 
+	Xe_flash_userCtrl_class = class_create(THIS_MODULE, "Xe_flash_dev");
+    Xe_flash_register_ctrl_dev = device_create(Xe_flash_userCtrl_class, NULL, 0, "%s", "command");
+    device_create_file(Xe_flash_register_ctrl_dev, &dev_attr_send_cmd);
+    device_create_file(Xe_flash_register_ctrl_dev, &dev_attr_rcv_cmd);
+    device_create_file(Xe_flash_register_ctrl_dev, &dev_attr_debug_flag);
+    device_create_file(Xe_flash_register_ctrl_dev, &dev_attr_debug_delay); 
+    device_create_file(Xe_flash_register_ctrl_dev, &dev_attr_debug_pulse);
+	
 #ifndef CSS20
 	isp->media_dev.driver_version = ATOMISP_CSS_VERSION_15;
 #elif !defined(CSS21)
@@ -1480,7 +1668,8 @@ static void __exit atomisp_exit(void)
 
 module_init(atomisp_init);
 module_exit(atomisp_exit);
-
+//EXPORT_SYMBOL_GPL(Xe_flash_on);
+EXPORT_SYMBOL_GPL(xe_debug_flag);
 MODULE_AUTHOR("Wen Wang <wen.w.wang@intel.com>");
 MODULE_AUTHOR("Xiaolin Zhang <xiaolin.zhang@intel.com>");
 MODULE_LICENSE("GPL");

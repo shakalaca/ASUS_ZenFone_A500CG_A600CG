@@ -28,9 +28,8 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-
 #include "hid-ids.h"
-
+#include <linux/hid-holtekff.h>
 #if 1
 
 MODULE_LICENSE("GPL");
@@ -81,11 +80,19 @@ MODULE_DESCRIPTION("Force feedback support for Holtek On Line Grip based devices
 
 #define HOLTEKFF_MSG_LENGTH     8
 
-static u8 read_buf[] =           { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+static u8 read_test_buf[] =           { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+static u8 mread_buf[] =           { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 static u8 show_buf[] =           { 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-static u8 turn_on[] =	       { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-static  u8 turn_off[] =	   { 0x01, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-
+static u8 camera_apk_alive;
+struct hid_device *mhid;
+struct holtekff_device *mholtekff;
+/////
+static struct holtekff_device *holtekff;
+static struct hid_report *report;
+static struct hid_input *hidinput;
+static struct list_head *report_list;
+static struct input_dev *dev;
+////
 struct holtekff_device {
 	struct hid_field *field;
 };
@@ -95,159 +102,77 @@ static void holtekff_send(struct holtekff_device *holtekff,
 			  const u8 data[HOLTEKFF_MSG_LENGTH])
 {
 	int i;
+    if(!holtekff)
+          return;
 
 	for (i = 0; i < HOLTEKFF_MSG_LENGTH; i++) {
 		holtekff->field->value[i] = data[i];
 	}
 
-	dbg_hid("sending %*ph\n", 7, data);
-	printk("scorpio 3-1-1\n");
 	hid_hw_request(hid, holtekff->field->report, HID_REQ_SET_REPORT);
-	printk("scorpio 3-1-2\n");
-        hid_hw_wait(hid);
+    for (i = 0; i < HOLTEKFF_MSG_LENGTH; i++) {
+	   printk(KERN_INFO	"ASUS, @holtekff_send: 0x%x \n", holtekff->field->value[i]);
+	}
 }
 
-static void holtekff_rcv(struct holtekff_device *holtekff,
+static void holtekff_get(struct holtekff_device *holtekff,
 			  struct hid_device *hid,
-			  const u8 data[HOLTEKFF_MSG_LENGTH])
+			  u8** read_buf)
 {
-/*	
-    int i;
-
-	for (i = 0; i < HOLTEKFF_MSG_LENGTH; i++) {
-		holtekff->field->value[i] = data[i];
-	
+    int i; 
+    if(!holtekff)
+        return;
+    
+    if (NULL != hid->hid_output_raw_report){
+        hid->hid_get_raw_report(hid,0, mread_buf, 9, HID_FEATURE_REPORT);
     }
 
-	dbg_hid("sending %*ph\n", 7, data);
-	printk("scorpio 99-1-1\n");
-
-    hid_hw_request(hid, holtekff->field->report, HID_REQ_GET_REPORT);
     hid_hw_wait(hid);
-	printk("scorpio 99-1-2\n");
-
-    for (i = 0; i < HOLTEKFF_MSG_LENGTH; i++) {
-	   printk(KERN_INFO	"ASUS, AFTER GET: %x \n", holtekff->field->value[i]);
-	}
-*/
-/*     
-    int i;
-    struct hid_report *report = hid->report_enum[HID_FEATURE_REPORT].
-        report_id_hash[0x0d];
-
-
-
-    hid_hw_request(hid, report, HID_REQ_GET_REPORT);                                                                                                                                                   
-    hid_hw_wait(hid);
-     for (i = 0; i < HOLTEKFF_MSG_LENGTH; i++) {
-	   printk(KERN_INFO	"ASUS, AFTER GET: %x \n",report->field[0]->value[i]); 
-	}
-*/ 
-  
-    int i; 
-    if (NULL != hid->hid_output_raw_report){
-        printk(KERN_INFO "ASUS, Before hid_get_raw_report\n");
-
-        hid->hid_get_raw_report(hid,0, read_buf, 9, HID_FEATURE_REPORT);
-    }printk(KERN_INFO "ASUS, After hid_get_raw_report\n");
-
-       hid_hw_wait(hid);
     for (i = 0; i < 9; i++) {
-	   printk(KERN_INFO	"ASUS, AFTER GET: %x \n", read_buf[i]); 
+   	   printk(KERN_INFO	"ASUS, AFTER GET: %x \n", mread_buf[i]);
 	}
-
+    *read_buf = mread_buf + 1;
 }
 
-#if 0
-static int holtekff_play(struct input_dev *dev, void *data,
-			 struct ff_effect *effect)
-{
-	struct hid_device *hid = input_get_drvdata(dev);
-	struct holtekff_device *holtekff = data;
-	int left, right;
-	/* effect type 1, length 65535 msec */
-	u8 buf[HOLTEKFF_MSG_LENGTH] =
-		{ 0x01, 0x01, 0xff, 0xff, 0x10, 0xe0, 0x00 };
-
-	left = effect->u.rumble.strong_magnitude;
-	right = effect->u.rumble.weak_magnitude;
-	dbg_hid("called with 0x%04x 0x%04x\n", left, right);
-
-	if (!left && !right) {
-		holtekff_send(holtekff, hid, stop_all6);
-		return 0;
-	}
-
-	if (left)
-		buf[1] |= 0x80;
-	if (right)
-		buf[1] |= 0x40;
-
-	/* The device takes a single magnitude, so we just sum them up. */
-	buf[6] = min(0xf, (left >> 12) + (right >> 12));
-
-	holtekff_send(holtekff, hid, buf);
-	holtekff_send(holtekff, hid, start_effect_1);
-
-	return 0;
-}
-#endif
 static int holtekff_init(struct hid_device *hid)
 {
-	struct holtekff_device *holtekff;
-	struct hid_report *report;
-	struct hid_input *hidinput = list_entry(hid->inputs.next,
+	
+	hidinput = list_entry(hid->inputs.next,
 						struct hid_input, list);
-	struct list_head *report_list =
+	report_list =
 			&hid->report_enum[HID_FEATURE_REPORT].report_list;
-	struct input_dev *dev = hidinput->input;
+	dev = hidinput->input;
 	int error;
-	printk("scorpio 3-0\n");
 	if (list_empty(report_list)) {
 		hid_err(hid, "no output report found\n");
 		return -ENODEV;
 	}
-	printk("scorpio 3-0-1\n");
 	report = list_entry(report_list->next, struct hid_report, list);
-#if 0
-	if (report->maxfield < 1 || report->field[0]->report_count != 7) {
-		hid_err(hid, "unexpected output report layout\n");
-		return -ENODEV;
-	}
-#endif
-	printk(KERN_INFO "ASUS, report->maxfield is %d\n", report->maxfield);
-    printk(KERN_INFO "ASUS, report->field[0]->report_count is %d\n", report->field[0]->report_count);
-    printk(KERN_INFO "ASUS, report->id is %d\n", report->id); 
-    printk("scorpio 3-0-2\n");
 	holtekff = kzalloc(sizeof(*holtekff), GFP_KERNEL);
 	if (!holtekff)
 		return -ENOMEM;
 
-	//set_bit(FF_RUMBLE, dev->ffbit);
-	printk("scorpio 3-0-3\n");
+	if(!mholtekff){
+        mholtekff = holtekff;
+    }
+
+    if(!mhid){
+        mhid = hid;
+    }
+    //set_bit(FF_RUMBLE, dev->ffbit);
 	holtekff->field = report->field[0];
 	report_list =
 	&hid->report_enum[HID_FEATURE_REPORT].report_list;
 
-    printk("scorpio 3-0-4\n");
 	/* initialize the same way as win driver does */
-	printk("scorpio 3-1\n");
-	holtekff_send(holtekff, hid, turn_on);
-    mdelay(1000); // wait for micron LED blink process
-	holtekff_send(holtekff, hid, turn_off);
     holtekff_send(holtekff, hid, show_buf);
-    mdelay(5000);
-    holtekff_rcv(holtekff, hid, show_buf);
-
-	printk("scorpio 3-2\n");
-#if 0
-	error = input_ff_create_memless(dev, holtekff, holtekff_play);
-	if (error) {
-		kfree(holtekff);
-		return error;
-	}
-#endif
-	hid_info(hid, "Force feedback for Holtek On Line Grip based devices by Anssi Hannula <anssi.hannula@iki.fi>\n");
+    mdelay(1000);
+    holtekff_get(holtekff, hid, read_test_buf);
+	if(camera_apk_alive){
+        u8 charging_cmd[8] = {0x1,0,0,0,0,0,0,0};
+        holtekff_send(holtekff, hid, charging_cmd);
+    }
+    hid_info(hid, "Force feedback for Holtek On Line Grip based devices by Anssi Hannula <anssi.hannula@iki.fi>\n");
 
 	return 0;
 }
@@ -261,26 +186,46 @@ static inline int holtekff_init(struct hid_device *hid)
 static int holtek_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
 	int ret;
-	printk("scorpio 1\n");
 	ret = hid_parse(hdev);
 	if (ret) {
 		hid_err(hdev, "parse failed\n");
 		goto err;
 	}
-	printk("scorpio 2\n");
 	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT & ~HID_CONNECT_FF);
 	if (ret) {
 		hid_err(hdev, "hw start failed\n");
 		goto err;
 	}
-	printk("scorpio 3\n");
 	holtekff_init(hdev);
-	printk("scorpio 4\n");
 	return 0;
 err:
 	return ret;
 }
 
+static void holtek_remove(struct hid_device *hid){
+    printk(KERN_INFO "ASUS --- @holtek_remove \n");
+    kfree(mholtekff);
+    mholtekff = NULL;
+    mhid = NULL;
+}
+
+void Xe_flash_send_cmd(u8 cmd[8]){
+    holtekff_send(mholtekff, mhid, cmd);
+    if(cmd[0]==0x01){
+       camera_apk_alive = !cmd[1];
+    }
+}
+
+void Xe_flash_rcv_cmd(u8 read_cmd[8], u8** read_back_buff){
+    printk(KERN_INFO "ASUS --- @Xe_flash_rcv_cmd \n");
+    holtekff_send(mholtekff, mhid, read_cmd);
+    mdelay(1000);
+    holtekff_get(mholtekff, mhid, read_back_buff);
+}
+
+int Xe_flash_inserted(void){
+    return (!!mholtekff); 
+}
 static const struct hid_device_id holtek_devices[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_HOLTEK_ALT, 0x0b00) },
 	{ }
@@ -291,5 +236,10 @@ static struct hid_driver holtek_driver = {
 	.name = "holtek",
 	.id_table = holtek_devices,
 	.probe = holtek_probe,
+    .remove = holtek_remove,
 };
 module_hid_driver(holtek_driver);
+EXPORT_SYMBOL_GPL(Xe_flash_send_cmd);
+EXPORT_SYMBOL_GPL(Xe_flash_rcv_cmd);
+EXPORT_SYMBOL_GPL(Xe_flash_inserted);
+MODULE_LICENSE("GPL");

@@ -300,6 +300,7 @@ const struct cntry_locales_custom translate_custom_table[] = {
  */
 #ifdef BOARD_INTEL
 #if defined(SUPPORT_MULTIPLE_REVISION)
+	{"",  "",  "XV", 0}, /* defaut use XV/0 (1-11 active, 12-14 passive) */
 	{BCM4334_CHIP_ID,  "US", "US", 0}, /* Translate US into US/0 in order to enable 5GHz band */
 	{BCM4324_CHIP_ID,  "US", "US", 0}, /* Translate US into US/0 in order to enable 5GHz band */
 	{BCM43341_CHIP_ID, "US", "US", 0}, /* Translate US into US/0 in order to enable 5GHz band */
@@ -313,7 +314,16 @@ const struct cntry_locales_custom translate_custom_table[] = {
 	{BCM43341_CHIP_ID, "KR", "KR", 4}, /* Enable correct 5Ghz channel */
 	{BCM4335_CHIP_ID,  "KR", "KR", 4}, /* Enable correct 5Ghz channel */
 	{BCM4339_CHIP_ID,  "KR", "KR", 4}, /* Enable correct 5Ghz channel */
+    {BCM43362_CHIP_ID, "TW", "TW", 0},
+    {BCM43362_CHIP_ID, "CN", "CN", 0},
+    {BCM43362_CHIP_ID, "US", "US", 0},
+    {BCM43362_CHIP_ID, "RU", "EU", 0},
+    {BCM43362_CHIP_ID, "IR", "EU", 0},
+    {BCM43362_CHIP_ID, "SY", "EU", 0},
+    //special case(rev!=0)
+    {BCM43362_CHIP_ID, "JP", "JP", 1},
 #else /* SUPPORT_MULTIPLE_REVISION */
+	{"",   "XY", 4},  /* Universal if Country code is unknown or empty */
 	{"US", "US", 0}, /* Translate US into US/0 in order to enable 5GHz band */
 	{"FR", "FR", 5}, /* Translate FR into FR/5 in order to enable 802.11ac */
 	{"FI", "FR", 5}, /* Translate FI into FR/5 in order to enable 802.11ac */
@@ -345,11 +355,16 @@ void get_customized_country_code(char *country_iso_code, wl_country_t *cspec)
 		uint chip = 0;
 #if defined(SUPPORT_MULTIPLE_REVISION)
 		chip = bcm_get_chip_id();
+        if (chip == 0)
+            chip = BCM43362_CHIP_ID;
 		if (chip != translate_custom_table[i].chip_id) {
 			continue;
 		}
 #endif
 		if (strcmp(country_iso_code, translate_custom_table[i].iso_abbrev) == 0) {
+        WL_ERROR(("[WLDBG] match customized country code table iso = %s\n",translate_custom_table[i].iso_abbrev));
+        WL_ERROR(("[WLDBG] set wifi country = %s set rev =%s \n"
+                                ,translate_custom_table[i].custom_locale,translate_custom_table[i].custom_locale_rev));
 			memcpy(cspec->ccode,
 				translate_custom_table[i].custom_locale, WLC_CNTRY_BUF_SZ);
 			cspec->rev = translate_custom_table[i].custom_locale_rev;
@@ -357,6 +372,11 @@ void get_customized_country_code(char *country_iso_code, wl_country_t *cspec)
 			return;
 		}
 	}
-	return;
+//#ifdef EXAMPLE_TABLE
+	/* if no country code matched return first universal code from translate_custom_table */
+	memcpy(cspec->ccode, translate_custom_table[0].custom_locale, WLC_CNTRY_BUF_SZ);
+	cspec->rev = translate_custom_table[0].custom_locale_rev;
+//#endif /* EXMAPLE_TABLE */
+        return;
 #endif /* defined(CUSTOMER_HW2) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)) */
 }

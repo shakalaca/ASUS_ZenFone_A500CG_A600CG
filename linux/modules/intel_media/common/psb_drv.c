@@ -4741,8 +4741,6 @@ int gpio_control_write(struct file *file, const char *buffer,
 
 static const struct file_operations psb_gpio_proc_fops = {
        .owner = THIS_MODULE,
-       .read = gpio_control_read,
-       .write = gpio_control_write,
 };
 
 static const struct file_operations psb_ospm_proc_fops = {

@@ -30,8 +30,9 @@
 //<ASUS+>#define FW_IMAGE_NAME "synaptics/startup_fw_update.img"
 #define FW_IMAGE_NAME_A500_LCE "synaptics/startup_fw_update_A500_LCE_1636167_354C0112.img"
 #define FW_IMAGE_NAME_A500_JTouch "synaptics/startup_fw_update_A500_JTouch_1636167_354A0118.img"
-#define FW_IMAGE_NAME_A600_Ofilm "synaptics/startup_fw_update_A600_Ofilm_1636167_364F0121.img"
-#define FW_IMAGE_NAME_A600_JTouch "synaptics/startup_fw_update_A600_JTouch_1636167_364A0121.img"
+#define FW_IMAGE_NAME_A500_YFO "synaptics/startup_fw_update_A500_YFO_1636167_35590003.img"
+#define FW_IMAGE_NAME_A600_Ofilm "synaptics/startup_fw_update_A600_Ofilm_1688183_364F0132.img"
+#define FW_IMAGE_NAME_A600_JTouch "synaptics/startup_fw_update_A600_JTouch_1688183_364A0130.img"
 
 //<ASUS+>/*
 #define DO_STARTUP_FW_UPDATE
@@ -1386,6 +1387,15 @@ static int fwu_start_reflash(void)
 					__func__);
 			strncpy(fwu->image_name, FW_IMAGE_NAME_A600_Ofilm, MAX_IMAGE_NAME_LEN);
 		}
+#ifdef A500CG_3rd_Touch_TP_YFO
+		else if (Read_TP_ID() == 3)	//A500 YFO:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+		{
+			dev_info(rmi4_data->pdev->dev.parent,
+					"%s: TP A500 YFO\n",
+					__func__);
+			strncpy(fwu->image_name, FW_IMAGE_NAME_A500_YFO, MAX_IMAGE_NAME_LEN);
+		}
+#else
 		else if (Read_TP_ID() == 3)	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
 		{
 			dev_info(rmi4_data->pdev->dev.parent,
@@ -1393,6 +1403,7 @@ static int fwu_start_reflash(void)
 					__func__);
 			strncpy(fwu->image_name, FW_IMAGE_NAME_A600_JTouch, MAX_IMAGE_NAME_LEN);
 		}
+#endif
 		//<ASUS->
 		dev_dbg(rmi4_data->pdev->dev.parent,
 				"%s: Requesting firmware image %s\n",

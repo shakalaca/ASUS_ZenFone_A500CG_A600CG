@@ -112,12 +112,15 @@
 #include "device_libs/platform_imx134.h"
 #include "device_libs/platform_imx132.h"
 #include "device_libs/platform_hm2056.h"
+#include "device_libs/platform_gc2155.h"
 #include "device_libs/platform_gc0339.h"
 #include "device_libs/platform_gc0310.h" 
 #include "device_libs/platform_imx111.h"
 #include "device_libs/platform_imx219.h"
 #include "device_libs/platform_mn34130.h"
 #include "device_libs/platform_t4k37.h"
+#include "device_libs/platform_t4k35.h"
+#include "device_libs/platform_t4k35_180.h"
 #include "device_libs/platform_s5k8aay.h"
 #include "device_libs/platform_ov9724.h"
 #include "device_libs/platform_ov2722.h"
@@ -322,13 +325,15 @@ struct devs_id __initconst device_ids[] = {
 	{"lm3559", SFI_DEV_TYPE_I2C, 0, &lm3559_platform_data_func,
 					&intel_register_i2c_camera_device},
 #endif
-    	{"hm2056", SFI_DEV_TYPE_I2C, 0, &hm2056_platform_data,
-                    			&intel_register_i2c_camera_device},
+    {"hm2056", SFI_DEV_TYPE_I2C, 0, &hm2056_platform_data,
+                    &intel_register_i2c_camera_device},
+	{"gc2155", SFI_DEV_TYPE_I2C, 0, &gc2155_platform_data,
+                    &intel_register_i2c_camera_device},
 	{"gc0339", SFI_DEV_TYPE_I2C, 0, &gc0339_platform_data,
-                    			&intel_register_i2c_camera_device},
+                    &intel_register_i2c_camera_device},
     {"gc0310", SFI_DEV_TYPE_I2C, 0, &gc0310_platform_data,
-                    			&intel_register_i2c_camera_device},
-    {"cm3628", SFI_DEV_TYPE_I2C, 0, &accel_cm3628_platform_data, NULL},					
+                    &intel_register_i2c_camera_device},
+    {"cm3628", SFI_DEV_TYPE_I2C, 0, &accel_cm3628_platform_data, NULL},
 	{"lm3560", SFI_DEV_TYPE_I2C, 0, &lm3559_platform_data_func,
 					&intel_register_i2c_camera_device},
 	{"ap1302", SFI_DEV_TYPE_I2C, 0, &ap1302_platform_data,
@@ -340,6 +345,10 @@ struct devs_id __initconst device_ids[] = {
 	{"mn34130", SFI_DEV_TYPE_I2C, 0, &mn34130_platform_data,
 					&intel_register_i2c_camera_device},
 	{"t4k37", SFI_DEV_TYPE_I2C, 0, &t4k37_platform_data,
+					&intel_register_i2c_camera_device},
+	{"t4k35", SFI_DEV_TYPE_I2C, 0, &t4k35_platform_data,
+					&intel_register_i2c_camera_device},
+	{"t4k35_180", SFI_DEV_TYPE_I2C, 0, &t4k35_180_platform_data,
 					&intel_register_i2c_camera_device},
 //ChungYi
 	{"rt8515", SFI_DEV_TYPE_I2C, 1, &rt8515_platform_data_func,

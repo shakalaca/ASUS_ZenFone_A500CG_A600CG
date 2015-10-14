@@ -107,7 +107,7 @@
 
 #define ATOMISP_ISP_TIMEOUT_DURATION		(2 * HZ)
 #define ATOMISP_ISP_FILE_TIMEOUT_DURATION	(60 * HZ)
-#define ATOMISP_ISP_MAX_TIMEOUT_COUNT	2
+#define ATOMISP_ISP_MAX_TIMEOUT_COUNT	4
 #define ATOMISP_CSS_STOP_TIMEOUT_US	200000
 
 #define ATOMISP_CSS_Q_DEPTH	3
@@ -230,7 +230,9 @@ struct atomisp_map {
  * ci device struct
  */
 struct atomisp_device {
-	struct pci_dev *pdev;
+	u16 xe_flash_pulse;
+    u16 xe_flash_delay;
+    struct pci_dev *pdev;
 	struct device *dev;
 	struct v4l2_device v4l2_dev;
 	struct media_device media_dev;

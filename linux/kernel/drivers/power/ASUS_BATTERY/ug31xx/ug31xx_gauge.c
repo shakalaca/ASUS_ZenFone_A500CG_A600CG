@@ -357,7 +357,7 @@ static void get_ggb_array(void)
 			}
 	}
 
-	if(PROJ_ID_A600CG == Read_PROJ_ID())
+	if((PROJ_ID_A600CG == Read_PROJ_ID())||(PROJ_ID_A601CG == Read_PROJ_ID()))
 	{
                 if(vol_temp > 778) {
 		        GAUGE_info("%s: use 600 ggb data\n", __func__);
@@ -2177,8 +2177,9 @@ static void batt_info_update_work_func(struct work_struct *work)
 	if((curr_charger_full_status == true) && 
 	   (enable_board_offset_cali_at_eoc == true) && 
 	   (ug31_dev->batt_capacity == 100) &&
-	   (kbo_file_exist == false) &&
-	   (auto_kbo_file_exist == false))
+     ((PROJ_ID_A502CG == Read_PROJ_ID()) || ///< [AT-PM] : Always calibrate board offset at EOC for A502CG ; 12/09/2014
+      ((kbo_file_exist == false) &&         ///< [AT-PM] : Calibrate board offset at EOC if and only if no upi_bo and upi_auto_bo are found ; 12/09/2014
+       (auto_kbo_file_exist == false))))
 #else ///< for FEATRUE_K_BOARD_OFFSET
 	if((is_charging_full() == true) && (enable_board_offset_cali_at_eoc == true))	
 #endif ///< for FEATRUE_K_BOARD_OFFSET
@@ -2789,14 +2790,43 @@ static void auto_kbo_work_func(struct work_struct *work)
   board_offset = ug31_module.get_current_now();
   mutex_unlock(&ug31_dev->info_update_lock);
 
-  if((is_charging_full() != true) ||
-  	 (ug31->batt_capacity != 100) ||
-  	 (board_offset > 30) ||
-  	 (board_offset < -10))
+  if(PROJ_ID_A502CG == Read_PROJ_ID())
   {
-  	GAUGE_info("[%s] Cancel kbo, current:%d ; Full:%d ; RSOC:%d\n", __func__,
-  		board_offset, is_charging_full(), ug31->batt_capacity);
-    return;
+    if((is_charging_full() != true) ||
+		(ug31->batt_capacity != 100))
+    {
+		GAUGE_info("[%s] Cancel kbo, current:%d ; Full:%d ; RSOC:%d\n", __func__,
+			board_offset, is_charging_full(), ug31->batt_capacity);
+      return;
+    }
+
+    if(board_offset > 40)
+    {
+      GAUGE_info("[%s] Set board offset to maximum = 40 (%d)\n", __func__,
+        board_offset);
+      board_offset = 40;
+    }
+    else
+    {
+      if(board_offset < -40)
+      {
+        GAUGE_info("[%s] Set board offset to minimum = -40 (%d)\n", __func__,
+          board_offset);
+        board_offset = -40;
+      }
+    }
+  }
+  else
+  {
+    if((is_charging_full() != true) ||
+		(ug31->batt_capacity != 100) ||
+		(board_offset > 30) ||
+		(board_offset < -10))
+    {
+		GAUGE_info("[%s] Cancel kbo, current:%d ; Full:%d ; RSOC:%d\n", __func__,
+			board_offset, is_charging_full(), ug31->batt_capacity);
+      return;
+    }
   }
 
   if(kbo_with_eoc_cnt < UG31XX_KBO_WITH_EOC_COUNT)

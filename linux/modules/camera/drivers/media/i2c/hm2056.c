@@ -452,7 +452,7 @@ static int hm2056_raw_set_mbus_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&dev->input_lock);
 	hm2056_raw_try_res(sd, &width, &height);
 
-	dev_info(&client->dev, "%s %d x %d => %d x %d\n", __func__, fmt->width, fmt->height, width, height);
+	dev_info(&client->dev, "%s RES %d x %d => %d x %d\n", __func__, fmt->width, fmt->height, width, height);
 
 	dev->fmt_idx = hm2056_raw_to_res(sd, width, height);
 	if (dev->fmt_idx == -1) {

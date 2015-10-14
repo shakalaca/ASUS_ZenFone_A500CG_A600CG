@@ -230,7 +230,21 @@ static irqreturn_t sdhci_pci_sd_cd(int irq, void *dev_id)
 	struct sdhci_pci_slot *slot = dev_id;
 	struct sdhci_host *host = slot->host;
 
-	mmc_detect_change(host->mmc, msecs_to_jiffies(200));
+    int gpio_status = gpio_get_value(slot->cd_gpio);
+
+    if (gpio_status == 0) {
+        host->mmc->caps |= MMC_CAP_NEEDS_POLL;
+        host->mmc->retry_timeout = 10;
+    }
+    else {
+        host->mmc->caps &= ~MMC_CAP_NEEDS_POLL;
+    }
+    pr_debug("%s (polling %s)\n", mmc_hostname(host->mmc),
+             gpio_status ? "disabled" : "enabled");
+    if (host->mmc->caps2 & MMC_CAP2_DEFERRED_RESUME)
+        mmc_set_force_pm_resume(host->mmc);
+	mmc_detect_change(host->mmc,
+                      (gpio_status == 0) ? msecs_to_jiffies(200) : msecs_to_jiffies(20));
 	return IRQ_HANDLED;
 }
 
@@ -348,7 +362,7 @@ static int mfd_emmc_probe_slot(struct sdhci_pci_slot *slot)
 		sdhci_alloc_panic_host(slot->host);
 		slot->host->mmc->caps |= MMC_CAP_1_8V_DDR;
 		slot->host->mmc->caps2 |= MMC_CAP2_INIT_CARD_SYNC |
-					MMC_CAP2_CACHE_CTRL;
+					MMC_CAP2_CACHE_CTRL | MMC_CAP2_DEFERRED_RESUME;
 		slot->host->quirks2 |= SDHCI_QUIRK2_V2_0_SUPPORT_DDR50;
 		/*
 		 * CLV host controller has a special POWER_CTL register,
@@ -1796,6 +1810,40 @@ static int sdhci_pci_bus_width(struct sdhci_host *host, int width)
 	return 0;
 }
 
+/*
+ * Work around of a hw_reset functionality in mmc1
+ * by turning OFF & back ON the regulator supplying mmc1.
+ */
+void asus_mmc1_hw_reset(struct sdhci_host *host)
+{
+    struct regulator *vmmc;
+	int rc;
+
+    pr_info("%s: reset start\n", mmc_hostname(host->mmc));
+    vmmc = host->vmmc;
+    if (!vmmc)
+        return;
+
+    rc = regulator_disable(vmmc);
+    if (rc) {
+            pr_err("%s: %s disable regulator: failed: %d\n",
+                            mmc_hostname(host->mmc), __func__, rc);
+    }
+
+    /* 20ms delay */
+    usleep_range(20000, 22000);
+
+    rc = regulator_enable(vmmc);
+    if (rc) {
+            pr_err("%s: %s enable regulator: failed: %d\n",
+                            mmc_hostname(host->mmc), __func__, rc);
+    }
+
+    /* 10ms delay */
+    usleep_range(10000, 12000);
+    pr_info("%s: reset complete\n", mmc_hostname(host->mmc));
+}
+
 static void sdhci_pci_hw_reset(struct sdhci_host *host)
 {
 	struct sdhci_pci_slot *slot = sdhci_priv(host);
@@ -1813,6 +1861,10 @@ static void sdhci_pci_hw_reset(struct sdhci_host *host)
 		 */
 		usleep_range(300, 1000);
 	} else if (slot->host->mmc->caps & MMC_CAP_HW_RESET) {
+                if (slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_CLV_SDIO0) {
+                        asus_mmc1_hw_reset(host);
+                        return;
+                }
 		/* first set bit4 of power control register */
 		pwr = sdhci_readb(host, SDHCI_POWER_CONTROL);
 		pwr |= SDHCI_HW_RESET;
@@ -2018,6 +2070,13 @@ static int sdhci_pci_suspend(struct device *dev)
 		if (ret)
 			goto err_pci_suspend;
 	}
+
+	/*nick_hsiao:for TT304983 sometimes MMC driver resumes right after suspending because
+	other driver fails to suspend.
+	This behavior may cause some SD card init error -110 while resuming.
+	Workaround is prolonging time(50ms) between suspend/resume to reduce init error -110 possibility*/
+
+	msleep(50);
 
 	return 0;
 
@@ -2330,8 +2389,8 @@ static struct sdhci_pci_slot *sdhci_pci_probe_slot(
         if (slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_CLV_SDIO0) {
                 host->mmc->pm_caps &= ~MMC_PM_KEEP_POWER;
                 host->mmc->caps |= MMC_CAP_HW_RESET;
-                host->mmc->caps2 |= MMC_CAP2_BROKEN_VOLTAGE | MMC_CAP2_DETECT_ON_ERR  | MMC_CAP2_BROKEN_MAX_CLK;
-                 host->mmc->half_max_clk_count = REQ_COUNT_FMID;
+		host->mmc->caps2 |= MMC_CAP2_BROKEN_VOLTAGE | MMC_CAP2_DETECT_ON_ERR  | MMC_CAP2_BROKEN_MAX_CLK | MMC_CAP2_DEFERRED_RESUME;
+                host->mmc->half_max_clk_count = REQ_COUNT_FMID;
         }
         //<ASUS-Wade->
 

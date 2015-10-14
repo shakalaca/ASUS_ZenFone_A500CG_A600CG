@@ -452,11 +452,11 @@
 		};
 		static unsigned char i_CTPM_FW_GIS_New[]=
 		{
-			#include "hx85xx_20140926_ASUS_A502_GIS_D0507_02_08.i"
+			#include "hx85xx_20141027_ASUS_A502_GIS_D0507_02_09.i"
 		};
 		static unsigned char i_CTPM_FW_Toptouch[]=
 		{
-			#include "hx85xx_20140926_ASUS_A502_TOP_D0507_03_08.i"
+			#include "hx85xx_20141027_ASUS_A502_TOP_D0507_03_09.i"
 		};
 		#else
 		static unsigned char i_CTPM_FW[]=

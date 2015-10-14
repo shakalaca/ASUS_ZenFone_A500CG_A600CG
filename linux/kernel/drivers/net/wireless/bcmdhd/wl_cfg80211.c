@@ -2286,6 +2286,8 @@ __wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 
 	dhd_pub_t *dhd;
 
+	static s32 disconnect_flag = 0;
+
 	dhd = (dhd_pub_t *)(wl->pub);
 	if (dhd->op_mode & DHD_FLAG_HOSTAP_MODE) {
 		WL_ERR(("Invalid Scan Command at SoftAP mode\n"));
@@ -2408,9 +2410,12 @@ __wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 							DOT11_MNG_INTERWORKING_ID,
 							0, 0);
 
-						wldev_iovar_setint_bsscfg(ndev, "grat_arp", 0,
+						err = wldev_iovar_setint_bsscfg(ndev, "grat_arp", 0,
 							bssidx);
 						wl->wl11u = FALSE;
+						if (unlikely(err)) {
+                                                  		goto scan_out;
+                                                	}
 						/* we don't care about error */
 					}
 #endif /* WL11U */
@@ -2509,6 +2514,8 @@ __wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 scan_success:
 	busy_count = 0;
 
+	disconnect_flag = 0;
+
 	return 0;
 
 scan_out:
@@ -2542,10 +2549,22 @@ scan_out:
 			else
 				WL_ERR(("GET BSSID failed with %d\n", ret));
 
-			wl_cfg80211_scan_abort(wl);
+
+			if (!disconnect_flag) {
+				wl_cfg80211_disconnect(wiphy, ndev, DOT11_RC_DISASSOC_LEAVING);
+				disconnect_flag = 1;
+			} else {
+				WL_ERR(("%s: disconnect_flag = 1, send hang.\n", __FUNCTION__));
+				net_os_send_hang_message(ndev);
+				disconnect_flag = 0;
+			}
+
 		}
 	} else {
 		busy_count = 0;
+
+		disconnect_flag = 0;
+
 	}
 
 	wl_clr_drv_status(wl, SCANNING, ndev);

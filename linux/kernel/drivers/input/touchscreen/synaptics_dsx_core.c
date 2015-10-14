@@ -657,10 +657,17 @@ static ssize_t synaptics_rmi4_proj_tp_show(struct device *dev,
 	{
 		return snprintf(buf, PAGE_SIZE, "A600CG Ofilm\n");
 	}
+#ifdef A500CG_3rd_Touch_TP_YFO
+	else if (Read_TP_ID() == 3)	//A500 YFO:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+	{
+		return snprintf(buf, PAGE_SIZE, "A500CG YFO\n");
+	}
+#else
 	else if (Read_TP_ID() == 3)	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
 	{
 		return snprintf(buf, PAGE_SIZE, "A600CG JTouch\n");
 	}
+#endif
 	else
 	{
 		return snprintf(buf, PAGE_SIZE, "Error\n"); 
@@ -682,6 +689,9 @@ static ssize_t synaptics_rmi4_glove_mode_store(struct device *dev,
 {
 	unsigned int input;
 	int retval;
+//<ASUS_GPS+>
+	unsigned char wakeup_threshold;
+//<ASUS_GPS->
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
 	struct synaptics_rmi4_f12_ctrl_23 ctrl_23;
 	struct synaptics_rmi4_f12_ctrl_26 ctrl_26;
@@ -734,6 +744,48 @@ static ssize_t synaptics_rmi4_glove_mode_store(struct device *dev,
 	if (retval < 0)
 		return -EINVAL;
 //<ASUS_Glove2->
+
+//<ASUS_GPS+>
+	retval = synaptics_rmi4_reg_read(rmi4_data,
+			rmi4_data->f01_ctrl_base_addr + 3,
+			&wakeup_threshold,
+			sizeof(wakeup_threshold));
+	if (retval < 0)
+		return -EINVAL;
+
+	if (rmi4_data->glove_mode == 1) {
+		if (Read_TP_ID() == 2)		//A600 Ofilm:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,0)
+		{
+			wakeup_threshold = 10;
+		}
+		#ifdef A500CG_3rd_Touch_TP_YFO
+		#else
+		else if (Read_TP_ID() == 3)	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+		{
+			wakeup_threshold = 10;
+		}
+		#endif
+	} else {
+		if (Read_TP_ID() == 2)		//A600 Ofilm:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,0)
+		{
+			wakeup_threshold = 18;
+		}
+		#ifdef A500CG_3rd_Touch_TP_YFO
+		#else
+		else if (Read_TP_ID() == 3)	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+		{
+			wakeup_threshold = 20;
+		}
+		#endif
+	}
+
+	retval = synaptics_rmi4_reg_write(rmi4_data,
+			rmi4_data->f01_ctrl_base_addr + 3,
+			&wakeup_threshold,
+			sizeof(wakeup_threshold));
+	if (retval < 0)
+		return -EINVAL;
+//<ASUS_GPS->
 
 	return count;
 }
@@ -2976,6 +3028,16 @@ static ssize_t virtual_keys_show(struct kobject *kobj,
 			"\n" __stringify(EV_KEY) ":" __stringify(KEY_MENU) ":603:1333:130:60"  
 			"\n");
 	}
+#ifdef A500CG_3rd_Touch_TP_YFO
+	else if (Read_TP_ID() == 3)	//A500 YFO:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
+	{
+		return sprintf(buf,  
+			__stringify(EV_KEY) ":" __stringify(KEY_BACK) ":108:1345:130:104"  
+			"\n" __stringify(EV_KEY) ":" __stringify(KEY_HOME) ":359:1345:185:104"  
+			"\n" __stringify(EV_KEY) ":" __stringify(KEY_MENU) ":622:1345:130:104"  
+			"\n");
+	}
+#else
 	else if (Read_TP_ID() == 3)	//A600 JTouch:ID(11,1) = (GP_CORE_073, GP_CAMERA_S86) = (1,1)
 	{
 		return sprintf(buf,  
@@ -2984,6 +3046,7 @@ static ssize_t virtual_keys_show(struct kobject *kobj,
 			"\n" __stringify(EV_KEY) ":" __stringify(KEY_MENU) ":603:1333:130:60"  
 			"\n");
 	}
+#endif
 	else							//Others
 	{
 		return sprintf(buf,  
@@ -3638,13 +3701,13 @@ static void synaptics_rmi4_early_suspend(struct early_suspend *h)
 
 		synaptics_rmi4_free_fingers(rmi4_data);
 
-		mutex_lock(&exp_data.mutex);
-		if (!list_empty(&exp_data.list)) {
-			list_for_each_entry(exp_fhandler, &exp_data.list, link)
-				if (exp_fhandler->exp_fn->early_suspend != NULL)
-					exp_fhandler->exp_fn->early_suspend(rmi4_data);
-		}
-		mutex_unlock(&exp_data.mutex);
+//		mutex_lock(&exp_data.mutex);
+//		if (!list_empty(&exp_data.list)) {
+//			list_for_each_entry(exp_fhandler, &exp_data.list, link)
+//				if (exp_fhandler->exp_fn->early_suspend != NULL)
+//					exp_fhandler->exp_fn->early_suspend(rmi4_data);
+//		}
+//		mutex_unlock(&exp_data.mutex);
 
 		wake_unlock(&rmi4_data->wake_lock);
 
@@ -3731,13 +3794,13 @@ static void synaptics_rmi4_late_resume(struct early_suspend *h)
 				&ctrl_20.data,
 				sizeof(ctrl_20.data));
 
-		mutex_lock(&exp_data.mutex);
-		if (!list_empty(&exp_data.list)) {
-			list_for_each_entry(exp_fhandler, &exp_data.list, link)
-				if (exp_fhandler->exp_fn->late_resume != NULL)
-					exp_fhandler->exp_fn->late_resume(rmi4_data);
-		}
-		mutex_unlock(&exp_data.mutex);
+//		mutex_lock(&exp_data.mutex);
+//		if (!list_empty(&exp_data.list)) {
+//			list_for_each_entry(exp_fhandler, &exp_data.list, link)
+//				if (exp_fhandler->exp_fn->late_resume != NULL)
+//					exp_fhandler->exp_fn->late_resume(rmi4_data);
+//		}
+//		mutex_unlock(&exp_data.mutex);
 
 		wake_unlock(&rmi4_data->wake_lock);
 
@@ -3843,19 +3906,19 @@ static int synaptics_rmi4_suspend(struct device *dev)
 				&ctrl_20.data,
 				sizeof(ctrl_20.data));
 */
-		synaptics_rmi4_free_fingers(rmi4_data);
+//		synaptics_rmi4_free_fingers(rmi4_data);
 
-		mutex_lock(&exp_data.mutex);
-		if (!list_empty(&exp_data.list)) {
-			list_for_each_entry(exp_fhandler, &exp_data.list, link)
-				if (exp_fhandler->exp_fn->suspend != NULL)
-					exp_fhandler->exp_fn->suspend(rmi4_data);
-		}
-		mutex_unlock(&exp_data.mutex);
+//		mutex_lock(&exp_data.mutex);
+//		if (!list_empty(&exp_data.list)) {
+//			list_for_each_entry(exp_fhandler, &exp_data.list, link)
+//				if (exp_fhandler->exp_fn->suspend != NULL)
+//					exp_fhandler->exp_fn->suspend(rmi4_data);
+//		}
+//		mutex_unlock(&exp_data.mutex);
 
 //		wake_unlock(&rmi4_data->wake_lock);
 
-		return;
+		return 0;
 	} else {
 #endif
 //<ASUS_DTP->
@@ -3929,17 +3992,17 @@ static int synaptics_rmi4_resume(struct device *dev)
 				&ctrl_20.data,
 				sizeof(ctrl_20.data));
 */
-		mutex_lock(&exp_data.mutex);
-		if (!list_empty(&exp_data.list)) {
-			list_for_each_entry(exp_fhandler, &exp_data.list, link)
-				if (exp_fhandler->exp_fn->resume != NULL)
-					exp_fhandler->exp_fn->resume(rmi4_data);
-		}
-		mutex_unlock(&exp_data.mutex);
+//		mutex_lock(&exp_data.mutex);
+//		if (!list_empty(&exp_data.list)) {
+//			list_for_each_entry(exp_fhandler, &exp_data.list, link)
+//				if (exp_fhandler->exp_fn->resume != NULL)
+//					exp_fhandler->exp_fn->resume(rmi4_data);
+//		}
+//		mutex_unlock(&exp_data.mutex);
 
 //		wake_unlock(&rmi4_data->wake_lock);
 
-		return;
+		return 0;
 	} else {
 /*
 		retval = synaptics_rmi4_reg_read(rmi4_data,

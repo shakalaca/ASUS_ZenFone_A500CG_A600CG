@@ -9,6 +9,8 @@ source "drivers/external_drivers/camera/drivers/media/i2c/imx135VB/Kconfig"
 source "drivers/external_drivers/camera/drivers/media/i2c/imx219/Kconfig"
 source "drivers/external_drivers/camera/drivers/media/i2c/imx111/Kconfig"
 source "drivers/external_drivers/camera/drivers/media/i2c/t4k37/Kconfig"
+source "drivers/external_drivers/camera/drivers/media/i2c/t4k35/Kconfig"
+source "drivers/external_drivers/camera/drivers/media/i2c/t4k35_180/Kconfig"
 
 config VIDEO_OV9724
        tristate "OVT ov9724 sensor support"
@@ -94,7 +96,7 @@ config VIDEO_GC0339
          This is a Video4Linux2 sensor-level driver for the Gcoreinc
          gc0339 0.3 Mpixel camera.
 
-         gc0339 is video camrea sensor.
+         gc0339 is video camera sensor.
 
          It currently only works with the atomisp driver.
 
@@ -105,7 +107,7 @@ config VIDEO_GC0310
          This is a Video4Linux2 sensor-level driver for the Gcoreinc
          gc0310 0.3 Mpixel camera.
 
-         gc0310 is video camrea sensor.
+         gc0310 is video camera sensor.
 
          It currently only works with the atomisp driver.
 
@@ -117,6 +119,17 @@ config VIDEO_HM2056
          hm2056 2M camera.
 
          hm2056 is video camrea sensor.
+
+config VIDEO_GC2155
+       tristate "Gcoreinc gc2155 sensor support"
+       depends on I2C && VIDEO_V4L2
+       ---help---
+         This is a Video4Linux2 sensor-level driver for the Gcoreinc
+         gc2155 2 Mpixel camera.
+
+         gc2155 is video camera sensor.
+
+         It currently only works with the atomisp driver.
 
 config VIDEO_MT9V113
        tristate "Aptina mt9v113 sensor support"

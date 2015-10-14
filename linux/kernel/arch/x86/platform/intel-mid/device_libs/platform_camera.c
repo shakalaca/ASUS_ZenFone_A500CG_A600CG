@@ -27,10 +27,10 @@
 #ifdef CONFIG_CRYSTAL_COVE
 #include <linux/mfd/intel_mid_pmic.h>
 #endif
-/*ChungYi : 
+/*ChungYi :
    For A500CG , we don't use this CAM_0_AF_EN for power-up VCM,
    So it doesn't need to request CAM_0_AF_EN anymore.
-*/	
+*/
 #define A500CG
 /*
  * TODO: Check whether we can move this info to OEM table or
@@ -44,14 +44,16 @@ const struct intel_v4l2_subdev_id v4l2_ids[] = {
 	{"imx135fuji", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
 	{"imx134", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
 	{"imx132", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
-    	{"hm2056", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
+    {"hm2056", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
+    {"gc2155", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
+    {"gc0339", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
     {"gc0310", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
-    	{"gc0339", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
-        {"gc0310", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
 	{"imx111", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
 	{"imx219", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
 	{"mn34130", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
 	{"t4k37", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
+	{"t4k35", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
+	{"t4k35_180", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
 	{"ov9724", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
 	{"ov2722", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
 	{"ov5693", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
@@ -62,8 +64,8 @@ const struct intel_v4l2_subdev_id v4l2_ids[] = {
 	{"ap1302", SOC_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
 	{"lm3554", LED_FLASH, -1},
 	{"lm3559", LED_FLASH, -1},
-//ChungYi	
-	{"rt8515", LED_FLASH, -1},	
+//ChungYi
+	{"rt8515", LED_FLASH, -1},
 	{"lm3560", LED_FLASH, -1},
 	{},
 };
@@ -383,11 +385,11 @@ static void atomisp_unregister_acpi_devices(struct atomisp_platform_data *pdata)
 		"2-0010",	/* imx1xx driver*/
 		"2-0036",	/* ov2722 driver*/
 		"2-0010",	/* CHT OV5693 */
-		"4-003c",	/* CHT AP1302 */
+		"4-003c",	/* CHT AP1302 gc2155*/
 		"1-0053",	/* CHT lm3554 */
 		"4-0021",       /* gc0339 */
 		"4-0037",       /* mn34130 */
-        "4-0036",       /* t4k37 */
+        "4-0036",       /* t4k37/t4k35 */
 
 #if 0
 		"INTCF0B:00",	/* From ACPI ov2722 */

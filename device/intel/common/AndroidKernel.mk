@@ -82,9 +82,6 @@ KERNEL_VERSION_FILE := $(KERNEL_OUT_DIR)/include/config/kernel.release
 KERNEL_VERSION_FILE_KDUMP := $(KERNEL_OUT_DIR_KDUMP)/include/config/kernel.release
 
 $(KERNEL_CONFIG): $(KERNEL_DEFCONFIG) $(wildcard $(KERNEL_DIFFCONFIG))
-	@echo PATH $(PATH)
-	@echo KERNEL_PATH $(KERNEL_PATH)
-	@echo KERNEL_BLD_ENV $(KERNEL_BLD_ENV)	
 	@echo Regenerating kernel config $(KERNEL_OUT_DIR)
 	@mkdir -p $(KERNEL_OUT_DIR)
 	@cat $^ > $@

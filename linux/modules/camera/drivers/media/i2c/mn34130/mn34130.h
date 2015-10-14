@@ -112,7 +112,7 @@ struct mn34130_af_data {
 };
 
 /* Defines for lens/VCM */
-#define MN34130_FOCAL_LENGTH_NUM	369	/*3.69mm*/
+#define MN34130_FOCAL_LENGTH_NUM	378	/*3.78mm*/
 #define MN34130_FOCAL_LENGTH_DEM	100
 #define MN34130_F_NUMBER_DEFAULT_NUM	20
 #define MN34130_F_NUMBER_DEM	10

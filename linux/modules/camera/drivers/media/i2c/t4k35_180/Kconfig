@@ -1,0 +1,9 @@
+config VIDEO_T4K35_180
+	tristate "Toshiba t4k35 8Mp raw sensor with Larview module 180 degree rotation"
+	depends on I2C && VIDEO_V4L2
+	---help---
+	  This is a Video4Linux2 sensor-level driver for the Toshiba
+	  RAW sensor.
+
+	  It currently depends on internal V4L2 extensions defined in
+	  atomisp driver.

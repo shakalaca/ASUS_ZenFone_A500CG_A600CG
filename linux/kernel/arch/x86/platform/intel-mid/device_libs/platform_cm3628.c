@@ -20,10 +20,10 @@ void *accel_cm3628_platform_data(void *info)
                     .power = NULL,
                     .slave_addr = CM36283_slave_add,
 					// Modify threshold settings for new PS initial setting.
-					.ps_close_thd_set = 0x55,        
+                    .ps_close_thd_set = 0x55,        
                     .ps_away_thd_set = 0x49,
+
                     .ls_cmd = CM36283_ALS_IT_160ms | CM36283_ALS_GAIN_2,     
-                   
                     
                     .ps_conf1_val = CM36283_PS_ITB_1 | CM36283_PS_DR_1_320 | CM36283_PS_IT_1_6T | 
 					                CM36283_PS_PERS_2 | CM36283_PS_RES_1 |CM36283_PS_INT_IN_AND_OUT,

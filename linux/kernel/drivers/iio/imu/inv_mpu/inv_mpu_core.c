@@ -1993,15 +1993,49 @@ static ssize_t get_mpu6500_gsensor_rawdata(struct device *dev, struct device_att
 	return sprintf(buf, "%d , %d , %d\n",rawdata_x, rawdata_y, rawdata_z);
 }
 
+static ssize_t get_mpu6500_gsensor_rawdata_for_camera(struct device *dev, struct device_attribute *devattr, char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	uint8_t buffer[6];
+	int err=0;
+	int rawdata_x=0,rawdata_y=0,rawdata_z=0;
+    int cam_x, cam_y, cam_z;
+
+	buffer[0] = REG_RAW_ACCEL;
+	err = mpu6500_i2c_rxdata(client, &(buffer[0]), 6);
+	if (err < 0){
+		printk("get_mpu6500_gsensor_rawdata_for_camera fail\n");
+		return err;
+	}
+	printk("Accel rawdataX : (%d) | (%d)\n",buffer[0], buffer[1]);
+	printk("Accel rawdataY : (%d) | (%d)\n",buffer[2], buffer[3]);
+	printk("Accel rawdataZ : (%d) | (%d)\n",buffer[4], buffer[5]);
+	rawdata_x = ( buffer[1] | (buffer[0]<<8) );
+	rawdata_y = ( buffer[3] | (buffer[2]<<8) );
+	rawdata_z = ( buffer[5] | (buffer[4]<<8) );
+	if(rawdata_x>0x7FFF)
+		rawdata_x = rawdata_x-0x10000;
+	if(rawdata_y>0x7FFF)
+		rawdata_y = rawdata_y-0x10000;
+	if(rawdata_z>0x7FFF)
+		rawdata_z = rawdata_z-0x10000;
+    cam_x = ((rawdata_y*(-1))*98)/16384;
+    cam_y = (rawdata_x*98)/16384;
+    cam_z = (rawdata_z*98)/16384;
+    printk("Accelerometer report to camera %d %d %d\n", cam_x, cam_y, cam_z);
+    return sprintf(buf, "%d %d %d\n", cam_x, cam_y, cam_z);
+}
 
 static DEVICE_ATTR(state, S_IRUGO, get_mpu6500_state, NULL);
 static DEVICE_ATTR(gsensor_rawdata, S_IRUGO, get_mpu6500_gsensor_rawdata, NULL);
 static DEVICE_ATTR(gyro_rawdata, S_IRUGO, get_mpu6500_gyro_rawdata, NULL);
+static DEVICE_ATTR(camera_rawdata, S_IRUGO, get_mpu6500_gsensor_rawdata_for_camera, NULL);
 
 static struct attribute *i2c_mpu6500_attributes[] = {
 	&dev_attr_state.attr,
 	&dev_attr_gyro_rawdata.attr,
 	&dev_attr_gsensor_rawdata.attr,
+    &dev_attr_camera_rawdata.attr,
 	NULL
 };
 

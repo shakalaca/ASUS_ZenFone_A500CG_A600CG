@@ -210,13 +210,6 @@ static struct rt5647_init_reg init_list[] = {
 		{ RT5647_MONO_OUT       , 0x0800 }, //MX-04
 	#endif
 
-	//A502CG
-	#ifdef CONFIG_A502CG_AUDIO_SETTING
-		{ RT5647_CJ_CTRL1       , 0x1c06 },
-		{ RT5647_MONO_OUT       , 0x1200 },
-		{ RT5647_CLSD_OUT_CTRL  , 0x03a8 },
-	#endif
-
 	{ RT5647_CJ_CTRL3        , 0xc000 },
 	{ RT5647_MONO_ADC_DIG_VOL, 0xafaf },
 };
@@ -942,6 +935,7 @@ EXPORT_SYMBOL(rt5647_set_a2dp_to_spk_delay);
 
 static const DECLARE_TLV_DB_SCALE(out_vol_tlv, -4650, 150, 0);
 static const DECLARE_TLV_DB_SCALE(dac_vol_tlv, -65625, 375, 0);
+static const DECLARE_TLV_DB_SCALE(dac_gain_tlv, -900, 300, 0);
 static const DECLARE_TLV_DB_SCALE(in_vol_tlv, -3450, 150, 0);
 static const DECLARE_TLV_DB_SCALE(adc_vol_tlv, -17625, 375, 0);
 static const DECLARE_TLV_DB_SCALE(adc_bst_tlv, 0, 1200, 0);
@@ -1074,6 +1068,21 @@ static const struct snd_kcontrol_new rt5647_snd_controls[] = {
 	SOC_DOUBLE_TLV("Mono DAC Playback Volume", RT5647_DAC2_DIG_VOL,
 			RT5647_L_VOL_SFT, RT5647_R_VOL_SFT,
 			175, 0, dac_vol_tlv),
+	/* DAC Digital Gain */
+	SOC_DOUBLE_R_TLV("HPMIX DAC1 Gain", RT5647_HPMIXL_CTRL,
+			RT5647_HPMIXR_CTRL, 8, 3, 1, dac_gain_tlv),
+	SOC_DOUBLE_R_TLV("HPMIX DAC2 Gain", RT5647_HPMIXL_CTRL,
+			RT5647_HPMIXR_CTRL, 6, 3, 1, dac_gain_tlv),
+	SOC_DOUBLE_R_TLV("HPMIX IN Gain", RT5647_HPMIXL_CTRL,
+			RT5647_HPMIXR_CTRL, 4, 3, 1, dac_gain_tlv),
+	SOC_DOUBLE_R_TLV("HPMIX BST3 Gain", RT5647_HPMIXL_CTRL,
+			RT5647_HPMIXR_CTRL, 2, 3, 1, dac_gain_tlv),
+	SOC_DOUBLE_R_TLV("HPMIX BST2 Gain", RT5647_HPMIXL_CTRL,
+			RT5647_HPMIXR_CTRL, 0, 3, 1, dac_gain_tlv),
+	SOC_SINGLE_TLV("HPMIXL BST1 Gain", RT5647_HPMIXL_CTRL,
+			0, 3, 1, dac_gain_tlv),
+	SOC_SINGLE_TLV("HPMIXR BST2 Gain", RT5647_HPMIXR_CTRL,
+			0, 3, 1, dac_gain_tlv),
 	/* IN1/IN2 Control */
 	SOC_ENUM("IN1 Mode Control",  rt5647_in1_mode_enum),
 	SOC_SINGLE_TLV("IN1 Boost", RT5647_CJ_CTRL1,
@@ -3753,7 +3762,7 @@ static ssize_t rt5647_codec_show(struct device *dev,
 		if (!val)
 			continue;
 		cnt += snprintf(buf + cnt, RT5647_REG_DISP_LEN,
-				"#rng%02x  #rv%04x  #rd0\n", i, val);
+				"%04x: %04x\n", i, val);
 	}
 	codec->cache_bypass = 0; //bard 3-25
 	if (cnt >= PAGE_SIZE)
@@ -3807,6 +3816,122 @@ static ssize_t rt5647_codec_store(struct device *dev,
 }
 
 static DEVICE_ATTR(codec_reg, 0666, rt5647_codec_show, rt5647_codec_store);
+
+static ssize_t rt5647_codec_adb_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct rt5647_priv *rt5647 = i2c_get_clientdata(client);
+	struct snd_soc_codec *codec = rt5647->codec;
+	unsigned int val;
+	int cnt = 0, i;
+
+	for (i = 0; i < rt5647->adb_reg_num; i++) {
+		if (cnt + RT5647_REG_DISP_LEN >= PAGE_SIZE)
+			break;
+
+		switch (rt5647->adb_reg_addr[i] & 0x30000) {
+		case 0x10000:
+			val = rt5647_index_read(codec, rt5647->adb_reg_addr[i] & 0xffff);
+			break;
+		default:
+			val = snd_soc_read(codec, rt5647->adb_reg_addr[i] & 0xffff);
+		}
+
+		cnt += snprintf(buf + cnt, RT5647_REG_DISP_LEN, "%05x: %04x\n",
+			rt5647->adb_reg_addr[i], val);
+	}
+
+	return cnt;
+}
+
+static ssize_t rt5647_codec_adb_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct rt5647_priv *rt5647 = i2c_get_clientdata(client);
+	struct snd_soc_codec *codec = rt5647->codec;
+	unsigned int value = 0;
+	int i = 2, j = 0;
+
+	if (buf[0] == 'R' || buf[0] == 'r') {
+		while (j < 0x100 && i < count) {
+			rt5647->adb_reg_addr[j] = 0;
+			value = 0;
+			for ( ; i < count; i++) {
+				if (*(buf + i) <= '9' && *(buf + i) >= '0')
+					value = (value << 4) | (*(buf + i) - '0');
+				else if (*(buf + i) <= 'f' && *(buf + i) >= 'a')
+					value = (value << 4) | ((*(buf + i) - 'a')+0xa);
+				else if (*(buf + i) <= 'F' && *(buf + i) >= 'A')
+					value = (value << 4) | ((*(buf + i) - 'A')+0xa);
+				else
+					break;
+			}
+			i++;
+
+			rt5647->adb_reg_addr[j] = value;
+			j++;
+		}
+		rt5647->adb_reg_num = j;
+	} else if (buf[0] == 'W' || buf[0] == 'w') {
+		while (j < 0x100 && i < count) {
+			/* Get address */
+			rt5647->adb_reg_addr[j] = 0;
+			value = 0;
+			for ( ; i < count; i++) {
+				if (*(buf + i) <= '9' && *(buf + i) >= '0')
+					value = (value << 4) | (*(buf + i) - '0');
+				else if (*(buf + i) <= 'f' && *(buf + i) >= 'a')
+					value = (value << 4) | ((*(buf + i) - 'a')+0xa);
+				else if (*(buf + i) <= 'F' && *(buf + i) >= 'A')
+					value = (value << 4) | ((*(buf + i) - 'A')+0xa);
+				else
+					break;
+			}
+			i++;
+			rt5647->adb_reg_addr[j] = value;
+
+			/* Get value */
+			rt5647->adb_reg_value[j] = 0;
+			value = 0;
+			for ( ; i < count; i++) {
+				if (*(buf + i) <= '9' && *(buf + i) >= '0')
+					value = (value << 4) | (*(buf + i) - '0');
+				else if (*(buf + i) <= 'f' && *(buf + i) >= 'a')
+					value = (value << 4) | ((*(buf + i) - 'a')+0xa);
+				else if (*(buf + i) <= 'F' && *(buf + i) >= 'A')
+					value = (value << 4) | ((*(buf + i) - 'A')+0xa);
+				else
+					break;
+			}
+			i++;
+			rt5647->adb_reg_value[j] = value;
+
+			j++;
+		}
+
+		rt5647->adb_reg_num = j;
+
+		for (i = 0; i < rt5647->adb_reg_num; i++) {
+			switch (rt5647->adb_reg_addr[i] & 0x30000) {
+			case 0x10000:
+				rt5647_index_write(codec,
+					rt5647->adb_reg_addr[i] & 0xffff,
+					rt5647->adb_reg_value[i]);
+				break;
+			default:
+				snd_soc_write(codec,
+					rt5647->adb_reg_addr[i] & 0xffff,
+					rt5647->adb_reg_value[i]);
+			}
+		}
+
+	}
+
+	return count;
+}
+static DEVICE_ATTR(codec_reg_adb, 0664, rt5647_codec_adb_show, rt5647_codec_adb_store);
 
 static int rt5647_set_bias_level(struct snd_soc_codec *codec,
 			enum snd_soc_bias_level level)
@@ -4117,6 +4242,13 @@ static int rt5647_probe(struct snd_soc_codec *codec)
 	if (ret != 0) {
 		dev_err(codec->dev,
 			"Failed to create codex_reg sysfs files: %d\n", ret);
+		return ret;
+	}
+
+	ret = device_create_file(codec->dev, &dev_attr_codec_reg_adb);
+	if (ret != 0) {
+		dev_err(codec->dev,
+			"Failed to create codec_reg_adb sysfs files: %d\n", ret);
 		return ret;
 	}
 

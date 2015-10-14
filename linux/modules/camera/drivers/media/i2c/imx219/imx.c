@@ -470,7 +470,7 @@ static long imx_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		printk("[AsusVCM] Set postion to %d\n",input_arg);
 		return 0;
 	case ATOMISP_TEST_CMD_GET_VCM_POS:
-		ret = dev->vcm_driver->q_focus_abs(sd, &value);	
+		ret = dev->vcm_driver->q_focus_abs(sd, &value);
 		*(int*) arg = value;
 		printk("[AsusVCM] Get VCM postion %d\n",*(int*) arg);
 		return 0;
@@ -1227,6 +1227,18 @@ static int distance(struct imx_resolution const *res, u32 w, u32 h)
 	return w_ratio + h_ratio;
 }
 
+static int distance_without_ratio(struct imx_resolution const *res, u32 w, u32 h)
+{
+	u32 w_ratio = ((res->width<<13)/w);
+	u32 h_ratio = ((res->height<<13)/h);
+
+	if ((w_ratio < (s32)8192) || (h_ratio < (s32)8192)  /*||
+		(match > LARGEST_ALLOWED_RATIO_MISMATCH) */)
+		return -1;
+
+	return w_ratio + h_ratio;
+}
+
 /* Return the nearest higher resolution index */
 static int nearest_resolution_index(struct v4l2_subdev *sd, int w, int h)
 {
@@ -1249,6 +1261,23 @@ static int nearest_resolution_index(struct v4l2_subdev *sd, int w, int h)
 		if (dist < min_dist) {
 			min_dist = dist;
 			idx = i;
+		}
+	}
+//For those odd ratio resolution.
+	if(idx == -1) {
+		for (i = 0; i < dev->entries_curr_table; i++) {
+			tmp_res = &dev->curr_res_table[i];
+			dist = distance_without_ratio(tmp_res, w, h);
+			if (dist == -1)
+				continue;
+			//Return 2576x1456 only when ISP exactly require 2576x1456(only for 1080p).
+			if((dev->curr_res_table[i].width == 2576 && dev->curr_res_table[i].height == 1456) &&
+					(w != 2576 || h != 1456))
+				continue;
+			if (dist < min_dist) {
+				min_dist = dist;
+				idx = i;
+			}
 		}
 	}
 

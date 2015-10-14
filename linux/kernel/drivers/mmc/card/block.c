@@ -1980,6 +1980,13 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 		case MMC_BLK_RETRY:
 			if (retry++ < 5)
 				break;
+            /* Some card declares CMD23 supports in SCR.33,
+             * but actually, it doesn't response CMD23. */
+            if (mmc_card_sd(card) && (brq->sbc.opcode == MMC_SET_BLOCK_COUNT) &&
+                (card->sd_bus_speed != UHS_SDR104_BUS_SPEED)) {
+                card->quirks |= MMC_QUIRK_BLK_NO_CMD23;
+                pr_info("%s: disable CMD23 due to card doesn't response it\n", mmc_hostname(card->host));
+            }
 			/* Fall through */
 		case MMC_BLK_ABORT:
 			if (!mmc_blk_reset(md, card->host, type))
@@ -2543,7 +2550,8 @@ static int mmc_blk_probe(struct mmc_card *card)
 	mmc_fixup_device(card, blk_fixups);
 
 #ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
-	mmc_set_bus_resume_policy(card->host, 1);
+	if (card->host->caps2 & MMC_CAP2_DEFERRED_RESUME)
+		mmc_set_bus_resume_policy(card->host, 1);
 #endif
 	if (mmc_add_disk(md))
 		goto out;

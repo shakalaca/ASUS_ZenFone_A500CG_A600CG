@@ -35,6 +35,7 @@
 #include <asm/intel_mid_rpmsg.h>
 #include <asm/apb_timer.h>
 #include <asm/reboot.h>
+#include <asm/proto.h>
 #include "intel_mid_weak_decls.h"
 #include "intel_soc_pmu.h"
 #include <linux/proc_fs.h>
@@ -90,10 +91,25 @@ static void intel_mid_reboot(void)
 	if (intel_scu_ipc_fw_update()) {
 		pr_debug("intel_scu_fw_update: IFWI upgrade failed...\n");
 	}
-	if (force_cold_boot)
-		rpmsg_send_generic_simple_command(IPCMSG_COLD_BOOT, 0);
-	else
-		rpmsg_send_generic_simple_command(IPCMSG_COLD_RESET, 0);
+	if (reboot_force) {
+		if (force_cold_boot)
+			rpmsg_send_generic_simple_command(IPCMSG_COLD_BOOT, 0);
+		else
+			rpmsg_send_generic_simple_command(IPCMSG_COLD_RESET, 0);
+	} else {
+		/* system_state is SYSTEM_RESTART now,
+		 * polling to wait for SCU not busy.
+		 */
+		while (intel_scu_ipc_check_status())
+			udelay(10);
+
+		if (force_cold_boot)
+			intel_scu_ipc_raw_cmd(IPCMSG_COLD_BOOT,
+				0, NULL, 0, NULL, 0, 0, 0);
+		else
+			intel_scu_ipc_raw_cmd(IPCMSG_COLD_RESET,
+				0, NULL, 0, NULL, 0, 0, 0);
+	}
 }
 
 static unsigned long __init intel_mid_calibrate_tsc(void)
@@ -287,6 +303,13 @@ static const struct file_operations sim_id_proc_fops = {
         .llseek = seq_lseek,
         .release = single_release,
 };
+
+void set_force_cold_boot(int cold_reboot)
+{
+        force_cold_boot = cold_reboot;
+        pr_info("%s: force_cold_boot=%d\n",  __func__, force_cold_boot);
+}
+EXPORT_SYMBOL(set_force_cold_boot);
 
 
 static int __init intel_mid_platform_post_init(void)

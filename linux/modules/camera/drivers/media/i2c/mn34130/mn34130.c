@@ -891,6 +891,19 @@ static int distance(struct mn34130_resolution const *res, const u32 w,
 	return w_ratio + h_ratio;
 }
 
+static int distance_without_ratio(struct mn34130_resolution const *res, const u32 w,
+				const u32 h)
+{
+	u32 w_ratio = ((res->width << 13) / w);
+	u32 h_ratio = ((res->height << 13) / h);
+	// s32 match = abs(((w_ratio << 13) / h_ratio) - ((int) 8192));
+
+	if ((w_ratio < (s32) 8192) || (h_ratio < (s32) 8192)
+		/*|| (match > LARGEST_ALLOWED_RATIO_MISMATCH)*/)
+		return -1;
+
+	return w_ratio + h_ratio;
+}
 /*
  * Returns the nearest higher resolution index.
  * @w: width
@@ -917,6 +930,20 @@ static int nearest_resolution_index(struct v4l2_subdev *sd, int w, int h)
 		if (dist < min_dist) {
 			min_dist = dist;
 			idx = i;
+		}
+	}
+
+	if(idx == -1){
+		for (i = 0; i < dev->entries_curr_table; i++) {
+			tmp_res = &dev->curr_res_table[i];
+			dist = distance_without_ratio(tmp_res, w, h);
+			if (dist == -1)
+				continue;
+
+			if (dist < min_dist) {
+				min_dist = dist;
+				idx = i;
+			}
 		}
 	}
 

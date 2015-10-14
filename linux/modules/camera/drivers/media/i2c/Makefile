@@ -8,6 +8,8 @@ obj-$(CONFIG_VIDEO_IMX219)     += imx219/
 obj-$(CONFIG_VIDEO_IMXVB)      += imx135VB/
 obj-$(CONFIG_VIDEO_OV5693)     += ov5693/
 obj-$(CONFIG_VIDEO_T4K37)      += t4k37/
+obj-$(CONFIG_VIDEO_T4K35)      += t4k35/
+obj-$(CONFIG_VIDEO_T4K35_180)  += t4k35_180/
 
 obj-$(CONFIG_VIDEO_MT9M114)    += mt9m114.o
 obj-$(CONFIG_VIDEO_MT9E013)    += mt9e013/
@@ -31,6 +33,7 @@ obj-$(CONFIG_VIDEO_S5K8AAY)    += s5k8aay.o
 CFLAGS_s5k8aay.o += -Werror
 
 obj-$(CONFIG_VIDEO_HM2056)     += hm2056.o
+obj-$(CONFIG_VIDEO_GC2155)     += gc2155.o
 obj-$(CONFIG_VIDEO_GC0339)     += gc0339.o
 obj-$(CONFIG_VIDEO_GC0310)     += gc0310.o
 

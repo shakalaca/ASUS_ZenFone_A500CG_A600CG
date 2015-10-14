@@ -808,19 +808,17 @@ static void psensor_initial_cmd(struct CM36283_info *lpi)
 			// change initial settings according to vendor's suggestion.
 			lpi->ps_conf1_val = 0x03d7;
 			lpi->ps_conf3_val = 0x0210;
-			
-			_CM36283_I2C_Write_Word(lpi->slave_addr, PS_THDL, 130);
-			_CM36283_I2C_Write_Word(lpi->slave_addr, PS_THDH, 160);
 		}
 		else
 		{
 			lpi->ps_conf1_val |= CM36283_PS_SD;
-			lpi->ps_conf1_val &= CM36283_PS_INT_MASK;
-		
-			_CM36283_I2C_Write_Word(lpi->slave_addr, PS_THDL, lpi->ps_away_thd_set);
-			_CM36283_I2C_Write_Word(lpi->slave_addr, PS_THDH, lpi->ps_close_thd_set);
+			lpi->ps_conf1_val &= CM36283_PS_INT_MASK;	
 		}
+		
+		_CM36283_I2C_Write_Word(lpi->slave_addr, PS_THDL, lpi->ps_away_thd_set);
+		_CM36283_I2C_Write_Word(lpi->slave_addr, PS_THDH, lpi->ps_close_thd_set);
 	}
+	
 	_CM36283_I2C_Write_Word(lpi->slave_addr, PS_CONF1, lpi->ps_conf1_val);   
     _CM36283_I2C_Write_Word(lpi->slave_addr, PS_CONF3, lpi->ps_conf3_val);
 	
@@ -910,25 +908,24 @@ static int psensor_release(struct inode *inode, struct file *file)
 static int psensor_modi_xtalk(struct CM36283_info *lpi, int set)
 {
 	int ret = 0;
-	uint16_t ps_raw;
+	uint16_t ps_raw = 0;
 	
 	D("[PS][CM36283] %s, set = %d\n", __func__, set);
 	if (set)
 	{
-		msleep(100);
+		D("[PS][CM36283] clean PS_CANC reg.\n");
+		_CM36283_I2C_Write_Word(lpi->slave_addr, PS_CANC, 0);
+		
+		// wait for data ready
+		msleep(200);	
 		ret = get_ps_adc_value(&ps_raw);
 		if (!ret)
-		{
-			D("[PS][CM36283] ps_raw = %d\n", ps_raw);
+		{	
+			D("[PS][CM36283] xtalk ps_raw = %d\n", ps_raw);
 			_CM36283_I2C_Write_Word(lpi->slave_addr, PS_CANC, ps_raw);
 		}
 	}
-	else
-	{
-		D("[PS][CM36283] clean PS_CANC reg.\n");
-		_CM36283_I2C_Write_Word(lpi->slave_addr, PS_CANC, 0);
-	}
-	
+
 	return ret;
 }
 
@@ -936,7 +933,6 @@ static long psensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 {
 	int val;
 	int rc ;
-	int ret;
 	struct CM36283_info *lpi = lp_info_cm36283;
 	char enPcalibration_flag = 0 ;
 	void __user *argp = (void __user *)arg;
@@ -946,21 +942,11 @@ static long psensor_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 	case CAPELLA_CM3602_IOCTL_ENABLE:
 		if (get_user(val, (unsigned long __user *)arg))
 			return -EFAULT;
-
 		if (val){
-			ret = psensor_enable(lpi);
-			if (ret)
-				return ret;
-			ret = psensor_modi_xtalk(lpi, 1);
-			return ret; 
+			return psensor_enable(lpi);
 		}else{
-			ret = psensor_disable(lpi);
-			if (ret)
-				return ret;
-			ret = psensor_modi_xtalk(lpi, 0);
-			return ret;
+			return psensor_disable(lpi);
 		}
-
 		break;
 	case CAPELLA_CM3602_IOCTL_GET_ENABLED:
 		return put_user(lpi->ps_enable, (unsigned long __user *)arg);
@@ -2091,8 +2077,18 @@ static int CM36283_probe (struct i2c_client *client,
 	lpi->adc_table = pdata->levels;
 	lpi->power = pdata->power;
 	lpi->slave_addr = pdata->slave_addr;
-	lpi->ps_away_thd_set = pdata->ps_away_thd_set;
-	lpi->ps_close_thd_set = pdata->ps_close_thd_set;	
+	
+	// set a502cg initial ps thresholds value for non-calibration device
+	if (Read_PROJ_ID() == PROJ_ID_A502CG)
+	{
+		lpi->ps_away_thd_set = 9;
+		lpi->ps_close_thd_set = 23;	
+	}
+	else
+	{
+		lpi->ps_away_thd_set = pdata->ps_away_thd_set;
+		lpi->ps_close_thd_set = pdata->ps_close_thd_set;	
+	}
 	lpi->ps_conf1_val = pdata->ps_conf1_val;
     if (Read_PROJ_ID() == PROJ_ID_A502CG){
         lpi->ps_conf1_val = CM36283_PS_ITB_1  | CM36283_PS_DR_1_320 | CM36283_PS_IT_1T | 
@@ -2554,8 +2550,10 @@ static int control_and_report( struct CM36283_info *lpi, uint8_t mode, uint16_t 
         int ps_status = 0;
 
   if( mode == CONTROL_PS ){
-      ps_status = PS_CLOSE_AND_AWAY;   
-
+      ps_status = PS_CLOSE_AND_AWAY;
+#ifdef CONFIG_DYNAMIC_CALIBRATION
+	  psensor_modi_xtalk(lpi, param);
+#endif			
   }else if(mode == CONTROL_INT_ISR_REPORT ){  
            if ( param & INT_FLAG_PS_IF_CLOSE )
                  ps_status |= PS_CLOSE;      
