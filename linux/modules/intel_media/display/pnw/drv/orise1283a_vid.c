@@ -2987,7 +2987,7 @@ static int orise1283a_vid_set_brightness(struct mdfld_dsi_config *dsi_config,
 		return -EINVAL;
 	}
 #if PWM_SOC_ENABLE
-	if (board_proj_id == PROJ_ID_A600CG)
+	if (board_proj_id == PROJ_ID_A600CG || PROJ_ID_A601CG)
 		pwm_min = 5;
 	else
 		pwm_min = 13;
@@ -3221,11 +3221,13 @@ void orise1283a_vid_init(struct drm_device *dev, struct panel_funcs *p_funcs)
 
 }
 
+extern int flag_shutdown;
 static int orise1283a_vid_shutdown(struct platform_device *pdev)
 {
 	struct orise1283a_vid_data *pdata = &gpio_settings_data;
 	printk("[DISP] %s\n", __func__);
 
+	flag_shutdown = 1;
 	mdfld_dsi_dpi_set_power(encoder_lcd, 0);
 //	intel_scu_ipc_iowrite8(PMIC_GPIO_BACKLIGHT_EN, 0);
 //	orise1283a_vid_set_brightness(orise1283a_dsi_config, 0);

@@ -2643,6 +2643,8 @@ void mmc_rescan(struct work_struct *work)
 	mmc_claim_host(host);
 	for (i = 0; i < ARRAY_SIZE(freqs); i++) {
 		if (!mmc_rescan_try_freq(host, max(freqs[i], host->f_min))) {
+            host->caps &= ~MMC_CAP_NEEDS_POLL;
+            pr_debug("%s (polling disabled)", mmc_hostname(host));
 			extend_wakelock = true;
 			break;
 		}
@@ -2663,6 +2665,17 @@ void mmc_rescan(struct work_struct *work)
 	if (host->caps & MMC_CAP_NEEDS_POLL) {
 		wake_lock(&host->detect_wake_lock);
 		mmc_schedule_delayed_work(&host->detect, HZ);
+        /*
+         * If retry_timeout do not define in advance, set as 10
+         */
+        if(host->retry_timeout > 10)
+            host->retry_timeout = 10;
+
+        host->retry_timeout--;
+        if (host->retry_timeout == 0)
+            host->caps &= ~MMC_CAP_NEEDS_POLL;
+        else
+            pr_debug("%s: reschedule detect work: %d\n", mmc_hostname(host), host->retry_timeout);
 	}
 }
 

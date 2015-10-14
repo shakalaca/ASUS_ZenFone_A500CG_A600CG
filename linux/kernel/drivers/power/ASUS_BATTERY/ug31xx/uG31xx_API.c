@@ -652,6 +652,11 @@ void CheckInitCapacityFromCC(struct ug31xx_data *pUg31xx)
 #define MAX_DELTA_RSOC_THRESHOLD_FOR_TABLE      (10)
 #define MIN_DELTA_RSOC_THRESHOLD_FOR_TABLE      (-10)
 
+typedef enum CMP_CAP_DATA_OPTION_ST {
+  CMP_CAP_DATA_NORMAL = 0,
+  CMP_CAP_DATA_RESET_BY_RANGE,
+  CMP_CAP_DATA_ABNORMAL_SHUTDOWN,
+} CMP_CAP_DATA_OPTION_TYPE;
 /**
  * @brief CmpCapData
  *
@@ -659,16 +664,63 @@ void CheckInitCapacityFromCC(struct ug31xx_data *pUg31xx)
  *
  * @para  pUg31xx address of struct ug31xx_data
  * @para  initial   set _UPI_TRUE_ for upiGG_Initial procedure
+ * @para  cmpDataOption CMP_CAP_DATA_OPTION_TYPE
  * @return  NULL
  */
-void CmpCapData(struct ug31xx_data *pUg31xx, _upi_bool_ initial, _upi_bool_ ResetByRange)
+void CmpCapData(struct ug31xx_data *pUg31xx, _upi_bool_ initial, CMP_CAP_DATA_OPTION_TYPE cmpDataOption)
 {
   _upi_s16_ deltaQC;
   _upi_s32_ tmp32;
+  _upi_u32_ deltaTime;
+
+  /// [AT-PM] : Operation for abnormal shutdown ; 04/12/2015
+  if(cmpDataOption == CMP_CAP_DATA_ABNORMAL_SHUTDOWN)
+  {
+    deltaQC = (_upi_s16_)pUg31xx->sysData.rsocFromIC;
+    deltaQC = deltaQC - pUg31xx->capData.rsoc;
+    UG31_LOGE("[%s]: CMP_CAP_DATA_ABNORMAL_SHUTDOWN -> %d - %d = %d\n", __func__,
+              pUg31xx->sysData.rsocFromIC, pUg31xx->capData.rsoc, deltaQC);
+
+    if(deltaQC < 0)
+    {
+      if(initial == _UPI_TRUE_)
+      {
+        CheckInitCapacityFromCC(pUg31xx);
+      }
+      pUg31xx->capData.rm = (_cap_u16_)pUg31xx->sysData.rmFromIC;
+      pUg31xx->capData.fcc = (_cap_u16_)pUg31xx->sysData.fccFromIC;
+      pUg31xx->capData.rsoc = (_cap_u8_)pUg31xx->sysData.rsocFromIC;
+      UG31_LOGE("[%s]: Use data from coulomb counter (%d/%d = %d)\n", __func__,
+                pUg31xx->capData.rm, pUg31xx->capData.fcc, pUg31xx->capData.rsoc);
+    }
+    else
+    {
+      deltaTime = CountTotalTime(pUg31xx->sysData.timeTagFromIC);
+      deltaTime = deltaTime / 1000;
+      deltaTime = deltaTime / 60;
+      deltaTime = deltaTime / 60;
+      if(deltaQC > deltaTime)
+      {
+        deltaQC = (_upi_s16_)deltaTime;
+      }
+      tmp32 = (_upi_s32_)pUg31xx->sysData.rsocFromIC;
+      tmp32 = tmp32 - deltaQC;
+      UG31_LOGE("[%s]: Limit RSOC according to time = %d - %d = %d\n", __func__,
+                pUg31xx->sysData.rsocFromIC, deltaQC, tmp32);
+
+      pUg31xx->capData.rsoc = (_cap_u8_)tmp32;
+      pUg31xx->capData.fcc = pUg31xx->sysData.fccFromIC;
+      tmp32 = tmp32 * (pUg31xx->capData.fcc) / CONST_PERCENTAGE;
+      pUg31xx->capData.rm = (_cap_u16_)tmp32;
+      UG31_LOGE("[%s]: Use data from table and limited by time (%d/%d) = %d\n", __func__,
+                pUg31xx->capData.rm, pUg31xx->capData.fcc, pUg31xx->capData.rsoc);
+    }
+    return;
+  }
 
   if((CountTotalTime(pUg31xx->sysData.timeTagFromIC) > MAX_DELTA_TIME_THRESHOLD_FOR_WAKEUP) ||
      (pUg31xx->measData.lastCounter > MAX_DELTA_CC_CNT_THRESHOLD_FOR_WAKEUP) ||
-     (ResetByRange == _UPI_TRUE_))
+     (cmpDataOption == CMP_CAP_DATA_RESET_BY_RANGE))
   {
     /// [AT-PM] : Check the data accuracy ; 01/27/2013
     deltaQC = (_upi_s16_)pUg31xx->sysData.rsocFromIC;
@@ -900,7 +952,7 @@ GGSTATUS upiGG_Initial(char **pObj, GGBX_FILE_HEADER *pGGBXBuf, unsigned char Fo
   _meas_s16_ tmpCurr;
   _meas_s16_ tmpStepCap;
   _meas_u32_ tmpDeltaTime;
-	_upi_bool_ resetByRange;
+	CMP_CAP_DATA_OPTION_TYPE resetByRange;
 
   #ifdef  __TEST_CHARGER_STOP_CHARGING__
     _upi_u16_ tmp16;
@@ -952,14 +1004,14 @@ GGSTATUS upiGG_Initial(char **pObj, GGBX_FILE_HEADER *pGGBXBuf, unsigned char Fo
 	if((pUg31xx->sysData.cycleCount & 0x8000) && (ForceReset
  == _UPI_FALSE_))
 	{
-		resetByRange = _UPI_TRUE_;
+    resetByRange = CMP_CAP_DATA_ABNORMAL_SHUTDOWN;
 		pUg31xx->sysData.cycleCount = pUg31xx->sysData.cycleCount & 0x7FFF;
 		UG31_LOGE("[%s]: Boot from abnormal shutdown\n", __func__);
 	}
 	else
 	{
-		resetByRange = ResetByRange;
-		if(resetByRange == _UPI_TRUE_)
+    resetByRange = (ResetByRange == _UPI_TRUE_) ? CMP_CAP_DATA_RESET_BY_RANGE : CMP_CAP_DATA_NORMAL;
+		if(resetByRange == CMP_CAP_DATA_RESET_BY_RANGE)
 		{
 			UG31_LOGE("[%s]: Force reset by compare RSOC difference to OCV\n", __func__);
 		}
@@ -1615,7 +1667,7 @@ GGSTATUS upiGG_Wakeup(char *pObj, _upi_bool_ dc_in_before)
   pUg31xx->capData.tableUpdateIdx = pUg31xx->sysData.tableUpdateIdxFromIC;
   UpiTableCapacity(&pUg31xx->capData);
   /// [AT-PM] : Check the data accuracy ; 01/27/2013
-  CmpCapData(pUg31xx, _UPI_FALSE_,  _UPI_FALSE_);
+  CmpCapData(pUg31xx, _UPI_FALSE_, CMP_CAP_DATA_NORMAL);
   pUg31xx->capData.dsgCharge = pUg31xx->capData.dsgCharge - (pUg31xx->capData.rm - pUg31xx->batteryInfo.NAC);
 
   /// [AT-PM] : Check capacity can not be increased if no dc in during suspend ; 10/25/2013

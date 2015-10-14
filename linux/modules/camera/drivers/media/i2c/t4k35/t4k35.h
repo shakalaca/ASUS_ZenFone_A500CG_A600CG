@@ -798,7 +798,7 @@ struct tsb_resolution t4k35_res_preview[] = {
 			}
 		},
 	},
-    {
+	{
 		.desc = "PREVIEW_FHD_1936x1096_30fps_2lane",
 		.regs = t4k35_FHD_1936x1096_30fps_2lane,
 		.width = 1936,

@@ -1170,49 +1170,47 @@ static bool intel_mid_get_vbt_data(struct drm_psb_private *dev_priv)
 	}
 	DRM_INFO("%s: FW panel name: %s, mipi_mode = %d !\n", __func__, panel_name_FW, mipi_mode);
 
-	if (Read_PROJ_ID() == PROJ_ID_A502CG) {
-		if (Read_LCD_ID() == A502CG_LCD_ID_TXD) {
-			printk("[DISP] DriverIC : ORISE9605A, Panel : TXD device registered!\n");
-			strncpy(panel_name, panel_name_FW, strlen("OTM9605A"));
-			mipi_mode = MDFLD_DSI_ENCODER_DPI;
-		} else if (Read_LCD_ID() == A502CG_LCD_ID_TM) {
-			printk("[DISP] DriverIC : RM68191, Panel : TM device registered!\n");
-			strncpy(panel_name, panel_name_FW, strlen("RM68191"));
-			mipi_mode = MDFLD_DSI_ENCODER_DPI;
-		} else if (Read_LCD_ID() == A502CG_LCD_ID_OFILM) {
-			printk("[DISP] DriverIC : ORISE8018B, Panel : OFILM device registered!\n");
-			strncpy(panel_name, panel_name_FW, strlen("OTM8018B"));
-			mipi_mode = MDFLD_DSI_ENCODER_DPI;
-		} else {
-			printk("[DISP] DriverIC : ORISE8018B, Panel : GIS device registered!\n");
-			strncpy(panel_name, panel_name_FW, strlen("OTM8018B"));
-			mipi_mode = MDFLD_DSI_ENCODER_DPI;
-		}
-	} else {
-#if defined(CONFIG_SUPPORT_MIPI_HX8394_DISPLAY) || defined(CONFIG_SUPPORT_MIPI_ORISE1283A_DISPLAY)
-		if(Read_PROJ_ID()==PROJ_ID_A600CG ){
-				printk("[DISP] DriverIC : ORISE1283A device registered!\n");
-				strncpy(panel_name, panel_name_FW, strlen("ORISE1283A"));
-				mipi_mode = MDFLD_DSI_ENCODER_DPI;
-		} else {
-			if (Read_LCD_ID() == LCD_ID_TM) {
-				printk("[DISP] DriverIC : HX8394 SR device registered!\n");
-				strncpy(panel_name, panel_name_FW, strlen("HX8394"));
-				mipi_mode = MDFLD_DSI_ENCODER_DPI;
-			} else {
-#ifdef PANEL_HX8394_EVB
-				printk("[DISP] DriverIC : HX8394 EVB device registered!\n");
-				strncpy(panel_name, panel_name_FW, strlen("HX8394"));
-				mipi_mode = MDFLD_DSI_ENCODER_DPI;
-#else
-				printk("[DISP] DriverIC : ORISE1283A device registered!\n");
-				strncpy(panel_name, panel_name_FW, strlen("ORISE1283A"));
-				mipi_mode = MDFLD_DSI_ENCODER_DPI;
-#endif
-			}
-		}
-#endif
-	}
+	switch(Read_PROJ_ID()){
+			case PROJ_ID_A502CG:
+					if (Read_LCD_ID() == A502CG_LCD_ID_TXD) {
+						printk("[DISP] DriverIC : ORISE9605A, Panel :\
+                                                                TXD device registered!\n");
+						strncpy(panel_name, "OTM9605A", strlen("OTM9605A"));
+						mipi_mode = MDFLD_DSI_ENCODER_DPI;
+					} else if (Read_LCD_ID() == A502CG_LCD_ID_TM) {
+                                                printk("[DISP] DriverIC : RM68191, Panel :\
+                                                                TM device registered!\n");
+                                                strncpy(panel_name, panel_name_FW, strlen("RM68191"));
+                                                mipi_mode = MDFLD_DSI_ENCODER_DPI;
+                                        } else if (Read_LCD_ID() == A502CG_LCD_ID_OFILM) {
+						printk("[DISP] DriverIC : ORISE8018B, Panel :\
+                                                                OFILM device registered!\n");
+						strncpy(panel_name, panel_name_FW, strlen("OTM8018B"));
+						mipi_mode = MDFLD_DSI_ENCODER_DPI;
+					} else {
+						printk("[DISP] DriverIC : ORISE8018B, Panel :\
+                                                                GIS device registered!\n");
+						strncpy(panel_name, panel_name_FW, strlen("OTM8018B"));
+						mipi_mode = MDFLD_DSI_ENCODER_DPI;
+					}
+					break;
+			case PROJ_ID_A600CG:
+			case PROJ_ID_A601CG:
+					printk("[DISP] DriverIC : ORISE1283A device registered!\n");
+					strncpy(panel_name, panel_name_FW, strlen("ORISE1283A"));
+					mipi_mode = MDFLD_DSI_ENCODER_DPI;
+					break;
+			default:
+					if (Read_LCD_ID() == LCD_ID_TM) {
+						printk("[DISP] DriverIC : HX8394 SR device registered!\n");
+						strncpy(panel_name, panel_name_FW, strlen("HX8394"));
+						mipi_mode = MDFLD_DSI_ENCODER_DPI;
+					} else {
+						printk("[DISP] DriverIC : ORISE1283A device registered!\n");
+						strncpy(panel_name, panel_name_FW, strlen("ORISE1283A"));
+						mipi_mode = MDFLD_DSI_ENCODER_DPI;
+					}
+				}
 
 	if (strcmp(panel_name_FW, panel_name) == 0) {
 		lcd_unique_id = "ffffffff";

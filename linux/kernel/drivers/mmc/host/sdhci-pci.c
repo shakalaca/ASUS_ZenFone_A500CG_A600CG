@@ -231,6 +231,16 @@ static irqreturn_t sdhci_pci_sd_cd(int irq, void *dev_id)
 	struct sdhci_host *host = slot->host;
 
     int gpio_status = gpio_get_value(slot->cd_gpio);
+
+    if (gpio_status == 0) {
+        host->mmc->caps |= MMC_CAP_NEEDS_POLL;
+        host->mmc->retry_timeout = 10;
+    }
+    else {
+        host->mmc->caps &= ~MMC_CAP_NEEDS_POLL;
+    }
+    pr_debug("%s (polling %s)\n", mmc_hostname(host->mmc),
+             gpio_status ? "disabled" : "enabled");
     if (host->mmc->caps2 & MMC_CAP2_DEFERRED_RESUME)
         mmc_set_force_pm_resume(host->mmc);
 	mmc_detect_change(host->mmc,
@@ -1815,22 +1825,22 @@ void asus_mmc1_hw_reset(struct sdhci_host *host)
         return;
 
     rc = regulator_disable(vmmc);
-	if (rc) {
-		pr_err("%s: %s disable regulator: failed: %d\n",
-		       mmc_hostname(host->mmc), __func__, rc);
-	}
+    if (rc) {
+            pr_err("%s: %s disable regulator: failed: %d\n",
+                            mmc_hostname(host->mmc), __func__, rc);
+    }
 
-	/* 20ms delay */
-	usleep_range(20000, 22000);
+    /* 20ms delay */
+    usleep_range(20000, 22000);
 
-	rc = regulator_enable(vmmc);
-	if (rc) {
-		pr_err("%s: %s enable regulator: failed: %d\n",
-		       mmc_hostname(host->mmc), __func__, rc);
-	}
+    rc = regulator_enable(vmmc);
+    if (rc) {
+            pr_err("%s: %s enable regulator: failed: %d\n",
+                            mmc_hostname(host->mmc), __func__, rc);
+    }
 
-	/* 10ms delay */
-	usleep_range(10000, 12000);
+    /* 10ms delay */
+    usleep_range(10000, 12000);
     pr_info("%s: reset complete\n", mmc_hostname(host->mmc));
 }
 
@@ -1851,10 +1861,10 @@ static void sdhci_pci_hw_reset(struct sdhci_host *host)
 		 */
 		usleep_range(300, 1000);
 	} else if (slot->host->mmc->caps & MMC_CAP_HW_RESET) {
-        if (slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_CLV_SDIO0) {
-            asus_mmc1_hw_reset(host);
-            return;
-        }
+                if (slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_CLV_SDIO0) {
+                        asus_mmc1_hw_reset(host);
+                        return;
+                }
 		/* first set bit4 of power control register */
 		pwr = sdhci_readb(host, SDHCI_POWER_CONTROL);
 		pwr |= SDHCI_HW_RESET;

@@ -1644,6 +1644,22 @@ void UpiSaveBatInfoTOIC(SystemDataType *data, _sys_bool_ shutdown)
                 BACKUP_NAC_HIGH,
                 1,
                 &u8Temp);
+  API_I2C_Read((BACKUP_NAC_HIGH < 0x80)? NORMAL: SECURITY,
+               UG31XX_I2C_HIGH_SPEED_MODE,
+               UG31XX_I2C_TEM_BITS_MODE,
+               BACKUP_NAC_HIGH,
+               1,
+               &u8Temp1);
+  if(u8Temp != u8Temp1)
+  {
+    UG31_LOGE("[%s]: Re-save BACKUP_NAC_HIGH = %02x\n", __func__, u8Temp);
+    API_I2C_Write((BACKUP_NAC_HIGH < 0x80)? NORMAL: SECURITY,
+                  UG31XX_I2C_HIGH_SPEED_MODE,
+                  UG31XX_I2C_TEM_BITS_MODE,
+                  BACKUP_NAC_HIGH,
+                  1,
+                  &u8Temp);
+  }
   u8Temp = (_sys_u8_)(data->rmFromIC & 0x00ff); 
   API_I2C_Write((BACKUP_NAC_LOW < 0x80)? NORMAL: SECURITY,
                 UG31XX_I2C_HIGH_SPEED_MODE,
@@ -1651,6 +1667,22 @@ void UpiSaveBatInfoTOIC(SystemDataType *data, _sys_bool_ shutdown)
                 BACKUP_NAC_LOW,
                 1,
                 &u8Temp);
+  API_I2C_Read((BACKUP_NAC_LOW < 0x80)? NORMAL: SECURITY,
+               UG31XX_I2C_HIGH_SPEED_MODE,
+               UG31XX_I2C_TEM_BITS_MODE,
+               BACKUP_NAC_LOW,
+               1,
+               &u8Temp1);
+  if(u8Temp != u8Temp1)
+  {
+    UG31_LOGE("[%s]: Re-save BACKUP_NAC_LOW = %02x\n", __func__, u8Temp);
+    API_I2C_Write((BACKUP_NAC_LOW < 0x80)? NORMAL: SECURITY,
+                  UG31XX_I2C_HIGH_SPEED_MODE,
+                  UG31XX_I2C_TEM_BITS_MODE,
+                  BACKUP_NAC_LOW,
+                  1,
+                  &u8Temp);
+  }
   
   // save LMD	
   u8Temp = (_sys_u8_)((data->fccFromIC & 0xff00)/256);
@@ -1660,6 +1692,22 @@ void UpiSaveBatInfoTOIC(SystemDataType *data, _sys_bool_ shutdown)
                 BACKUP_LMD_HIGH,
                 1,
                 &u8Temp);
+  API_I2C_Read((BACKUP_LMD_HIGH < 0x80)? NORMAL: SECURITY,
+               UG31XX_I2C_HIGH_SPEED_MODE,
+               UG31XX_I2C_TEM_BITS_MODE,
+               BACKUP_LMD_HIGH,
+               1,
+               &u8Temp1);
+  if(u8Temp != u8Temp1)
+  {
+    UG31_LOGE("[%s]: Re-save BACKUP_LMD_HIGH = %02x\n", __func__, u8Temp);
+    API_I2C_Write((BACKUP_LMD_HIGH < 0x80)? NORMAL: SECURITY,
+                  UG31XX_I2C_HIGH_SPEED_MODE,
+                  UG31XX_I2C_TEM_BITS_MODE,
+                  BACKUP_LMD_HIGH,
+                  1,
+                  &u8Temp);
+  }
   u8Temp = (_sys_u8_)(data->fccFromIC & 0x00ff); 
   API_I2C_Write((BACKUP_LMD_LOW < 0x80)? NORMAL: SECURITY,
                 UG31XX_I2C_HIGH_SPEED_MODE,
@@ -1667,6 +1715,22 @@ void UpiSaveBatInfoTOIC(SystemDataType *data, _sys_bool_ shutdown)
                 BACKUP_LMD_LOW,
                 1,
                 &u8Temp);
+  API_I2C_Read((BACKUP_LMD_LOW < 0x80)? NORMAL: SECURITY,
+               UG31XX_I2C_HIGH_SPEED_MODE,
+               UG31XX_I2C_TEM_BITS_MODE,
+               BACKUP_LMD_LOW,
+               1,
+               &u8Temp1);
+  if(u8Temp != u8Temp1)
+  {
+    UG31_LOGE("[%s]: Re-save BACKUP_LMD_LOW = %02x\n", __func__, u8Temp);
+    API_I2C_Write((BACKUP_LMD_LOW < 0x80)? NORMAL: SECURITY,
+                  UG31XX_I2C_HIGH_SPEED_MODE,
+                  UG31XX_I2C_TEM_BITS_MODE,
+                  BACKUP_LMD_LOW,
+                  1,
+                  &u8Temp);
+  }
 
   /// [AT-PM] : Save table update index ; 02/10/2013
   u8Temp = data->tableUpdateIdxFromIC;

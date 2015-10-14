@@ -51,6 +51,7 @@
 #define PCB_PR2 2
 #define PCB_MP_RF 0
 #define PROJ_600 7
+#define PROJ_601 5
 extern  int Read_HW_ID(void);
 extern  int Read_PROJ_ID(void);
 
@@ -164,7 +165,7 @@ static int vibra_pmic_pwm_configure(struct vibra_info *info, bool enable)
        int ret = 0;
        printk("%s: %s\n", __func__, enable ? "on" : "off");
        if (enable) {/*enable PWM block */
-               if(Read_PROJ_ID() == PROJ_600){
+               if(Read_PROJ_ID() == PROJ_600 || Read_PROJ_ID() == PROJ_601){
                    ret = intel_scu_ipc_iowrite8(PWM0DUTYCYCLE,0x59);
                }else{
                    ret = intel_scu_ipc_iowrite8(PWM0DUTYCYCLE,*info->duty_cycle);
@@ -523,7 +524,7 @@ static int intel_mid_vibra_probe(struct pci_dev *pci,
         ret = intel_scu_ipc_iowrite8(PWM0CLKDIV1, 0x00);
 
         if (!ret){
-                if(Read_PROJ_ID() == PROJ_600){
+                if(Read_PROJ_ID() == PROJ_600 || Read_PROJ_ID() == PROJ_601){
                     ret = intel_scu_ipc_iowrite8(PWM0CLKDIV0, 0x05);
                 }else{
                     ret = intel_scu_ipc_iowrite8(PWM0CLKDIV0, 0x25);

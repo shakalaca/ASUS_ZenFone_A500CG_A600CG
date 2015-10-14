@@ -1997,7 +1997,7 @@ static int atomisp_camera_g_ext_ctrls(struct file *file, void *fh,
 				sensor, g_skip_frames, (u32 *)&ctrl.value);
 			break;
 		case V4L2_CID_G_XE_FLASH_INSETRED:
-            ctrl.value = Xe_flash_inserted(); 
+            ctrl.value = Xe_flash_inserted();
             printk(KERN_INFO "ASUSBSP --- ctrl.value is %d \n", ctrl.value);
             ret = 0;
             break;
@@ -2427,10 +2427,10 @@ static long atomisp_vidioc_default(struct file *file, void *fh,
 					core, ioctl, cmd, arg);
 // <ChungYi>
     case ATOMISP_IOC_S_EXPOSURE:
-         
+
          if(xe_debug_flag >1){
-           ( (struct atomisp_exposure*)arg)->integration_time[0] = xe_debug_flag;  
-         }     	
+           ( (struct atomisp_exposure*)arg)->integration_time[0] = xe_debug_flag;
+         }
     case ATOMISP_TEST_CMD_SET_VCM_POS:
 	case ATOMISP_TEST_CMD_GET_VCM_POS:
 	case ATOMISP_TEST_CMD_SET_TORCH:
@@ -2439,6 +2439,7 @@ static long atomisp_vidioc_default(struct file *file, void *fh,
 	case ATOMISP_IOC_G_SENSOR_CALIBRATION_GROUP:
 	case ATOMISP_IOC_G_SENSOR_PRIV_INT_DATA:
     case ATOMISP_IOC_S_BINNING_SUM:
+    case ATOMISP_IOC_S_SET_DRAKMODE:
 		mutex_unlock(&isp->mutex);
 		return v4l2_subdev_call(isp->inputs[asd->input_curr].camera,
 					core, ioctl, cmd, arg);

@@ -78,8 +78,8 @@ MODULE_DESCRIPTION("Force feedback support for Holtek On Line Grip based devices
  *	bits 0-3: effect magnitude
  */
 
+#define CHRGING_TIME_20S      (20)
 #define HOLTEKFF_MSG_LENGTH     8
-
 static u8 read_test_buf[] =           { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 static u8 mread_buf[] =           { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 static u8 show_buf[] =           { 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -96,7 +96,52 @@ static struct input_dev *dev;
 struct holtekff_device {
 	struct hid_field *field;
 };
+///////////////////
+u32 static charging_time = CHRGING_TIME_20S;
+u8 static file_node_flag;
+static struct class* holtek_charging_userCtrl_class;
+static struct device* holtek_charging_register_ctrl_dev;
+static ssize_t holtek_charging_send_cmd_show(struct device *dev,
+        struct device_attribute *attr, char *buf){
 
+    int ret;
+    ret = sprintf(buf, "ASUSBSP --- charging_time is %d \n", charging_time);
+
+    return ret;
+}
+
+
+static ssize_t holtek_charging_send_cmd_store(struct device *dev,
+        struct device_attribute *attr,
+        const char *buf, size_t count){
+
+
+    charging_time = -1;
+    sscanf(buf, "%d", &charging_time);
+
+
+    printk(KERN_INFO "ASUSBSP --- charging_time is %d \n", charging_time);
+    return count;
+}
+
+
+DEVICE_ATTR(holtek_charging_send_cmd, 0660, holtek_charging_send_cmd_show, holtek_charging_send_cmd_store);
+static void holtekff_send(struct holtekff_device *holtekff,
+			  struct hid_device *hid,
+			  const u8 data[HOLTEKFF_MSG_LENGTH]);
+static struct workqueue_struct *brook_workqueue;
+static void brook_3_routine(struct work_struct *);
+static DECLARE_DELAYED_WORK(brook_3_work, brook_3_routine);
+static void brook_3_routine(struct work_struct *ws)
+{
+    u8 charging_cmd[8] = {0x1,0,0,0,0,0,0,0};
+    printk("ASUSBSP --- \n");
+   if(camera_apk_alive &&!!mholtekff){
+       queue_delayed_work(brook_workqueue, &brook_3_work, charging_time*HZ);
+       holtekff_send(mholtekff, mhid, charging_cmd);
+   }
+}
+//////////////////
 static void holtekff_send(struct holtekff_device *holtekff,
 			  struct hid_device *hid,
 			  const u8 data[HOLTEKFF_MSG_LENGTH])
@@ -168,12 +213,13 @@ static int holtekff_init(struct hid_device *hid)
     holtekff_send(holtekff, hid, show_buf);
     mdelay(1000);
     holtekff_get(holtekff, hid, read_test_buf);
-	if(camera_apk_alive){
+	brook_workqueue = create_workqueue("brook_wq");
+    if(camera_apk_alive){
         u8 charging_cmd[8] = {0x1,0,0,0,0,0,0,0};
-        holtekff_send(holtekff, hid, charging_cmd);
+//        holtekff_send(holtekff, hid, charging_cmd);
+        queue_delayed_work(brook_workqueue, &brook_3_work,0);
     }
     hid_info(hid, "Force feedback for Holtek On Line Grip based devices by Anssi Hannula <anssi.hannula@iki.fi>\n");
-
 	return 0;
 }
 #else
@@ -197,13 +243,21 @@ static int holtek_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		goto err;
 	}
 	holtekff_init(hdev);
-	return 0;
+	printk(KERN_INFO "ASUSBSP --- 005\n");
+    if(!file_node_flag){
+        holtek_charging_userCtrl_class = class_create(THIS_MODULE, "holtek_charging_dev");
+        holtek_charging_register_ctrl_dev = device_create(holtek_charging_userCtrl_class, NULL, 0, "%s", "send_command");
+        device_create_file(holtek_charging_register_ctrl_dev, &dev_attr_holtek_charging_send_cmd);
+        file_node_flag =1;
+    }
+    return 0;
 err:
 	return ret;
 }
 
 static void holtek_remove(struct hid_device *hid){
     printk(KERN_INFO "ASUS --- @holtek_remove \n");
+    cancel_delayed_work(&brook_3_work);
     kfree(mholtekff);
     mholtekff = NULL;
     mhid = NULL;
@@ -213,13 +267,22 @@ void Xe_flash_send_cmd(u8 cmd[8]){
     holtekff_send(mholtekff, mhid, cmd);
     if(cmd[0]==0x01){
        camera_apk_alive = !cmd[1];
+       printk(KERN_INFO "ASUSBSP --- camera_apk_alive is %d \n", camera_apk_alive);
+    }
+
+    if(Xe_flash_inserted()){
+        if(camera_apk_alive){
+           queue_delayed_work(brook_workqueue, &brook_3_work, 0);
+        }else{
+           cancel_delayed_work(&brook_3_work);
+        }
     }
 }
 
 void Xe_flash_rcv_cmd(u8 read_cmd[8], u8** read_back_buff){
     printk(KERN_INFO "ASUS --- @Xe_flash_rcv_cmd \n");
     holtekff_send(mholtekff, mhid, read_cmd);
-    mdelay(1000);
+    mdelay(10);
     holtekff_get(mholtekff, mhid, read_back_buff);
 }
 
@@ -227,7 +290,7 @@ int Xe_flash_inserted(void){
     return (!!mholtekff); 
 }
 static const struct hid_device_id holtek_devices[] = {
-	{ HID_USB_DEVICE(USB_VENDOR_ID_HOLTEK_ALT, 0x0b00) },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK, 0x7799) },
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, holtek_devices);

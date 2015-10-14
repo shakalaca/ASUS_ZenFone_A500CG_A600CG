@@ -254,6 +254,7 @@ struct mmc_host {
 	u32			ocr_avail_sd;	/* SD-specific OCR */
 	u32			ocr_avail_mmc;	/* MMC-specific OCR */
 	struct notifier_block	pm_notify;
+        int                     retry_timeout;  /* Rescan timeout for polling mode to scan SD card */
     unsigned int half_max_clk_count;
 	u32			max_current_330;
 	u32			max_current_300;

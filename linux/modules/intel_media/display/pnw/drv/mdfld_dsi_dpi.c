@@ -46,6 +46,7 @@ extern int entry_mode;
 static int reset_panel = 1;
 void mdfld_reset_dpi_panel1(struct drm_psb_private *dev_priv);
 #endif
+int flag_shutdown = 0;
 
 #ifdef BKL_EN_WKAD
 struct delayed_work vsync_delay_work;
@@ -645,7 +646,7 @@ static int __dpi_panel_power_off(struct mdfld_dsi_config *dsi_config,
 
 #ifdef PANEL_RESET_WKAD
 	//reset dsi contorller
-	if (reset_panel) {
+	if (reset_panel == 1 && flag_shutdown == 0) {
 		mdfld_reset_dpi_panel1(dev_priv);
 		reset_panel = 0;
 	}

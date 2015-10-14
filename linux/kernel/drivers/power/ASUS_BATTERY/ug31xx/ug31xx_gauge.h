@@ -62,6 +62,20 @@ typedef enum {
 
 #endif  ///< end of _LKM_OPTIONS_
 
+#define UG31XX_KOBJ_CMD1A     (1<<0)
+#define UG31XX_KOBJ_CMD1B     (1<<1)
+#define UG31XX_KOBJ_CMD1C     (1<<2)
+#define UG31XX_KOBJ_CMD1D     (1<<3)
+#define UG31XX_KOBJ_CMD1E     (1<<4)
+#define UG31XX_KOBJ_CMD2      (1<<5)
+#define UG31XX_KOBJ_CMD3      (1<<6)
+#define UG31XX_KOBJ_CMD4      (1<<7)
+#define UG31XX_KOBJ_CMD5      (1<<8)
+#define UG31XX_KOBJ_CMD6      (1<<9)
+#define UG31XX_KOBJ_CMD7      (1<<10)
+#define UG31XX_KOBJ_CMD8      (1<<11)
+#define UG31XX_KOBJ_CMD9      (1<<12)
+
 struct ug31xx_module_interface {
 	int (*initial)(char *ggb, unsigned char cable);
 	int (*uninitial)(void);

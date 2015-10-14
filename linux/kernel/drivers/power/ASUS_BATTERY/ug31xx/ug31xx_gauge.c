@@ -47,12 +47,14 @@
 #include <linux/switch.h>
 
 #include <linux/timer.h>
+#if 0
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0)
 #ifdef CONFIG_ANDROID
 #include "../../..//staging/android/android_alarm.h"
 #endif
 #else
 #include <linux/android_alarm.h>
+#endif
 #endif
 #include <linux/hrtimer.h>
 
@@ -213,6 +215,7 @@ static void batt_info_update_work_func(struct work_struct *work);
 #endif ///< for FEATRUE_K_BOARD_OFFSET
 #define UG31XX_IOCTL_RESET_TOTALLY      			_IO(UG31XX_IOC_MAGIC, 37)
 #define UG31XX_IOCTL_ALGORITHM_RESET_BY_RANGE _IO(UG31XX_IOC_MAGIC, 38)
+#define UG31XX_IOCTL_DAEMON_EVENT             _IOWR(UG31XX_IOC_MAGIC, 51, unsigned char *)
 
 #endif	///< end of UG31XX_MISC_DEV
 
@@ -331,6 +334,7 @@ static int kbo_with_eoc_cnt = 0;
 static int op_actions = UG31XX_OP_NORMAL;
 static int force_fc_current_thrd = 0;
 static int force_fc_timeout = 30*60*1000;
+static unsigned int daemon_uevent_request = 0;
 
 #define CHARGER_LIST_NUM      (1)
 //static char *charger_list[] = {"ac"};
@@ -931,6 +935,17 @@ static long ug31xx_misc_ioctl(struct file *file, unsigned int cmd, unsigned long
       schedule_delayed_work(&ug31->batt_info_update_work, 0*HZ);
       break;
 
+  case UG31XX_IOCTL_DAEMON_EVENT:
+    val[0] = (unsigned char)(daemon_uevent_request % 256);
+    val[1] = (unsigned char)(daemon_uevent_request / 256);
+    if(copy_to_user((void __user *)arg, (void *)&val[0], 2))
+    {
+      rc = -EINVAL;
+      UG31_LOGE("[%s] copy_to_user fail\n", __func__);
+    }
+    daemon_uevent_request = 0;
+    break;
+
     default:
       UG31_LOGE("[%s] invalid cmd %d\n", __func__, _IOC_NR(cmd));
       rc = -EINVAL;
@@ -1067,24 +1082,29 @@ static void change_ug31xx_kobj(void)
         #endif  ///< end of UG31XX_USER_SPACE_ALGORITHM
 
         kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd1a);
+        daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD1A;
       }
       else
       {
         if(op_actions == UG31XX_OP_EARLY_SUSPEND)
         {
           kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd1b);
+          daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD1B;
         }
         else if(op_actions == UG31XX_OP_SUSPEND)
         {
           kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd1c);
+          daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD1C;
         }
         else if(op_actions == UG31XX_OP_RESUME)
         {
           kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd1d);
+          daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD1D;
         }
         else if(op_actions == UG31XX_OP_LATE_RESUME)
         {
           kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd1e);
+          daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD1E;
         }
         else
         {
@@ -1097,24 +1117,30 @@ static void change_ug31xx_kobj(void)
       {
         force_update_backup_file = false;
         kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd3);
+        daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD3;
       }
       else
       {
         kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd2);
+        daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD2;
       }
       break;
     case UG31XX_KOBJ_ENV_BACKUP_BO_CHECK:
       kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd4);
+      daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD4;
       break;      
     case UG31XX_KOBJ_ENV_BACKUP_BO_WRITE:
       kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd5);
+      daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD5;
       break;
     case UG31XX_KOBJ_ENV_BACKUP_BO_INIT:
       kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd6);
+      daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD6;
       break;
 #ifdef FEATRUE_K_BOARD_OFFSET
     case UG31XX_KOBJ_ENV_BACKUP_BO_CHECK_AUTO:
       kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd7);
+      daemon_uevent_request = daemon_uevent_request | UG31XX_KOBJ_CMD7;
       break; 
     case UG31XX_KOBJ_ENV_BACKUP_BO_WRITE_AUTO:
       kobject_uevent_env(&ug31_kobj->kobj, KOBJ_CHANGE, cmd8);
