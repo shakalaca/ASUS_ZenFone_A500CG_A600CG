@@ -20,6 +20,7 @@ config USB_OTG_WAKELOCK
 	  Select this to automatically hold a wakelock when USB is
 	  connected, preventing suspend.
 
+
 if USB || USB_GADGET
 
 #
@@ -199,4 +200,13 @@ config USB_DWC_OTG_XCEIV
 	  this option will create the DWC OTG transceiver module and registers
 	  the xHCI and DWC as platform device.
 
+config USB_OTG_SUPPLY_VOLT
+	bool "Use OTG function"
+	default n
+	help
+	  Say Y here if you want to use OTG function.
+	  If unsure, say N
+
+
 endif # USB || OTG
+

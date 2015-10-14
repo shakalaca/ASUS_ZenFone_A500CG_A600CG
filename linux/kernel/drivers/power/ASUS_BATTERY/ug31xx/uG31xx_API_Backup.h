@@ -51,6 +51,8 @@ typedef struct BackupDataST {
   _backup_u8_ backupBufferSize;
   _backup_u8_ backupFileRetryCnt;
   _backup_u32_ backupNacLmdAdjustCfg;
+  _backup_u8_ backupCustomerSelfDef[CELL_PARAMETER_STRING_LENGTH];
+  _backup_u8_ backupProjectSelfDef[CELL_PARAMETER_STRING_LENGTH];
 
   _backup_u8_ backupSuspendIdx;
   BackupSuspendDataType backupSuspendData[BACKUP_MAX_LOG_SUSPEND_DATA];
@@ -157,4 +159,13 @@ extern _backup_u32_ UpiGetBackupMemorySize(void);
  * @return  NULL
  */
 extern void UpiBackupVoltage(BackupDataType *data);
+
+/**
+ * @brief UpiPrintBackupVersion
+ *
+ *  Print backup module version
+ *
+ * @return  NULL
+ */
+extern void UpiPrintBackupVersion(void);
 

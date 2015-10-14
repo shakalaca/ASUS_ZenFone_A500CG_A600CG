@@ -113,6 +113,7 @@ static struct rt5647_init_reg init_list[] = {
 	{ RT5647_IL_CMD2	, 0x0010 }, /* set Inline Command Window */
 	{ RT5647_PRIV_INDEX	, 0x003d },
 	{ RT5647_PRIV_DATA	, 0x3600 },
+	{ RT5647_CHARGE_PUMP	, 0x0e06 },
 #if 0
 	{ RT5647_A_JD_CTRL1	, 0x0202 },/* for combo jack 1.8v */
 #endif
@@ -166,7 +167,7 @@ static struct rt5647_init_reg init_list[] = {
 	{ RT5647_DMIC_CTRL2	, 0x0005 },
 	/* { RT5647_STO1_ADC_DIG_VOL, 0xafaf }, */ /* Mute STO1 ADC for depop, Digital Input Gain */
 	//{ RT5647_STO1_ADC_DIG_VOL, 0xd7d7 }, /* Mute STO1 ADC for depop, Digital Input Gain */
-        { RT5647_STO1_ADC_DIG_VOL, 0x5757 }, //MX-1c, Eric
+        { RT5647_STO1_ADC_DIG_VOL, 0xafaf }, //MX-1c, Eric
 	{ RT5647_GPIO_CTRL1	, 0xc004 },
 	{ RT5647_GPIO_CTRL2	, 0x0004 },
 #ifdef JD1_FUNC
@@ -201,6 +202,7 @@ static struct rt5647_init_reg init_list[] = {
 		{ RT5647_MONO_OUT       , 0x0800 }, //MX-04
 	#endif
 
+	{ RT5647_CJ_CTRL3        , 0xc000 },
 };
 #define RT5647_INIT_REG_LEN ARRAY_SIZE(init_list)
 
@@ -701,7 +703,7 @@ static int rt5647_readable_register(
 		return 0;
 	}
 }
-
+/*
 void dc_calibrate(struct snd_soc_codec *codec)
 {
 	unsigned int sclk_src;
@@ -725,7 +727,7 @@ void dc_calibrate(struct snd_soc_codec *codec)
 	snd_soc_update_bits(codec, RT5647_GLB_CLK,
 		RT5647_SCLK_SRC_MASK, sclk_src);
 }
-
+*/
 /**
  * rt5647_headset_detect - Detect headset.
  * @codec: SoC audio codec device.
@@ -854,6 +856,11 @@ int rt5647_check_irq_event(struct snd_soc_codec *codec)
 	switch (val) {
 	case 0x20: /* No plug */
 		//rt5647->jack_type = rt5647_headset_detect(codec, 0);
+
+		snd_soc_update_bits(codec, RT5647_SPK_L_MIXER , RT5647_M_IN_L_SM_L, RT5647_M_IN_L_SM_L); //Angus 0326
+		snd_soc_update_bits(codec, RT5647_SPK_R_MIXER , RT5647_M_IN_R_SM_R, RT5647_M_IN_R_SM_R); //Angus 0326
+		printk(KERN_INFO "disable alsa control\n");
+
 		ret = RT5647_J_OUT_EVENT;
 		del_timer( &jd_check_timer); //bard 1-27
 		break;
@@ -1754,6 +1761,7 @@ static int rt5647_sto1_adcl_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
+		msleep(50);	// Oder 140609
 		snd_soc_update_bits(codec, RT5647_STO1_ADC_DIG_VOL,
 			RT5647_L_MUTE, 0);
 		break;
@@ -1866,8 +1874,6 @@ static void hp_amp_power(struct snd_soc_codec *codec, int on)
 				RT5647_PWR_FV1 | RT5647_PWR_FV2,
 				RT5647_PWR_FV1 | RT5647_PWR_FV2);
 
-			snd_soc_update_bits(codec, RT5647_HP_CALIB_AMP_DET,
-				RT5647_HPD_PS_MASK, RT5647_HPD_PS_EN);
 			snd_soc_update_bits(codec, RT5647_DEPOP_M1,
 				RT5647_HP_CO_MASK | RT5647_HP_SG_MASK,
 				RT5647_HP_CO_EN | RT5647_HP_SG_EN);
@@ -1904,29 +1910,8 @@ static void hp_amp_power(struct snd_soc_codec *codec, int on)
 static void rt5647_pmu_depop(struct snd_soc_codec *codec)
 {
 	hp_amp_power(codec, 1);
-	/* headphone unmute sequence */
-	snd_soc_update_bits(codec, RT5647_DEPOP_M3,
-		RT5647_CP_FQ1_MASK | RT5647_CP_FQ2_MASK | RT5647_CP_FQ3_MASK,
-		(RT5647_CP_FQ_192_KHZ << RT5647_CP_FQ1_SFT) |
-		(RT5647_CP_FQ_12_KHZ << RT5647_CP_FQ2_SFT) |
-		(RT5647_CP_FQ_192_KHZ << RT5647_CP_FQ3_SFT));
-	rt5647_index_write(codec, RT5647_MAMP_INT_REG2, 0xfc00);
-	snd_soc_update_bits(codec, RT5647_DEPOP_M1,
-		RT5647_SMT_TRIG_MASK, RT5647_SMT_TRIG_EN);
-	snd_soc_update_bits(codec, RT5647_DEPOP_M1,
-		RT5647_RSTN_MASK, RT5647_RSTN_EN);
-	snd_soc_update_bits(codec, RT5647_DEPOP_M1,
-		RT5647_RSTN_MASK | RT5647_HP_L_SMT_MASK | RT5647_HP_R_SMT_MASK,
-		RT5647_RSTN_DIS | RT5647_HP_L_SMT_EN | RT5647_HP_R_SMT_EN);
 
 	schedule_delayed_work(&hp_work, msecs_to_jiffies(150));
-
-	msleep(40);
-	snd_soc_update_bits(codec, RT5647_DEPOP_M1,
-		RT5647_HP_SG_MASK | RT5647_HP_L_SMT_MASK |
-		RT5647_HP_R_SMT_MASK, RT5647_HP_SG_DIS |
-		RT5647_HP_L_SMT_DIS | RT5647_HP_R_SMT_DIS);
-
 }
 
 static void rt5647_pmd_depop(struct snd_soc_codec *codec)
@@ -2162,8 +2147,8 @@ static int rt5647_dmic1_event(struct snd_soc_dapm_widget *w,
 			snd_soc_write(codec, 0xb3, 0x099f);
 			snd_soc_write(codec, 0xb4, 0xc20c);
 			snd_soc_write(codec, 0xb5, 0x1f01);
-			snd_soc_write(codec, 0xb6, 0x001f);
-			snd_soc_write(codec, 0xb7, 0x6003);
+			snd_soc_write(codec, 0xb6, 0xa01c);
+			snd_soc_write(codec, 0xb7, 0x600a);
 			snd_soc_write(codec, 0xd4, 0x0505);
 			snd_soc_write(codec, 0xe7, 0x0700);
 			snd_soc_write(codec, 0xf1, 0x020c);
@@ -2174,11 +2159,11 @@ static int rt5647_dmic1_event(struct snd_soc_dapm_widget *w,
 
 		//AGC(A600CG)
                 #ifdef CONFIG_A600CG_AUDIO_SETTING
-                        snd_soc_write(codec, 0xb3, 0x099f);
+                        snd_soc_write(codec, 0xb3, 0x09df);
                         snd_soc_write(codec, 0xb4, 0xc20c);
                         snd_soc_write(codec, 0xb5, 0x1f01);
-                        snd_soc_write(codec, 0xb6, 0x001f);
-                        snd_soc_write(codec, 0xb7, 0x6003);
+                        snd_soc_write(codec, 0xb6, 0xa01c);
+                        snd_soc_write(codec, 0xb7, 0x6008);
                         snd_soc_write(codec, 0xd4, 0x0505);
                         snd_soc_write(codec, 0xe7, 0x0700);
 			snd_soc_write(codec, 0xf1, 0x020c);
@@ -2187,11 +2172,18 @@ static int rt5647_dmic1_event(struct snd_soc_dapm_widget *w,
 			snd_soc_write(codec, 0xf4, 0x4000);
                 #endif
 		printk(KERN_INFO "[DRC] enable recording DRC\n");
+#ifdef CONFIG_A600CG_AUDIO_SETTING
+		rt5647_update_eqmode(codec, EQ_CH_ADC, CLUB);
+		printk(KERN_INFO "[rt5647] enable recording EQ\n");
+#endif
 		break;
 
-	/*case SND_SOC_DAPM_PRE_PMD:
-		snd_soc_write(codec, 0xb4, 0x0206);
-		break;*/ //MX-b4
+#ifdef CONFIG_A600CG_AUDIO_SETTING
+	case SND_SOC_DAPM_PRE_PMD:
+		rt5647_update_eqmode(codec, EQ_CH_ADC, NORMAL);
+		printk(KERN_INFO "[rt5647] disable recording EQ\n");
+		break;
+#endif
 
 	default:
 		return 0;
@@ -2427,14 +2419,26 @@ static int rt5647_asrc_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
 
+	unsigned int tmp;
+
 	pr_debug("%s\n", __func__);
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
+		tmp = snd_soc_read(w->codec, RT5647_SIDETONE_CTRL) &
+                                                RT5647_ST_SEL_MASK;
+                snd_soc_update_bits(w->codec, RT5647_SIDETONE_CTRL,
+                        RT5647_ST_SEL_MASK, 0x3 << RT5647_ST_SEL_SFT);
+
 		snd_soc_write(w->codec, RT5647_ASRC_1, 0xffff);
 		snd_soc_write(w->codec, RT5647_ASRC_2, 0x1221);
 		snd_soc_write(w->codec, RT5647_ASRC_3, 0x0022);
+                snd_soc_update_bits(w->codec, RT5647_SIDETONE_CTRL,
+                                                RT5647_ST_SEL_MASK, tmp);
+
+		snd_soc_update_bits(w->codec, RT5647_ADDA_CLK1, 0xf, 0x5);
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
+		snd_soc_update_bits(w->codec, RT5647_ADDA_CLK1, 0xf, 0);
 		snd_soc_write(w->codec, RT5647_ASRC_1, 0);
 		snd_soc_write(w->codec, RT5647_ASRC_2, 0);
 		snd_soc_write(w->codec, RT5647_ASRC_3, 0);
@@ -2505,8 +2509,13 @@ static const struct snd_soc_dapm_widget rt5647_dapm_widgets[] = {
 	SND_SOC_DAPM_SUPPLY_S("ASRC enable", 2, SND_SOC_NOPM, 0, 0,
 		rt5647_asrc_event, SND_SOC_DAPM_POST_PMU |
 		SND_SOC_DAPM_PRE_PMD),
+#if 0
 	SND_SOC_DAPM_SUPPLY("LDO2", RT5647_PWR_MIXER,
 		RT5647_PWR_LDO2_BIT, 0, NULL, 0),
+#else
+	SND_SOC_DAPM_SUPPLY("LDO2", SND_SOC_NOPM,
+		0, 0, NULL, 0),
+#endif
 	SND_SOC_DAPM_SUPPLY("PLL1", RT5647_PWR_ANLG2,
 		RT5647_PWR_PLL_BIT, 0, NULL, 0),
 	SND_SOC_DAPM_SUPPLY("Recording DRC", SND_SOC_NOPM,
@@ -3661,6 +3670,7 @@ static ssize_t rt5647_codec_show(struct device *dev,
 	unsigned int val;
 	int cnt = 0, i;
 
+	codec->cache_bypass = 1; //bard 3-25
 	for (i = 0; i <= RT5647_VENDOR_ID2; i++) {
 		if (cnt + RT5647_REG_DISP_LEN >= PAGE_SIZE)
 			break;
@@ -3670,7 +3680,7 @@ static ssize_t rt5647_codec_show(struct device *dev,
 		cnt += snprintf(buf + cnt, RT5647_REG_DISP_LEN,
 				"#rng%02x  #rv%04x  #rd0\n", i, val);
 	}
-
+	codec->cache_bypass = 0; //bard 3-25
 	if (cnt >= PAGE_SIZE)
 		cnt = PAGE_SIZE - 1;
 
@@ -3759,7 +3769,7 @@ static int rt5647_set_bias_level(struct snd_soc_codec *codec,
 		snd_soc_write(codec, RT5647_PWR_DIG2, 0x0000);
 		snd_soc_write(codec, RT5647_PWR_VOL, 0x0000);
 		snd_soc_write(codec, RT5647_PWR_MIXER, 0x0000);
-		snd_soc_write(codec, RT5647_PWR_ANLG1, 0x0000); //bard 11-20
+		snd_soc_write(codec, RT5647_PWR_ANLG1, 0x2000); //bard 05-13
 		snd_soc_write(codec, RT5647_PWR_ANLG2, 0x0004); //bard 11-20
 		rt5647_index_write(codec, 0x94, 0x8700); //close HPF&LPF before DRC disable
 		snd_soc_write(codec, 0xea, 0x0f20); //close DRC mixer before DRC disable
@@ -3776,11 +3786,30 @@ static int rt5647_set_bias_level(struct snd_soc_codec *codec,
 
 void do_hp_work(struct work_struct *work)
 {
-	msleep(5);
+	snd_soc_update_bits(codec_global, RT5647_DEPOP_M3,
+		RT5647_CP_FQ1_MASK | RT5647_CP_FQ2_MASK | RT5647_CP_FQ3_MASK,
+		(RT5647_CP_FQ_192_KHZ << RT5647_CP_FQ1_SFT) |
+		(RT5647_CP_FQ_12_KHZ << RT5647_CP_FQ2_SFT) |
+		(RT5647_CP_FQ_192_KHZ << RT5647_CP_FQ3_SFT));
+	rt5647_index_write(codec_global, RT5647_MAMP_INT_REG2, 0xfc00);
+	snd_soc_update_bits(codec_global, RT5647_DEPOP_M1,
+		RT5647_SMT_TRIG_MASK, RT5647_SMT_TRIG_EN);
+	snd_soc_update_bits(codec_global, RT5647_DEPOP_M1,
+		RT5647_RSTN_MASK, RT5647_RSTN_EN);
+	snd_soc_update_bits(codec_global, RT5647_DEPOP_M1,
+		RT5647_RSTN_MASK | RT5647_HP_L_SMT_MASK | RT5647_HP_R_SMT_MASK,
+		RT5647_RSTN_DIS | RT5647_HP_L_SMT_EN | RT5647_HP_R_SMT_EN);
+
 	snd_soc_update_bits( codec_global , RT5647_HP_VOL,
 			RT5647_L_MUTE | RT5647_R_MUTE, 0);
+
+	msleep(40);
+	snd_soc_update_bits(codec_global, RT5647_DEPOP_M1,
+		RT5647_HP_SG_MASK | RT5647_HP_L_SMT_MASK |
+		RT5647_HP_R_SMT_MASK, RT5647_HP_SG_DIS |
+		RT5647_HP_L_SMT_DIS | RT5647_HP_R_SMT_DIS);
+
 	printk(KERN_INFO "[DRC] into do_hp_work\n");
-	msleep(65);
 }
 
 
@@ -3877,6 +3906,11 @@ static void jd_check_handler(struct work_struct *work)
 	val = snd_soc_read(codec, RT5647_A_JD_CTRL1) & 0x0020;
 	pr_debug("jd_check_handler : val = 0x%x\n", val);
 	if (val == 0x20) {
+
+		snd_soc_update_bits(codec, RT5647_SPK_L_MIXER , RT5647_M_IN_L_SM_L, RT5647_M_IN_L_SM_L); //Angus 0326
+		snd_soc_update_bits(codec, RT5647_SPK_R_MIXER , RT5647_M_IN_R_SM_R, RT5647_M_IN_R_SM_R); //Angus 0326
+		printk(KERN_INFO "disable alsa control\n");
+
 		pr_err("jack plug out\n");
 		rt5647_button_detect(codec);
 		snd_soc_update_bits(codec, RT5647_INT_IRQ_ST, 0x8, 0x0);
@@ -3920,6 +3954,7 @@ static int rt5647_probe(struct snd_soc_codec *codec)
 	}
 
 	rt5647_reset(codec);
+
 	snd_soc_update_bits(codec, RT5647_PWR_ANLG1,
 		RT5647_PWR_VREF1 | RT5647_PWR_MB |
 		RT5647_PWR_BG | RT5647_PWR_VREF2,
@@ -3940,7 +3975,6 @@ static int rt5647_probe(struct snd_soc_codec *codec)
 #endif
 	snd_soc_update_bits(codec, RT5647_PWR_ANLG1, RT5647_LDO_SEL_MASK, 0x0);
 
-	/* dc_calibrate(codec); */
 	rt5647_set_bias_level(codec, SND_SOC_BIAS_OFF);
 
 	rt5647->codec = codec;

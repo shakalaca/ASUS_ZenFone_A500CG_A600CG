@@ -4,7 +4,7 @@
  *  Header of uG31xx capacity algorithm
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 476 $
+ * @revision  $Revision: 95 $
  */
 
 typedef char            _cap_bool_;
@@ -18,7 +18,8 @@ typedef signed long     _cap_s32_;
 #define CAP_TRUE                (1)
 #define CAP_FALSE               (0)
 
-#define CAP_FC_RELEASE_RSOC     (99)
+#define CAP_FC_RELEASE_RSOC     (90)
+#define CAP_FC_NEAR_RSOC        (99)
 #define SOC_LOCK_TIME_STEP      (10000) /// 15 sec
 #define SOC_CHG_LOCK_TIME       (120000) /// 180 sec
 #define SOC_DSG_LOCK_TIME       (120000) /// 120 sec
@@ -45,7 +46,6 @@ typedef struct CapacityDataST {
   _cap_u16_ rm;
   _cap_u16_ fcc;
   _cap_u16_ fccBackup;
-  _cap_u16_ fccBeforeChg;
   _cap_u8_ rsoc;
   _cap_u8_ predictRsoc;
   _cap_bool_ fcSts;
@@ -99,7 +99,17 @@ typedef struct CapacityDataST {
   _cap_u32_ socTimeFull;
   _cap_u8_ socTimeFullOverCnt;
   _cap_u32_ socTimeLock;
-  
+  _cap_s32_ socCCStep;
+  _cap_s32_ socCCStepBuf;
+
+  _cap_u8_ rsocFilterActiveCnt;
+
+  _cap_u32_ inSuspendMilliSec;
+
+  _cap_s32_ qFromCurr;
+  _cap_s32_ qFromCC;
+  _cap_s32_ qFromCurrBuf;
+
   _cap_s16_ tableNac[SOV_NUMS];
   _cap_s16_ tableNacUpdate[SOV_NUMS];
 } ALIGNED_ATTRIBUTE CapacityDataType;
@@ -225,3 +235,23 @@ extern _cap_u32_ UpiGetCapacityMemorySize(void);
  * @return  NULL
  */
 extern void UpiSetFactoryBoardOffset(CapacityDataType *data);
+
+/**
+ * @brief UpiPrintCapacityVersion
+ *
+ *  Print capacity module version
+ *
+ * @return  NULL
+ */
+extern void UpiPrintCapacityVersion(void);
+/**
+ * @brief UpiGetOcvSoc
+ *
+ *  Get OCV soc according to current temperature and voltage
+ *
+ * @para  data  address of CapacityDataType
+ * @para  volt  target voltage
+ * @return  SOC from OCV table
+ */
+extern _cap_u8_ UpiGetOcvSoc(CapacityDataType *data, _cap_u16_ volt);
+

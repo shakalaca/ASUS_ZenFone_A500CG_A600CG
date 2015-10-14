@@ -312,6 +312,10 @@
 	static int himax_ts_poweron(struct himax_ts_data *ts_modify);							// Power on
 	static int himax_touch_sysfs_init(void);																	// Sys filesystem initial
 	static void himax_touch_sysfs_deinit(void);																// Sys filesystem de-initial
+
+	#ifdef HX_RST_PIN_FUNC    
+	void himax_HW_reset(void);
+	#endif
 	
 	//----[HX_LOADIN_CONFIG]--------------------------------------------------------------------------------start
 		#ifdef HX_LOADIN_CONFIG
@@ -393,12 +397,21 @@
 		static struct task_struct		*i_update_firmware_tsk;
 		static bool i_Needupdate = true;
 		static unsigned char i_isTP_Updated = 0;
+		#ifdef CONFIG_TOUCHSCREEN_HIMAX_HX85XX_A502CG
 		static unsigned char i_CTPM_FW[]=
 		{
-  	  //#include "WingTec_13040C1_NA_double_V02_edge_2013-05-13_1611.i" //Paul Check
+			//#include "hx85xx_GIS_A502CG_ASUS_02_2014-03-18_1054.i"
+			//#include "hx85xx_20140319_ASUS_A502_GIS_D0501_00_01.i"
+			#include "hx85xx_20140325_ASUS_A502_GIS_D0501_00_03.i"
+		};
+		#else
+		static unsigned char i_CTPM_FW[]=
+		{
+  	  		//#include "WingTec_13040C1_NA_double_V02_edge_2013-05-13_1611.i" //Paul Check
 			//#include "hx85xx_ASUS_A13_D0306_00_2013_11_08_1057_sorting.i"
 			#include "hx85xx_ASUS_A13_D0306_00_2013_11_14_1600_modified_modified_01.i"
 		};
+		#endif
 		#endif
 	//----[HX_FW_UPDATE_BY_I_FILE]----------------------------------------------------------------------------end
 	
@@ -2145,11 +2158,24 @@
 		
 		static uint8_t himax_calculateChecksum(char *ImageBuffer, int fullLength)//, int address, int RST)
 		{
+			uint8_t cmd[5];
+
+			#ifdef HX_RST_PIN_FUNC
+				himax_HW_reset();
+			#endif
+			
+			if( i2c_himax_write(touch_i2c, 0x81 ,&cmd[0], 0, DEFAULT_RETRY_CNT) < 0)
+			{
+				printk(KERN_ERR "[TP] %s: i2c access fail!\n", __func__);
+				return 0;
+			}
+			msleep(100);
+					
 			//----[ HX_TP_BIN_CHECKSUM_SW]----------------------------------------------------------------------start
 			if(IC_CHECKSUM == HX_TP_BIN_CHECKSUM_SW)
 			{
 				u16 checksum = 0;
-				uint8_t cmd[5], last_byte;
+				uint8_t last_byte;
 				int FileLength, i, readLen, k, lastLength;
 				
 				FileLength = fullLength - 2;
@@ -2888,8 +2914,6 @@
 			cfg_ver_min_end_addr    = (CFG_VER_MIN_FLASH_ADDR + cfg_ver_min_length ) / 4 + 1;	// end addr = (172 + 12) / 4 = 46
 			cfg_ver_min_addr        = CFG_VER_MIN_FLASH_ADDR % 4;															// 172 mod 4 = 0
 			
-			disable_irq(private_ts->client->irq);
-			
 			#ifdef HX_RST_PIN_FUNC
 			if(hw_reset)
 			{
@@ -3109,13 +3133,13 @@
 			for(i=0; i<12; i++)
 				printk(" %d ,",CFG_VER_MIN_buff[i]);
 			printk("\n");
+			
 			#ifdef ENABLE_CHIP_RESET_MACHINE
-			if(private_ts->init_success)
+			if(private_ts->init_success && hw_reset)
 			{
 				queue_delayed_work(private_ts->himax_wq, &private_ts->himax_chip_reset_work, 0);
 			}
 			#endif
-			enable_irq(private_ts->client->irq);
 			return 0;
 	}
 	//----[firmware version read]-----------------------------------------------------------------------------end
@@ -3208,7 +3232,7 @@
 			himax_read_flash( temp_buffer, 0x262, 1);
 			HX_BT_NUM = (temp_buffer[0] & 0x07);
 			#endif
-			
+/*			
 			himax_read_flash( temp_buffer, 0x272, 6);
 			if((temp_buffer[0] & 0x04) == 0x04)
 			{
@@ -3224,6 +3248,10 @@
 				HX_X_RES = temp_buffer[2]*256 + temp_buffer[3];
 				HX_Y_RES = temp_buffer[4]*256 + temp_buffer[5];
 			}
+*/
+			HX_XY_REVERSE = false;
+			HX_X_RES = 480;
+			HX_Y_RES = 854;			
 			
 			himax_read_flash( temp_buffer, 0x200, 6);
 			if( (temp_buffer[1] & 0x01) == 1 )
@@ -3425,6 +3453,15 @@
 		{
 			himax_read_FW_ver(false);
 
+			printk("FW_VER_MAJ_buff in flash : %d \n",FW_VER_MAJ_buff[0]);
+			printk("FW_VER_MIN_buff in flash : %d \n",FW_VER_MIN_buff[0]);
+			printk("CFG_VER_MAJ_buff in flash : %d \n",CFG_VER_MAJ_buff[(CFG_VER_MAJ_FLASH_LENG - 1)]);
+			printk("CFG_VER_MIN_buff in flash : %d \n",CFG_VER_MIN_buff[(CFG_VER_MIN_FLASH_LENG - 1)]);
+			printk("FW_VER_MAJ_buff in Image : %d \n",i_CTPM_FW[FW_VER_MAJ_FLASH_ADDR]);
+			printk("FW_VER_MIN_buff in Image : %d \n",i_CTPM_FW[FW_VER_MIN_FLASH_ADDR]);
+			printk("CFG_VER_MAJ_buff in Image : %d \n",i_CTPM_FW[CFG_VER_MAJ_FLASH_ADDR + (CFG_VER_MAJ_FLASH_LENG - 1)]);
+			printk("CFG_VER_MIN_buff in Image : %d \n",i_CTPM_FW[CFG_VER_MIN_FLASH_ADDR + (CFG_VER_MIN_FLASH_LENG - 1)]);
+
 			//TODO modify the condition by your project 
 			//Here check fw_ver_maj, fw_ver_min, cfg_ver_maj, cfg_ver_min 
 			//if( FW_VER_MIN_buff[0] < i_CTPM_FW[FW_VER_MIN_FLASH_ADDR] )
@@ -3452,22 +3489,42 @@
 			unsigned char* ImageBuffer = i_CTPM_FW;
     	int fullFileLength = sizeof(i_CTPM_FW); 
     	
-    	if (i_Check_FW_Version() > 0 || himax_calculateChecksum(ImageBuffer, fullFileLength) == 0 )
+    	if (i_Check_FW_Version() > 0 )
 			{		 
-				disable_irq(private_ts->client->irq);
+				//disable_irq(private_ts->client->irq);
 				if(fts_ctpm_fw_upgrade_with_i_file() == 0)
 					printk(KERN_ERR "TP upgrade error, line: %d\n", __LINE__);
 				else
 					printk(KERN_ERR "TP upgrade OK, line: %d\n", __LINE__);
 					
+				//#ifdef HX_RST_PIN_FUNC
+				//	himax_HW_reset();
+				//#endif
+			
+				//msleep(50);
+				//himax_ts_poweron(private_ts); 
+			
+				//enable_irq(private_ts->client->irq);
+			}
+			else
+			{
+				if(himax_calculateChecksum(ImageBuffer, fullFileLength) == 0 )
+				{
+					//disable_irq(private_ts->client->irq);
+					if(fts_ctpm_fw_upgrade_with_i_file() == 0)
+						printk(KERN_ERR "TP upgrade error, line: %d\n", __LINE__);
+					else
+						printk(KERN_ERR "TP upgrade OK, line: %d\n", __LINE__);
+					
 				#ifdef HX_RST_PIN_FUNC
 					himax_HW_reset();
 				#endif
 			
-				msleep(50);
-				himax_ts_poweron(private_ts); 
+					//msleep(50);
+					//himax_ts_poweron(private_ts); 
 			
-				enable_irq(private_ts->client->irq);
+					//enable_irq(private_ts->client->irq);
+				}
 			}
 			return 0;
 		}
@@ -4135,7 +4192,9 @@
 			if( buf[0] == 'v') //firmware version
 			{
 				debug_level_cmd = buf[0];
+				disable_irq(private_ts->client->irq);
 				himax_read_FW_ver(true);
+				enable_irq(private_ts->client->irq);
 				return count;
 			}
 			

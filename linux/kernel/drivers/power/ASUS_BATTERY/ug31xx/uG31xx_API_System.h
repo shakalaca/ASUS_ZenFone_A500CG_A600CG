@@ -4,7 +4,7 @@
  *  Interface of ug31xx system control
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 405 $
+ * @revision  $Revision: 564 $
  */
 
 #define UG31XX_SYSTEM_VERSION     (7)
@@ -91,7 +91,7 @@ extern SYSTEM_RTN_CODE UpiInitSystemData(SystemDataType *data);
  *
  * @return  _UPI_TRUE_ if uG31xx is not actived
  */
-extern _upi_bool_ UpiCheckICActive(void);
+extern _upi_bool_ UpiCheckICActive(SystemDataType *data);
 
 /**
  * @brief UpiActiveUg31xx
@@ -101,6 +101,15 @@ extern _upi_bool_ UpiCheckICActive(void);
  * @return  SYSTEM_RTN_CODE
  */
 extern SYSTEM_RTN_CODE UpiActiveUg31xx(void);
+
+/**
+ * @brief UpiStopUg31xx
+ *
+ *  Stop uG31xx
+ *
+ * @return  SYSTEM_RTN_CODE
+ */
+extern SYSTEM_RTN_CODE UpiStopUg31xx(void);
 
 /**
  * @brief UpiSetupAdc
@@ -174,9 +183,10 @@ extern void UpiLoadBatInfoFromIC(SystemDataType *data);
  *
  * @para  data  address of SystemDataType
  * @para  deltaQ  delta capacity from coulomb counter
+ * @para  suspend set _UPI_TRUE_ for suspend operation
  * @return  _UPI_NULL_
  */
-extern void UpiUpdateBatInfoFromIC(SystemDataType *data, _sys_s16_ deltaQ);
+extern void UpiUpdateBatInfoFromIC(SystemDataType *data, _sys_s16_ deltaQ, _sys_bool_ suspend);
 
 /**
  * @brief UpiSaveBatInfoTOIC
@@ -257,4 +267,13 @@ extern void UpiAllocateTableBuf(_sys_u8_ **data, _sys_u8_ *size);
  * @return  NULL
  */
 extern void UpiFreeTableBuf(_sys_u8_ **data);
+
+/**
+ * @brief UpiPrintSystemVersion
+ *
+ *  Print system module version
+ *
+ * @return  NULL
+ */
+extern void UpiPrintSystemVersion(void);
 

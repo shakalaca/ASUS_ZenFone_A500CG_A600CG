@@ -29,6 +29,7 @@
 #include <linux/of_platform.h>
 #include <linux/of_gpio.h>
 #include <linux/spinlock.h>
+#include <linux/wakelock.h>
 
 struct gpio_keys_drvdata;
 struct gpio_button_data {
@@ -53,6 +54,8 @@ struct gpio_keys_drvdata {
 	void (*disable)(struct device *dev);
 	struct gpio_button_data data[0];
 };
+
+struct wake_lock gpio_wake_lock;
 
 static int gpio_keys_request_irq(int gpio, irq_handler_t isr,
 		unsigned long flags, const char *name, void *data)
@@ -356,11 +359,12 @@ static ssize_t gpio_keys_wakeup_enable(struct device *dev,
 
 	for (i = 0; i < pdata->nbuttons; i++) {
 		struct gpio_keys_button *button = &pdata->buttons[i];
-		if ((int)code == button->code)
-			button->wakeup = enable_wakeup;
+        if ((int)code == button->code)
+        	button->wakeup = enable_wakeup;
+         
 		if (button->wakeup)
 			wakeup = button->wakeup;
-	}
+	}    
 
 	device_init_wakeup(dev, wakeup);
 
@@ -378,12 +382,40 @@ static ssize_t gpio_keys_store_disabled_wakeup(struct device *dev,
 {
 	return gpio_keys_wakeup_enable(dev, attr, buf, size, 0);
 }
+
+static ssize_t gpio_keys_show_wakeup(struct device *dev,
+               struct device_attribute *attr, char *buf)
+{
+
+	int i, wakeup_volumeup_status = -1, wakeup_volumedown_status = -1, ret = -EINVAL;
+	long code;
+	struct platform_device *pdev = to_platform_device(dev);
+	struct gpio_keys_platform_data *pdata = pdev->dev.platform_data;
+
+	for (i = 0; i < pdata->nbuttons; i++) {
+		struct gpio_keys_button *button = &pdata->buttons[i];
+		if (KEY_VOLUMEUP == button->code)
+			wakeup_volumeup_status = button->wakeup;
+		if (KEY_VOLUMEDOWN == button->code)
+			wakeup_volumedown_status = button->wakeup;
+	}
+
+	ret = sprintf(buf, "%d%d\n",
+		wakeup_volumeup_status, wakeup_volumedown_status);
+
+	return ret;
+}
+
 static DEVICE_ATTR(enabled_wakeup, S_IWUSR | S_IRUGO,
 		   NULL,
 		   gpio_keys_store_enabled_wakeup);
 static DEVICE_ATTR(disabled_wakeup, S_IWUSR | S_IRUGO,
 		   NULL,
 		   gpio_keys_store_disabled_wakeup);
+
+static DEVICE_ATTR(show_wakeup, S_IWUSR | S_IRUGO,
+                   gpio_keys_show_wakeup,
+		   NULL);
 
 static struct attribute *gpio_keys_attrs[] = {
 	&dev_attr_keys.attr,
@@ -392,6 +424,7 @@ static struct attribute *gpio_keys_attrs[] = {
 	&dev_attr_disabled_switches.attr,
 	&dev_attr_enabled_wakeup.attr,
 	&dev_attr_disabled_wakeup.attr,
+	&dev_attr_show_wakeup.attr,
 	NULL,
 };
 
@@ -456,9 +489,16 @@ static irqreturn_t gpio_keys_gpio_isr(int irq, void *dev_id)
 	if (bdata->timer_debounce)
 		mod_timer(&bdata->timer,
 			jiffies + msecs_to_jiffies(bdata->timer_debounce));
-	else
-		schedule_work(&bdata->work);
-
+	else{
+            type = button->type ?: EV_KEY;
+            if( state == 0 &&
+                type == EV_KEY &&
+		button->wakeup == 1 &&
+                button->code == KEY_VOLUMEUP){ 
+                     wake_lock_timeout(&gpio_wake_lock, msecs_to_jiffies(2000));
+            }
+	 	    schedule_work(&bdata->work);
+    }
 	return IRQ_HANDLED;
 }
 
@@ -823,6 +863,8 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 	input_sync(input);
 
 	device_init_wakeup(&pdev->dev, wakeup);
+
+    wake_lock_init(&gpio_wake_lock, WAKE_LOCK_SUSPEND, "platform_gpio_wakelock");
 
 	return 0;
 

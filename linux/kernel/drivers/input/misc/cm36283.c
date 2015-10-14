@@ -2399,11 +2399,38 @@ static int CM32683_resume(struct i2c_client *client)
 	return 0;
 }
 
+static int CM32683_shutdown(struct i2c_client *client)
+{
+    D("CM36283:  CM32683_shutdown \n");
+    struct CM36283_info *lpi = lp_info_cm36283;
+	device_unregister(lpi->ps_dev);
+	device_unregister(lpi->ls_dev);
+	class_destroy(lpi->CM36283_class);
+	destroy_workqueue(lpi->lp_wq);
+	wake_lock_destroy(&(lpi->ps_wake_lock));
+	input_unregister_device(lpi->ls_input_dev);
+	input_free_device(lpi->ls_input_dev);
+	input_unregister_device(lpi->ps_input_dev);
+	input_free_device(lpi->ps_input_dev);
+	misc_deregister(&psensor_misc_cm36283);
+	mutex_destroy(&CM36283_control_mutex);
+	mutex_destroy(&ps_enable_mutex);
+	mutex_destroy(&ps_disable_mutex);
+	mutex_destroy(&ps_get_adc_mutex);
+	misc_deregister(&lightsensor_misc);
+	mutex_destroy(&als_enable_mutex);
+	mutex_destroy(&als_disable_mutex);
+	mutex_destroy(&als_get_adc_mutex);
+	kfree(lpi);
+
+    return 0;
+}
 static struct i2c_driver CM36283_driver = {
 	.id_table = CM36283_i2c_id,
 	.probe = CM36283_probe,
 	.suspend = CM36283_suspend,
 	.resume = CM32683_resume,
+	.shutdown = CM32683_shutdown,
 	.driver = {
 		.name = CM36283_I2C_NAME,
 		.owner = THIS_MODULE,

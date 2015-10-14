@@ -1314,6 +1314,18 @@ static const struct i2c_device_id kxtj9_id[] = {
 	{ },
 };
 
+static int kxtj9_shutdown(struct i2c_client *client)
+{
+	printk("Gsensor : kxtj9 shutdown.\n");
+	struct kxtj9_data *tj9 = i2c_get_clientdata(client);
+	free_irq(tj9->irq, tj9);
+	input_unregister_device(tj9->input_dev);
+	input_free_device(tj9->input_dev);
+	misc_deregister(&asus_gsensor_device);
+	kfree(tj9);
+
+	return 0;
+};
 MODULE_DEVICE_TABLE(i2c, kxtj9_id);
 
 static struct i2c_driver kxtj9_driver = {
@@ -1324,6 +1336,7 @@ static struct i2c_driver kxtj9_driver = {
 	},
 	.probe		= kxtj9_probe,
 	.remove		= __devexit_p(kxtj9_remove),
+	.shutdown	=kxtj9_shutdown,
 	.id_table	= kxtj9_id,
 };
 

@@ -53,37 +53,20 @@ typedef char                _upi_bool_;
 
   #else   ///< else of uG31xx_BOOT_LOADER
 
-    #ifdef  ANDROID_SHELL_ALGORITHM
+    #ifndef BUILD_UG31XX_LIB
 
-      #include <stdio.h>
-      #include <stdlib.h>
-      #include <sys/types.h>
-      #include <time.h>
-      #include <stdarg.h>
-      #include <cutils/klog.h>
+      #include <linux/module.h>
+      #include <linux/delay.h>
+      #include <linux/fs.h>
+      #include <linux/i2c.h>
+      #include <linux/slab.h>
+      #include <linux/jiffies.h>
+      #include <linux/err.h>
+      #include <linux/kernel.h>
+      #include <asm/uaccess.h>
+      #include <asm/unaligned.h>
       
-      #include <cutils/logd.h>
-      #include <cutils/sockets.h>
-      #include <ctype.h>
-      
-    #else   ///< else of ANDROID_SHELL_ALGORITHM
-    
-      #ifndef BUILD_UG31XX_LIB
-
-        #include <linux/module.h>
-        #include <linux/delay.h>
-        #include <linux/fs.h>
-        #include <linux/i2c.h>
-        #include <linux/slab.h>
-        #include <linux/jiffies.h>
-        #include <linux/err.h>
-        #include <linux/kernel.h>
-        #include <asm/uaccess.h>
-        #include <asm/unaligned.h>
-      
-      #endif  ///< end of BUILD_UG31XX_LIB
-    
-    #endif  ///< end of ANDROID_SHELL_ALGORITHM
+    #endif  ///< end of BUILD_UG31XX_LIB
     
   #endif  ///< end of uG31xx_BOOT_LOADER
 
@@ -193,6 +176,7 @@ extern _upi_u8_ Ug31DebugEnable;
   #define UG31_LOGD(...)  wDebug::LOGE(DEBUG_FILE, 0, _T(__VA_ARGS__));
 
   #define ug31_printk(...)
+  #define ug31_printk_special(...)
 
 #else   ///< else of defined (uG31xx_OS_WINDOWS)
 
@@ -210,14 +194,25 @@ extern _upi_u8_ Ug31DebugEnable;
     #define UG31_LOGD(...)  printf(__VA_ARGS__)
 
   #else   ///< else of uG31xx_BOOT_LOADER
+
+    #ifdef  BUILD_UG31XX_LIB
+  
+      #define printk
+  
+    #endif  ///< end of BUILD_UG31XX_LIB
+
+    #define UG31_LOGE(...)  if(Ug31DebugEnable >= LOG_LEVEL_ERROR)\
+                              printk("<UG31/E>" __VA_ARGS__);
+    #define UG31_LOGI(...)  if(Ug31DebugEnable >= LOG_LEVEL_INFO)\
+                              printk("<UG31/I>" __VA_ARGS__);
+    #define UG31_LOGN(...)  if(Ug31DebugEnable >= LOG_LEVEL_NOTICE)\
+                              printk("<UG31/N>" __VA_ARGS__);
+    #define UG31_LOGD(...)  if(Ug31DebugEnable >= LOG_LEVEL_DEBUG)\
+                              printk("<UG31/D>" __VA_ARGS__);
     
-    #define UG31_LOGE(...)  ug31_printk(LOG_LEVEL_ERROR, "<UG31/E>" __VA_ARGS__)
-    #define UG31_LOGI(...)  ug31_printk(LOG_LEVEL_INFO, "<UG31/I>" __VA_ARGS__)
-    #define UG31_LOGN(...)  ug31_printk(LOG_LEVEL_NOTICE, "<UG31/N>" __VA_ARGS__)
-    #define UG31_LOGD(...)  ug31_printk(LOG_LEVEL_DEBUG, "<UG31/D>" __VA_ARGS__)
-    
-    extern int ug31_printk(int level, const char *fmt, ...);
-    
+    extern int ug31_printk(int level, const char *fmt, ...); 
+    extern int ug31_printk_special(int level, const char *fmt, ...); 
+
   #endif  ///< end of uG31xx_BOOT_LOADER
   
 #endif  ///< end of defined (uG31xx_OS_WINDOWS)

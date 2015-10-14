@@ -4,7 +4,7 @@
  *  uG31xx register definition
  *
  * @author AllenTeng <allen.kuoliang.teng@gmail.com>
- * @revision  $Revision: 2 $
+ * @revision  $Revision: 253 $
  * @note register table release date 2012/11/05
  */
 

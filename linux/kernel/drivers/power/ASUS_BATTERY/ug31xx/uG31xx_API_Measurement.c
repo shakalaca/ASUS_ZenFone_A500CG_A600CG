@@ -11,7 +11,7 @@
  *  guG31xx measurement API
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 488 $
+ * @revision  $Revision: 96 $
  */
 
 #include "stdafx.h"     //windows need this??
@@ -19,11 +19,11 @@
 
 #ifdef  uG31xx_OS_WINDOWS
 
-  #define MEASUREMENT_VERSION      (_T("Measurement $Rev: 488 $"))
+  #define MEASUREMENT_VERSION      (_T("Measurement $Rev: 96 $"))
 
 #else   ///< else of uG31xx_OS_WINDOWS
 
-  #define MEASUREMENT_VERSION      ("Measurement $Rev: 488 $")
+  #define MEASUREMENT_VERSION      ("Measurement $Rev: 96 $")
 
 #endif  ///< end of uG31xx_OS_WINDOWS
 
@@ -59,6 +59,9 @@ typedef struct MeasDataInternalST {
   _meas_u16_ codeCounter;
   _meas_s16_ ccOffset;
   _meas_s16_ codeExtTemperatureComp;
+
+  _meas_u16_ codeBat2;
+  _meas_u16_ codeBat3;
 
   _meas_u8_ reg14;
   _meas_u8_ reg9C;
@@ -145,7 +148,11 @@ static AdcDeltaCodeMappingType AdcDeltaCodeMapping[] =
   { 0,      0,      0,     0    },     ///< Index = 31
 };
 
-#define ADC_TEMPERATURE_GAIN_CONST            (1000)
+#ifdef  UG31XX_ADC_NO_TEMP_COMPENSATION
+  #define ADC_TEMPERATURE_GAIN_CONST          (0)
+#else   ///< else of UG31XX_ADC_NO_TEMP_COMPENSATION
+  #define ADC_TEMPERATURE_GAIN_CONST          (1000)
+#endif  ///< end of UG31XX_ADC_NO_TEMP_COMPENSATION
 
 #define ADC1_CODE_100MV_NEGATIVE              (0xFF00)
 #define ADC1_CODE_200MV_NEGATIVE              (0xFE00)
@@ -330,12 +337,12 @@ void CalAdc1Factors(MeasDataInternalType *obj)
 
   /// [AT-PM] : Calculate current ADC1 gain ; 01/23/2013
   tmp64 = (_meas_s64_)obj->info->adc1GainSlope;
-  tmp64 = tmp64*(obj->codeIntTemperature) + obj->info->adc1GainFactorB;
+  tmp64 = tmp64*(obj->info->filterIntTemperature) + obj->info->adc1GainFactorB;
   obj->info->adc1Gain = (_meas_s32_)tmp64;
 
   /// [AT-PM] : Calculate current ADC1 offset ; 01/23/2013
   tmp64 = (_meas_s64_)obj->info->adc1OffsetSlope;
-  tmp64 = tmp64*(obj->codeIntTemperature) + obj->info->adc1OffsetFactorO;
+  tmp64 = tmp64*(obj->info->filterIntTemperature) + obj->info->adc1OffsetFactorO;
   obj->info->adc1Offset = (_meas_s32_)tmp64;
 	#ifdef	UPI_UBOOT_DEBUG_MSG
 		printf("[CalAdc1Factors] adc1Gain / adc1Offset = %d / %d\n", obj->info->adc1Gain, obj->info->adc1Offset);
@@ -383,12 +390,12 @@ void CalAdc2Factors(MeasDataInternalType *obj)
 
   /// [AT-PM] : Calculate current ADC1 gain ; 01/23/2013
   tmp64 = (_meas_s64_)obj->info->adc2GainSlope;
-  tmp64 = tmp64*(obj->codeIntTemperature) + obj->info->adc2GainFactorB;
+  tmp64 = tmp64*(obj->info->filterIntTemperature) + obj->info->adc2GainFactorB;
   obj->info->adc2Gain = (_meas_s32_)tmp64;
 
   /// [AT-PM] : Calculate current ADC1 offset ; 01/23/2013
   tmp64 = (_meas_s64_)obj->info->adc2OffsetSlope;
-  tmp64 = tmp64*(obj->codeIntTemperature) + obj->info->adc2OffsetFactorO;
+  tmp64 = tmp64*(obj->info->filterIntTemperature) + obj->info->adc2OffsetFactorO;
   obj->info->adc2Offset = (_meas_s32_)tmp64;
         #ifdef  UPI_UBOOT_DEBUG_MSG
                 printf("[CalAdc2Factors] adc2Gain / adc2Offset = %d / %d\n", obj->info->adc2Gain, obj->info->adc2Offset);
@@ -458,20 +465,15 @@ _meas_s32_ CalibrateAdc1Code(MeasDataInternalType *obj, _meas_s32_ code)
  * @para  code  ADC2 code to be calibrated
  * @return  calibrated code
  */
-_meas_s32_ CalibrateAdc2Code(MeasDataInternalType *obj, _meas_s32_ code)
+_meas_s32_ CalibrateAdc2Code(MeasDataInternalType *obj, _meas_s32_ code, _meas_s32_ gain, _meas_s32_ offset)
 {
   _meas_s64_ tmp64;
   _meas_s32_ tmp32;
   _meas_s32_ deltaIT;
-  _meas_s32_ gain;
-  _meas_s32_ offset;
-
   deltaIT = (_meas_s32_)obj->info->otp->aveIT80;
   deltaIT = deltaIT - obj->info->otp->aveIT25;
 
   /// [AT-PM] : Pre-operation to avoid 64-bit division ; 01/23/2013
-  gain = obj->info->adc2Gain;
-  offset = obj->info->adc2Offset;
   while(1)
   {
     tmp64 = (_meas_s64_)code;
@@ -602,6 +604,78 @@ void ConvertBat1(MeasDataInternalType *obj)
   tmp32 = tmp32 - obj->info->sysData->ggbParameter->adc2_offset;
   tmp32 = tmp32*CALIBRATION_FACTOR_CONST/obj->info->sysData->ggbParameter->adc2_gain;
   obj->info->bat1Voltage = (_meas_u16_)tmp32;
+}
+
+/**
+ * @brief ConvertBat2
+ *
+ *  Convert code of BAT2
+ *
+ * @para  obj address of MeasDataInternalType
+ * @return  _UPI_NULL_
+ */
+void ConvertBat2(MeasDataInternalType *obj)
+{
+  _meas_s32_ tmp32;
+
+  /// [AT-PM] : Convert from calibrated ADC code ; 01/25/2013
+  tmp32 = (_meas_s32_)obj->info->codeBat2;
+  tmp32 = tmp32 - ADC2_IDEAL_CODE_100MV;
+  tmp32 = tmp32*ADC2_VOLTAGE_DELTA/ADC2_IDEAL_CODE_DELTA;
+  tmp32 = tmp32 + ADC2_VOLTAGE_100MV;
+
+  /// [AT-PM] : Apply board factor ; 01/25/2013
+  tmp32 = tmp32 - BoardFactor[GET_PRODUCT_TYPE(obj->info->sysData->ggbParameter->NacLmdAdjustCfg)].voltage_offset;
+  tmp32 = tmp32*BOARD_FACTOR_CONST/BoardFactor[GET_PRODUCT_TYPE(obj->info->sysData->ggbParameter->NacLmdAdjustCfg)].voltage_gain;
+
+/// [RY] : add check the vbat2 gain 
+  if(obj->info->sysData->ggbParameter->vbat2_gain <= 0)
+  {
+    obj->info->bat2Voltage = 0;
+  }
+  else
+  {
+    /// [AT-PM] : Apply calibration parameter ; 01/25/2013
+    tmp32 = tmp32 - obj->info->sysData->ggbParameter->vbat2_offset;
+    tmp32 = (tmp32*CALIBRATION_FACTOR_CONST)/obj->info->sysData->ggbParameter->vbat2_gain;
+    obj->info->bat2Voltage = (_meas_u16_)tmp32*2;
+  }
+}
+
+/**
+ * @brief ConvertBat2
+ *
+ *  Convert code of BAT2
+ *
+ * @para  obj address of MeasDataInternalType
+ * @return  _UPI_NULL_
+ */
+void ConvertBat3(MeasDataInternalType *obj)
+{
+  _meas_s32_ tmp32;
+
+  /// [AT-PM] : Convert from calibrated ADC code ; 01/25/2013
+  tmp32 = (_meas_s32_)obj->info->codeBat3;
+  tmp32 = tmp32 - ADC2_IDEAL_CODE_100MV;
+  tmp32 = tmp32*ADC2_VOLTAGE_DELTA/ADC2_IDEAL_CODE_DELTA;
+  tmp32 = tmp32 + ADC2_VOLTAGE_100MV;
+
+  /// [AT-PM] : Apply board factor ; 01/25/2013
+  tmp32 = tmp32 - BoardFactor[GET_PRODUCT_TYPE(obj->info->sysData->ggbParameter->NacLmdAdjustCfg)].voltage_offset;
+  tmp32 = tmp32*BOARD_FACTOR_CONST/BoardFactor[GET_PRODUCT_TYPE(obj->info->sysData->ggbParameter->NacLmdAdjustCfg)].voltage_gain;
+
+  /// [RY] : add check the vbat2 gain 
+  if(obj->info->sysData->ggbParameter->vbat3_gain <= 0)
+  {
+    obj->info->bat3Voltage = 0;
+  }
+  else
+  {
+    /// [AT-PM] : Apply calibration parameter ; 01/25/2013
+    tmp32 = tmp32 - obj->info->sysData->ggbParameter->vbat3_offset;
+    tmp32 = (tmp32*CALIBRATION_FACTOR_CONST)/obj->info->sysData->ggbParameter->vbat3_gain;
+    obj->info->bat3Voltage = (_meas_u16_)tmp32*3;
+  }
 }
 
 #define ADC1_VOLTAGE_100MV    (-5000)                                   ///< [AT-PM] : Unit in uV ; 01/25/2013
@@ -751,6 +825,12 @@ void ConvertExtTemperature(MeasDataInternalType *obj)
   tmp16 = (_meas_s16_)obj->info->sysData->ggbParameter->adc_d3;
   tmp16 = tmp16 - obj->codeExtTemperatureComp - obj->info->codeExtTemperature;
   UG31_LOGN("[%s]: Voltage divider = %d\n", __func__, tmp16);
+  if(tmp16 <= 0)
+  {
+    UG31_LOGE("[%s]: Limit the minimum of voltage divider to 1 from %d\n", __func__,
+              tmp16);
+    tmp16 = 1;
+  }
   
   /// [AT-PM] : Calculate NTC resistance ; 11/01/2013
   tmp32 = (_meas_s32_)obj->info->codeExtTemperature;
@@ -1017,7 +1097,8 @@ void ConvertCharge(MeasDataInternalType *obj)
  */
 void TimeTick(MeasDataInternalType *obj)
 {
-  if(MEAS_IN_SUSPEND_MODE(obj->info->status) == _UPI_TRUE_)
+  if((MEAS_IN_SUSPEND_MODE(obj->info->status) == _UPI_TRUE_) ||
+     (MEAS_LEAVE_SUSPEND_MODE(obj->info->status) == _UPI_TRUE_))
   {    
     /// [AT-PM] : Prevent adc conversion count overflow ; 06/11/2013
     if(obj->codeCounter < obj->info->lastCounter)
@@ -1033,7 +1114,15 @@ void TimeTick(MeasDataInternalType *obj)
     }
     /// [AT-PM] : Use conversion count to estimate delta time ; 06/11/2013
     obj->info->deltaTime = obj->info->deltaTime*obj->info->adc1ConvertTime/TIME_CONVERT_TIME_TO_MSEC;
-    UG31_LOGE("[%s]: In internal suspend mode, deltaTime = %d\n", __func__, (int)obj->info->deltaTime);
+    UG31_LOGE("[%s]: In internal suspend mode, deltaTime = %d\n", __func__, 
+              (int)obj->info->deltaTime);
+    if(MEAS_LEAVE_SUSPEND_MODE(obj->info->status) == _UPI_TRUE_)
+    {
+      obj->info->status = obj->info->status & (~MEAS_STATUS_LAST_IN_SUSPEND_MODE);
+      obj->info->lastTimeTick = GetTickCount();
+      UG31_LOGE("[%s]: Leave internal suspend mode, lastTimeTick = %d\n", __func__,
+                (int)obj->info->lastTimeTick);
+    }
     return;
   }
 
@@ -1044,8 +1133,24 @@ void TimeTick(MeasDataInternalType *obj)
   {
     UG31_LOGE("[%s]: OVERFLOW -> %d < %d\n", __func__, 
               (int)obj->currTime, (int)obj->info->lastTimeTick);
-    obj->info->deltaTime = 0;
     obj->info->lastTimeTick = obj->currTime;
+
+    /// [AT-PM] : Use adc conversion count to count delta time ; 03/04/2014
+    if(obj->codeCounter < obj->info->lastCounter)
+    {
+      /// [AT-PM] : Prevent adc conversion count overflow ; 06/11/2013
+      obj->info->deltaTime = (_meas_u32_)obj->codeCounter;
+      UG31_LOGE("[%s]: Counter and jiffies overflow, counter = %d\n", __func__, 
+                (int)obj->codeCounter);
+    }
+    else
+    {
+      obj->info->deltaTime = (_meas_u32_)obj->codeCounter;
+      obj->info->deltaTime = obj->info->deltaTime - obj->info->lastCounter;
+    }
+    /// [AT-PM] : Use conversion count to estimate delta time ; 06/11/2013
+    obj->info->deltaTime = obj->info->deltaTime*obj->info->adc1ConvertTime/TIME_CONVERT_TIME_TO_MSEC;
+    UG31_LOGE("[%s]: Jiffies overflow, deltaTime = %d\n", __func__, (int)obj->info->deltaTime);
     return;
   }
 
@@ -1054,6 +1159,90 @@ void TimeTick(MeasDataInternalType *obj)
   UG31_LOGN("[%s]: Delta Time = %d - %d = %d\n", __func__,
             (int)obj->currTime, (int)obj->info->lastTimeTick, (int)obj->info->deltaTime);
   obj->info->lastTimeTick = obj->currTime;  
+}
+
+#define MAX_READ_REGISTER_RETRY     (5)
+
+/**
+ * @brief ReadVoltBat3Code
+ *
+ *  Read register with debug for LA
+ *
+ * @return  NULL
+ */
+void ReadVoltBat3Code(void)
+{
+  _meas_u8_ buf[2];
+  buf[0] = 0;
+  buf[1] = 0;
+  API_I2C_Read(NORMAL_REGISTER,
+                           UG31XX_I2C_HIGH_SPEED_MODE,
+                           UG31XX_I2C_TEM_BITS_MODE,
+                           REG_VBAT3_LOW,
+                           2,
+                           (unsigned char *)&buf[0]);
+  UG31_LOGE("[UPI] %s vbat3(%x%x)\n", __func__,
+          buf[1], buf[0]);
+}
+
+/**
+ * @brief _ReadRegister
+ *
+ *  Read register with double buffer
+ *
+ * @para  addr  register address
+ * @para  size  data size in byte
+ * @para  rdata address of data to be stored
+ * @return  NULL
+ */
+void _ReadRegister(_meas_u8_ addr, _meas_u8_ size, _meas_u8_ *rdata)
+{
+  _meas_u8_ buf[2];
+  _meas_u8_ cnt;
+
+  API_I2C_Read(NORMAL_REGISTER,
+               UG31XX_I2C_HIGH_SPEED_MODE,
+               UG31XX_I2C_TEM_BITS_MODE,
+               addr,
+               size,
+               (unsigned char *)rdata);
+  
+  cnt = 0;
+  while(1)
+  {
+    buf[0] = 0;
+    buf[1] = 0;
+    API_I2C_Read(NORMAL_REGISTER,
+                 UG31XX_I2C_HIGH_SPEED_MODE,
+                 UG31XX_I2C_TEM_BITS_MODE,
+                 addr,
+                 size,
+                 (unsigned char *)&buf[0]);
+
+    if((buf[0] == *rdata) &&
+       (buf[1] == *(rdata + 1)))
+    {
+      break;
+    }
+    UG31_LOGE("[%s]: re-read i2c %x%x -> %x != %x%x (%d)\n", __func__,
+              addr,
+              *(rdata+1),
+              *rdata,
+              buf[1],
+              buf[0],
+              cnt);
+    
+    upi_memcpy(rdata, &buf[0], size);
+
+    cnt = cnt + 1;
+    if(cnt > MAX_READ_REGISTER_RETRY)
+    {
+      UG31_LOGE("[%s]: read i2c %x fail (%d)\n", __func__,
+                addr,
+                cnt);
+      break;
+    }
+  }
 }
 
 /**
@@ -1067,60 +1256,39 @@ void TimeTick(MeasDataInternalType *obj)
 void ReadRegister(MeasDataInternalType *obj)
 {
   /// [AT-PM] : Read VBat1Ave ; 01/27/2013
-  API_I2C_Read(NORMAL_REGISTER, 
-               UG31XX_I2C_HIGH_SPEED_MODE, 
-               UG31XX_I2C_TEM_BITS_MODE, 
-               REG_AVE_VBAT1_LOW, 
-               REG_AVE_VBAT1_HIGH - REG_AVE_VBAT1_LOW + 1, 
-               (unsigned char *)&obj->codeBat1);
+  _ReadRegister(REG_AVE_VBAT1_LOW,
+                REG_AVE_VBAT1_HIGH - REG_AVE_VBAT1_LOW + 1, 
+                (unsigned char *)&obj->codeBat1);
 
   /// [AT-PM] : Read CurrentAve ; 01/27/2013
-  API_I2C_Read(NORMAL_REGISTER, 
-               UG31XX_I2C_HIGH_SPEED_MODE, 
-               UG31XX_I2C_TEM_BITS_MODE, 
-               REG_AVE_CURRENT_LOW, 
-               REG_AVE_CURRENT_HIGH - REG_AVE_CURRENT_LOW + 1, 
-               (unsigned char *)&obj->codeCurrent);
+  _ReadRegister(REG_AVE_CURRENT_LOW, 
+                REG_AVE_CURRENT_HIGH - REG_AVE_CURRENT_LOW + 1, 
+                (unsigned char *)&obj->codeCurrent);
 
   /// [AT-PM] : Read ITAve ; 01/27/2013
-  API_I2C_Read(NORMAL_REGISTER, 
-               UG31XX_I2C_HIGH_SPEED_MODE, 
-               UG31XX_I2C_TEM_BITS_MODE, 
-               REG_AVE_IT_LOW, 
-               REG_AVE_IT_HIGH - REG_AVE_IT_LOW + 1, 
-               (unsigned char *)&obj->codeIntTemperature);
+  _ReadRegister(REG_AVE_IT_LOW, 
+                REG_AVE_IT_HIGH - REG_AVE_IT_LOW + 1, 
+                (unsigned char *)&obj->codeIntTemperature);
 
   /// [AT-PM] : Read ETAve ; 01/27/2013
-  API_I2C_Read(NORMAL_REGISTER, 
-               UG31XX_I2C_HIGH_SPEED_MODE, 
-               UG31XX_I2C_TEM_BITS_MODE, 
-               REG_AVE_ET_LOW, 
-               REG_AVE_ET_HIGH - REG_AVE_ET_LOW + 1, 
-               (unsigned char *)&obj->codeExtTemperature);
+  _ReadRegister(REG_AVE_ET_LOW, 
+                REG_AVE_ET_HIGH - REG_AVE_ET_LOW + 1, 
+                (unsigned char *)&obj->codeExtTemperature);
 
   /// [AT-PM] : Read Charge ; 01/27/2013
-  API_I2C_Read(NORMAL_REGISTER, 
-               UG31XX_I2C_HIGH_SPEED_MODE, 
-               UG31XX_I2C_TEM_BITS_MODE, 
-               REG_CHARGE_LOW, 
-               REG_CHARGE_HIGH - REG_CHARGE_LOW + 1, 
-               (unsigned char *)&obj->codeCharge);
+  _ReadRegister(REG_CHARGE_LOW, 
+                REG_CHARGE_HIGH - REG_CHARGE_LOW + 1, 
+                (unsigned char *)&obj->codeCharge);
 
   /// [AT-PM] : Read Counter ; 01/27/2013
-  API_I2C_Read(NORMAL_REGISTER, 
-               UG31XX_I2C_HIGH_SPEED_MODE, 
-               UG31XX_I2C_TEM_BITS_MODE, 
-               REG_COUNTER_LOW, 
-               REG_COUNTER_HIGH - REG_COUNTER_LOW + 1, 
-               (unsigned char *)&obj->codeCounter);
+  _ReadRegister(REG_COUNTER_LOW, 
+                REG_COUNTER_HIGH - REG_COUNTER_LOW + 1, 
+                (unsigned char *)&obj->codeCounter);
 
   /// [AT-PM] : Read Offset ; 01/27/2013
-  API_I2C_Read(NORMAL_REGISTER, 
-               UG31XX_I2C_HIGH_SPEED_MODE, 
-               UG31XX_I2C_TEM_BITS_MODE, 
-               REG_ADC1_OFFSET_LOW, 
-               REG_ADC1_OFFSET_HIGH - REG_ADC1_OFFSET_LOW + 1, 
-               (unsigned char *)&obj->ccOffset);
+  _ReadRegister(REG_ADC1_OFFSET_LOW, 
+                REG_ADC1_OFFSET_HIGH - REG_ADC1_OFFSET_LOW + 1, 
+                (unsigned char *)&obj->ccOffset);
 
   /// [AT-PM] : Read register for debugging ; 02/27/2014
   API_I2C_Read(NORMAL_REGISTER, 
@@ -1165,6 +1333,27 @@ void ReadRegister(MeasDataInternalType *obj)
                REG_CELL_EN, 
                1, 
                (unsigned char *)&obj->reg9E);
+  
+  if(obj->reg9E >= APPLICATION_UG3102)
+  {
+    _ReadRegister(REG_VBAT2_LOW,
+                  REG_VBAT2_HIGH - REG_VBAT2_LOW + 1, 
+                  (unsigned char *)&obj->codeBat2);
+  }
+  else
+  {
+    obj->codeBat2 = 0;
+  }
+  if((obj->reg9E & APPLICATION_UG3103_3) == APPLICATION_UG3103_3)
+  {
+    _ReadRegister(REG_VBAT3_LOW,
+                  REG_VBAT3_HIGH - REG_VBAT3_LOW + 1, 
+                  (unsigned char *)&obj->codeBat3);
+  }
+  else
+  {
+    obj->codeBat3 = 0;
+  }
 }
 
 /**
@@ -1524,7 +1713,7 @@ static CheckAdcCode CheckAdcCodeRoutine[] = {
 MEAS_RTN_CODE FetchAdcCode(MeasDataInternalType *obj)
 {
   _meas_u8_ retry;
-  MEAS_RTN_CODE rtn;
+  MEAS_RTN_CODE rtn = MEAS_RTN_ADC_ABNORMAL;
   _meas_u8_ idx;
   
   /// [AT-PM] : Read ADC code ; 01/27/2013
@@ -1554,27 +1743,52 @@ MEAS_RTN_CODE FetchAdcCode(MeasDataInternalType *obj)
 
     if(rtn == MEAS_RTN_PASS)
     {
-      if(retry != 0)
+      if((MEAS_NTC_OPEN(obj->info->status) == _UPI_TRUE_) ||
+         (MEAS_NTC_SHORT(obj->info->status) == _UPI_TRUE_))
       {
-        SleepMiniSecond(250);
+        #ifdef  STOP_IF_NTC_CHECK_FAIL
+        
+          SleepMiniSecond(250);
+          UG31_LOGE("[%s]: NTC status abnormal. (%x)\n", __func__,
+                    obj->info->status);
 
-        ReadRegister(obj);
-        UG31_LOGI("[%s]: Retry = %d (%d)\n", __func__, retry, obj->info->fetchRetryCnt);
-        UG31_LOGI("[%s]: Voltage code = %d\n", __func__, obj->codeBat1);
-        UG31_LOGI("[%s]: Current code = %d\n", __func__, obj->codeCurrent);
-        UG31_LOGI("[%s]: Internal Temperature code = %d\n", __func__, obj->codeIntTemperature);
-        UG31_LOGI("[%s]: External Temperature code = %d\n", __func__, obj->codeExtTemperature);
-        UG31_LOGI("[%s]: Charge code = %d\n", __func__, obj->codeCharge);
-        UG31_LOGI("[%s]: Counter = %d\n", __func__, obj->codeCounter);
+        #else   ///< else of STOP_IF_NTC_CHECK_FAIL
+
+          break;
+        
+        #endif  ///< end of STOP_IF_NTC_CHECK_FAIL
       }
-      break;
+      else
+      {
+        if(retry != 0)
+        {
+          SleepMiniSecond(250);
+        
+          ReadRegister(obj);
+          UG31_LOGI("[%s]: Retry = %d (%d)\n", __func__, retry, obj->info->fetchRetryCnt);
+          UG31_LOGI("[%s]: Voltage code = %d\n", __func__, obj->codeBat1);
+          UG31_LOGI("[%s]: Current code = %d\n", __func__, obj->codeCurrent);
+          UG31_LOGI("[%s]: Internal Temperature code = %d\n", __func__, obj->codeIntTemperature);
+          UG31_LOGI("[%s]: External Temperature code = %d\n", __func__, obj->codeExtTemperature);
+          UG31_LOGI("[%s]: Charge code = %d\n", __func__, obj->codeCharge);
+          UG31_LOGI("[%s]: Counter = %d\n", __func__, obj->codeCounter);
+        }
+        break;
+      }
     }
 
     rtn = MEAS_RTN_ADC_ABNORMAL;
     retry = retry + 1;
   }
 
+  if(rtn == MEAS_RTN_ADC_ABNORMAL)
+  {
+    ReadVoltBat3Code();
+  }
+
   obj->info->codeBat1BeforeCal = obj->codeBat1;
+  obj->info->codeBat2BeforeCal = obj->codeBat2;
+  obj->info->codeBat3BeforeCal = obj->codeBat3;
   obj->info->codeCurrentBeforeCal = obj->codeCurrent;
   obj->info->codeIntTemperatureBeforeCal = obj->codeIntTemperature;
   obj->info->codeExtTemperatureBeforeCal = obj->codeExtTemperature;
@@ -1680,8 +1894,9 @@ void CalculateCCOffset(MeasDataInternalType *obj)
   tmp32 = tmp32 + obj->info->ccOffsetAdj;
   tmp32 = tmp32*BoardFactor[GET_PRODUCT_TYPE(obj->info->sysData->ggbParameter->NacLmdAdjustCfg)].current_gain/BOARD_FACTOR_CONST;
   tmp32 = tmp32 + BoardFactor[GET_PRODUCT_TYPE(obj->info->sysData->ggbParameter->NacLmdAdjustCfg)].current_offset;
-  UG31_LOGN("[%s]: Offset from board and calibration factor = %d x %d / %d + %d = %d\n", __func__,
+  UG31_LOGN("[%s]: Offset from board and calibration factor = (%d + %d) x %d / %d + %d = %d\n", __func__,
             obj->info->sysData->ggbParameter->adc1_pos_offset,
+            obj->info->ccOffsetAdj,
             BoardFactor[GET_PRODUCT_TYPE(obj->info->sysData->ggbParameter->NacLmdAdjustCfg)].current_gain,
             BOARD_FACTOR_CONST,
             BoardFactor[GET_PRODUCT_TYPE(obj->info->sysData->ggbParameter->NacLmdAdjustCfg)].current_offset,
@@ -1747,7 +1962,141 @@ void CountCumuCap(MeasDataInternalType *obj)
 {
   obj->info->cumuCap = obj->info->cumuCap + obj->info->stepCap;
   UG31_LOGI("[%s]: Cumulative capacity = %d\n", __func__,
-            obj->info->cumuCap);
+            (int)obj->info->cumuCap);
+}
+
+#define FILTER_BAT_CODE_CNT         (5)
+#define FILTER_BAT_CODE_WEIGHT_OLD  (90)
+#define FILTER_BAT_CODE_WEIGHT_NEW  (10)
+
+/**
+ * @brief FilterBat1Code
+ *
+ *  IIR for BAT1
+ *
+ * @para  obj address of MeasDataInternalType
+ * @return  NULL
+ */
+void FilterBat1Code(MeasDataInternalType *obj)
+{
+  _meas_u32_ result;
+
+  if(MEAS_IN_SUSPEND_MODE(obj->info->status) == _UPI_TRUE_)
+  {
+    obj->info->filterBat1 = obj->codeBat1;
+    return;
+  }
+  
+  if(obj->info->filterCntBat1 < FILTER_BAT_CODE_CNT)
+  {
+    obj->info->filterCntBat1 = obj->info->filterCntBat1 + 1;
+    obj->info->filterSumBat1 = obj->info->filterSumBat1 + obj->codeBat1;
+    result = (obj->info->filterSumBat1)/(obj->info->filterCntBat1);
+    obj->info->filterBat1 = (_meas_u16_)result;
+    return;
+  }
+
+  result = (_meas_u32_)obj->codeBat1;
+  result = result*FILTER_BAT_CODE_WEIGHT_NEW + (obj->info->filterBat1)*FILTER_BAT_CODE_WEIGHT_OLD;
+  result = result/(FILTER_BAT_CODE_WEIGHT_NEW + FILTER_BAT_CODE_WEIGHT_OLD);
+  obj->info->filterBat1 = (_meas_u16_)result;  
+}
+
+/**
+ * @brief FilterBat1Code
+ *
+ *  IIR for BAT1
+ *
+ * @para  obj address of MeasDataInternalType
+ * @return  NULL
+ */
+void FilterBat2Code(MeasDataInternalType *obj)
+{
+  _meas_u32_ result;
+
+  if(MEAS_IN_SUSPEND_MODE(obj->info->status) == _UPI_TRUE_)
+  {
+    obj->info->filterBat2 = obj->codeBat2;
+    return;
+  }
+
+  if(obj->info->filterCntBat2 < FILTER_BAT_CODE_CNT)
+  {
+    obj->info->filterCntBat2 = obj->info->filterCntBat2 + 1;
+    obj->info->filterSumBat2 = obj->info->filterSumBat2 + obj->codeBat2;
+    result = (obj->info->filterSumBat2)/(obj->info->filterCntBat2);
+    obj->info->filterBat2 = (_meas_u16_)result;
+    return;
+  }
+
+  result = (_meas_u32_)obj->codeBat2;
+  result = result*FILTER_BAT_CODE_WEIGHT_NEW + (obj->info->filterBat2)*FILTER_BAT_CODE_WEIGHT_OLD;
+  result = result/(FILTER_BAT_CODE_WEIGHT_NEW + FILTER_BAT_CODE_WEIGHT_OLD);
+  obj->info->filterBat2 = (_meas_u16_)result;  
+}
+
+/**
+ * @brief FilterBat1Code
+ *
+ *  IIR for BAT1
+ *
+ * @para  obj address of MeasDataInternalType
+ * @return  NULL
+ */
+void FilterBat3Code(MeasDataInternalType *obj)
+{
+  _meas_u32_ result;
+
+  if(MEAS_IN_SUSPEND_MODE(obj->info->status) == _UPI_TRUE_)
+  {
+    obj->info->filterBat3 = obj->codeBat3;
+    return;
+  }
+
+  if(obj->info->filterCntBat3 < FILTER_BAT_CODE_CNT)
+  {
+    obj->info->filterCntBat3 = obj->info->filterCntBat3 + 1;
+    obj->info->filterSumBat3 = obj->info->filterSumBat3 + obj->codeBat3;
+    result = (obj->info->filterSumBat3)/(obj->info->filterCntBat3);
+    obj->info->filterBat3 = (_meas_u16_)result;
+    return;
+  }
+
+  result = (_meas_u32_)obj->codeBat3;
+  result = result*FILTER_BAT_CODE_WEIGHT_NEW + (obj->info->filterBat3)*FILTER_BAT_CODE_WEIGHT_OLD;
+  result = result/(FILTER_BAT_CODE_WEIGHT_NEW + FILTER_BAT_CODE_WEIGHT_OLD);
+  obj->info->filterBat3 = (_meas_u16_)result;  
+}
+
+#define FILTER_IT_CODE_CNT        (5)
+#define FILTER_IT_CODE_WEIGHT_OLD (60)
+#define FILTER_IT_CODE_WEIGHT_NEW (40)
+
+/**
+ * @brief FilterITCode
+ *
+ *  IIR for IT
+ *
+ * @para  obj address of MeasDataInternalType
+ * @return  NULL
+ */
+void FilterITCode(MeasDataInternalType *obj)
+{
+  _meas_u32_ result;
+
+  if(obj->info->filterCntIntTemperature < FILTER_IT_CODE_CNT)
+  {
+    obj->info->filterCntIntTemperature = obj->info->filterCntIntTemperature + 1;
+    obj->info->filterSumIntTemperature = obj->info->filterSumIntTemperature + obj->codeIntTemperature;
+    result = (obj->info->filterSumIntTemperature)/(obj->info->filterCntIntTemperature);
+    obj->info->filterIntTemperature = (_meas_u16_)result;
+    return;
+  }
+
+  result = (_meas_u32_)obj->codeIntTemperature;
+  result = result*FILTER_IT_CODE_WEIGHT_NEW + (obj->info->filterIntTemperature)*FILTER_IT_CODE_WEIGHT_OLD;
+  result = result/(FILTER_IT_CODE_WEIGHT_NEW + FILTER_IT_CODE_WEIGHT_OLD);
+  obj->info->filterIntTemperature = (_meas_u16_)result;  
 }
 
 /// =============================================
@@ -1823,6 +2172,17 @@ void UpiResetCoulombCounter(MeasDataType *data)
 #define COULOMB_COUNTER_RESET_THRESHOLD_CHARGE_CHG  (30000)
 #define COULOMB_COUNTER_RESET_THREDHOLD_CHARGE_DSG  (-30000)
 
+_meas_s32_ AvgVoltage(_meas_u16_ currVoltage, _meas_u16_ avgVoltage)
+{
+  _meas_s32_ tmp32;
+
+  tmp32 = (_meas_s32_)currVoltage;
+  tmp32 = tmp32 + avgVoltage;
+  tmp32 = tmp32/2;
+  //obj->info->bat1VoltageAvg = (_meas_u16_)tmp32;
+  return tmp32;
+  }
+
 /**
  * @brief UpiMeasurement
  *
@@ -1857,15 +2217,30 @@ MEAS_RTN_CODE UpiMeasurement(MeasDataType *data, MEAS_SEL_CODE select)
 
   /// [AT-PM] : Get ADC code ; 06/04/2013
   rtn = FetchAdcCode(obj);
+  if((select == MEAS_SEL_ALL) || (select == MEAS_SEL_INITIAL))
+  {
   UG31_LOGE("[%s]: (%d-%d) V=%d, I=%d, IT=%d, ET=%d, CH=%d, CT=%d, %02x%02x %02x%02x%02x%02x %02x%02x%02x %02x%02x %02x%02x %02x%02x\n", __func__, 
-            select, obj->info->fetchRetryCnt, obj->codeBat1, obj->codeCurrent, 
-            obj->codeIntTemperature, obj->codeExtTemperature, obj->codeCharge, obj->codeCounter,
-            obj->reg14, obj->reg9C,
-            obj->regC5, obj->regC6, obj->regC7, obj->regC8,
-            obj->regC9, obj->regCA, obj->regCB,
-            obj->reg0A, obj->reg0B,
-            obj->reg50, obj->reg51,
-            obj->reg9B, obj->reg9E);
+              select, obj->info->fetchRetryCnt, obj->codeBat1, obj->codeCurrent, 
+              obj->codeIntTemperature, obj->codeExtTemperature, obj->codeCharge, obj->codeCounter,
+              obj->reg14, obj->reg9C,
+              obj->regC5, obj->regC6, obj->regC7, obj->regC8,
+              obj->regC9, obj->regCA, obj->regCB,
+              obj->reg0A, obj->reg0B,
+              obj->reg50, obj->reg51,
+              obj->reg9B, obj->reg9E);
+  }
+  else
+  {
+  UG31_LOGI("[%s]: (%d-%d) V=%d, I=%d, IT=%d, ET=%d, CH=%d, CT=%d, %02x%02x %02x%02x%02x%02x %02x%02x%02x %02x%02x %02x%02x %02x%02x\n", __func__, 
+              select, obj->info->fetchRetryCnt, obj->codeBat1, obj->codeCurrent, 
+              obj->codeIntTemperature, obj->codeExtTemperature, obj->codeCharge, obj->codeCounter,
+              obj->reg14, obj->reg9C,
+              obj->regC5, obj->regC6, obj->regC7, obj->regC8,
+              obj->regC9, obj->regCA, obj->regCB,
+              obj->reg0A, obj->reg0B,
+              obj->reg50, obj->reg51,
+              obj->reg9B, obj->reg9E);
+  }
   if(rtn != MEAS_RTN_PASS)
   {
     #ifdef  UG31XX_SHELL_ALGORITHM
@@ -1873,7 +2248,13 @@ MEAS_RTN_CODE UpiMeasurement(MeasDataType *data, MEAS_SEL_CODE select)
     #endif  ///< end of UG31XX_SHELL_ALGORITHM
     return (rtn);
   }
-  
+
+  /// [AT-PM] : IIR filter ; 04/15/2014  
+  FilterBat1Code(obj);
+  FilterBat2Code(obj);
+  FilterBat3Code(obj);
+  FilterITCode(obj);
+
   /// [AT-PM] : Get delta time ; 01/25/2013
   if((select == MEAS_SEL_ALL) || (select == MEAS_SEL_INITIAL))
   {
@@ -1909,8 +2290,25 @@ MEAS_RTN_CODE UpiMeasurement(MeasDataType *data, MEAS_SEL_CODE select)
   /// [AT-PM] : Calibrate ADC code ; 01/23/2013
   if((select == MEAS_SEL_ALL) || (select == MEAS_SEL_VOLTAGE) || (select == MEAS_SEL_INITIAL))
   {
-    data->codeBat1 = (_meas_u16_)CalibrateAdc2Code(obj, (_meas_s32_)obj->codeBat1);
-    UG31_LOGN("[%s]: VBat1 Code = %d -> %d\n", __func__, obj->codeBat1, data->codeBat1);
+    data->codeBat1 = (_meas_u16_)CalibrateAdc2Code(obj, (_meas_s32_)obj->info->filterBat1, obj->info->adc2Gain, obj->info->adc2Offset);
+    if(obj->codeBat2 > 0x00)
+    {
+      data->codeBat2 = (_meas_u16_)CalibrateAdc2Code(obj, (_meas_s32_)obj->info->filterBat2, obj->info->adc2Gain, obj->info->adc2Offset);
+    }
+    else
+    {
+      data->codeBat2 = obj->codeBat2;
+    }
+
+    if(obj->codeBat3 > 0x00)
+    {
+    data->codeBat3 = (_meas_u16_)CalibrateAdc2Code(obj, (_meas_s32_)obj->info->filterBat3, obj->info->adc2Gain, obj->info->adc2Offset);
+    }
+    else
+    {
+      data->codeBat3 = obj->codeBat3;
+    }
+    UG31_LOGN("[%s]: VBat1 Code = %d -> %d\n", __func__, obj->info->filterBat1, data->codeBat1);
   }
   if((select == MEAS_SEL_ALL) || (select == MEAS_SEL_CURRENT) || (select == MEAS_SEL_INITIAL))
   {
@@ -1923,9 +2321,9 @@ MEAS_RTN_CODE UpiMeasurement(MeasDataType *data, MEAS_SEL_CODE select)
   }
   if((select == MEAS_SEL_ALL) || (select == MEAS_SEL_INT_TEMP) || (select == MEAS_SEL_INITIAL))
   {
-    data->codeIntTemperature = CalibrateITCode(obj, obj->codeIntTemperature);
+    data->codeIntTemperature = CalibrateITCode(obj, obj->info->filterIntTemperature);
     UG31_LOGN("[%s]: Internal Temperature Code = %d -> %d\n", __func__,
-              obj->codeIntTemperature, data->codeIntTemperature);
+              obj->info->filterIntTemperature, data->codeIntTemperature);
   }
   if((select == MEAS_SEL_ALL) || (select == MEAS_SEL_EXT_TEMP) || (select == MEAS_SEL_INITIAL))
   {
@@ -1937,17 +2335,21 @@ MEAS_RTN_CODE UpiMeasurement(MeasDataType *data, MEAS_SEL_CODE select)
   if((select == MEAS_SEL_ALL) || (select == MEAS_SEL_VOLTAGE) || (select == MEAS_SEL_INITIAL))
   {
     ConvertBat1(obj);
+    ConvertBat2(obj);
+    ConvertBat3(obj);
 
-    if(select == MEAS_SEL_INITIAL)
+    if((select == MEAS_SEL_INITIAL) || (MEAS_IN_SUSPEND_MODE(obj->info->status) == _UPI_TRUE_))
     {
       obj->info->bat1VoltageAvg = obj->info->bat1Voltage;
+      obj->info->bat2VoltageAvg = obj->info->bat2Voltage;
+      obj->info->bat3VoltageAvg = obj->info->bat3Voltage;
     }
     else
     {
-      tmp32 = (_meas_s32_)obj->info->bat1Voltage;
-      tmp32 = tmp32 + obj->info->bat1VoltageAvg;
-      tmp32 = tmp32/2;
-      obj->info->bat1VoltageAvg = (_meas_u16_)tmp32;
+      obj->info->bat1VoltageAvg = (_meas_u16_)AvgVoltage(obj->info->bat1Voltage, obj->info->bat1VoltageAvg);
+      obj->info->bat2VoltageAvg = (_meas_u16_)AvgVoltage(obj->info->bat2Voltage, obj->info->bat2VoltageAvg);
+      obj->info->bat3VoltageAvg = (_meas_u16_)AvgVoltage(obj->info->bat3Voltage, obj->info->bat3VoltageAvg);
+
       UG31_LOGN("[%s]: Average voltage = %d (%d)\n", __func__,
                 obj->info->bat1VoltageAvg,
                 obj->info->bat1Voltage);
@@ -1957,7 +2359,7 @@ MEAS_RTN_CODE UpiMeasurement(MeasDataType *data, MEAS_SEL_CODE select)
   {
     ConvertCurrent(obj);
 
-    if(select == MEAS_SEL_INITIAL)
+    if((select == MEAS_SEL_INITIAL) || (MEAS_IN_SUSPEND_MODE(obj->info->status) == _UPI_TRUE_))
     {
       obj->info->currAvg = obj->info->curr;
     }
@@ -2011,11 +2413,18 @@ MEAS_RTN_CODE UpiMeasurement(MeasDataType *data, MEAS_SEL_CODE select)
     standbyLower = standbyUpper*(-1);
     if((obj->codeCharge > COULOMB_COUNTER_RESET_THRESHOLD_CHARGE_CHG) ||
        (obj->codeCharge < COULOMB_COUNTER_RESET_THREDHOLD_CHARGE_DSG) ||
+#ifdef  UG31XX_RESET_CC_IN_STANDBY
        ((obj->info->curr < standbyUpper) && 
         (obj->info->curr > standbyLower) && 
-        (obj->codeCounter > CONST_CONVERSION_COUNT_THRESHOLD*RESET_CC_CURRENT_MAGIC_NUMBER)) ||
+        (obj->info->deltaCap != 0)) ||
+#endif  ///< end of UG31XX_RESET_CC_IN_STANDBY
        (obj->info->deltaTime > RESET_CC_DELTA_TIME))
     {
+      UG31_LOGN("[%s]: Reset coulomb counter (%d - %d - %d - %d)\n", __func__,
+                obj->codeCharge,
+                obj->info->curr,
+                obj->info->deltaCap,
+                obj->info->deltaTime);
       ResetCoulombCounter(obj);
       data->lastDeltaCap = 0;
 
@@ -2122,6 +2531,19 @@ _meas_u32_ UpiGetMeasurementMemorySize(void)
   #endif  ///< end of UG31XX_SHELL_ALGORITHM
 
   return (totalSize);
+}
+
+/**
+ * @brief UpiPrintMeasurementVersion
+ *
+ *  Print measurement module version
+ *
+ * @return  NULL
+ */
+void UpiPrintMeasurementVersion(void)
+{
+  UG31_LOGE("[%s]: %s\n", __func__,
+            MEASUREMENT_VERSION);
 }
 
 

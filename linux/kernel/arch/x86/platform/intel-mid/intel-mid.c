@@ -932,6 +932,7 @@ static int __init sfi_parse_devs(struct sfi_table_header *table)
 			}
 		}
 	}
+
 	return 0;
 }
 

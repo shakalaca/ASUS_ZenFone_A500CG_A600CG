@@ -11,7 +11,7 @@
  *  Convert OTP registers into readable value
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 25 $
+ * @revision  $Revision: 503 $
  */
 
 #include "stdafx.h"     //windows need this??
@@ -19,11 +19,11 @@
 
 #ifdef  uG31xx_OS_WINDOWS
 
-  #define OTP_VERSION      (_T("OTP $Rev: 25 $ "))
+  #define OTP_VERSION      (_T("OTP $Rev: 503 $ "))
 
 #else   ///< else of uG31xx_OS_WINDOWS
 
-  #define OTP_VERSION      ("OTP $Rev: 25 $ ")
+  #define OTP_VERSION      ("OTP $Rev: 503 $ ")
 
 #endif  ///< end of uG31xx_OS_WINDOWS
 
@@ -926,6 +926,19 @@ void UpiConvertOtp(OtpDataType *data)
 
   /// [AT-PM] : Check OTP is empty ; 01/25/2013
   CheckOtpISEmpty(data);
+}
+
+/**
+ * @brief UpiPrintOtpVersion
+ *
+ *  Print OTP module version
+ *
+ * @return  NULL
+ */
+void UpiPrintOtpVersion(void)
+{
+  UG31_LOGE("[%s]: %s\n", __func__,
+            OTP_VERSION);
 }
 
 

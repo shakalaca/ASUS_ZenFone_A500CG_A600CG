@@ -7,6 +7,13 @@
 #define LCD_ID_TM				0
 #define LCD_ID_HSD				1
 
+#define A502CG_LCD_ID_GIS				0
+#define A502CG_LCD_ID_TM				1
+#define A502CG_LCD_ID_OFILM			2
+#define A502CG_LCD_ID_HSD			3
+
 #define PROJ_ID_A500CG  				0x00000000
+#define PROJ_ID_A501CG_BZ  				0x00000003
 #define PROJ_ID_A501CG  				0x00000004
+#define PROJ_ID_A502CG  				0x00000006
 #define PROJ_ID_A600CG  				0x00000007

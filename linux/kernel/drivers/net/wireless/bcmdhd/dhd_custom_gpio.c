@@ -235,12 +235,20 @@ dhd_custom_get_mac_address(unsigned char *buf)
 	return ret;
 }
 #endif /* GET_CUSTOM_MAC_ENABLE */
-
+#define WIFI_CHIP_43362 1
 /* Customized Locale table : OPTIONAL feature */
 const struct cntry_locales_custom translate_custom_table[] = {
 /* Table should be filled out based on custom platform regulatory requirement */
-#ifdef EXAMPLE_TABLE
-	{"",   "XY", 4},  /* Universal if Country code is unknown or empty */
+//#ifdef EXAMPLE_TABLE
+#ifdef WIFI_CHIP_43362
+        //defaut use XV/0 (1-11 active, 12-14 passive)
+        {"",   "XV", 0},
+        {"TW", "TW", 0},
+        {"CN", "CN", 0},
+        //special case(rev!=0)
+        {"JP", "JP", 1},
+#else
+        {"",   "XY", 4},  /* Universal if Country code is unknown or empty */
 	{"US", "US", 69}, /* input ISO "US" to : US regrev 69 */
 	{"CA", "US", 69}, /* input ISO "CA" to : US regrev 69 */
 	{"EU", "EU", 5},  /* European union countries to : EU regrev 05 */
@@ -282,7 +290,8 @@ const struct cntry_locales_custom translate_custom_table[] = {
 	{"CH", "CH", 0},
 	{"TR", "TR", 0},
 	{"NO", "NO", 0},
-#endif /* EXMAPLE_TABLE */
+//#endif /* EXMAPLE_TABLE */
+#endif /* WIFI_CHIP_43362 */
 };
 
 
@@ -292,7 +301,8 @@ const struct cntry_locales_custom translate_custom_table[] = {
 */
 void get_customized_country_code(char *country_iso_code, wl_country_t *cspec)
 {
-#if defined(CUSTOMER_HW2) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 39))
+//#if defined(CUSTOMER_HW2) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 39))
+#if 0
 
 	struct cntry_locales_custom *cloc_ptr;
 
@@ -308,7 +318,6 @@ void get_customized_country_code(char *country_iso_code, wl_country_t *cspec)
 	return;
 #else
 	int size, i;
-
 	size = ARRAYSIZE(translate_custom_table);
 
 	if (cspec == 0)
@@ -319,17 +328,20 @@ void get_customized_country_code(char *country_iso_code, wl_country_t *cspec)
 
 	for (i = 0; i < size; i++) {
 		if (strcmp(country_iso_code, translate_custom_table[i].iso_abbrev) == 0) {
+        WL_ERROR(("[WLDBG] match customized country code table iso = %s\n",translate_custom_table[i].iso_abbrev));
+        WL_ERROR(("[WLDBG] set wifi country = %s set rev =%s \n"
+                                ,translate_custom_table[i].custom_locale,translate_custom_table[i].custom_locale_rev));
 			memcpy(cspec->ccode,
 				translate_custom_table[i].custom_locale, WLC_CNTRY_BUF_SZ);
 			cspec->rev = translate_custom_table[i].custom_locale_rev;
 			return;
 		}
 	}
-#ifdef EXAMPLE_TABLE
+//#ifdef EXAMPLE_TABLE
 	/* if no country code matched return first universal code from translate_custom_table */
 	memcpy(cspec->ccode, translate_custom_table[0].custom_locale, WLC_CNTRY_BUF_SZ);
 	cspec->rev = translate_custom_table[0].custom_locale_rev;
-#endif /* EXMAPLE_TABLE */
-	return;
+//#endif /* EXMAPLE_TABLE */
+        return;
 #endif /* defined(CUSTOMER_HW2) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)) */
 }

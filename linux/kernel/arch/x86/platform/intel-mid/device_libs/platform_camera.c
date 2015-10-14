@@ -38,6 +38,7 @@ const struct intel_v4l2_subdev_id v4l2_ids[] = {
 	{"imx134", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
 	{"imx132", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
     	{"hm2056", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
+    	{"gc0339", RAW_CAMERA, ATOMISP_CAMERA_PORT_SECONDARY},
 	{"imx111", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
 	{"imx219", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
 	{"mn34130", RAW_CAMERA, ATOMISP_CAMERA_PORT_PRIMARY},
@@ -276,6 +277,7 @@ static void atomisp_unregister_acpi_devices(struct atomisp_platform_data *pdata)
 		"4-0054",	/* imx1xx EEPROM*/
 		"4-000c",	/* imx1xx driver*/
 		"4-0037",       /* mn34130 */
+		"4-0021",       /* gc0339 */
 #if 0
 		"INTCF0B:00",	/* From ACPI ov2722 */
 		"INTCF1A:00",	/* From ACPI imx175 */

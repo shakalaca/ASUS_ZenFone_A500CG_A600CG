@@ -797,7 +797,7 @@ int smb347_set_battery_0V(void) {
 	if (ret < 0)
 		goto out;
 
-	ret &= ~BIT(1);
+	ret &= ~(BIT(1));
         CHR_info("write  battery 0V does not charger cycle = 0x%02x\n", ret);
 	ret = smb347_write(smb347_dev, VAR_FUNC_REG, ret);
 	if (ret < 0)
@@ -862,9 +862,12 @@ int smb347_set_voltage(bool on) {
 		ret |= (BIT(2));
 		ret &= ~(BIT(3));
 	} else {
+		/* in A500/A501/A502/A600, recharge inhibit = 100mV, 01h[3:2] = 01*/
+		ret |= (BIT(2));
+		ret &= ~(BIT(3));
 		/* voltage = 4.32v, recharge inhibit = 200mV, 01h[3:2] = 10*/
-		ret |= (BIT(3));
-		ret &= ~(BIT(2));
+		//ret |= (BIT(3));
+		//ret &= ~(BIT(2));
 	}
 
 	CHR_info("write recharge voltage = 0x%02x\n", ret);
@@ -903,7 +906,7 @@ int smb347_set_fast_charge(void) {
 	 * command register unless pin control is specified in the platform
 	 * data.
 	 */
-	 if(project_id_flag==0) {
+	 if((project_id_flag==0)||(project_id_flag==2)||(project_id_flag==3)) {
 		 if( hw_id_flag==0 )
 			ret = CFG_FAST_CHARGE;
 		 else {
@@ -932,7 +935,7 @@ int smb347_set_fast_charge(void) {
 	 * command register unless pin control is specified in the platform
 	 * data.
 	 */
-	 if(project_id_flag==0) {
+	 if((project_id_flag==0)||(project_id_flag==2)||(project_id_flag==3)) {
 		ret &= ~(BIT(7));
 		if( hw_id_flag==0 ) {
 			ret |= CFG_SOFT_700mA;
@@ -1033,7 +1036,7 @@ int smb347_AC_in_current(void) {
 
 		CHR_info("in A500CG SR1, 01h=0x%02x, 31h=0x%02x, 06h=0x%02x\n", smb347_read(smb347_dev, 0x01), smb347_read(smb347_dev, 0x31), smb347_read(smb347_dev, 0x06));
 	} else {
-		/*===A500CG SR2 & A600CG===*/
+		/*===A50XCG >= SR2 & A600CG===*/
 		/* Config VAR_FUNC_REG register */
 		ret = smb347_read(smb347_dev, VAR_FUNC_REG);
 		if (ret < 0)
@@ -1050,7 +1053,10 @@ int smb347_AC_in_current(void) {
 			goto out;
 
 		ret &= 0x0f;
-		ret |= CFG_1200mA_SMB358;
+		if(project_id_flag==3) //A501CG BZ
+			ret |= (BIT(4)|BIT(5));
+		else
+			ret |= CFG_1200mA_SMB358;
 		ret = smb347_write(smb347_dev, INPUT_CURRENT_LIMIT_REG, ret);
 		if (ret < 0)
 			goto out;
@@ -2538,6 +2544,10 @@ static int smb347_probe(struct i2c_client *client,
 	/*read project id first*/
 	if(PROJ_ID_A600CG == Read_PROJ_ID())
 		project_id_flag = 1;
+	else if(PROJ_ID_A502CG == Read_PROJ_ID())
+		project_id_flag = 2;
+	else if(PROJ_ID_A501CG_BZ == Read_PROJ_ID())
+		project_id_flag = 3;
 	else
 		project_id_flag = 0;
 	/*read hw id*/
@@ -2550,7 +2560,7 @@ static int smb347_probe(struct i2c_client *client,
 
 	if(hw_id_flag==1)
 		hw_id_flag = 2; // because cannot recognize SR1 & SR2 so use SR2 settings in all SR
-	CHR_info("%s, Read_PROJ_ID=0x%x, project_id_flag=%d, HW_ID=0x%x, hw_id_flag=%d\n", __func__,  Read_PROJ_ID(), project_id_flag, Read_HW_ID(), hw_id_flag);
+	CHR_info("%s, Read_PROJ_ID=0x%x, project_id_flag=%d, Read_HW_ID=0x%x, hw_id_flag=%d\n", __func__,  Read_PROJ_ID(), project_id_flag, Read_HW_ID(), hw_id_flag);
 
 	pdata = dev->platform_data;
 	if (!pdata)

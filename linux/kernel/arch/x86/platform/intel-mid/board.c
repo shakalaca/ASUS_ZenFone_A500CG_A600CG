@@ -76,6 +76,7 @@
 #include "device_libs/platform_imx134.h"
 #include "device_libs/platform_imx132.h"
 #include "device_libs/platform_hm2056.h"
+#include "device_libs/platform_gc0339.h"
 #include "device_libs/platform_imx111.h"
 #include "device_libs/platform_imx219.h"
 #include "device_libs/platform_mn34130.h"
@@ -258,6 +259,8 @@ struct devs_id __initconst device_ids[] = {
 					&intel_register_i2c_camera_device},
 #endif
     	{"hm2056", SFI_DEV_TYPE_I2C, 0, &hm2056_platform_data,
+                    			&intel_register_i2c_camera_device},
+    	{"gc0339", SFI_DEV_TYPE_I2C, 0, &gc0339_platform_data,
                     			&intel_register_i2c_camera_device},
 	{"imx111", SFI_DEV_TYPE_I2C, 0, &imx111_platform_data,
 					&intel_register_i2c_camera_device},

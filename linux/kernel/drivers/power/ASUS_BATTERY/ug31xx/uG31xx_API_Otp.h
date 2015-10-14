@@ -4,7 +4,7 @@
  *  Header of OTP conversion module
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 2 $
+ * @revision  $Revision: 503 $
  */
 
 /// [AT-PM] : Product Type definition in OTP ; 01/23/2013
@@ -80,4 +80,13 @@ typedef struct OtpDataST {
  * @return  _UPI_NULL_
  */
 extern void UpiConvertOtp(OtpDataType *data);
+
+/**
+ * @brief UpiPrintOtpVersion
+ *
+ *  Print OTP module version
+ *
+ * @return  NULL
+ */
+extern void UpiPrintOtpVersion(void);
 

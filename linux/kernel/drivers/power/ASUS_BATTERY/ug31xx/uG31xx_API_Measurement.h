@@ -4,7 +4,7 @@
  *  Header for uG31xx measurement API
  *
  * @author  AllenTeng <allen_teng@upi-semi.com>
- * @revision  $Revision: 476 $
+ * @revision  $Revision: 81 $
  */
 
 typedef signed char       _meas_s8_;
@@ -26,12 +26,14 @@ typedef char              _meas_bool_;
 #define MEAS_STATUS_NTC_SHORT                 (1<<3)
 #define MEAS_STATUS_REFER_ET                  (1<<4)
 #define MEAS_STATUS_CABLE_OUT                 (1<<5)
+#define MEAS_STATUS_LAST_IN_SUSPEND_MODE      (1<<6)
 
 #define MEAS_IN_SUSPEND_MODE(x)           ((x & MEAS_STATUS_IN_SUSPEND_MODE) ? _UPI_TRUE_ : _UPI_FALSE_)
 #define MEAS_REVERSE_CURRENT_DIRECTION(x) ((x & MEAS_STATUS_REVERSE_CURRENT_DIRECTION) ? _UPI_TRUE_ : _UPI_FALSE_)
 #define MEAS_NTC_OPEN(x)                  ((x & MEAS_STATUS_NTC_OPEN) ? _UPI_TRUE_ : _UPI_FALSE_)
 #define MEAS_NTC_SHORT(x)                 ((x & MEAS_STATUS_NTC_SHORT) ? _UPI_TRUE_ : _UPI_FALSE_)
 #define MEAS_CABLE_OUT(x)                 ((x & MEAS_STATUS_CABLE_OUT) ? _UPI_TRUE_ : _UPI_FALSE_)
+#define MEAS_LEAVE_SUSPEND_MODE(x)        (((x & MEAS_STATUS_LAST_IN_SUSPEND_MODE) && (!(x & MEAS_STATUS_IN_SUSPEND_MODE))) ? _UPI_TRUE_ : _UPI_FALSE_)
 
 #define MEAS_MAXIMUM_INITIAL_RETRY_CNT      (40)
 #define MEAS_MAXIMUM_ROUTINE_RETRY_CNT      (3)
@@ -64,7 +66,11 @@ typedef struct MeasDataST {
   
   /// [AT-PM] : Physical value ; 01/23/2013
   _meas_u16_ bat1Voltage;
+  _meas_u16_ bat2Voltage;
+  _meas_u16_ bat3Voltage;
   _meas_u16_ bat1VoltageAvg;
+  _meas_u16_ bat2VoltageAvg;
+  _meas_u16_ bat3VoltageAvg;
   _meas_s16_ curr;
   _meas_s16_ currAvg;
   _meas_s16_ intTemperature;
@@ -78,12 +84,28 @@ typedef struct MeasDataST {
 
   /// [AT-PM] : ADC code ; 01/23/2013
   _meas_u16_ codeBat1;
+  _meas_u16_ codeBat2;
+  _meas_u16_ codeBat3;
   _meas_s16_ codeCurrent;
   _meas_u16_ codeIntTemperature;
   _meas_u16_ codeExtTemperature;
   _meas_u16_ codeInstExtTemperature;
   _meas_s32_ codeCharge;
 
+  /// [AT-PM] : ADC code filter ; 04/15/2014
+  _meas_u32_ filterSumBat1;
+  _meas_u32_ filterSumBat2;
+  _meas_u32_ filterSumBat3;
+  _meas_u32_ filterSumIntTemperature;
+  _meas_u8_ filterCntBat1;
+  _meas_u8_ filterCntBat2;
+  _meas_u8_ filterCntBat3;
+  _meas_u8_ filterCntIntTemperature;
+  _meas_u16_ filterBat1;
+  _meas_u16_ filterBat2;
+  _meas_u16_ filterBat3;
+  _meas_u16_ filterIntTemperature;
+  
   /// [AT-PM] : Coulomb counter offset ; 01/23/2013
   _meas_s16_ ccOffset;
   _meas_s8_ ccOffsetAdj;
@@ -105,6 +127,11 @@ typedef struct MeasDataST {
   _meas_s32_ adc2OffsetSlope;
   _meas_s32_ adc2OffsetFactorO;
 
+  _meas_s32_ adc2Vbat2Gain;
+  _meas_s32_ adc2Vbat2Offset;
+  _meas_s32_ adc2Vbat3Gain;
+  _meas_s32_ adc2Vbat3Offset;
+
   /// [AT-PM] : Previous information ; 01/25/2013
   _meas_u16_ lastCounter;
   _meas_u32_ lastTimeTick;
@@ -116,6 +143,8 @@ typedef struct MeasDataST {
   _meas_s16_ adc2CodeT25V100;
   _meas_s16_ adc2CodeT25V200;
   _meas_u16_ codeBat1BeforeCal;
+  _meas_u16_ codeBat2BeforeCal;
+  _meas_u16_ codeBat3BeforeCal;
   _meas_s16_ codeCurrentBeforeCal;
   _meas_u16_ codeIntTemperatureBeforeCal;
   _meas_u16_ codeExtTemperatureBeforeCal;
@@ -180,4 +209,13 @@ extern MEAS_RTN_CODE UpiMeasReadCode(MeasDataType *data);
  * @return  memory size
  */
 extern _meas_u32_ UpiGetMeasurementMemorySize(void);
+
+/**
+ * @brief UpiPrintMeasurementVersion
+ *
+ *  Print measurement module version
+ *
+ * @return  NULL
+ */
+extern void UpiPrintMeasurementVersion(void);
 

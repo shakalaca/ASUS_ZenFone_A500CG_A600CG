@@ -855,6 +855,10 @@ config TOUCHSCREEN_HIMAX_HX85XX
         bool "Himax HX85XX touchscreen"
         depends on I2C
 
+config TOUCHSCREEN_HIMAX_HX85XX_A502CG
+        bool "Himax HX85XX touchscreen"
+        depends on I2C
+
 config TOUCHSCREEN_SYNAPTICS_DSX_I2C
 	bool "I2C"
 	depends on I2C

@@ -28,10 +28,10 @@
 #include "synaptics_dsx_core.h"
 
 //<ASUS+>#define FW_IMAGE_NAME "synaptics/startup_fw_update.img"
-#define FW_IMAGE_NAME_A500_LCE "synaptics/startup_fw_update_A500_LCE_1626568_354C0111.img"
-#define FW_IMAGE_NAME_A500_JTouch "synaptics/startup_fw_update_A500_JTouch_1626568_354A0117.img"
-#define FW_IMAGE_NAME_A600_Ofilm "synaptics/startup_fw_update_A600_Ofilm_1593779_364F0117.img"
-#define FW_IMAGE_NAME_A600_JTouch "synaptics/startup_fw_update_A600_JTouch_1593779_364A0121.img"
+#define FW_IMAGE_NAME_A500_LCE "synaptics/startup_fw_update_A500_LCE_1636167_354C0112.img"
+#define FW_IMAGE_NAME_A500_JTouch "synaptics/startup_fw_update_A500_JTouch_1636167_354A0118.img"
+#define FW_IMAGE_NAME_A600_Ofilm "synaptics/startup_fw_update_A600_Ofilm_1636167_364F0121.img"
+#define FW_IMAGE_NAME_A600_JTouch "synaptics/startup_fw_update_A600_JTouch_1636167_364A0121.img"
 
 //<ASUS+>/*
 #define DO_STARTUP_FW_UPDATE

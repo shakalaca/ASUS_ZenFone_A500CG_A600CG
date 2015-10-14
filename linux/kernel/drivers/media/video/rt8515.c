@@ -17,11 +17,78 @@
 #include <media/v4l2-device.h>
 #include <linux/atomisp.h>
 #include <linux/i2c.h>
+#include <linux/proc_fs.h>
+
+/*
+static struct device* flash_dev;
+static struct class* flash_class;
+*/
+static int set_light_record;
+static void rt8515_torch_on(u8);  
+static void rt8515_flash_off(unsigned long );      
+u8 inline turn_percent_to_s2c(u8);
+
+
+static ssize_t flash_show(struct file *dev, char *buffer, size_t count, loff_t *ppos)
+{
+
+   int len = 0;       
+   int report_light =0;                                                                                                                                                                                  
+   ssize_t ret = 0;
+   char *buff;
+ 
+   buff = kmalloc(100,GFP_KERNEL);
+   if(!buff)
+            return -ENOMEM;
+
+    report_light = set_light_record;
+    report_light *= 2; 
+    len += sprintf(buff+len, "%d\n", report_light);
+    ret = simple_read_from_buffer(buffer,count,ppos,buff,len);
+    kfree(buff);
+
+    return ret;
+
+}
+
+static ssize_t flash_store(struct file *dev, const char *buf, size_t count, loff_t *loff)
+{
+    int set_light; 
+    set_light = -1;
+    sscanf(buf, "%d", &set_light);
+    printk(KERN_INFO "[Flash] Set light to %d ", set_light);        
+    if (set_light == set_light_record) return count;  
+  
+    if(set_light ==-1 || set_light >200) return -1;
+    
+    else if (set_light == 0 ){ 
+        rt8515_flash_off((unsigned long) 0); 
+    }else{
+        set_light /= 2;
+        set_light_record = set_light; 
+        rt8515_flash_off((unsigned long) 0);
+        u8 map_num = turn_percent_to_s2c((u8)set_light); 
+        printk(KERN_INFO "map_num is %x", map_num);
+        rt8515_torch_on(map_num);         
+    }    
+
+    return count;
+}
+
+static const struct file_operations flash_proc_fops = {
+     .read       = flash_show,
+     .write      = flash_store,
+};
+
+
+
+DEVICE_ATTR(flash, 0664, flash_show, flash_store);
 
 u8 inline turn_percent_to_s2c(u8 light_intensity_percentage){
 		u8 ret;
+        set_light_record = (int) light_intensity_percentage;
 
-		ret = RT8515_TORCH_INT_0_PERCENT;
+        ret = RT8515_TORCH_INT_0_PERCENT;
 		if(light_intensity_percentage >= 20)
 			ret = RT8515_TORCH_INT_20_PERCENT;
 		if(light_intensity_percentage > 22)
@@ -104,6 +171,7 @@ static void rt8515_flash_on(void)
 
 static void rt8515_flash_off(unsigned long dummy)
 {
+    set_light_record = 0; 
 	del_timer(&flash_timer);
 	gpio_direction_output(rt8515_ENF, 0);
 	gpio_direction_output(rt8515_ENT, 0);
@@ -117,7 +185,7 @@ static void rt8515_torch_on(u8 data)
 	gpio_set_value(rt8515_ENF, 0);
 	gpio_set_value(rt8515_ENT, 0);
 	//usleep_range(500, 600);
-	udelay(600);
+	udelay(3500);
 	printk(KERN_DEBUG "[FLASH] Settings RT8515_FLASH_ENT (%d) is set from 0 to 1 %d times for s2c communication \n",rt8515_ENT,data);
 	while(data--){
 		gpio_set_value(rt8515_ENT, 0);
@@ -666,6 +734,8 @@ static int __devinit rt8515_probe(struct i2c_client *client,
 		goto fail1;
 	}
 
+	spin_lock_init(&flash->lock);
+
 	flash->sd.entity.type = MEDIA_ENT_T_V4L2_SUBDEV_FLASH;
 
 	init_timer(&flash_timer);
@@ -673,7 +743,17 @@ static int __devinit rt8515_probe(struct i2c_client *client,
 	flash_timer.function = &rt8515_time_off;
 	flash_timer.data = (unsigned long) 10;
 	add_timer(&flash_timer);
-
+/*
+    flash_class = class_create(THIS_MODULE, "flash_dev");
+    flash_dev = device_create(flash_class, NULL, 0, "%s", "flash_ctrl");
+    device_create_file(flash_dev, &dev_attr_flash);
+*/
+    void* dummy;
+    struct proc_dir_entry* proc_entry_flash; 
+    proc_entry_flash = proc_create_data("driver/asus_flash_brightness", 0664, NULL, &flash_proc_fops, dummy);
+    proc_entry_flash->uid = 1000;
+    proc_entry_flash->gid = 1000;
+     
 #if 0
 
 

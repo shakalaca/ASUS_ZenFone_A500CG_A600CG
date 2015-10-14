@@ -57,7 +57,6 @@ typedef enum {
 #define LKM_OPTIONS_ENABLE_REVERSE_CURRENT  (1<<4)
 #define LKM_OPTIONS_ADJUST_DESIGN_CAPACITY  (1<<5)
 #define LKM_OPTIONS_DISABLE_BACHUP_FILE     (1<<6)
-#define LKM_OPTIONS_RSOC_REMAP              (1<<7)
 
 #endif  ///< end of _LKM_OPTIONS_
 
@@ -114,6 +113,9 @@ struct ug31xx_module_interface {
 	int (*get_cumulative_capacity)(void);
 	int (*get_standby_current)(void);
 	int (*get_ggb_board_gain)(void);
+	unsigned int (*get_ggb_config)(void);
+	unsigned char (*get_decimate_rst_sts)(void);
+  int (*get_delta_time)(void);
 
 	int (*set_backup_file)(char enable);
 	int (*set_charger_full)(char is_full);
@@ -134,6 +136,7 @@ struct ug31xx_module_interface {
 	int (*set_ntc_offset)(int offset);
 	int (*set_standby_current)(int curr);
 	int (*set_ggb_board_gain)(int gain);
+	int (*set_ggb_config)(unsigned int config);
 
 	int (*chk_backup_file)(void);
 	int (*enable_save_data)(char enable);
@@ -172,11 +175,19 @@ enum {
   UG31XX_BOARD_OFFSET_CALI_FULL_NO_UPPER,
   UG31XX_BOARD_OFFSET_CALI_AVG,
   UG31XX_BOARD_OFFSET_FROM_UPI_BO,
+  UG31XX_BOARD_OFFSET_FROM_UPI_COS,
   UG31XX_BOARD_OFFSET_NOT_FROM_UPI_BO,
   UG31XX_CABLE_OUT,
   UG31XX_CABLE_IN,
   UG31XX_USER_SPACE_RESPONSE,
   UG31XX_USER_SPACE_NO_RESPONSE,
+  UG31XX_DECIMATE_RST_ACTIVE,
+  UG31XX_DECIMATE_RST_NOT_ACTIVE,
+  UG31XX_OP_NORMAL,
+  UG31XX_OP_EARLY_SUSPEND,
+  UG31XX_OP_SUSPEND,
+  UG31XX_OP_RESUME,
+  UG31XX_OP_LATE_RESUME,
 };
 
 extern struct ug31xx_module_interface ug31_module;

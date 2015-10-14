@@ -198,7 +198,6 @@ static void lid_do_work_function(struct work_struct *dat)
 	pr_info("[%s] hall_sensor_interrupt = %d\n", DRIVER_NAME,hall_sensor_dev->irq);
 	cancel_delayed_work(&hall_sensor_dev->hall_sensor_work);
 	queue_delayed_work(hall_sensor_wq, &hall_sensor_dev->hall_sensor_work, 0);
-	wake_lock(&hall_sensor_dev->wake_lock);
 }
 
 
@@ -235,6 +234,7 @@ static void lid_report_function(struct work_struct *dat)
                 pwn_enable(false);
 #endif
 	wake_unlock(&hall_sensor_dev->wake_lock);
+    wake_lock_timeout(&hall_sensor_dev->wake_lock, msecs_to_jiffies(3000));
         pr_info("[%s] SW_LID report value = %d\n", DRIVER_NAME,!hall_sensor_dev->status);
  
 
@@ -242,7 +242,9 @@ static void lid_report_function(struct work_struct *dat)
 
 static irqreturn_t hall_sensor_interrupt_handler(int irq, void *dev_id)
 {
+	pr_info("[%s] hall_sensor_interrupt_handler = %d\n", DRIVER_NAME,hall_sensor_dev->irq);
 	queue_delayed_work(hall_sensor_do_wq, &hall_sensor_dev->hall_sensor_dowork, msecs_to_jiffies(50));
+	wake_lock(&hall_sensor_dev->wake_lock);
 	return IRQ_HANDLED;
 }
 

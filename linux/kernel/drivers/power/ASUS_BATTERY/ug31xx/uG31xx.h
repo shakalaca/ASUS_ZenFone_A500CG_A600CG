@@ -75,11 +75,7 @@
 #define NAC_LMD_ADJUST_CFG_PARSER_FORCE_100_REACH_TP_DISABLE  (1<<8)
 #define NAC_LMD_ADJUST_CFG_PARSER_FORCE_99_BEFORE_TP_DISABLE  (1<<9)
 #define NAC_LMD_ADJUST_CFG_PARSER_RM_NOT_EXCEED_FCC_DISABLE   (1<<10)
-#define NAC_LMD_ADJUST_CFG_CHG_FCC_SELECTION                  (3<<11)
-  #define NAC_LMD_ADJUST_CFG_CHG_FCC_WITH_CURR_FCC            (0<<11)
-  #define NAC_LMD_ADJUST_CFG_CHG_FCC_WITH_CC_RECORD           (1<<11)
-  #define NAC_LMD_ADJUST_CFG_CHG_FCC_WITH_NAC_TABLE           (2<<11)   
-  #define NAC_LMD_ADJUST_CFG_CHG_FCC_WITH_DSG_CHARGE          (3<<11)
+#define NAC_LMD_ADJUST_CFG_CHG_ALGORITHM_EN                   (1<<12)
 #define NAC_LMD_ADJUST_CFG_ALWAYS_UPDATE_FCC_AT_LAST          (1<<13)
 #define NAC_LMD_ADJUST_CFG_PARSER_RATIO_DISABLE               (1<<14)
 #define NAC_LMD_ADJUST_CFG_CAP_ALGORITHM_VER                  (3<<15)
@@ -102,6 +98,8 @@
 #define NAC_LMD_ADJUST_CFG_RSOC_FILTER_LOCK_TABLE             (1<<27)
 #define NAC_LMD_ADJUST_CFG_BATTERY_REINSERT_DETECT_EN         (1<<28)
 #define NAC_LMD_ADJUST_CFG_INIT_PARSER_FORCE_100_EN           (1<<29)
+#define NAC_LMD_ADJUST_CFG_RSOC_FILTER_STEP_CC                (1<<30)
+#define NAC_LMD_ADJUST_CFG_REMAP_RSOC_EN                      (1<<31)
 
 #define GET_PRODUCT_TYPE(x)       ((x & NAC_LMD_ADJUST_CFG_PRODUCT_TYPE) >> 6)
 #define GET_CAP_ALGORITHM_VER(x)  ((x & NAC_LMD_ADJUST_CFG_CAP_ALGORITHM_VER) >> 15)
@@ -124,9 +122,10 @@ enum OCV_TABLE_IDX {
 #define CONST_ROUNDING                    (10)
 #define CONST_ROUNDING_5                  (5)
 #define TIME_CONVERT_TIME_TO_MSEC         (10)
-#define CONST_CONVERSION_COUNT_THRESHOLD  (300)
+#define CONST_CONVERSION_COUNT_THRESHOLD  (500)
 #define TIME_SEC_TO_HOUR                  (3600)
 #define TIME_MSEC_TO_SEC                  (1000)
+#define TIME_SEC_TO_MIN                   (60)
 
 #define ET_AVERAGE_NEW      (1)
 #define ET_AVERAGE_OLD      (7)
@@ -150,7 +149,6 @@ enum OCV_TABLE_IDX {
 #define LKM_OPTIONS_ENABLE_REVERSE_CURRENT  (1<<4)
 #define LKM_OPTIONS_ADJUST_DESIGN_CAPACITY  (1<<5)
 #define LKM_OPTIONS_DISABLE_BACHUP_FILE     (1<<6)
-#define LKM_OPTIONS_RSOC_REMAP              (1<<7)
 
 #define LKM_OPTIONS_DEBUG_LEVEL(x)          ((x & LKM_OPTIONS_ENABLE_DEBUG_LOG) >> 2)
 

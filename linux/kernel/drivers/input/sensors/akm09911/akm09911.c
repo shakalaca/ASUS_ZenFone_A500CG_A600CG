@@ -1647,7 +1647,18 @@ static int akm_compass_remove(struct i2c_client *client)
 	dev_info(&client->dev, "successfully removed.");
 	return 0;
 }
+static int akm_compass_shutdown(struct i2c_client *client)
+{
+	printk("compass : akm09911 shutdown\n");	
+	struct akm_compass_data *akm = i2c_get_clientdata(client);
+	class_destroy(akm->compass);
+	misc_deregister(&akm_compass_dev);
+	input_unregister_device(akm->input);
+	input_free_device(akm->input);
+	kfree(akm);
 
+	return 0;
+};
 static const struct i2c_device_id akm_compass_id[] = {
 	{AKM_I2C_NAME, 0 },
 	{ }
@@ -1661,6 +1672,7 @@ static const struct dev_pm_ops akm_compass_pm_ops = {
 static struct i2c_driver akm_compass_driver = {
 	.probe		= akm_compass_probe,
 	.remove		= akm_compass_remove,
+	.shutdown	= akm_compass_shutdown,
 	.id_table	= akm_compass_id,
 	.driver = {
 		.name	= AKM_I2C_NAME,

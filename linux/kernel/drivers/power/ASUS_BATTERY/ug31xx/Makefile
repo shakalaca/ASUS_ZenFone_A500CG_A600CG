@@ -2,10 +2,8 @@
 #  Copyright (c) 2012, UPI-SEMI, Inc. All Rights Reserved.
 #
 
-EXTRA_CFLAGS    += -DBUILD_UG31XX_LINUX_KERNEL -DuG31xx_OS_ANDROID -DUG31XX_USE_DAEMON_AP_FOR_FILE_OP -DUG31XX_SHELL_ALGORITHM -DCONFIG_ASUS_ENGINEER_MODE -fno-pic
-
-#$(obj)/uG31xx_API_Capacity.o: $(src)/uG31xx_API_Capacity.obj
-#	if [ -a $< ]; then cp $< $@; fi;
+EXTRA_CFLAGS	+= -DBUILD_UG31XX_LINUX_KERNEL -DuG31xx_OS_ANDROID -DUG31XX_USE_DAEMON_AP_FOR_FILE_OP -DUG31XX_SHELL_ALGORITHM -fno-pic
+EXTRA_CFLAGS	+= -DFEATURE_DISABLE_SUSPEND_OPERATION
 
 ug31xx_battery-objs	+= uG31xx_API_Backup.o
 ug31xx_battery-objs	+= uG31xx_API_Capacity.o

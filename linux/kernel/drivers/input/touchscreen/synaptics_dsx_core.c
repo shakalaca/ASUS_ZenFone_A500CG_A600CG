@@ -703,6 +703,14 @@ static int tp_proc_write(struct file *file, const char *buffer,
 static int tp_proximity_proc_read(char *buf, char **start, off_t offset, int request,
 				     int *eof, void *data)
 {
+	if (touch_proximity_at_phone == 1) {		//No Touch
+		printk("[Synaptics] Touch is disabled now\n");
+		return sprintf(buf, "Touch is disabled now\n");
+	} else if (touch_proximity_at_phone == 0) {	//Touch
+		printk("[Synaptics] Touch is enabled now\n");
+		return sprintf(buf, "Touch is enabled now\n");
+	}
+
 	return 0;
 }
 static int tp_proximity_proc_write(struct file *file, const char *buffer,
@@ -713,8 +721,10 @@ static int tp_proximity_proc_write(struct file *file, const char *buffer,
 
 	if ((int)(*buffer) == (1+48)) {		//No Touch
 		touch_proximity_at_phone = 1;
+		printk("[Synaptics] Disable Touch\n");
 	} else {				//Touch
 		touch_proximity_at_phone = 0;
+		printk("[Synaptics] Enable Touch\n");
 	}
 
 	return count;
@@ -1020,6 +1030,17 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 			input_report_abs(rmi4_data->input_dev,
 					ABS_MT_TOUCH_MINOR, min(wx, wy));
 #endif
+
+//<ASUS_Glove_Distance+>
+			if (finger_status == F12_FINGER_STATUS && rmi4_data->glove_mode == 1) {
+				input_report_abs(rmi4_data->input_dev, ABS_MT_DISTANCE, 5566);
+				dev_dbg(rmi4_data->pdev->dev.parent,"%s: Finger touch in glove mode, x:%d y:%d\n", __func__, x, y);
+			} else {
+				input_report_abs(rmi4_data->input_dev, ABS_MT_DISTANCE, 0);
+				dev_dbg(rmi4_data->pdev->dev.parent,"%s: Finger touch in finger mode or glove touch in glove mode, x:%d y:%d\n", __func__, x, y);
+			}
+//<ASUS_Glove_Distance->
+
 #ifndef TYPE_B_PROTOCOL
 			input_mt_sync(rmi4_data->input_dev);
 #endif
@@ -2332,6 +2353,12 @@ static void synaptics_rmi4_set_params(struct synaptics_rmi4_data *rmi4_data)
 			ABS_MT_TOUCH_MINOR, 0,
 			rmi4_data->max_touch_width, 0, 0);
 #endif
+
+//<ASUS_Glove_Distance+>
+	input_set_abs_params(rmi4_data->input_dev,
+			ABS_MT_DISTANCE, 0,
+			5566, 0, 0);
+//<ASUS_Glove_Distance->
 
 #ifdef TYPE_B_PROTOCOL
 	input_mt_init_slots(rmi4_data->input_dev,

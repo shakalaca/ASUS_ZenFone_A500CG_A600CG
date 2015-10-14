@@ -49,6 +49,7 @@
 
 #define	DRIVER_DESC		"Intel Penwell USB OTG transceiver driver"
 #define	DRIVER_VERSION		"0.8"
+#define	USB_DET			1
 
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_AUTHOR("Henry Yuan <hang.yuan@intel.com>, Hao Wu <hao.wu@intel.com>");
@@ -843,6 +844,9 @@ static int penwell_otg_set_vbus(struct usb_otg *otg, bool enabled)
 						enabled ? "ON" : "OFF");
 			atomic_notifier_call_chain(&pnw->iotg.otg.notifier,
 				USB_EVENT_DRIVE_VBUS, &enabled);
+#ifdef CONFIG_USB_OTG_SUPPLY_VOLT
+                        setSMB347Charger(enabled ? ENABLE_5V: DISABLE_5V);
+#endif
 			kfree(evt);
 			goto done;
 		}
@@ -3027,7 +3031,9 @@ static void penwell_otg_work(struct work_struct *work)
 	int					retval;
 	struct pci_dev				*pdev;
 	unsigned long				flags;
-
+#if USB_DET
+	int retry_flag=0;
+#endif
 	dev_dbg(pnw->dev,
 		"old state = %s\n", state_string(iotg->otg.state));
 
@@ -3144,7 +3150,19 @@ static void penwell_otg_work(struct work_struct *work)
 							"detect fail again\n");
 					break;
 				} else
+#if USB_DET	// Chih-Hsuan ++
+				{
+					if ((retval==CHRG_SDP)&&(retry_flag==0)) {
+						dev_warn(pnw->dev, "USB detect, retry once after 1s\n");
+						msleep(1000);
+						retval = penwell_otg_charger_det_clt();
+						retry_flag = 1;
+					}
+#endif
 					charger_type = retval;
+#if USB_DET
+				}
+#endif
 			}
 
 			/* This is a workaround for self-powered hub case,

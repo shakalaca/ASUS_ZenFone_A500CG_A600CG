@@ -92,18 +92,18 @@ typedef struct CELL_PARAMETER
                                     [3]:VP  [2]:V3  [1]:V2 [0]:V1 */
   _upi_u8_ cbcEnable; /*[1]:CBC_EN32  [0]:CBC_EN21 */
 
-  _upi_u16_ vBat2_8V_IdealAdcCode;	//ideal ADC Code
-  _upi_u16_ vBat2_6V_IdealAdcCode;
+  _upi_u16_ vbat2_gain;	//ideal ADC Code
+  _upi_s16_ vbat2_offset;
 
-  _upi_u16_ vBat3_12V_IdealAdcCode;
-  _upi_u16_ vBat3_9V_IdealAdcCode;
+  _upi_u16_ vbat3_gain;
+  _upi_s16_ vbat3_offset;
 
   _upi_s16_ adc1_pgain;
   _upi_s16_ adc1_ngain;
 
   _upi_s16_ adc1_pos_offset;
-  _upi_u16_ adc2_gain;
 
+  _upi_u16_ adc2_gain;
   _upi_s16_ adc2_offset;
   _upi_u16_ R;
   
@@ -121,6 +121,7 @@ typedef struct CELL_PARAMETER
   _upi_u16_ CycleCountThrd;
   
   _upi_u32_ NacLmdAdjustCfg;
+  
 }ALIGNED_ATTRIBUTE CELL_PARAMETER;
 
 typedef struct CELL_TABLE
@@ -156,6 +157,8 @@ typedef struct ADC_CHECK
   _upi_u16_ lastVBat1Ave;
   _upi_u16_ failCounterCurrent;
   _upi_u16_ failCounterVoltage;
+  _upi_bool_ decimateRst;
+  _upi_u32_ decimateRstTime;
 } ALIGNED_ATTRIBUTE ADC_CHECK;
 
 typedef struct USER_REGISTER
